@@ -9,8 +9,8 @@ with numpy: same images, slower. tools/build_package.py ships whichever librarie
 are in the folder.
 """
 import argparse
-import importlib.util
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -21,11 +21,11 @@ NATIVE = ROOT / "blender_addon" / "kileido" / "native"
 
 
 def library_name() -> str:
-    """gerber.native_library_name(), so the build and the loader agree on the name."""
-    spec = importlib.util.spec_from_file_location("kileido_gerber", NATIVE.parent / "gerber.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.native_library_name()
+    """The name gerber.native_library_name() loads (tests/test_gerber.py checks they agree).
+    Repeated here so the build needs only the standard library, not numpy."""
+    system = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
+    suffix = {"windows": "dll", "macos": "dylib"}.get(system, "so")
+    return f"kls_raster-{system}-{platform.machine().lower()}.{suffix}"
 
 
 def compiler(requested: str | None) -> str:

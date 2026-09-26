@@ -163,6 +163,13 @@ def test_blur_softens_edges_and_keeps_the_amount_inside():
     assert np.allclose(gerber.blur(np.ones((5, 5), np.float32), 3.0), 1.0)  # edges extend, no dark rim
 
 
+def test_the_build_tool_names_the_library_the_loader_looks_for():
+    spec = importlib.util.spec_from_file_location("build_native", _PATH.parents[2] / "tools" / "build_native.py")
+    build_native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_native)
+    assert build_native.library_name() == gerber.native_library_name()
+
+
 def test_a_built_library_loads():
     """A library built for this platform that fails to load would silently fall back."""
     if (_PATH.parent / "native" / gerber.native_library_name()).is_file():
