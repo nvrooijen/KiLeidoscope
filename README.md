@@ -36,7 +36,7 @@ Mask, silkscreen and 3D models take a second path. The bridge keeps a copy of th
 | --- | --- |
 | KiCad access | Official IPC API, read-only apart from selection. No legacy `pcbnew` bindings. |
 | Data sent to Blender | Whole (layer, kind) lists, such as all F.Cu tracks, re-sent when anything in them changes. No per-item deltas. |
-| Language | Python 3.10+ for the bridge (Ubuntu 22.04 ships 3.10); a Python add-on inside Blender. |
+| Language | Python 3.10+ for the bridge (Ubuntu 22.04 ships 3.10); a Python add-on inside Blender, with one small C library for drawing the Gerber overlays (numpy fallback when it is not built for the platform). |
 | Boundaries | The bridge never imports `bpy`; the add-on never imports the bridge or `kipy`. `tests/test_boundaries.py` enforces this. |
 | Analysis (planned) | Geometry-based only: closed-form impedance, spacing and parallel-length coupling, path-length skew, reference-plane checks. No field solver. |
 
@@ -119,7 +119,10 @@ In a running viewer, F3 **KiLeidoscope: Load dump** opens a `.kls` file. A `.jso
 
 The add-on keeps its own copy of the frame decoder (`client.py`), checked against the bridge's by `tests/test_addon_protocol.py`.
 
+The add-on draws the mask, silkscreen and drawing overlays with a small C library (`blender_addon/kileido/native/kls_raster.c`), about 8× faster than its numpy fallback and giving the same images. It is loaded through `ctypes`, so one build per OS and CPU serves every Python and Blender version. Build it for your platform (needs `gcc` or `clang`) before running the tests or building the package, which ships whichever libraries are in `native/`:
+
 ```
+python tools/build_native.py
 python -m pip install -e ".[test]"
 python -m pytest -q
 ```
