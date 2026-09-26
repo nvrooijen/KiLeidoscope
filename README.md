@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/logo.png" alt="KiLeidoscope logo: a differential pair's two vias and traces, highlighted red and blue" width="240" align="middle">
+  <img src="assets/mainUI.png" width="400" align="middle" alt="A board in Blender with KiLeidoscope's Realistic colours and a differential pair highlighted red and blue, next to the KiLeidoscope sidebar panel: live with KiCad, Preview or Cycles, board finish ENIG and the stackup with a visibility eye and thickness per layer.">
   &nbsp;&nbsp;
-  <img src="assets/turntable.gif" width="480" align="middle" alt="A board turning in a Cycles render while it is edited in KiCad: the selected net's tracks get wider, the top solder mask and silkscreen switch off, X-ray mode turns the rest of the board see-through grey, and one segment of the net moves sideways.">
+  <img src="assets/turntable.gif" width="400" align="middle" alt="A board turning in a Cycles render while it is edited in KiCad: the selected net's tracks get wider, the top solder mask and silkscreen switch off, X-ray mode turns the rest of the board see-through grey, and one segment of the net moves sideways.">
 </p>
-<p align="center"><sub>Edits in KiCad appear in the Cycles render as the board turns: the selected net is widened, the top solder mask and silkscreen are switched off, X-ray mode fades everything else and a segment of the net is moved.<br>
+<p align="center"><sub>Right: edits in KiCad appear in the Cycles render as the board turns: the selected net is widened, the top solder mask and silkscreen are switched off, X-ray mode fades everything else and a segment of the net is moved.<br>
 Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2); the edits were made for this demo and are not part of the design.</sub></p>
 
 <p align="center">
