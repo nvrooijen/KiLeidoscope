@@ -243,6 +243,7 @@ def ensure_studio_lights():
         collection["kileido_owned"] = 1
         collection["kls_studio_lights"] = 1
         scene.collection.children.link(collection)
+    collection.hide_select = True  # fitted to the boards; a stray click must not move them
     for side, rotation in (("top", 0.0), ("bottom", math.pi)):
         obj = next((item for item in collection.objects
                     if item.get("kls_studio_side") == side and item.type == "LIGHT"), None)
@@ -262,5 +263,6 @@ def ensure_studio_lights():
     for space in view3d_spaces():
         space.shading.use_scene_lights = True
         space.shading.use_scene_lights_render = True
+        space.overlay.show_extras = False  # the softboxes' outlines (and empties); they still light
     fit_to_boards()
     return collection

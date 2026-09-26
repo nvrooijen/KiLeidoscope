@@ -73,6 +73,10 @@ def main():
     assert not collection.hide_viewport
     assert all(not area.spaces.active.overlay.show_relationship_lines
                for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")
+    assert all(not area.spaces.active.overlay.show_extras  # no softbox outlines over the board
+               for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")
+    studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
+    assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
     assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v3", "KLS_Fill_v3", "KLS_FillSingle_v3",
                                                       "KLS_Drills_v2", "KLS_Vias_v3", "KLS_Board_v3",
                                                       "KLS_Solder"))
