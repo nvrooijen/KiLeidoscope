@@ -21,7 +21,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
-               render_depth)
+               render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -203,8 +203,8 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             logo = layout.row()
             logo.alignment = "CENTER"
             logo.template_icon(icon_value=icon.icon_id, scale=LOGO_SCALE)
-        self._draw_link()
-        self._draw_outline_warnings()
+        self._draw_link(context)
+        self._draw_outline_warnings(context)
         row = layout.row(align=True)
         current = _viewport_mode(context)
         for mode, label in (("MATERIAL", "Preview"), ("RENDERED", "Cycles")):
@@ -227,7 +227,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             if _icons is not None and icon in _icons:
                 row.label(text="", icon_value=_icons[icon].icon_id)
 
-    def _draw_outline_warnings(self):
+    def _draw_outline_warnings(self, context):
         """KiCad's own words when a board has no usable Edge.Cuts outline, then where."""
         found = [(board.board_name, warning) for warning in packages.outline_warnings()]
         for root in packages.roots():
@@ -241,10 +241,10 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         named = len({name for name, _ in found}) > 1 or bool(packages.roots())
         for name, warning in found[:6]:
             detail = warning.removeprefix(packages.OUTLINE_PROBLEM).lstrip(": ")
-            for line in textwrap.wrap(f"{name}: {detail}" if named else detail, 44):
+            for line in _wrap(context, f"{name}: {detail}" if named else detail):
                 box.label(text=line, icon="BLANK1")
 
-    def _draw_link(self):
+    def _draw_link(self, context):
         """A status LED: green live, amber waiting or KiCad editing, red lost, grey offline."""
         health = live.health()
         text = {"ok": "Live with KiCad",
@@ -253,8 +253,16 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         error = live.error_text()
         if error:  # e.g. a second KiCad on Windows: say why the scene is empty
             box = self.layout.box()
-            for index, line in enumerate(textwrap.wrap(error, 42)):
+            for index, line in enumerate(_wrap(context, error)):
                 box.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+
+
+def _wrap(context, text):
+    """Lines that fit the sidebar at its current width (Blender cuts a longer label in
+    its middle): ~7 px per character and an icon and box margins, at the UI scale."""
+    scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
+    width = context.region.width if context.region else 300 * scale
+    return textwrap.wrap(text, max(16, int((width - 50 * scale) / (7 * scale))))
 
 
 def _draw_thickness(layout, scene, copper_m):
@@ -722,6 +730,7 @@ def register():
         path = Path(__file__).with_name("icons") / f"{icon}.png"
         if path.is_file():
             _icons.load(icon, str(path), "IMAGE")
+    watcher.sweep_stale()  # scratch folders a crashed Blender left behind
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     for name, prop in _scene_properties().items():
