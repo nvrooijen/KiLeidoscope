@@ -585,6 +585,51 @@ def test_selection_reads_from_before_kicad_applied_a_click_are_ignored():
         runtime.close()
 
 
+def test_every_click_is_highlighted_at_once_while_kicad_calls_stall():
+    """After a selection change a hidden KiCad answers every call late (measured 1-9 s).
+    With KiCad calls on the worker thread, not only the first click but each next one
+    is highlighted at once, while the worker still waits on KiCad."""
+    snapshot = fixture()
+    tracks = tuple(replace(track, net=f"N{index}") for index, track in enumerate(snapshot.tracks[:3]))
+    snapshot = replace(snapshot, tracks=(*tracks, *snapshot.tracks[3:]))
+
+    class StallingBoard:
+        calls = 0
+
+        def stall(self, *args, **kwargs):
+            StallingBoard.calls += 1
+            time.sleep(1.0)
+            return []
+
+        clear_selection = add_to_selection = get_selection = stall
+
+    reader = FakeReader(snapshot)
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        reader.board = StallingBoard()
+        runtime.start()
+        for track in tracks:
+            started = time.perf_counter()
+            client.request_select([track.id])
+            highlighted = False
+            while not highlighted and time.perf_counter() - started < 0.3:
+                client.poll_io()  # sends the click
+                runtime.step()
+                runtime.wait(0.005)
+                highlighted = any(h["type"] == "selection" and track.id in h["selected"] for h, _ in client.poll_io())
+            took = time.perf_counter() - started
+            assert highlighted and took < 0.3, f"click {tracks.index(track) + 1}: highlighted after {took:.2f} s"
+        assert StallingBoard.calls  # the worker was talking to (stalled) KiCad meanwhile
+    finally:
+        client.close()
+        runtime.close()
+
+
 def test_highlight_survives_routing_and_clears_on_a_real_deselect():
     """KiCad is busy while routing and clears the selection: the nets stay
     highlighted and newly routed tracks join; a plain deselect clears them."""

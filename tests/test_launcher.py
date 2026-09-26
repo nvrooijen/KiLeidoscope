@@ -24,7 +24,7 @@ def test_plugin_lifecycle_and_environment(monkeypatch, tmp_path):
     server = SimpleNamespace(port=23456, token="test-bridge-token", pump=lambda wait: None)
     monkeypatch.setattr(launcher, "BridgeServer", lambda port: server if port == 0 else None)
     monkeypatch.setattr(launcher, "BridgeRuntime", lambda s: SimpleNamespace(
-        step=lambda: steps.append(1), close=lambda: closed.append(1)))
+        start=lambda: None, step=lambda: steps.append(1), wait=lambda timeout: None, close=lambda: closed.append(1)))
     outcomes = iter((None, 0))
 
     def popen(command, **kwargs):

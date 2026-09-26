@@ -155,9 +155,10 @@ def launch(root=None) -> int:
             viewer = subprocess.Popen(
                 [executable, "--python", str(root / "blender_addon" / "start.py")],
                 cwd=root, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            runtime.start()
             while viewer.poll() is None:
                 runtime.step()
-                server.pump(0.05)
+                runtime.wait(0.05)
         return viewer.returncode
     finally:
         runtime.close()

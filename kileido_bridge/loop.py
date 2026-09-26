@@ -1,6 +1,8 @@
 """Read-only KiCad poll loop and complete/incremental Blender frame delivery."""
 
+import threading
 import time
+from collections import deque
 from dataclasses import replace
 
 from . import protocol
@@ -68,6 +70,12 @@ class BridgeRuntime:
         self.busy_seen = False
         self.selected = frozenset()  # KiCad's selection as last read or requested
         self.requested = None  # (ids, deadline) of a Blender click KiCad has not shown yet
+        # Threads (start): KiCad calls run on a worker, so a stalled KiCad delays no click.
+        self.lock = threading.RLock()  # the server and the highlight; never held during a KiCad call
+        self.kicad_selects = deque()  # clicks the worker still has to select in KiCad
+        self.wake = threading.Event()
+        self.stopping = threading.Event()
+        self.worker = None
 
     # --- Connection state ---------------------------------------------------------------
 
@@ -80,23 +88,28 @@ class BridgeRuntime:
             return
         self.status = value
         self.error = error
-        self.server.send_frames([self._status_frame(last_read_ms=last_read_ms)])
+        self._send([self._status_frame(last_read_ms=last_read_ms)])
+
+    def _send(self, frames, snapshot: bool = False):
+        with self.lock:
+            self.server.send_frames(frames, snapshot=snapshot)
 
     def _disconnect_reader(self, error=""):
         if self.reader is not None:
             self.reader.close()
+        with self.lock:  # a resync on the main thread reads these
             self.reader = None
-        self.snapshot = None
-        self.origin_nm = None
-        self.board_path = ""
-        self.appearance = {}
-        self.appearance_sig = None
-        self.tools = {}
-        self.copy_enabled = True
-        self.timeout_count = 0
-        self.next_connect_at = self.clock() + self.reconnect_interval_s
-        self.sent_from_text = False
-        self._status("disconnected", error=error)
+            self.snapshot = None
+            self.origin_nm = None
+            self.board_path = ""
+            self.appearance = {}
+            self.appearance_sig = None
+            self.tools = {}
+            self.copy_enabled = True
+            self.timeout_count = 0
+            self.next_connect_at = self.clock() + self.reconnect_interval_s
+            self.sent_from_text = False
+            self._status("disconnected", error=error)
 
     def _connect(self):
         try:
@@ -150,7 +163,7 @@ class BridgeRuntime:
             self._refresh_copy()
             frames += self._appearance_frames()
         frames += self._selection_frames(snapshot, force=full_snapshot)
-        self.server.send_frames(frames, snapshot=full_snapshot)
+        self._send(frames, snapshot=full_snapshot)
         self._status("connected", snapshot.read_timings_ms.get("total"))
 
     def _on_board_changed(self, snapshot):
@@ -216,7 +229,7 @@ class BridgeRuntime:
             self.revision += 1
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
-        self.server.send_frames(frames)
+        self._send(frames)
 
     def _selection_frames(self, snapshot, force: bool = False, selected=None) -> list[bytes]:
         """Highlighted nets (and components), sent when they change. `selected` is
@@ -227,7 +240,8 @@ class BridgeRuntime:
         period keeps its nets highlighted (new tracks on them join in); one that
         empties without a busy period is a deselect and clears them.
         """
-        if selected is None:
+        read = selected is None
+        if read:
             try:
                 selected = selected_ids(self.reader.board)
             except KiCadBusy:
@@ -237,23 +251,24 @@ class BridgeRuntime:
                 if _is_timeout(exc):
                     return []  # KiCad is slow to answer, not deselected: keep the highlight
                 selected = frozenset()  # no selection API (tests' fake reader)
-            if self._before_requested(selected):
+        with self.lock:  # a click on the main thread changes the highlight too
+            if read and self._before_requested(selected):
                 return []
-        self.selected = selected
-        nets = selected_nets(snapshot, selected)
-        if nets:
-            self.sticky_nets = nets
-        elif self.had_selection and not self.busy_seen:
-            self.sticky_nets = frozenset()
-        self.had_selection = bool(selected)
-        self.busy_seen = False
-        on_nets, pair = highlight_nets(snapshot, self.sticky_nets)
-        loose = unconnected(snapshot, selected)  # net-less items: only while selected
-        current = (tuple(sorted({*on_nets, *loose})), pair, *components(snapshot, selected))
-        if current == self.highlight and not force:
-            return []
-        self.highlight = current
-        return [protocol.selection_message(*current, self.revision)]
+            self.selected = selected
+            nets = selected_nets(snapshot, selected)
+            if nets:
+                self.sticky_nets = nets
+            elif self.had_selection and not self.busy_seen:
+                self.sticky_nets = frozenset()
+            self.had_selection = bool(selected)
+            self.busy_seen = False
+            on_nets, pair = highlight_nets(snapshot, self.sticky_nets)
+            loose = unconnected(snapshot, selected)  # net-less items: only while selected
+            current = (tuple(sorted({*on_nets, *loose})), pair, *components(snapshot, selected))
+            if current == self.highlight and not force:
+                return []
+            self.highlight = current
+            return [protocol.selection_message(*current, self.revision)]
 
     def _before_requested(self, selected) -> bool:
         """A read from before KiCad applied a Blender click: the bridge reads over
@@ -299,27 +314,41 @@ class BridgeRuntime:
 
     # --- Blender requests and the main loop ---------------------------------------------
 
-    def _apply_select_requests(self):
-        """A click in Blender: select the item in KiCad. A pad selects its footprint.
-        The next poll reads KiCad's selection back, so both sides agree."""
+    def _take_select_requests(self):
+        """A click in Blender (main thread, under the lock): highlight it now, and queue
+        selecting it in KiCad for the worker. A pad selects its footprint. KiCad can take
+        seconds to apply a selection and answer (measured 1-9 s with its window hidden
+        behind Blender); later polls confirm it."""
         for ids, extend in self.server.take_select_requests():
-            if self.reader is None or self.snapshot is None:
+            snapshot = self.snapshot
+            if self.reader is None or snapshot is None:
                 continue
-            owner = {pad.id: pad.footprint_id for pad in self.snapshot.pads}
+            owner = {pad.id: pad.footprint_id for pad in snapshot.pads}
             wanted = list(dict.fromkeys(owner.get(item_id) or item_id for item_id in ids))
             if not wanted and not extend:
                 self.sticky_nets = frozenset()  # a click on bare board: clear the highlight
-            # Highlight now: KiCad can take seconds to apply a selection and answer
-            # (measured 1-6 s with its window hidden behind Blender). Later polls confirm it.
             selected = frozenset(wanted) | (self.selected if extend else frozenset())
             self.requested = (selected, self.clock() + self.REQUEST_GRACE_S)
-            self.server.send_frames(self._selection_frames(self.snapshot, selected=selected))
+            self.server.send_frames(self._selection_frames(snapshot, selected=selected))
             self.server.pump()
+            self.kicad_selects.append((wanted, extend))
+            self.wake.set()
+
+    def _run_kicad_selects(self):
+        """The worker's half of a click. Clicks queued behind a stalled KiCad collapse
+        to the last plain click and the Shift+clicks after it."""
+        with self.lock:
+            pending = list(self.kicad_selects)
+            self.kicad_selects.clear()
+        plain = [index for index, (_, extend) in enumerate(pending) if not extend]
+        for wanted, extend in pending[plain[-1] if plain else 0:]:
+            if self.reader is None:
+                return
             try:
                 select_in_kicad(self.reader.board, wanted, extend)
             except Exception:
                 pass  # KiCad busy (a tool is running) or gone: the click is dropped
-            self.next_poll_at = self.clock()  # show the new selection promptly
+            self.next_poll_at = self.clock()  # read the new selection back promptly
 
     def _send_resync(self):
         """The viewer asked for everything again (new connection or its own request)."""
@@ -329,31 +358,63 @@ class BridgeRuntime:
         self.server.send_frames([self._status_frame()])
 
     def step(self) -> None:
-        self.server.pump()
-        self._apply_select_requests()
-        if self.server.take_resync():
-            self._send_resync()
+        """Serve Blender; without a started worker (tests), also talk to KiCad."""
+        with self.lock:
+            self.server.pump()
+            self._take_select_requests()
+            if self.server.take_resync():
+                self._send_resync()
+        if self.worker is None:
+            self._kicad_step()
+        with self.lock:
+            self.server.pump()
+
+    def wait(self, timeout: float) -> None:
+        """Serve Blender for up to `timeout` s, returning early when it sends something."""
+        with self.lock:
+            self.server.pump(timeout)
+
+    def _kicad_step(self):
+        self._run_kicad_selects()
         now = self.clock()
         if self.reader is None and now >= self.next_connect_at:
             self._connect()
         if self.reader is not None and now >= self.next_poll_at:
             self.next_poll_at = now + self.poll_interval_s
             self._poll()
-        self.server.pump()
+
+    def start(self) -> None:
+        """Talk to KiCad on a worker thread from now on; `step` then only serves Blender."""
+        self.worker = threading.Thread(target=self._kicad_loop, name="KiLeidoscope KiCad", daemon=True)
+        self.worker.start()
+
+    def _kicad_loop(self):
+        while not self.stopping.is_set():
+            try:
+                self._kicad_step()
+            except Exception as exc:  # keep serving: a dead worker would freeze the viewer
+                self._disconnect_reader(error=f"{type(exc).__name__}: {exc}")
+            next_time = self.next_poll_at if self.reader is not None else self.next_connect_at
+            self.wake.wait(max(0.0, min(0.05, next_time - self.clock())))  # a click wakes it
+            self.wake.clear()
 
     def run_forever(self) -> None:
         try:
+            self.start()
             while True:
                 self.step()
-                next_time = self.next_poll_at if self.reader is not None else self.next_connect_at
-                wait = max(0.0, min(0.05, next_time - self.clock()))
-                self.server.pump(wait)
+                self.wait(0.05)
         finally:
             self.close()
 
     def close(self) -> None:
+        self.stopping.set()
+        self.wake.set()
+        if self.worker is not None:
+            self.worker.join(timeout=5.0)  # a KiCad call can take up to its 3 s timeout
         if self.reader is not None:
             self.reader.close()
             self.reader = None
-        self.server.close()
+        with self.lock:
+            self.server.close()
         self.copy.close()
