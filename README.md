@@ -16,7 +16,7 @@ Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> b
 
 KiLeidoscope is an interactive, real-time bridge between KiCad and Blender 3D software. Using KiCad's official IPC API, edits of your board open in KiCad appear in Blender a fraction of a second after you make them. Furthermore, the bridge works bi-directional, as selections in Blender are visible in the KiCad software as well. The interactive UI has several advantages over the existing KiCad 3D UI; Not only does it provide the PCB designer with a more aesthetically pleasing environment, it also allows for various interactive modes, such as 'X-Ray vision', trace and differential pair highlighting and multi-board assemblies. 
 
-KiLeidoscope is fully open source and in early development, 
+KiLeidoscope is fully open source and in early development; feedback and contributions are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 
 <p align="center">
@@ -72,9 +72,8 @@ A finished track edit reaches the Blender viewport in about 0.2 s. Most of that 
 
 KiLeidoscope needs KiCad 10 and Blender 5.1 or newer (tested with 5.1 and 5.2). It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
 
-1. Build the package: `python tools/build_package.py` writes `dist/kileidoscope-<version>.zip`.
-2. In KiCad, turn on Preferences > Plugins > **Enable KiCad API**.
-3. Set the path to the python interpreter to the correct KiCad 10 version, e.g. 'C:\Program Files\KiCad\10.0\bin\pythonw.exe'
+1. Download `kileidoscope-<version>.zip` from [Releases](https://github.com/nvrooijen/KiLeidoscope/releases), or build it yourself: `python tools/build_native.py` (the C overlay library, optional but about 8× faster) and then `python tools/build_package.py`, which writes `dist/kileidoscope-<version>.zip`.
+2. In KiCad, under Preferences > Plugins, turn on **Enable KiCad API** and set **Python interpreter** to KiCad 10's own, e.g. `C:\Program Files\KiCad\10.0\bin\pythonw.exe`.
 3. Open the **Plugin and Content Manager**, choose **Install from File…** and pick the zip.
 4. Restart KiCad. On its first start the plugin gets its own Python environment, and KiCad installs `kicad-python` and `numpy` into it (internet needed once). **Open in Blender** then appears on the PCB Editor toolbar.
 
@@ -92,6 +91,7 @@ sudo apt install kicad python3-venv
 
 ### macOS
 Untested, looking for contributors as I have no macOS available.
+
 ## Usage
 
 ### Open from KiCad
@@ -116,6 +116,14 @@ Components without a model file show an envelope of KiCad's footprint bounds, th
 ### View-only boards
 
 **Export…** saves the live board, as it looks now, to a `.blend` package. **Import…** adds such a package beside the others in any KiLeidoscope session, with or without KiCad. View-only boards can be moved, rotated and scaled (the select button next to the board chooser picks one), shown per layer, or all boards together. **Collision check** marks where boards overlap (components and board solids) with red boxes. Future version will enable multi-board editing on KiCad for linux. 
+
+## Known limitations
+
+- **KiCad API**: KiLeidoscope only works with **Enable KiCad API** turned on (Preferences > Plugins).
+- **One KiCad on Windows**: only one KiCad instance at a time can serve plugins ([KiCad issue #20880](https://gitlab.com/kicad/code/kicad/-/issues/20880)).
+- **macOS**: untested.
+- **Linux overlays**: the release zip carries the fast overlay library for Windows only. On Linux the add-on draws mask and silkscreen with its numpy fallback (same images, slower) unless you build the library with `python tools/build_native.py`.
+- **Multi-board editing**: only the live board follows KiCad; other boards are view-only packages.
 
 ## Roadmap
 Future work includes the construction of an adapter for various animations, such as E/H field propagations, surface currents, and thermal stresses. 
