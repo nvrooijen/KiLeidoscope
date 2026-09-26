@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kileidoscope"
+version = "0.3.0"
+description = "View the board open in KiCad live in Blender, read-only"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = ["kicad-python>=0.7,<1", "numpy>=1.24"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["kileido_bridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

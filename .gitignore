@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+*.jsonl
+probe*.json
+dump*.json
+*.kicad_prl
+*.kls
+*.lck
+.claude/
+_dev/
+dist/

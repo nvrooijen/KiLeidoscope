@@ -1,0 +1,30 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "org.kileido.core",
+  "name": "KiLeidoscope",
+  "description": "View the current PCB live in Blender, read-only.",
+  "runtime": {
+    "type": "python",
+    "min_version": "3.10"
+  },
+  "actions": [
+    {
+      "identifier": "open-blender",
+      "name": "Open in Blender",
+      "description": "Open this board in Blender and connect the live viewer automatically",
+      "entrypoint": "launch.py",
+      "show-button": true,
+      "scopes": [
+        "pcb"
+      ],
+      "icons-light": [
+        "icon_24.png",
+        "icon_48.png"
+      ],
+      "icons-dark": [
+        "icon_24.png",
+        "icon_48.png"
+      ]
+    }
+  ]
+}
