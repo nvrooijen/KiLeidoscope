@@ -1,4 +1,10 @@
-<p align="center"><img src="assets/logo.png" alt="KiLeidoscope logo: a differential pair's two vias and traces, highlighted red and blue" width="240"></p>
+<p align="center">
+  <img src="assets/logo.png" alt="KiLeidoscope logo: a differential pair's two vias and traces, highlighted red and blue" width="240" align="middle">
+  &nbsp;&nbsp;
+  <img src="assets/turntable.gif" width="480" align="middle" alt="A board turning in a Cycles render while it is edited in KiCad: the selected net's tracks get wider, the top solder mask and silkscreen switch off, X-ray mode turns the rest of the board see-through grey, and one segment of the net moves sideways.">
+</p>
+<p align="center"><sub>Edits in KiCad appear in the Cycles render as the board turns: the selected net is widened, the top solder mask and silkscreen are switched off, X-ray mode fades everything else and a segment of the net is moved.<br>
+Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2); the edits were made for this demo and are not part of the design.</sub></p>
 
 <p align="center">
   <a href="https://www.blender.org/download/"><img src="https://img.shields.io/badge/Blender-5.1%20%7C%205.2-E87D0D?logo=blender&logoColor=white" alt="Blender 5.1 and 5.2"></a>
@@ -11,6 +17,13 @@
 KiLeidoscope is an interactive, real-time bridge between KiCad and Blender 3D software. Using KiCad's official IPC API, edits of your board open in KiCad appear in Blender a fraction of a second after you make them. Furthermore, the bridge works bi-directional, as selections in Blender are visible in the KiCad software as well. The interactive UI has several advantages over the existing KiCad 3D UI; Not only does it provide the PCB designer with a more aesthetically pleasing environment, it also allows for various interactive modes, such as 'X-Ray vision', trace and differential pair highlighting and multi-board assemblies. 
 
 KiLeidoscope is fully open source and in early development, 
+
+
+<p align="center">
+  <img src="assets/xray-wipe.gif" width="680" alt="A differential pair selected in KiCad, highlighted red and blue in Blender; a slider wipes between the normal render and X-ray mode, where everything but the pair turns see-through grey.">
+</p>
+<p align="center"><sub>A differential pair selected in KiCad, with and without X-ray mode.<br>
+Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2).</sub></p>
 
 ## Features
 
