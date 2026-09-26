@@ -1,6 +1,8 @@
 """The overlay Gerber renderer (`blender_addon/kileido/gerber.py`), without Blender.
 
-Expected areas are worked out by hand from the shapes' dimensions.
+Expected areas are worked out by hand from the shapes' dimensions. Every test
+runs twice: with the C scanline library (when built for this platform, see
+tools/build_native.py) and with the numpy fallback.
 """
 
 import importlib.util
@@ -15,6 +17,15 @@ _PATH = Path(__file__).resolve().parents[1] / "blender_addon" / "kileido" / "ger
 _SPEC = importlib.util.spec_from_file_location("kileido_gerber", _PATH)
 gerber = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(gerber)
+_NATIVE = gerber._native_coverage
+
+
+@pytest.fixture(autouse=True, params=["native", "numpy"])
+def backend(request, monkeypatch):
+    if request.param == "native" and _NATIVE is None:
+        pytest.skip("C scanline library not built for this platform")
+    monkeypatch.setattr(gerber, "_native_coverage", _NATIVE if request.param == "native" else None)
+    return request.param
 
 HEADER = "%FSLAX46Y46*%\n%MOMM*%\n%LPD*%\nG01*\n"
 BOUNDS = (0.0, 0.0, 10e6, 10e6)  # 10 x 10 mm, nm
@@ -150,3 +161,38 @@ def test_blur_softens_edges_and_keeps_the_amount_inside():
     assert math.isclose(soft[20, 30], 1.0, abs_tol=1e-3)  # the middle stays at full height
     assert 0.4 < soft[20, 20] < 0.6 and 0.0 < soft[20, 18] < soft[20, 20]  # a ramp across the edge
     assert np.allclose(gerber.blur(np.ones((5, 5), np.float32), 3.0), 1.0)  # edges extend, no dark rim
+
+
+def test_a_built_library_loads():
+    """A library built for this platform that fails to load would silently fall back."""
+    if (_PATH.parent / "native" / gerber.native_library_name()).is_file():
+        assert _NATIVE is not None
+
+
+def test_native_and_numpy_draw_the_same_image(backend):
+    """Overlapping strokes, flashes, an arc region, clear polarity, shapes past the image edge."""
+    if backend != "native":
+        pytest.skip("compares the two backends once")
+    rng = np.random.default_rng(7)
+    lines = ["%ADD10C,0.300000*%", "%ADD11R,1.200000X0.600000*%", "%ADD12O,0.800000X2.000000*%",
+             "%ADD13C,1.500000*%", "D10*"]
+    for _ in range(300):  # a polyline stroke with gaps; some points outside the 10 mm image
+        x, y = rng.uniform(-1, 11, 2)
+        lines.append(f"X{mm(x)}Y{mm(y)}D0{1 + (rng.random() < 0.2)}*")
+    lines.append("D11*")
+    lines += [f"X{mm(x)}Y{mm(y)}D03*" for x, y in rng.uniform(0, 10, (80, 2))]
+    lines.append("D12*")
+    lines += [f"X{mm(x)}Y{mm(y)}D03*" for x, y in rng.uniform(0, 10, (40, 2))]
+    lines += ["G36*", f"X{mm(1)}Y{mm(1)}D02*", f"X{mm(9)}Y{mm(1)}D01*",
+              "G75*", "G03*", f"X{mm(1)}Y{mm(1)}I{mm(-4)}J0D01*", "G01*", "G37*"]
+    lines += ["%LPC*%", "D13*"] + [f"X{mm(x)}Y{mm(y)}D03*" for x, y in rng.uniform(0, 10, (15, 2))]
+    lines += ["%LPD*%", "D10*", f"X{mm(0.5)}Y{mm(9.5)}D02*", f"X{mm(9.5)}Y{mm(0.3)}D01*"]
+    plot = gerber.parse(HEADER + "\n".join(lines) + "\nM02*\n")
+    for resolution in (97, 400, 1000):  # odd sizes too
+        native = gerber.rasterize(plot, BOUNDS, resolution)
+        gerber._native_coverage = None
+        numpy = gerber.rasterize(plot, BOUNDS, resolution)
+        gerber._native_coverage = _NATIVE
+        assert native.dtype == numpy.dtype == np.float32 and native.shape == numpy.shape
+        assert 0.05 < numpy.mean() < 0.95  # a real test image, not empty or solid
+        assert np.abs(native - numpy).max() < 1e-5

@@ -14,12 +14,19 @@ Drawing is a scanline pass over polygon edges with the nonzero winding rule:
 16 sample rows per pixel, exact coverage along each row. Every stroke, flash and region contour is turned into a
 counter-clockwise polygon first, so overlapping shapes add up instead of
 cancelling. This is image generation only; no geometry is merged or meshed.
+
+The scanline pass runs in native/kls_raster.c when a library built for this
+platform is there (tools/build_native.py), else in numpy; both give the same image.
 """
 
+import ctypes
 import math
+import platform
 import re
 import struct
+import sys
 import zlib
+from pathlib import Path
 
 import numpy as np
 
@@ -290,7 +297,41 @@ def _edges(contours):
     return edges
 
 
+def native_library_name():
+    """File name of the scanline library for this platform, e.g. kls_raster-windows-amd64.dll."""
+    system = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
+    suffix = {"windows": "dll", "macos": "dylib"}.get(system, "so")
+    return f"kls_raster-{system}-{platform.machine().lower()}.{suffix}"
+
+
+def _load_native():
+    """The C scanline pass, or None (not built for this platform, or will not load)."""
+    try:
+        library = ctypes.CDLL(str(Path(__file__).resolve().parent / "native" / native_library_name()))
+        if library.kls_abi() != 1:
+            return None
+        function = library.kls_coverage
+    except (OSError, AttributeError):
+        return None
+    function.argtypes = (ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32, ctypes.c_int32,
+                         ctypes.c_int32, ctypes.c_void_p)
+    function.restype = ctypes.c_int
+    return function  # ctypes releases the GIL during the call: layers draw in parallel
+
+
+_native_coverage = _load_native()
+
+
 def _coverage(edges, width, height):
+    if _native_coverage is not None:
+        edges = np.ascontiguousarray(edges, dtype=np.float64)
+        alpha = np.empty((height, width), np.float32)
+        if _native_coverage(edges.ctypes.data, len(edges), width, height, SAMPLES, alpha.ctypes.data) == 0:
+            return alpha
+    return _coverage_numpy(edges, width, height)
+
+
+def _coverage_numpy(edges, width, height):
     """Nonzero-winding coverage (0..1) of `edges` given in pixel units (row 0 on top).
 
     Each of SAMPLES rows per pixel crosses the edges; between crossings where the
@@ -373,18 +414,20 @@ def grid(bounds, resolution=RESOLUTION):
 def rasterize(plot, bounds, resolution=RESOLUTION):
     """Coverage image (row 0 on top) of `plot` over `bounds` (nm, Gerber frame)."""
     pixel, width, height, rect = grid(bounds, resolution)
-    alpha = np.zeros((height, width), np.float32)
+    alpha = None
     for dark, contours in plot.groups:
         edges = _edges(contours)
         if len(edges):
             edges = np.column_stack(((edges[:, 0] - rect[0]) / pixel, (rect[3] - edges[:, 1]) / pixel,
                                      (edges[:, 2] - rect[0]) / pixel, (rect[3] - edges[:, 3]) / pixel))
         coverage = _coverage(edges, width, height)
-        if dark:
+        if alpha is None:  # nothing drawn yet: the first group's image is the result so far
+            alpha = coverage if dark else np.zeros((height, width), np.float32)
+        elif dark:
             np.maximum(alpha, coverage, out=alpha)
         else:
             alpha *= 1.0 - coverage
-    return alpha
+    return alpha if alpha is not None else np.zeros((height, width), np.float32)
 
 
 def blur(alpha, sigma):

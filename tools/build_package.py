@@ -31,7 +31,8 @@ def plugin_files() -> dict[str, Path]:
     files["LICENSE"] = ROOT / "LICENSE"
     files["blender_addon/start.py"] = ROOT / "blender_addon" / "start.py"
     for folder, patterns in (("kileido_bridge", ("*.py",)),
-                             ("blender_addon/kileido", ("*.py", "icons/*.png"))):
+                             ("blender_addon/kileido", ("*.py", "icons/*.png", "native/*.c",
+                                                        "native/*.dll", "native/*.so", "native/*.dylib"))):
         for pattern in patterns:
             for path in sorted((ROOT / folder).glob(pattern)):
                 files[path.relative_to(ROOT).as_posix()] = path

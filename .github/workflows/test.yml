@@ -18,6 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[test]"
+      - run: python tools/build_native.py  # the Gerber tests then run on both the C and numpy paths
       - run: python -m pytest -q
 
   blender:
@@ -53,6 +54,7 @@ jobs:
             mv "blender-${{ matrix.blender }}-linux-x64" blender
           fi
           blender/blender --version | head -1
+      - run: python3 tools/build_native.py
       - name: Headless Blender tests
         run: |
           for script in tests/blender/run_*.py; do

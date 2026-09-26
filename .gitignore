@@ -12,3 +12,4 @@ dump*.json
 .claude/
 _dev/
 dist/
+*.in-use
