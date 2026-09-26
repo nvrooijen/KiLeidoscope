@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="330" viewBox="0 0 680 330" role="img">
+<title>Track edit latency, KiCad to Blender</title>
+<desc>Waterfall of a committed track edit: the edit waits in KiCad for the next poll (0 to 200 ms, 100 on average), the bridge reads and diffs it in about 65 ms, Blender receives and applies it in 29 ms median (p95 59), and Geometry Nodes evaluation and redraw take about 20 ms (estimate). About 0.2 s typical. Composed from measured stages, not measured end to end.</desc>
+<defs>
+<style>
+text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; dominant-baseline: central; }
+.th { font-size: 14px; font-weight: 500; fill: #1F2328; }
+.ts { font-size: 12px; font-weight: 400; fill: #59636E; }
+.axis { stroke: #818B98; stroke-width: 0.75; }
+</style>
+</defs>
+<rect width="100%" height="100%" fill="#FFFFFF"/>
+<text class="ts" x="40" y="58">Wait for next poll</text>
+<rect x="220" y="48" width="105" height="20" rx="4" fill="#314CB0"/>
+<rect x="325" y="48" width="105" height="20" rx="4" fill="none" stroke="#6F86D6" stroke-width="1" stroke-dasharray="3 3"/>
+<text class="ts" x="440" y="58">0–200 ms, avg 100</text>
+<text class="ts" x="40" y="94">Bridge read + diff</text>
+<rect x="325" y="84" width="68" height="20" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="ts" x="403" y="94">~65 ms</text>
+<text class="ts" x="40" y="130">To Blender, applied</text>
+<rect x="393" y="120" width="30" height="20" rx="4" fill="#E87D0D"/>
+<text class="ts" x="433" y="130">29 ms median, p95 59</text>
+<text class="ts" x="40" y="166">GN eval + redraw</text>
+<rect x="423" y="156" width="21" height="20" rx="4" fill="#E87D0D"/>
+<text class="ts" x="454" y="166">~20 ms, estimate</text>
+<text class="th" x="40" y="214">Edit to on screen</text>
+<rect x="220" y="204" width="105" height="20" fill="#314CB0"/>
+<rect x="325" y="204" width="68" height="20" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<rect x="393" y="204" width="53" height="20" fill="#E87D0D"/>
+<text class="th" x="456" y="214">≈ 0.2 s typical</text>
+<line x1="220" y1="244" x2="640" y2="244" class="axis"/>
+<line x1="220" y1="240" x2="220" y2="248" class="axis"/>
+<line x1="325" y1="240" x2="325" y2="248" class="axis"/>
+<line x1="430" y1="240" x2="430" y2="248" class="axis"/>
+<line x1="535" y1="240" x2="535" y2="248" class="axis"/>
+<line x1="640" y1="240" x2="640" y2="248" class="axis"/>
+<text class="ts" x="220" y="264" text-anchor="middle">0</text>
+<text class="ts" x="325" y="264" text-anchor="middle">100</text>
+<text class="ts" x="430" y="264" text-anchor="middle">200</text>
+<text class="ts" x="535" y="264" text-anchor="middle">300</text>
+<text class="ts" x="618" y="264" text-anchor="middle">400 ms</text>
+<rect x="40" y="296" width="14" height="12" rx="2" fill="#314CB0"/>
+<text class="ts" x="62" y="302">KiCad</text>
+<rect x="130" y="296" width="14" height="12" rx="2" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="ts" x="152" y="302">KiLeidoscope bridge</text>
+<rect x="290" y="296" width="14" height="12" rx="2" fill="#E87D0D"/>
+<text class="ts" x="312" y="302">Blender</text>
+</svg>

@@ -8,47 +8,62 @@
 
 # KiLeidoscope
 
-An open-source project in early development, targeting KiCad 10 and Blender. GitHub is intended to remain private during initial development.
+KiLeidoscope is an interactive, real-time bridge between KiCad and Blender 3D software. Using KiCad's official IPC API, edits of your board open in KiCad appear in Blender a fraction of a second after you make them. Furthermore, the bridge works bi-directional, as selections in Blender are visible in the KiCad software as well. The interactive UI has several advantages over the existing KiCad 3D UI; Not only does it provide the PCB designer with a more aesthetically pleasing environment, it also allows for various interactive modes, such as 'X-Ray vision', trace and differential pair highlighting and multi-board assemblies. 
 
-## Top-level project architecture
+KiLeidoscope is fully open source and in early development, 
 
-| Area | Intended responsibility |
+## Features
+
+- Live 3D view of the open board: copper, zones, pads, vias, drills and the board outline, updated as you edit.
+- Solder mask, silkscreen, fabrication and drawing layers and 3D component models, from KiCad's own exports of the unsaved board.
+- Selection both ways: a click in Blender selects in KiCad, and KiCad's selection shows in Blender, with the differential-pair partner in blue.
+- Blender's EEVEE preview or Cycles engine, using different colour modes for either KiCad's PCB editor theme or realistic representations.
+- Per-layer visibility, X-ray mode and adjustable layer thickness.
+- View-only boards: save a board as a `.blend` package, place several side by side and check them for collisions. In a future update, Linux users will be able to control multiple boards simultaneously in the same Blender UI, allowing for true multi-PCB assemblies. 
+
+## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img src="assets/architecture-light.svg" alt="KiCad feeds the KiLeidoscope bridge over IPC every 200 ms; the bridge sends binary frames over local TCP to the Blender add-on. Clicks travel back through the bridge to select in KiCad. A live board copy feeds kicad-cli, whose Gerber and GLB exports go to Blender." width="680">
+</picture>
+
+KiLeidoscope consists of two processes. The **bridge** polls the board from KiCad through the official IPC API (`kicad-python`) every 200 ms. A list containing the changes is then forwarded to Blender as binary frames over a local TCP connection. The **Blender add-on** is mostly read-only: Geometry Nodes turn raw segments, polygons and via points into surfaces. The only Blender-to-KiCad part: a click in Blender becomes a selection in KiCad.
+
+Mask, silkscreen and 3D models take a second path. The bridge keeps a copy of the open board, unsaved edits included, and the add-on has `kicad-cli` export Gerbers and GLB models from it on a background worker. Results are cached by board content.
+
+| Topic | Choice |
 | --- | --- |
-| KiCad board import and updates | Bring a KiCad 10 board and subsequent edits into the project, with near-instant updates as the goal. |
-| Blender visualization | Display the board and relevant analysis feedback in Blender. |
-| Lightweight RF / signal-integrity analysis | Assess cross coupling, impedance mismatch and skew within and between pairs; explore S-parameters and basic EMI analysis where feasible. Focus on high-speed analog and digital rather than full FDTD or MoM. |
-| Signal-profile library | Hold configurable requirements for common interface and route types, such as CSI, USB HS and USB SS: impedance, di/dt, maximum skew and other relevant constraints. |
-
-## Decisions
-
-| Topic | Decision |
-| --- | --- |
-| Import method | KiCad's official IPC API (`kicad-python` / `kipy`) for live board geometry, read-only. The one exception: a click in Blender selects that item in KiCad. No legacy `pcbnew` bindings. |
-| Live updates | A bridge process polls KiCad every 200 ms. Edits appear about 0.1 s after the user finishes them. While an interactive tool runs KiCad answers "busy"; the bridge then reads committed routes from the board text instead, so routing shows without leaving the router. |
+| KiCad access | Official IPC API, read-only apart from selection. No legacy `pcbnew` bindings. |
 | Data sent to Blender | Whole (layer, kind) lists, such as all F.Cu tracks, re-sent when anything in them changes. No per-item deltas. |
-| Blender display | Raw primitives (segment endpoints and widths, polygon rings, via points) turned into surfaces by Geometry Nodes. No meshing or triangulation code of our own. |
-| Mask, silkscreen, models | `kicad-cli` exports (Gerbers, GLB) of a private copy of the open board, unsaved edits included, on a background worker. Results are cached by board content. |
-| Analysis methods | Geometry-based only: closed-form impedance, spacing and parallel-length coupling, path-length skew, reference-plane checks. No field solver (MoM, FDTD, FEM). |
-| Implementation language | Python 3.10+ for the bridge (Ubuntu 22.04 ships 3.10); a Python add-on inside Blender. |
-| Component boundaries | Two processes: the bridge (KiCad access, board model, analysis) and the Blender add-on (display only), connected over local TCP. |
-| Supported versions | KiCad 10, Blender 5.1 and 5.2. |
+| Language | Python 3.10+ for the bridge (Ubuntu 22.04 ships 3.10); a Python add-on inside Blender. |
+| Boundaries | The bridge never imports `bpy`; the add-on never imports the bridge or `kipy`. `tests/test_boundaries.py` enforces this. |
+| Analysis (planned) | Geometry-based only: closed-form impedance, spacing and parallel-length coupling, path-length skew, reference-plane checks. No field solver. |
 
-## Still open
+## Real-time updates
 
-- RF / signal-integrity analysis: not started.
-- Signal-profile library: contents and format.
-- S-parameters and EMI: how far geometry-based methods can go.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/latency-dark.svg">
+  <img src="assets/latency-light.svg" alt="Track edit latency: wait for the next poll 0 to 200 ms, bridge read and diff about 65 ms, Blender apply 29 ms median, Geometry Nodes and redraw about 20 ms; about 0.2 s in total." width="680">
+</picture>
 
-## Using KiLeidoscope
+A finished track edit reaches the Blender viewport in about 0.2 s. Most of that is waiting for the next 200 ms poll; the bridge then reads and compares the board in about 65 ms, and Blender applies the change in under 30 ms (median). The stage times were measured on a board with about 2,100 tracks, 450 vias and 125 footprints (Ryzen 7 7700). The total is added up from those stages, and the redraw time is an estimate.
 
-### Install
+- **While a tool is running** (move, drag, route), KiCad answers every API call with "busy". The bridge then reads the committed routes from the board text every 0.5 s, so routing shows without leaving the router.
+- **Mask, silkscreen and models** follow about 1.5–2 s after edits settle, the time `kicad-cli` needs to export them.
+- **Selection** highlights in Blender at once. KiCad applies it when it next responds, which can take a few seconds while its window is behind Blender.
+
+## Installation
 
 KiLeidoscope needs KiCad 10 and Blender 5.1 or newer (tested with 5.1 and 5.2). It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
 
 1. Build the package: `python tools/build_package.py` writes `dist/kileidoscope-<version>.zip`.
 2. In KiCad, turn on Preferences > Plugins > **Enable KiCad API**.
+3. Set the path to the python interpreter to the correct KiCad 10 version, e.g. 'C:\Program Files\KiCad\10.0\bin\pythonw.exe'
 3. Open the **Plugin and Content Manager**, choose **Install from File…** and pick the zip.
 4. Restart KiCad. On its first start the plugin gets its own Python environment, and KiCad installs `kicad-python` and `numpy` into it (internet needed once). **Open in Blender** then appears on the PCB Editor toolbar.
+
+### Linux
 
 On Ubuntu 22.04 or newer:
 
@@ -59,9 +74,10 @@ sudo apt install kicad python3-venv
 
 `python3-venv` lets KiCad create the plugin's environment; the system `python3` must be 3.10 or newer. KiCad builds that environment from the Python it finds on its first start, so start KiCad the first time from the app menu or a shell without an active conda or other Python environment. For Blender, unpack the official `blender-5.1.x-linux-x64.tar.xz` in your home folder, `~/Applications` or `/opt`. Its `blender-5.1.x-linux-x64/blender` is found there, as is a Snap install or a `blender` on `PATH`. A Blender older than 5.1 is skipped.
 
-If nothing opens, the reason is in `~/.cache/kileidoscope/blender.log` (Windows: `%LOCALAPPDATA%\KiLeidoscope\blender.log`), and a desktop notification names a missing or outdated Blender.
 
-**Development install:** `python tools/install_kicad_plugin.py <plugins folder>/org.kileido.core` installs an action that runs this checkout in place, which must stay put. The plugins folder is `~/.local/share/kicad/10.0/plugins` on Linux and `Documents\KiCad\10.0\plugins` on Windows. Remove it before installing the package: both use the same identifier.
+### macOS
+Untested, looking for contributors as I have no macOS available.
+## Usage
 
 ### Open from KiCad
 
@@ -71,20 +87,20 @@ If nothing opens, the reason is in `~/.cache/kileidoscope/blender.log` (Windows:
 
 The **KiLeidoscope** tab of the 3D View sidebar (**N**) holds everything:
 
-- **Preview / Cycles**: EEVEE Material Preview or a path-traced Cycles viewport (on the GPU when there is one).
+- **Preview / Cycles**: EEVEE Material Preview or a Cycles viewport (on the GPU when there is one).
 - **Colors**: the board's stackup colours as KiCad's 3D viewer shows them, **Realistic** (lit materials, metal where the solder mask is open, the board's copper finish), or the **PCB Editor** theme.
 - **Light** and fill colour of the two studio softboxes above and below the boards.
 - **Via fill** (capped vias), **X-ray mode** (everything but KiCad's selection turns faint grey), **Clip silkscreen to board outline**.
 - **Boards**: the live board, view-only boards (see below), and the **Layers** list: KiCad's layers top to bottom through the board, an eye each, plus vias, components and drawing layers. **Thickness (3D)** sets copper (from the stackup), silkscreen (15 µm by default; KiCad stores none) and solder paste (stencil thickness).
 - **Status**: the KiCad link, export progress and warnings.
 
-A click on a track, via, pad or component selects it in KiCad (Shift+click adds to the selection); a click on bare board clears KiCad's selection. KiCad's selection shows in Blender: the selected net in red-orange, its differential-pair partner in blue, selected components boxed.
+A click on a track, via, pad or component selects it in KiCad (Shift+click adds to the selection); a click on bare board clears KiCad's selection. KiCad's selection shows in Blender: the selected net in red-orange, its differential-pair partner in blue, selected components boxed. Double tapping 'a' will deselect everything as standard in Blender. 
 
-Solder mask, silkscreen, fabrication and user drawing layers and 3D component models follow unsaved edits a moment after they settle. Components without a model file show an envelope of KiCad's footprint bounds. Colours and layer heights are display approximations, not measured optical or physical properties.
+Components without a model file show an envelope of KiCad's footprint bounds, this can be turned off. Colours and layer heights are display approximations, not measured optical or physical properties.
 
 ### View-only boards
 
-**Export…** saves the live board, as it looks now, to a `.blend` package. **Import…** adds such a package beside the others in any KiLeidoscope session, with or without KiCad. View-only boards can be moved, rotated and scaled (the select button next to the board chooser picks one), shown per layer, or all boards together. **Collision check** marks where boards overlap (components and board solids) with red boxes.
+**Export…** saves the live board, as it looks now, to a `.blend` package. **Import…** adds such a package beside the others in any KiLeidoscope session, with or without KiCad. View-only boards can be moved, rotated and scaled (the select button next to the board chooser picks one), shown per layer, or all boards together. **Collision check** marks where boards overlap (components and board solids) with red boxes. Future version will enable multi-board editing on KiCad for linux. 
 
 ### Without the plugin
 
@@ -101,7 +117,7 @@ In a running viewer, F3 **KiLeidoscope: Load dump** opens a `.kls` file. A `.jso
 
 ## Development
 
-The bridge (`kileido_bridge/`) must not import `bpy`, and the add-on (`blender_addon/kileido/`) must not import the bridge or `kipy`; `tests/test_boundaries.py` enforces this and the read-only KiCad calls. The add-on keeps its own copy of the frame decoder (`client.py`), checked against the bridge's by `tests/test_addon_protocol.py`.
+The add-on keeps its own copy of the frame decoder (`client.py`), checked against the bridge's by `tests/test_addon_protocol.py`.
 
 ```
 python -m pip install -e ".[test]"
@@ -120,6 +136,9 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_exports.py
 ```
 
+## Roadmap
+Future work includes the construction of an adapter for various animations, such as E/H field propagations, surface currents, and thermal stresses. 
+
 ## Disclaimer
 
 KiLeidoscope is a visualization and inspection aid. It is not a design-rule checker, signal-integrity sign-off, or manufacturing tool, and it does not replace KiCad's DRC, your fabricator's checks, or proper simulation and measurement.
@@ -132,12 +151,12 @@ KiLeidoscope is an independent project. It is not affiliated with, endorsed by, 
 
 ## License
 
-Copyright © 2026 nvrooijen
+Copyright © 2026 Nick van Rooijen
 
 KiLeidoscope is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE), the same family of license as KiCad and Blender. It is distributed WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-If KiLeidoscope is useful to you, a mention or a link back to this project when you share renders or build on it is appreciated, but never required.
+If KiLeidoscope is useful to you, a mention or a link back to this project when you share renders or build on it is appreciated!
 
 ### Name and logo
 
-The GPL covers the code, not the KiLeidoscope name or logo. The name and logo are © 2026 nvrooijen, all rights reserved. You are free to fork and modify the code under the GPL, but please give your fork a different name and logo, and do not present it as the official KiLeidoscope project. Referring to KiLeidoscope by name, for example to say that your project is based on it, is fine.
+The GPL covers the code, not the KiLeidoscope name or logo. The name and logo are © 2026 Nick van Rooijen, all rights reserved. 
