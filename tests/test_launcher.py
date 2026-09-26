@@ -59,6 +59,25 @@ def test_launch_failure_closes_bridge(monkeypatch, tmp_path):
     assert closed == [1]
 
 
+def test_one_viewer_per_kicad(monkeypatch, tmp_path):
+    """Repeated clicks in one KiCad start no second Blender; another KiCad gets its own."""
+    held = launcher.viewer_lock("kicad-a")
+    assert held is not None and launcher.viewer_lock("kicad-a") is None
+    other = launcher.viewer_lock("kicad-b")
+    assert other is not None
+    told = []
+    monkeypatch.setenv("KICAD_API_SOCKET", "kicad-a")
+    monkeypatch.setattr(launcher, "_tell_user", told.append)
+    monkeypatch.setattr(launcher, "find_blender", lambda: pytest.fail("looked for Blender"))
+    assert launcher.launch(tmp_path) == 0
+    assert "already open" in told[0]
+    held.close()  # the viewer closed
+    again = launcher.viewer_lock("kicad-a")
+    assert again is not None
+    again.close()
+    other.close()
+
+
 def test_find_blender_skips_versions_older_than_5_1(monkeypatch):
     monkeypatch.delenv("KILEIDO_BLENDER", raising=False)
     versions = {"/usr/bin/blender": (4, 5), "/home/u/blender-5.1.0-linux-x64/blender": (5, 1)}

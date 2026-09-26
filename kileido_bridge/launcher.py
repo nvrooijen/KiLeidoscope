@@ -1,5 +1,6 @@
 """KiCad action: start a private bridge and its Blender viewer together."""
 
+import hashlib
 import os
 import re
 import shutil
@@ -97,6 +98,26 @@ def _tell_user(message: str) -> None:
         pass
 
 
+def viewer_lock(socket: str):
+    """The open lock file that makes this the one viewer of the KiCad at `socket`, or None
+    when another viewer holds it. The OS releases it when this process ends, even on a crash."""
+    path = cache_root() / f"viewer-{hashlib.sha256(socket.encode()).hexdigest()[:16]}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+b")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 def _stop_on_signals():
     """KiCad or the session ending sends SIGTERM/SIGHUP: leave through `finally`, so the
     bridge's temporary board copy is removed."""
@@ -109,8 +130,13 @@ def launch(root=None) -> int:
     """Run from kicad_plugin/launch.py: serve the board until the Blender window closes.
     Blender's output goes to `<cache>/blender.log`."""
     try:
-        if not os.environ.get("KICAD_API_SOCKET"):
+        socket = os.environ.get("KICAD_API_SOCKET")
+        if not socket:
             raise RuntimeError("Start Open in Blender from the KiCad PCB Editor to select the correct board.")
+        lock = viewer_lock(socket)
+        if lock is None:  # a repeated click must not start another Blender
+            _tell_user("KiLeidoscope is already open for this KiCad. Close that Blender window to open a new one.")
+            return 0
         executable = find_blender()
     except RuntimeError as exc:
         _tell_user(str(exc))
@@ -135,3 +161,4 @@ def launch(root=None) -> int:
         return viewer.returncode
     finally:
         runtime.close()
+        lock.close()
