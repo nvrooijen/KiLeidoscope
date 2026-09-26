@@ -6,6 +6,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from kileido_bridge.kicad_reader import KiCadBusy, PollResult
 from kileido_bridge.loop import BridgeRuntime
@@ -525,6 +526,60 @@ def test_blender_click_highlights_before_a_slow_kicad_answers():
             later += [header for header, _ in client.poll_io() if header["type"] == "selection"]
             time.sleep(0.001)
         assert later == []  # still highlighted
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_selection_reads_from_before_kicad_applied_a_click_are_ignored():
+    """A stalled KiCad can answer a selection read (on another connection) before it
+    applies the click: that old, or empty, selection must not undo the click's highlight."""
+    snapshot = fixture()
+    old, clicked = snapshot.tracks[0], snapshot.tracks[1]
+    snapshot = replace(snapshot, tracks=(replace(old, net="A"), replace(clicked, net="B"), *snapshot.tracks[2:]))
+
+    class StalledBoard:
+        selected = [old.id]
+
+        def clear_selection(self):
+            pass  # applied later, like a stalled KiCad
+
+        def add_to_selection(self, items):
+            pass
+
+        def get_selection(self, types=None):
+            return [SimpleNamespace(id=SimpleNamespace(value=item)) for item in self.selected]
+
+    reader = FakeReader(snapshot)
+    reader.board = StalledBoard()
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        assert any(h["type"] == "selection" and old.id in h["selected"] for h, _ in frames)
+        client.request_select([clicked.id])
+        exchange(runtime, client, lambda f: any(h["type"] == "selection" and clicked.id in h["selected"] for h, _ in f))
+        for stale in ([old.id], []):  # the old selection, then between clear and add
+            StalledBoard.selected = stale
+            for _ in range(10):
+                runtime.step()
+                time.sleep(0.001)
+            assert clicked.id in runtime.highlight[0] and old.id not in runtime.highlight[0]  # the click's stays
+            assert all(clicked.id in h["selected"] for h, _ in client.poll_io() if h["type"] == "selection")
+        StalledBoard.selected = [clicked.id]  # KiCad applied it: confirmed, reads count again
+        runtime.step()
+        StalledBoard.selected = []  # and a later deselect in KiCad clears the highlight
+        cleared = []
+        for _ in range(50):
+            runtime.step()
+            cleared += [h for h, _ in client.poll_io() if h["type"] == "selection"]
+            if cleared:
+                break
+            time.sleep(0.001)
+        assert cleared and cleared[-1]["selected"] == []
     finally:
         client.close()
         runtime.close()

@@ -32,6 +32,7 @@ def _copper_changes(old, tracks, arcs, vias) -> set:
 class BridgeRuntime:
     TEXT_POLL_INTERVAL_S = 0.5  # each read pauses KiCad ~75 ms, also mid-route
     MAX_TIMEOUTS = 3  # consecutive read timeouts before the reader is dropped
+    REQUEST_GRACE_S = 10.0  # how long KiCad may take to show a Blender click (measured up to ~9 s)
 
     def __init__(self, server, connector=None, poll_interval_s: float = 0.2,
                  reconnect_interval_s: float = 2.0, clock=time.monotonic,
@@ -66,6 +67,7 @@ class BridgeRuntime:
         self.had_selection = False
         self.busy_seen = False
         self.selected = frozenset()  # KiCad's selection as last read or requested
+        self.requested = None  # (ids, deadline) of a Blender click KiCad has not shown yet
 
     # --- Connection state ---------------------------------------------------------------
 
@@ -235,6 +237,8 @@ class BridgeRuntime:
                 if _is_timeout(exc):
                     return []  # KiCad is slow to answer, not deselected: keep the highlight
                 selected = frozenset()  # no selection API (tests' fake reader)
+            if self._before_requested(selected):
+                return []
         self.selected = selected
         nets = selected_nets(snapshot, selected)
         if nets:
@@ -250,6 +254,19 @@ class BridgeRuntime:
             return []
         self.highlight = current
         return [protocol.selection_message(*current, self.revision)]
+
+    def _before_requested(self, selected) -> bool:
+        """A read from before KiCad applied a Blender click: the bridge reads over
+        several connections, so a stalled KiCad can answer it first (the old or, between
+        clear and add, an empty selection). Ignored until KiCad shows the click or
+        REQUEST_GRACE_S pass (a selection made in KiCad meanwhile then takes over)."""
+        if self.requested is None:
+            return False
+        ids, deadline = self.requested
+        if (ids <= selected if ids else not selected) or self.clock() >= deadline:
+            self.requested = None
+            return False
+        return True
 
     # --- Live board copy (kicad-cli exports) --------------------------------------------
 
@@ -295,6 +312,7 @@ class BridgeRuntime:
             # Highlight now: KiCad can take seconds to apply a selection and answer
             # (measured 1-6 s with its window hidden behind Blender). Later polls confirm it.
             selected = frozenset(wanted) | (self.selected if extend else frozenset())
+            self.requested = (selected, self.clock() + self.REQUEST_GRACE_S)
             self.server.send_frames(self._selection_frames(self.snapshot, selected=selected))
             self.server.pump()
             try:
