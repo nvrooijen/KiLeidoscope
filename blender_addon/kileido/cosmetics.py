@@ -604,8 +604,8 @@ def _walls(layer, outline_path, image, rect_nm, board_path):
     rect = plot_rect_m(rect_nm)
     group = nodes.plot_walls()
     modifier = obj.modifiers.get(group.name)
-    previous = modifier.get(next(item.identifier for item in group.interface.items_tree
-                                 if getattr(item, "name", "") == "Image")) if modifier else None
+    previous = nodes.modifier_value(modifier, next(item.identifier for item in group.interface.items_tree
+                                                   if getattr(item, "name", "") == "Image")) if modifier else None
     set_modifier(obj, group, material, {
         "Image": image, "Plot Offset": (rect[0], rect[1], 0.0),
         "Plot Size": (rect[2] - rect[0], rect[3] - rect[1], 1.0),

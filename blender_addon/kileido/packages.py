@@ -15,7 +15,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import apply, cosmetics, highlight, layers, lighting, materials, render_depth, transform
+from . import apply, cosmetics, highlight, layers, lighting, materials, nodes, render_depth, transform
 from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
@@ -47,7 +47,7 @@ def _modifier_ids(obj):
         for item in modifier.node_group.interface.items_tree:
             if item.item_type == "SOCKET" and item.in_out == "INPUT" and \
                     item.socket_type in ("NodeSocketMaterial", "NodeSocketImage"):
-                value = modifier.get(item.identifier)
+                value = nodes.modifier_value(modifier, item.identifier)
                 if value is not None:
                     yield value
 

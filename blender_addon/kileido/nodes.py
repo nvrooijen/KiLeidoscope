@@ -122,10 +122,31 @@ def _disk_or_cylinder(nodes, links, thickness, vertices, outward):
     return shape, height
 
 
+def _input_slot(modifier, identifier):
+    """Blender 5.2+ keeps a modifier's inputs in `properties.inputs`; 5.1 in ID properties."""
+    inputs = getattr(getattr(modifier, "properties", None), "inputs", None)
+    return getattr(inputs, identifier, None) if inputs is not None else None
+
+
+def modifier_value(modifier, identifier, default=None):
+    slot = _input_slot(modifier, identifier)
+    if slot is not None:
+        return getattr(slot, "value", default)  # a Geometry input holds no value
+    return modifier.get(identifier, default)
+
+
+def set_modifier_value(modifier, identifier, value):
+    slot = _input_slot(modifier, identifier)
+    if slot is not None:
+        slot.value = value
+    else:
+        modifier[identifier] = value
+
+
 def modifier_input(modifier, group, name, value):
     socket = next(item for item in group.interface.items_tree
                   if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name == name)
-    modifier[socket.identifier] = value
+    set_modifier_value(modifier, socket.identifier, value)
 
 
 def tracks():

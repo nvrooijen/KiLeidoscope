@@ -62,6 +62,7 @@ SETTINGS = {"default": {"kileido_copper_3d": True, "kileido_silk_3d": True, "kil
 
 def heights(collection, prefix=""):
     """Every placed object's z, Geometry Nodes thickness inputs and visibility, by live name."""
+    from kileido.nodes import modifier_value
     from kileido.objects import node_modifier
     found = {}
     for obj in collection.all_objects:
@@ -70,7 +71,7 @@ def heights(collection, prefix=""):
             continue
         modifier = node_modifier(obj)
         inputs = {} if modifier is None else {
-            item.name: round(float(modifier[item.identifier]), 9) for item in modifier.node_group.interface.items_tree
+            item.name: round(float(modifier_value(modifier, item.identifier)), 9) for item in modifier.node_group.interface.items_tree
             if item.item_type == "SOCKET" and item.in_out == "INPUT" and "Thickness" in item.name}
         found[obj.name.removeprefix(prefix)] = (round(obj.location.z, 9), inputs, obj.hide_get())
     return found

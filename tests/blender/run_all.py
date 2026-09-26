@@ -425,16 +425,16 @@ def main():
         blue = collection.all_objects["KLS F.Cu highlight pair"]
         assert len(red.data.edges) == 1 and len(blue.data.edges) == 1
         assert not red.hide_get() and red.data.materials or red.modifiers
-        assert red.modifiers[0][next(i.identifier for i in red.modifiers[0].node_group.interface.items_tree
-                                     if getattr(i, "name", "") == "Material")].name == "KLS Highlight selected"
+        assert nodes.modifier_value(red.modifiers[0], next(i.identifier for i in red.modifiers[0].node_group.interface.items_tree
+                                                           if getattr(i, "name", "") == "Material")).name == "KLS Highlight selected"
         assert world_z_range(red)[1] > world_z_range(f_tracks)[1]  # on top of the copper
         # A highlighted net's power plane: the zone itself turns red-orange.
         zone_obj = collection.all_objects["KLS In1.Cu zone 88888888-8888-4888-8888-888888888888"]
 
         def zone_material():
             modifier = zone_obj.modifiers[0]
-            return modifier[next(i.identifier for i in modifier.node_group.interface.items_tree
-                                 if getattr(i, "name", "") == "Material")].name
+            return nodes.modifier_value(modifier, next(i.identifier for i in modifier.node_group.interface.items_tree
+                                                       if getattr(i, "name", "") == "Material")).name
         highlight.apply_selection({"selected": [chosen, "88888888-8888-4888-8888-888888888888"], "pair": []})
         assert zone_material() == "KLS Highlight selected"
         highlight.apply_selection({"selected": [], "pair": []})

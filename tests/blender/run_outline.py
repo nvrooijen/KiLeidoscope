@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, focus, packages, state  # noqa: E402
+from kileido import apply, focus, nodes, packages, state  # noqa: E402
 from kileido_bridge.geometry import outline_warning  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -43,7 +43,9 @@ def main():
         red = state.board.collection.all_objects[apply.OUTLINE_PROBLEM]
         assert state.board.outline_problem and not red.hide_get() and len(red.data.edges) >= 3
         modifier = next(m for m in red.modifiers if m.type == "NODES")
-        assert state.board.materials["highlight_outline"] in modifier.values()
+        assert state.board.materials["highlight_outline"] in [
+            nodes.modifier_value(modifier, item.identifier) for item in modifier.node_group.interface.items_tree
+            if item.item_type == "SOCKET" and item.in_out == "INPUT"]
         assert red.location.z < 0 and "KLS_Tracks" in modifier.node_group.name  # a wall through the board
         warnings = packages.outline_warnings()
         assert len(warnings) == 1 and warnings[0].startswith(packages.OUTLINE_PROBLEM)
