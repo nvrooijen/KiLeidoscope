@@ -7,6 +7,7 @@ points to one checkout through checkout.json; run in place, the checkout is the 
 
 import json
 import sys
+import sysconfig
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -18,6 +19,12 @@ elif (here / "kileido_bridge").is_dir():
 else:
     root = here.parent
 sys.path.insert(0, str(root))
+# PYTHONPATH (from KiCad, or a sourced ROS setup) comes before the plugin's environment,
+# so an older system protobuf would shadow the one kicad-python needs. Own packages first.
+for own in dict.fromkeys((sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))):
+    if own in sys.path:
+        sys.path.remove(own)
+        sys.path.insert(1, own)
 from kileido_bridge.launcher import launch  # noqa: E402
 
 raise SystemExit(launch(root))

@@ -53,3 +53,25 @@ def test_installed_action_finds_its_bundled_code(tmp_path):
                             cwd=plugins, env={**os.environ, "PYTHONPATH": str(plugins)})
     root, module = result.stdout.splitlines()
     assert Path(root) == plugins and Path(module).is_relative_to(plugins), result.stderr
+
+
+def test_installed_action_prefers_its_environment_over_pythonpath(tmp_path):
+    """KiCad (and a sourced ROS setup) put folders such as /usr/lib/python3/dist-packages on
+    PYTHONPATH; their older packages (protobuf) must not shadow the plugin environment's."""
+    zipfile.ZipFile(_builder().build(tmp_path)).extractall(tmp_path / "installed")
+    plugins = tmp_path / "installed" / "plugins"
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "pytest.py").write_text("raise ImportError('shadowed by PYTHONPATH')\n")
+    probe = ("import runpy, sys, types\n"
+             "sys.modules['kileido_bridge.launcher'] = types.SimpleNamespace(launch=lambda root: 0)\n"
+             "try:\n"
+             f"    runpy.run_path({str(plugins / 'launch.py')!r})\n"
+             "except SystemExit:\n"
+             "    pass\n"
+             "import pytest\n"
+             "print(pytest.__file__)\n")
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                            cwd=plugins, env={**os.environ, "PYTHONPATH": str(shadow)})
+    assert result.returncode == 0, result.stderr
+    assert not Path(result.stdout.strip()).is_relative_to(shadow)
