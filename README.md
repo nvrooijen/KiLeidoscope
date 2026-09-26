@@ -3,7 +3,7 @@
   &nbsp;&nbsp;
   <img src="assets/turntable.gif" width="400" align="middle" alt="A board turning in a Cycles render while it is edited in KiCad: the selected net's tracks get wider, the top solder mask and silkscreen switch off, X-ray mode turns the rest of the board see-through grey, and one segment of the net moves sideways.">
 </p>
-<p align="center"><sub>Right: edits in KiCad appear in the Cycles render as the board turns: the selected net is widened, the top solder mask and silkscreen are switched off, X-ray mode fades everything else and a segment of the net is moved.<br>
+<p align="center"><sub>Right: real-time edits in KiCad appear in the Cycles render as the board turns, showcasing the various different modes of visualization and editing.<br>
 Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2); the edits were made for this demo and are not part of the design.</sub></p>
 
 <p align="center">
@@ -149,3 +149,9 @@ If KiLeidoscope is useful to you, a mention or a link back to this project when 
 ### Name and logo
 
 The GPL covers the code, not the KiLeidoscope name or logo. The name and logo are © 2026 Nick van Rooijen, all rights reserved. 
+
+## About the Author
+
+KiLeidoscope is made by **Nick van Rooijen**, who has a PhD in Electrical Engineering.
+Questions and bug reports: [GitHub Issues](https://github.com/nvrooijen/KiLeidoscope/issues).
+Say hi on LinkedIn https://www.linkedin.com/in/nick-van-rooijen-23a28114b/).
