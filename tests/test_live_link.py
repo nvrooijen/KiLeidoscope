@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -244,7 +245,8 @@ def test_second_kicad_on_windows_is_explained_not_shown_raw():
         runtime.close()
     refused = explain_connection_error(ConnectionError("Failed to connect to KiCad: Connection refused"))
     assert "Enable KiCad API" in refused
-    assert "Task Manager" in refused and "Task Manager" in error
+    leftover = "Task Manager" if sys.platform == "win32" else "pgrep -a kicad"
+    assert leftover in refused and leftover in error
 
 
 def test_saved_color_change_sends_appearance_without_geometry(tmp_path, monkeypatch):

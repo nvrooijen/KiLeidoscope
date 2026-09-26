@@ -31,7 +31,7 @@ def test_saved_colors_and_editor_theme(tmp_path, monkeypatch):
         "board": {"copper": {"f": "rgb(200, 52, 52)", "b": "rgb(77, 127, 196)"},
                   "f_mask": "rgba(216, 100, 255, 0.4)",
                   "pad_plated_hole": "rgb(194, 194, 0)"}}))
-    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("KICAD_CONFIG_HOME", str(tmp_path / "kicad"))  # any OS
     appearance = read_appearance(str(board))
     assert appearance["saved_colors"]["F.Mask"] == [75/255, 124/255, 182/255, 179/255]
     # One "FR4 natural" dielectric (a stackup name, resolved): KiCad's alpha 0.83 + (1 - 0.83) * 0.83 / 2.
@@ -66,7 +66,7 @@ def _viewer_setup(tmp_path, monkeypatch, stackup_colors=None):
         "silkscreen_top": "rgba(45, 94, 182, 0.702)", "copper": "rgb(179, 156, 0)"}}))
     if stackup_colors is not None:
         (settings / "3d_viewer.json").write_text(json.dumps({"use_stackup_colors": stackup_colors}))
-    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("KICAD_CONFIG_HOME", str(tmp_path / "kicad"))  # any OS
     return read_appearance(str(board))["viewer"]
 
 
