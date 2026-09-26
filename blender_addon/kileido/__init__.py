@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 3, 0),
+    "version": (0, 3, 1),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
