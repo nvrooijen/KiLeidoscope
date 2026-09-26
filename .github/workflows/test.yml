@@ -19,3 +19,39 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[test]"
       - run: python -m pytest -q
+
+  blender:
+    # The add-on against real Blender builds, headless. Blender exits 0 when a script
+    # raises unless --python-exit-code is set.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        blender: ['5.1.2', '5.2.2']
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries for Blender and a software OpenGL
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libgl1 libegl1 libglx-mesa0 libgl1-mesa-dri \
+            libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6
+      - uses: actions/cache@v4
+        with:
+          path: blender
+          key: blender-${{ matrix.blender }}-linux-x64
+      - name: Blender ${{ matrix.blender }}
+        run: |
+          if [ ! -x blender/blender ]; then
+            series=$(echo "${{ matrix.blender }}" | cut -d. -f1,2)
+            curl -sfL "https://download.blender.org/release/Blender${series}/blender-${{ matrix.blender }}-linux-x64.tar.xz" \
+              | tar xJ
+            mv "blender-${{ matrix.blender }}-linux-x64" blender
+          fi
+          blender/blender --version | head -1
+      - name: Headless Blender tests
+        run: |
+          for script in tests/blender/run_*.py; do
+            echo "::group::$script"
+            xvfb-run -a blender/blender --background --factory-startup --python-exit-code 1 --python "$script"
+            echo "::endgroup::"
+          done
