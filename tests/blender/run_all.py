@@ -304,7 +304,8 @@ def main():
     bpy.context.scene.render.resolution_x = 1400
     bpy.context.scene.render.resolution_y = 1050
     bpy.context.scene.render.resolution_percentage = 100
-    bpy.context.scene.render.filepath = str(ROOT / "tests" / "blender" / "phase2_fixture.png")
+    # A picture to look at, not compared; tests/blender/phase2_fixture.png is a kept copy.
+    bpy.context.scene.render.filepath = str(Path(tempfile.gettempdir()) / "kileido_fixture_cycles.png")
     bpy.ops.render.render(write_still=True)
 
     # EEVEE final render with the default 0.1..1000 m clip range: its depth buffer

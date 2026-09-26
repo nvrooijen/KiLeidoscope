@@ -1,7 +1,7 @@
 <p align="center"><img src="assets/logo.png" alt="KiLeidoscope logo: a differential pair's two vias and traces, highlighted red and blue" width="240"></p>
 
 <p align="center">
-  <a href="https://www.blender.org/download/"><img src="https://img.shields.io/badge/Blender-5.1-E87D0D?logo=blender&logoColor=white" alt="Blender 5.1"></a>
+  <a href="https://www.blender.org/download/"><img src="https://img.shields.io/badge/Blender-5.1%20%7C%205.2-E87D0D?logo=blender&logoColor=white" alt="Blender 5.1 and 5.2"></a>
   <a href="https://www.kicad.org/download/"><img src="https://img.shields.io/badge/KiCad-10-314CB0?logo=kicad&logoColor=white" alt="KiCad 10"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3%2B-lightgrey" alt="License: GPLv3 or later"></a>
 </p>
@@ -31,7 +31,7 @@ An open-source project in early development, targeting KiCad 10 and Blender. Git
 | Analysis methods | Geometry-based only: closed-form impedance, spacing and parallel-length coupling, path-length skew, reference-plane checks. No field solver (MoM, FDTD, FEM). |
 | Implementation language | Python 3.10+ for the bridge (Ubuntu 22.04 ships 3.10); a Python add-on inside Blender. |
 | Component boundaries | Two processes: the bridge (KiCad access, board model, analysis) and the Blender add-on (display only), connected over local TCP. |
-| Supported versions | KiCad 10, Blender 5.1. |
+| Supported versions | KiCad 10, Blender 5.1 and 5.2. |
 
 ## Still open
 
@@ -43,7 +43,7 @@ An open-source project in early development, targeting KiCad 10 and Blender. Git
 
 ### Install
 
-KiLeidoscope needs KiCad 10 and Blender 5.1 or newer. It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
+KiLeidoscope needs KiCad 10 and Blender 5.1 or newer (tested with 5.1 and 5.2). It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
 
 1. Build the package: `python tools/build_package.py` writes `dist/kileidoscope-<version>.zip`.
 2. In KiCad, turn on Preferences > Plugins > **Enable KiCad API**.
@@ -57,7 +57,7 @@ sudo add-apt-repository ppa:kicad/kicad-10.0-releases
 sudo apt install kicad python3-venv
 ```
 
-`python3-venv` lets KiCad create the plugin's environment; the system `python3` must be 3.10 or newer. For Blender, unpack the official `blender-5.1.x-linux-x64.tar.xz` in your home folder, `~/Applications` or `/opt`. Its `blender-5.1.x-linux-x64/blender` is found there, as is a Snap install or a `blender` on `PATH`. A Blender older than 5.1 is skipped.
+`python3-venv` lets KiCad create the plugin's environment; the system `python3` must be 3.10 or newer. KiCad builds that environment from the Python it finds on its first start, so start KiCad the first time from the app menu or a shell without an active conda or other Python environment. For Blender, unpack the official `blender-5.1.x-linux-x64.tar.xz` in your home folder, `~/Applications` or `/opt`. Its `blender-5.1.x-linux-x64/blender` is found there, as is a Snap install or a `blender` on `PATH`. A Blender older than 5.1 is skipped.
 
 If nothing opens, the reason is in `~/.cache/kileidoscope/blender.log` (Windows: `%LOCALAPPDATA%\KiLeidoscope\blender.log`), and a desktop notification names a missing or outdated Blender.
 
@@ -111,13 +111,13 @@ python -m pytest -q
 The Blender tests run headless against a synthetic KiCad board (`tests/fixtures/`):
 
 ```
-blender --background --factory-startup --python tests/blender/run_all.py
-blender --background --factory-startup --python tests/blender/run_live.py
-blender --background --factory-startup --python tests/blender/run_boards.py
-blender --background --factory-startup --python tests/blender/run_collisions.py
-blender --background --factory-startup --python tests/blender/run_outline.py
-blender --background --factory-startup --python tests/blender/run_silk.py
-blender --background --factory-startup --python tests/blender/run_exports.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_all.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_live.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_boards.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_collisions.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_outline.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_silk.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_exports.py
 ```
 
 ## Disclaimer
