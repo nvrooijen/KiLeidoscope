@@ -13,7 +13,10 @@ from .selection import components, highlight_nets, selected_nets, unconnected
 
 
 def _is_timeout(exc: Exception) -> bool:
-    return isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+    """kipy reports a reply timeout as ConnectionError("Error receiving reply from KiCad:
+    Timed out"), raised from None: only the message tells it from a lost KiCad."""
+    return (isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+            or "timed out" in str(exc).lower())
 
 
 def _copper_changes(old, tracks, arcs, vias) -> set:
@@ -62,6 +65,7 @@ class BridgeRuntime:
         self.sticky_nets = frozenset()  # highlighted nets, kept through routing
         self.had_selection = False
         self.busy_seen = False
+        self.selected = frozenset()  # KiCad's selection as last read or requested
 
     # --- Connection state ---------------------------------------------------------------
 
@@ -212,21 +216,26 @@ class BridgeRuntime:
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
         self.server.send_frames(frames)
 
-    def _selection_frames(self, snapshot, force: bool = False) -> list[bytes]:
-        """Highlighted nets (and components), sent when they change.
+    def _selection_frames(self, snapshot, force: bool = False, selected=None) -> list[bytes]:
+        """Highlighted nets (and components), sent when they change. `selected` is
+        KiCad's selection, read from KiCad unless given.
 
         Sticky through routing: KiCad answers busy while its router runs and clears
         the selection when routing starts. A selection that empties after a busy
         period keeps its nets highlighted (new tracks on them join in); one that
         empties without a busy period is a deselect and clears them.
         """
-        try:
-            selected = selected_ids(self.reader.board)
-        except KiCadBusy:
-            self.busy_seen = True
-            return []
-        except Exception:
-            selected = frozenset()  # no selection API (tests' fake reader)
+        if selected is None:
+            try:
+                selected = selected_ids(self.reader.board)
+            except KiCadBusy:
+                self.busy_seen = True
+                return []
+            except Exception as exc:
+                if _is_timeout(exc):
+                    return []  # KiCad is slow to answer, not deselected: keep the highlight
+                selected = frozenset()  # no selection API (tests' fake reader)
+        self.selected = selected
         nets = selected_nets(snapshot, selected)
         if nets:
             self.sticky_nets = nets
@@ -283,6 +292,11 @@ class BridgeRuntime:
             wanted = list(dict.fromkeys(owner.get(item_id) or item_id for item_id in ids))
             if not wanted and not extend:
                 self.sticky_nets = frozenset()  # a click on bare board: clear the highlight
+            # Highlight now: KiCad can take seconds to apply a selection and answer
+            # (measured 1-6 s with its window hidden behind Blender). Later polls confirm it.
+            selected = frozenset(wanted) | (self.selected if extend else frozenset())
+            self.server.send_frames(self._selection_frames(self.snapshot, selected=selected))
+            self.server.pump()
             try:
                 select_in_kicad(self.reader.board, wanted, extend)
             except Exception:

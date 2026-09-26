@@ -474,6 +474,61 @@ def test_blender_click_selects_in_kicad_and_pads_select_their_footprint():
         runtime.close()
 
 
+def test_a_slow_kicad_reply_is_not_a_lost_kicad():
+    """kipy turns a reply timeout into ConnectionError("... Timed out"): a few in a row
+    keep the connection (KiCad stalls while its window is hidden); a real error drops it."""
+    reader = FakeReader(fixture())
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    try:
+        runtime.step()
+        timed_out = ConnectionError("Error receiving reply from KiCad: Timed out")
+        reader.events = [timed_out] * (BridgeRuntime.MAX_TIMEOUTS - 1)
+        for _ in range(BridgeRuntime.MAX_TIMEOUTS - 1):
+            runtime.step()
+        assert runtime.reader is reader and not reader.closed
+        runtime.step()  # a good poll resets the count
+        reader.events = [ConnectionError("Failed to send command to KiCad: Closed")]
+        runtime.step()
+        assert runtime.reader is None
+    finally:
+        runtime.close()
+
+
+def test_blender_click_highlights_before_a_slow_kicad_answers():
+    """KiCad can take seconds to apply a selection (its window hidden behind Blender):
+    the click's highlight goes out at once, and reads that time out do not clear it."""
+    snapshot = fixture()
+    track = snapshot.tracks[0]
+
+    class SlowBoard:
+        def clear_selection(self):
+            raise ConnectionError("Error receiving reply from KiCad: Timed out")
+
+        add_to_selection = get_selection = clear_selection
+
+    reader = FakeReader(snapshot)
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        reader.board = SlowBoard()
+        client.request_select([track.id])
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "selection" and h["selected"] for h, _ in f))
+        assert track.id in next(h for h, _ in frames if h["type"] == "selection" and h["selected"])["selected"]
+        later = []
+        for _ in range(20):
+            runtime.step()
+            later += [header for header, _ in client.poll_io() if header["type"] == "selection"]
+            time.sleep(0.001)
+        assert later == []  # still highlighted
+    finally:
+        client.close()
+        runtime.close()
+
 
 def test_highlight_survives_routing_and_clears_on_a_real_deselect():
     """KiCad is busy while routing and clears the selection: the nets stay
