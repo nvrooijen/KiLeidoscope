@@ -72,8 +72,8 @@ A finished track edit reaches the Blender viewport in about 0.2 s. Most of that 
 
 KiLeidoscope needs KiCad 10 and Blender 5.1 or newer (tested with 5.1 and 5.2). It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
 
-1. Download `kileidoscope-<version>.zip` from [Releases](https://github.com/nvrooijen/KiLeidoscope/releases), or build it yourself: `python tools/build_native.py` (the C overlay library, optional but about 8× faster) and then `python tools/build_package.py`, which writes `dist/kileidoscope-<version>.zip`.
-2. In KiCad, under Preferences > Plugins, turn on **Enable KiCad API** and set **Python interpreter** to KiCad 10's own, e.g. `C:\Program Files\KiCad\10.0\bin\pythonw.exe`.
+1. Download `kileidoscope-<version>.zip` from [Releases](https://github.com/nvrooijen/KiLeidoscope/releases), or build it yourself: `python3 tools/build_native.py` (the C overlay library for your platform, optional but about 8× faster) and then `python3 tools/build_package.py` (`python` on Windows), which writes `dist/kileidoscope-<version>.zip`.
+2. In KiCad, under Preferences > Plugins, turn on **Enable KiCad API** and set **Python interpreter** to KiCad 10's own: `C:\Program Files\KiCad\10.0\bin\pythonw.exe` on Windows, the system `/usr/bin/python3` on Linux.
 3. Open the **Plugin and Content Manager**, choose **Install from File…** and pick the zip.
 4. Restart KiCad. On its first start the plugin gets its own Python environment, and KiCad installs `kicad-python` and `numpy` into it (internet needed once). **Open in Blender** then appears on the PCB Editor toolbar.
 
@@ -86,7 +86,7 @@ sudo add-apt-repository ppa:kicad/kicad-10.0-releases
 sudo apt install kicad python3-venv
 ```
 
-`python3-venv` lets KiCad create the plugin's environment; the system `python3` must be 3.10 or newer. KiCad builds that environment from the Python it finds on its first start, so start KiCad the first time from the app menu or a shell without an active conda or other Python environment. For Blender, unpack the official `blender-5.1.x-linux-x64.tar.xz` in your home folder, `~/Applications` or `/opt`. Its `blender-5.1.x-linux-x64/blender` is found there, as is a Snap install or a `blender` on `PATH`. A Blender older than 5.1 is skipped.
+`python3-venv` lets KiCad create the plugin's environment; the system `python3` must be 3.10 or newer. Set it as KiCad's **Python interpreter** (`/usr/bin/python3`, step 2 above). KiCad builds that environment from the Python it finds on its first start, so start KiCad the first time from the app menu or a shell without an active conda or other Python environment. For Blender, unpack the official `blender-5.1.x-linux-x64.tar.xz` in your home folder, `~/Applications` or `/opt`. Its `blender-5.1.x-linux-x64/blender` is found there, as is a Snap install or a `blender` on `PATH`. A Blender older than 5.1 is skipped.
 
 
 ### macOS
@@ -122,7 +122,7 @@ Components without a model file show an envelope of KiCad's footprint bounds, th
 - **KiCad API**: KiLeidoscope only works with **Enable KiCad API** turned on (Preferences > Plugins).
 - **One KiCad on Windows**: only one KiCad instance at a time can serve plugins ([KiCad issue #20880](https://gitlab.com/kicad/code/kicad/-/issues/20880)).
 - **macOS**: untested.
-- **Linux overlays**: the release zip carries the fast overlay library for Windows only. On Linux the add-on draws mask and silkscreen with its numpy fallback (same images, slower) unless you build the library with `python tools/build_native.py`.
+- **Overlays on other platforms**: the release zip carries the fast overlay library for Windows and Linux on x86-64. Elsewhere (macOS, ARM) the add-on draws mask and silkscreen with its numpy fallback (same images, slower) unless you build the library with `python3 tools/build_native.py`.
 - **Multi-board editing**: only the live board follows KiCad; other boards are view-only packages.
 
 ## Roadmap
