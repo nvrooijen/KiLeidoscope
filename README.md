@@ -51,7 +51,7 @@ Mask, silkscreen and 3D models take a second path. The bridge keeps a copy of th
 | Data sent to Blender | Whole (layer, kind) lists, such as all F.Cu tracks, re-sent when anything in them changes. No per-item deltas. |
 | Language | Python 3.10+ for the bridge (Ubuntu 22.04 ships 3.10); a Python add-on inside Blender, with one small C library for drawing the Gerber overlays (numpy fallback when it is not built for the platform). |
 | Boundaries | The bridge never imports `bpy`; the add-on never imports the bridge or `kipy`. `tests/test_boundaries.py` enforces this. |
-| Analysis (planned) | Geometry-based only: closed-form impedance, spacing and parallel-length coupling, path-length skew, reference-plane checks. No field solver. |
+
 
 ## Real-time updates
 
