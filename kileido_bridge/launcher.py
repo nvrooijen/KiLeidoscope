@@ -98,10 +98,29 @@ def _tell_user(message: str) -> None:
         pass
 
 
+def _viewer_file(socket: str, suffix: str) -> Path:
+    return cache_root() / f"viewer-{hashlib.sha256(socket.encode()).hexdigest()[:16]}{suffix}"
+
+
+def viewer_pid(socket: str) -> int | None:
+    """The Blender process of the open viewer of the KiCad at `socket`, when known."""
+    try:
+        return int(_viewer_file(socket, ".pid").read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return None
+
+
+def already_open_message(socket: str) -> str:
+    pid = viewer_pid(socket)
+    where = f" (Blender, process {pid})" if pid else ""
+    return (f"KiLeidoscope is already open for this KiCad{where}. Close that Blender window to open "
+            "a new one. If you cannot find the window, end that process.")
+
+
 def viewer_lock(socket: str):
     """The open lock file that makes this the one viewer of the KiCad at `socket`, or None
     when another viewer holds it. The OS releases it when this process ends, even on a crash."""
-    path = cache_root() / f"viewer-{hashlib.sha256(socket.encode()).hexdigest()[:16]}.lock"
+    path = _viewer_file(socket, ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+b")
     try:
@@ -135,7 +154,7 @@ def launch(root=None) -> int:
             raise RuntimeError("Start Open in Blender from the KiCad PCB Editor to select the correct board.")
         lock = viewer_lock(socket)
         if lock is None:  # a repeated click must not start another Blender
-            _tell_user("KiLeidoscope is already open for this KiCad. Close that Blender window to open a new one.")
+            _tell_user(already_open_message(socket))
             return 0
         executable = find_blender()
     except RuntimeError as exc:
@@ -149,12 +168,14 @@ def launch(root=None) -> int:
     environment["KILEIDO_BRIDGE_PORT"] = str(server.port)
     environment["KILEIDO_BRIDGE_TOKEN"] = server.token
     log_path = cache_root() / "blender.log"
+    pid_path = _viewer_file(socket, ".pid")
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "wb") as log:
             viewer = subprocess.Popen(
                 [executable, "--python", str(root / "blender_addon" / "start.py")],
                 cwd=root, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            pid_path.write_text(str(viewer.pid), encoding="ascii")  # named if a later click finds it open
             runtime.start()
             while viewer.poll() is None:
                 runtime.step()
@@ -162,4 +183,5 @@ def launch(root=None) -> int:
         return viewer.returncode
     finally:
         runtime.close()
+        pid_path.unlink(missing_ok=True)
         lock.close()

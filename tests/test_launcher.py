@@ -29,11 +29,12 @@ def test_plugin_lifecycle_and_environment(monkeypatch, tmp_path):
 
     def popen(command, **kwargs):
         captured.update(command=command, **kwargs)
-        return SimpleNamespace(poll=lambda: next(outcomes), returncode=0)
+        return SimpleNamespace(poll=lambda: next(outcomes), returncode=0, pid=4321)
 
     monkeypatch.setattr(launcher.subprocess, "Popen", popen)
     assert launcher.launch(tmp_path) == 0
     assert len(steps) == 1 and closed == [1]
+    assert launcher.viewer_pid("test-editor-pipe") is None  # removed with the viewer
     assert captured["env"]["KICAD_API_SOCKET"] == "test-editor-pipe"
     assert captured["env"]["KILEIDO_BRIDGE_TOKEN"] == server.token
     assert captured["env"]["KILEIDO_BRIDGE_PORT"] == str(server.port)
@@ -70,7 +71,10 @@ def test_one_viewer_per_kicad(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "_tell_user", told.append)
     monkeypatch.setattr(launcher, "find_blender", lambda: pytest.fail("looked for Blender"))
     assert launcher.launch(tmp_path) == 0
-    assert "already open" in told[0]
+    assert "already open" in told[0] and "Blender, process" not in told[0]  # none recorded
+    launcher._viewer_file("kicad-a", ".pid").write_text("4242", encoding="ascii")
+    assert launcher.launch(tmp_path) == 0
+    assert "Blender, process 4242" in told[1]  # so a viewer whose window is lost can be ended
     held.close()  # the viewer closed
     again = launcher.viewer_lock("kicad-a")
     assert again is not None
