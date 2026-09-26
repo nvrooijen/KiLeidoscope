@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import bpy
+from mathutils import Vector
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
@@ -169,6 +170,36 @@ def check_reflections():
     assert texture.image == current
 
 
+def check_offset_models():
+    """Several model roots of one footprint (KiCad names them U5, U5.001) bind to it even
+    when every one sits far from its origin, as CM5 MINIMA's module connectors do; more
+    roots than the footprint declares models do not."""
+    from kileido.state import board
+    target = next(obj for obj in board.collection.all_objects if obj.get("kls_footprint") == 1)
+    target["kls_model_paths"] = ["connector.step", "connector.step"]
+    root = bpy.data.objects.new("Offset models root", None)
+    bpy.context.scene.collection.objects.link(root)
+    made = [root]
+    for index, offset in enumerate((0.021, 0.040, 0.060)):
+        mesh = bpy.data.meshes.new(f"Offset model {index}")
+        mesh.vertices.add(1)
+        ref = bpy.data.objects.new(target["kls_reference"] + (f".{index:03d}" if index else ""), None)
+        part = bpy.data.objects.new(f"Offset model part {index}", mesh)
+        for obj in (ref, part):
+            bpy.context.scene.collection.objects.link(obj)
+        ref.parent, part.parent = root, ref
+        ref.location = target.matrix_world.translation + Vector((offset, 0, 0))
+        made += [ref, part]
+    bpy.context.view_layer.update()
+    extra = made[-2:]  # the third root: one more than the two declared models
+    extra[0].parent = None
+    assert len(models._matches(root, [])) == 2, "offset model roots were not bound"
+    extra[0].parent = root
+    assert models._matches(root, []) == [], "three roots bound to a footprint declaring two models"
+    for obj in made:
+        bpy.data.objects.remove(obj)
+
+
 def main():
     kileido.register()
     scratch = Path(tempfile.mkdtemp())
@@ -177,6 +208,7 @@ def main():
         snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))
         apply.load_frames(b"".join(snapshot_frames(snapshot, board_path=str(BOARD_FILE))))
         check_overlay_images()
+        check_offset_models()
         check_superseded_glb(scratch)
         check_reflections()
     finally:

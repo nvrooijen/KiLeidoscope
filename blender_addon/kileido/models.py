@@ -244,11 +244,11 @@ def _matches(root, saved_positions=None):
             continue
         if len(footprints) == 1 and len(candidates) > 1:
             target = footprints[0]
-            # KiCad gives multiple model roots from one footprint names like
-            # U5 and U5.001. Some declared models have a deliberate large
-            # offset, so only one root needs to sit at the footprint origin.
-            if (len(target.get("kls_model_paths", ())) >= len(candidates) and
-                    min(distance(source, target) for source in candidates) <= MATCH_TOLERANCE_M):
+            # KiCad names the model roots of one footprint U5, U5.001, ... Each sits
+            # where its model offset puts it, and all of them can lie far from the
+            # footprint origin (CM5 MINIMA's module footprints: two connectors 21 and
+            # 40 mm away). The reference places them, as it does a single root.
+            if len(target.get("kls_model_paths", ())) >= len(candidates):
                 matches.extend((source, target) for source in candidates)
                 continue
         pairs = []

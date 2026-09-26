@@ -18,7 +18,9 @@ from .objects import hide
 from .state import board
 
 _COPPER = re.compile(r"^KLS ((?:F|B|In\d+)\.Cu) (?:tracks|pads|graphics|zone |highlight)")
-EXTRA = {"Board": "kileido_show_board", "Vias": "kileido_show_vias", "Components": "kileido_show_components"}
+EXTRA = {"Board": "kileido_show_board", "Vias": "kileido_show_vias", "Components": "kileido_show_components",
+         "Placeholders": "kileido_show_placeholders"}
+LABELS = {"Placeholders": "Missing models"}  # boxes for components whose model file KiCad cannot find
 COPPER_LAYERS = ("F.Cu", *(f"In{number}.Cu" for number in range(1, 31)), "B.Cu")
 
 
@@ -35,8 +37,9 @@ def row_of(obj):
     name = obj.name
     if name.startswith("KLS vias"):
         return "Vias"
-    if (obj.get("kls_model_fp_id") is not None or obj.get("kls_footprint_placeholder") == 1
-            or name.startswith("KLS footprint highlight")):
+    if obj.get("kls_footprint_placeholder") == 1:
+        return "Placeholders"
+    if obj.get("kls_model_fp_id") is not None or name.startswith("KLS footprint highlight"):
         return "Components"
     match = _COPPER.match(name)
     return match[1] if match else None
@@ -47,8 +50,11 @@ def shown(row):
 
 
 def hidden(obj):
-    """True when the object's row is switched off in the panel."""
+    """True when the object's row is switched off in the panel. A placeholder stands in
+    for a component, so switching Components off hides it too."""
     row = row_of(obj)
+    if row == "Placeholders" and not shown("Components"):
+        return True
     return row is not None and row != "Board" and not shown(row)
 
 
@@ -60,10 +66,10 @@ def refresh(row):
         from . import apply
         apply.set_board_visible(shown("Board"))
         return
-    visible = shown(row)
     for obj in tuple(board.collection.all_objects):
-        if row_of(obj) == row:
-            switch(obj, visible)
+        own = row_of(obj)
+        if own == row or (row == "Components" and own == "Placeholders"):
+            switch(obj, not hidden(obj))
 
 
 def rows():
@@ -73,12 +79,13 @@ def rows():
     overlays = {layer: label for layer, label, _ in cosmetics.visible_layers()}
     copper = sorted(board.heights, key=lambda layer: board.heights[layer], reverse=True)
     inner = [layer for layer in copper if layer not in ("F.Cu", "B.Cu")]
-    order = ["F.SilkS", "F.Mask", "F.Cu", *inner, "Board", "Vias", "B.Cu", "B.Mask", "B.SilkS", "Components"]
+    order = ["F.SilkS", "F.Mask", "F.Cu", *inner, "Board", "Vias", "B.Cu", "B.Mask", "B.SilkS", "Components",
+             "Placeholders"]
     order += [layer for layer in overlays if layer not in order]  # fabrication and user drawings
     result = []
     for row in order:
         if row in EXTRA:
-            result.append((row, row))
+            result.append((row, LABELS.get(row, row)))
         elif row in overlays or row in board.heights:
             result.append((row, names.get(row) or overlays.get(row) or row))
     return result
@@ -126,7 +133,8 @@ def sections():
                            "  ".join(part for part in detail if part)))
     add("B.Mask", "mask", board.layer_thickness.get("B.Mask"))
     add("B.SilkS", "silk")
-    objects = [Entry(row, rows_here[row], row.lower()) for row in ("Vias", "Components") if row in rows_here]
+    objects = [Entry(row, rows_here[row], row.lower()) for row in ("Vias", "Components", "Placeholders")
+               if row in rows_here]
     listed = {entry.row for entry in (*stack, *objects)}
     drawings = [Entry(row, label, "drawing") for row, label in rows() if row not in listed]
     return [(title, entries) for title, entries in
@@ -159,6 +167,8 @@ def swatch_color(entry):
         return core[:3]
     if entry.kind == "components":
         return (0.16, 0.16, 0.17)
+    if entry.kind == "placeholders":
+        return materials.PLACEHOLDER_COLOR
     color = cosmetics._layer_color(entry.row)
     if color and entry.kind == "mask":
         return shading.blend_srgb(color, core)  # the mask as seen on the laminate

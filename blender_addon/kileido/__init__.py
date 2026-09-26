@@ -699,7 +699,7 @@ def _scene_properties():
     for layer, label, default in cosmetics.LAYERS:
         properties[cosmetics.property_name(layer)] = BoolProperty(
             name=label, default=default, update=_layer_update(layer))
-    for row in (*layers.COPPER_LAYERS, "Vias", "Components"):
+    for row in (*layers.COPPER_LAYERS, "Vias", "Components", "Placeholders"):
         properties[layers.property_name(row)] = BoolProperty(
             name=row, default=True, update=_row_update(row))
     return properties

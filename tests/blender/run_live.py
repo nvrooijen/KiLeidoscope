@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 
-from kileido import live, models, state  # noqa: E402
+import kileido  # noqa: E402
+from kileido import layers, live, models, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402
 from kileido_bridge.protocol import FrameDecoder, messages_for, snapshot_frames  # noqa: E402
 
@@ -22,6 +23,7 @@ def decoded(frames):
 
 def main():
     assert bpy.app.background
+    kileido.register()  # as blender_addon/start.py does: the panel's scene properties exist
     fixture = ROOT / "tests" / "fixtures" / "synthetic_rf_geometry.kicad_dump.json"
     snapshot = snapshot_from_jsonable(json.loads(fixture.read_text(encoding="utf-8")))
     # A declared (not yet loaded) model gets a placeholder box; a footprint with no
@@ -85,6 +87,20 @@ def main():
         assert len(placeholder.data.vertices) == 1
         assert not placeholder.hide_get()
         assert collection.all_objects[f"KLS footprint placeholder {bare.id}"].hide_get()
+        # The Missing models row hides placeholder boxes; so does Components, which they stand in for.
+        assert ("Placeholders", "Missing models") in layers.rows()
+        scene = bpy.context.scene
+        for row_property in ("kileido_show_placeholders", "kileido_show_components"):
+            setattr(scene, row_property, False)
+            assert placeholder.hide_get(), row_property
+            setattr(scene, row_property, True)
+            assert not placeholder.hide_get(), row_property
+        scene.kileido_show_placeholders = False
+        scene.kileido_show_components = False
+        scene.kileido_show_components = True
+        assert placeholder.hide_get()  # its own row is still off
+        scene.kileido_show_placeholders = True
+        assert not placeholder.hide_get()
         top = collection.all_objects["KLS F.Cu tracks"]
         original_pointer = top.as_pointer()
         original_data_pointer = top.data.as_pointer()
@@ -157,6 +173,7 @@ def main():
     finally:
         live.disconnect()
         live.SocketClient = real_socket_client
+        kileido.unregister()
     print("KLS_PHASE3_TIMER_OK")
 
 

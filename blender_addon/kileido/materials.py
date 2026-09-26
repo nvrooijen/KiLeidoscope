@@ -22,6 +22,7 @@ FALLBACK_MASK = (0.29, 0.49, 0.71)
 FALLBACK_CORE = (0.43, 0.45, 0.29)
 
 HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0)}  # red-orange / blue (sRGB)
+PLACEHOLDER_COLOR = (0.36, 0.43, 0.52)  # a component whose model file is missing: a grey-blue box
 OUTLINE_PROBLEM_COLOR = (1.0, 0.0, 0.0)  # a malformed board outline: bright red
 OUTLINE_PROBLEM_GLOW = 0.8  # higher reads orange in AgX
 HIGHLIGHT_METALLIC = 1.0
@@ -57,7 +58,7 @@ def create_all():
         "board": make("KLS Board mask top", FALLBACK_MASK),
         "board_bottom": make("KLS Board mask bottom", FALLBACK_MASK),
         "board_core": make("KLS Board FR4 core", FALLBACK_CORE),
-        "footprint_placeholder": make("KLS Component placeholders", (0.36, 0.43, 0.52), 0.55),
+        "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
