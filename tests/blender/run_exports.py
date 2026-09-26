@@ -1,13 +1,16 @@
 """Headless checks of the kicad-cli export workers and what they leave behind: a failed
 model export is retried, exports read the bytes their cache key was made from, a new
 GLB import drops the one it replaces, re-applied overlays free the plots they replace,
-and a reflection HDRI saved by another Blender install is found again. Needs kicad-cli.
+a reflection HDRI saved by another Blender install is found again, and no scratch
+folder outlives Blender. Needs kicad-cli.
 
 blender --background --factory-startup --python tests/blender/run_exports.py
 """
 
 import json
+import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cosmetics, kicad_cli, lighting, models  # noqa: E402
+from kileido import apply, cosmetics, kicad_cli, lighting, models, watcher  # noqa: E402
 from kileido.watcher import Job  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -200,6 +203,30 @@ def check_offset_models():
         bpy.data.objects.remove(obj)
 
 
+def check_scratch_cleanup():
+    """Result folders nobody handled (here: every check's) go when Python exits, and a
+    crashed Blender's old ones on the next start; a fresh one is another Blender's."""
+    left = set(watcher._scratch)
+    assert left, "the checks' exports registered no scratch folders"
+    watcher._remove_unhandled()  # what atexit runs when Blender quits
+    assert not any(path.exists() for path in left), "a scratch folder outlived Blender"
+    root = Path(tempfile.gettempdir())
+    stale, fresh = (Path(tempfile.mkdtemp(prefix=watcher.SCRATCH_PREFIXES[0], dir=root)) for _ in range(2))
+    (stale / "models.glb").write_bytes(b"old")
+    old = time.time() - watcher.STALE_S - 60
+    os.utime(stale, (old, old))
+    try:
+        swept = watcher.sweep_stale()
+        assert stale in swept and fresh not in swept, swept
+        deadline = time.monotonic() + 10
+        while stale.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not stale.exists(), "a stale scratch folder was not removed"
+    finally:
+        shutil.rmtree(fresh, ignore_errors=True)
+        shutil.rmtree(stale, ignore_errors=True)
+
+
 def main():
     kileido.register()
     scratch = Path(tempfile.mkdtemp())
@@ -211,8 +238,10 @@ def main():
         check_offset_models()
         check_superseded_glb(scratch)
         check_reflections()
+        check_scratch_cleanup()
     finally:
         kileido.unregister()
+        shutil.rmtree(scratch, ignore_errors=True)
     print("KLS_EXPORTS_OK")
 
 

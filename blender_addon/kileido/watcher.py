@@ -6,10 +6,12 @@ kicad-cli there, and hand finished results to Blender's main thread through a
 queue drained by a timer. The worker never touches bpy.
 """
 
+import atexit
 import queue
 import shutil
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +22,10 @@ from .state import board
 
 POLL_S = 0.5  # one stat per poll: the bridge rewrites its copy ~0.5 s after edits settle
 TIMER_S = 0.2
+SCRATCH_PREFIXES = ("kileido_models_", "kileido_overlays_")  # the exports' scratch_directory folders
+STALE_S = 3600  # a scratch folder this old is a crashed Blender's; an export's lives seconds
+_scratch = set()  # scratch folders not yet removed, emptied again when Python exits
+_scratch_lock = threading.Lock()
 
 
 @dataclass
@@ -51,6 +57,8 @@ class Job:
         removed once that is handled), or is removed here once the job was stopped
         (a stopped job's results are dropped). A failure is reported, not raised."""
         directory = Path(tempfile.mkdtemp(prefix=prefix))
+        with _scratch_lock:
+            _scratch.add(directory)
         try:
             yield directory
         except Exception as exc:
@@ -58,14 +66,45 @@ class Job:
                 self.emit(directory=directory, error=str(exc))
                 return
         if self.stop.is_set():
-            shutil.rmtree(directory, ignore_errors=True)
+            _remove(directory)
+
+
+def _remove(directory):
+    shutil.rmtree(directory, ignore_errors=True)
+    with _scratch_lock:
+        _scratch.discard(Path(directory))
 
 
 def remove_later(directory):
     """Delete a folder off the main thread (large exports take a while)."""
     if directory is not None:
-        threading.Thread(target=shutil.rmtree, args=(directory,), kwargs={"ignore_errors": True},
-                         daemon=True).start()
+        threading.Thread(target=_remove, args=(directory,), daemon=True).start()
+
+
+@atexit.register
+def _remove_unhandled():
+    """Blender quitting stops the daemon threads, maybe mid-removal, and drops queued
+    results: remove what is left of this session's scratch folders."""
+    with _scratch_lock:
+        left = list(_scratch)
+    for directory in left:
+        _remove(directory)
+
+
+def sweep_stale(now=None):
+    """Remove scratch folders a crashed Blender left in the temp folder (off the main thread)."""
+    now = time.time() if now is None else now
+    stale = []
+    for prefix in SCRATCH_PREFIXES:
+        for path in Path(tempfile.gettempdir()).glob(prefix + "*"):
+            try:
+                if path.is_dir() and now - path.stat().st_mtime > STALE_S:
+                    stale.append(path)
+            except OSError:
+                pass
+    if stale:
+        threading.Thread(target=lambda: [_remove(path) for path in stale], daemon=True).start()
+    return stale
 
 
 class BoardWatcher:
