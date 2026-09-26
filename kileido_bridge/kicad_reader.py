@@ -217,17 +217,37 @@ def _polygon(value) -> model.Polygon:
     return (_ring(value.outline), *(_ring(hole) for hole in value.holes))
 
 
+# KiCad joins Edge.Cuts ends up to 10 um apart: KiCad 10.0.6's DRC accepts a 9.9 um gap and
+# reports invalid_outline at 10.1 um (measured). Boards carry such gaps (CM5 MINIMA: 33 nm).
+CHAIN_TOLERANCE_NM = 10_000
+
+
+def _near(a: model.Point, b: model.Point) -> bool:
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 <= CHAIN_TOLERANCE_NM ** 2
+
+
+def _nearest_part(remaining: list[list[model.Point]], end: model.Point) -> tuple[int, bool] | None:
+    """(index, reversed) of the stroke with an end nearest `end`, within the tolerance."""
+    best = None
+    for index, part in enumerate(remaining):
+        for flipped, point in ((False, part[0]), (True, part[-1])):
+            gap = (point[0] - end[0]) ** 2 + (point[1] - end[1]) ** 2
+            if gap <= CHAIN_TOLERANCE_NM ** 2 and (best is None or gap < best[0]):
+                best = (gap, index, flipped)
+    return None if best is None else best[1:]
+
+
 def _stitch_outline(parts: list[tuple[model.Point, ...]], warnings: list[str],
                     problems: list[model.Point]) -> list[model.Polygon]:
-    """Join exact endpoints of Edge.Cuts strokes; never union or triangulate."""
+    """Join Edge.Cuts strokes whose ends meet within KiCad's chaining tolerance; never
+    union or triangulate."""
     remaining = [list(part) for part in parts if len(part) >= 2]
     polygons: list[model.Polygon] = []
     while remaining:
         chain = remaining.pop()
         turned = False  # stuck at one end: grow from the other before calling it open
-        while chain[-1] != chain[0]:
-            match = next((i for i, part in enumerate(remaining)
-                          if part[0] == chain[-1] or part[-1] == chain[-1]), None)
+        while not (len(chain) >= 4 and _near(chain[-1], chain[0])):
+            match = _nearest_part(remaining, chain[-1])
             if match is None and not turned:
                 chain.reverse()
                 turned = True
@@ -236,8 +256,9 @@ def _stitch_outline(parts: list[tuple[model.Point, ...]], warnings: list[str],
                 warnings.append(outline_warning("open Edge.Cuts chain left out", chain[-1]))
                 problems += [chain[0], chain[-1]]  # both loose ends
                 break
-            part = remaining.pop(match)
-            chain.extend(part[1:] if part[0] == chain[-1] else list(reversed(part[:-1])))
+            index, flipped = match
+            part = remaining.pop(index)
+            chain.extend(list(reversed(part[:-1])) if flipped else part[1:])
         else:
             ring = tuple(chain[:-1])
             if len(ring) >= 3:

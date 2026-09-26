@@ -338,6 +338,11 @@ def test_outline_warnings_name_the_problem_and_where():
     assert len(warnings) == 2 and "open Edge.Cuts chain left out near (" in warnings[0]
     assert warnings[1] == f"{OUTLINE_PROBLEM}: no closed Edge.Cuts outline"
 
+    for gap, closes in ((33, True), (9_900, True), (10_100, False)):  # KiCad 10.0.6 DRC: 10 um
+        board.shapes = _edges(*square)[:3] + [NS(layer=BoardLayer.BL_Edge_Cuts, start=point(0, 10_000_000),
+                                                 end=point(gap, 0))]
+        assert (_outline_warnings(board) == []) is closes, gap
+
     bow_tie = [(0, 0), (10_000_000, 10_000_000), (10_000_000, 0), (0, 10_000_000)]
     board.shapes = _edges(*bow_tie)
     assert _outline_warnings(board) == [f"{OUTLINE_PROBLEM}: Edge.Cuts outline crosses itself near (5.00, 5.00) mm"]
