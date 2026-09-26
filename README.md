@@ -66,6 +66,8 @@ A finished track edit reaches the Blender viewport in about 0.2 s. Most of that 
 - **Mask, silkscreen and models** follow about 1.5–2 s after edits settle, the time `kicad-cli` needs to export them.
 - **Selection** highlights in Blender at once. KiCad applies it when it next responds, which can take a few seconds while its window is behind Blender.
 
+<p align="center"><img src="assets/RealTimeEditor.gif" width="680" alt="Routing a track in KiCad; the new track appears in Blender as it is drawn"></p>
+
 ## Installation
 
 KiLeidoscope needs KiCad 10 and Blender 5.1 or newer (tested with 5.1 and 5.2). It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
