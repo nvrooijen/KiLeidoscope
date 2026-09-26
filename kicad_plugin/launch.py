@@ -6,6 +6,7 @@ points to one checkout through checkout.json; run in place, the checkout is the 
 """
 
 import json
+import os
 import sys
 import sysconfig
 from pathlib import Path
@@ -21,10 +22,12 @@ else:
 sys.path.insert(0, str(root))
 # PYTHONPATH (from KiCad, or a sourced ROS setup) comes before the plugin's environment,
 # so an older system protobuf would shadow the one kicad-python needs. Own packages first.
-for own in dict.fromkeys((sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))):
-    if own in sys.path:
-        sys.path.remove(own)
-        sys.path.insert(1, own)
+# Compared normalised: on Windows sys.path may spell ...\Lib\site-packages as ...\lib\...
+own = {os.path.normcase(os.path.abspath(sysconfig.get_path(key))) for key in ("purelib", "platlib")}
+first = [path for path in sys.path if path and os.path.normcase(os.path.abspath(path)) in own]
+for path in first:
+    sys.path.remove(path)
+sys.path[1:1] = first
 from kileido_bridge.launcher import launch  # noqa: E402
 
 raise SystemExit(launch(root))

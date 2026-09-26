@@ -73,5 +73,8 @@ def test_installed_action_prefers_its_environment_over_pythonpath(tmp_path):
              "print(pytest.__file__)\n")
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                             cwd=plugins, env={**os.environ, "PYTHONPATH": str(shadow)})
-    assert result.returncode == 0, result.stderr
-    assert not Path(result.stdout.strip()).is_relative_to(shadow)
+    paths = subprocess.run([sys.executable, "-c", "import sys, sysconfig; print(sysconfig.get_path('purelib'), "
+                            "sysconfig.get_path('platlib'), sys.path)"], capture_output=True, text=True,
+                           env={**os.environ, "PYTHONPATH": str(shadow)}).stdout
+    assert result.returncode == 0, result.stderr + paths
+    assert not Path(result.stdout.strip()).is_relative_to(shadow), paths
