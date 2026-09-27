@@ -7,9 +7,10 @@ potential and the current's direction on a regular grid. Shown on the real layer
 - a colour map per layer ("KLS <layer> dc map"): a flat quad just out from the
   copper, textured with the field; see-through where there is no copper. Current
   density (log scale by default) or voltage drop from the highest supply.
-- arrows along the current ("KLS <layer> dc arrows"): points with a direction,
-  turned into cones by a Geometry Nodes group that marches them along it with the
-  scene time. The speed is illustrative, not the drift velocity.
+- particles along the current ("KLS <layer> dc arrows"): streamlines traced
+  through the current's direction here (flow_paths), one cone walking each with
+  the scene time plus a viewport clock, faster where the current is denser. The
+  speed is illustrative, not the drift velocity.
 - via currents ("KLS vias dc"): a column around each via and plated hole, coloured
   by the current through it.
 - the marked supplies and loads ("KLS dc markers ..."): cones pointing at their
@@ -21,6 +22,7 @@ the Vias eye. The panel's check box hides them all. Colours are computed here
 """
 
 import math
+import time
 
 import bpy
 import numpy as np
@@ -28,7 +30,7 @@ import numpy as np
 from . import transform
 from .highlight import hide_copy, show_copy
 from .nodes import _group
-from .objects import owned_object, set_modifier
+from .objects import owned_object, set_modifier, set_visible, write_attribute
 from .placement import outward
 from .state import board
 
@@ -40,7 +42,14 @@ LOG_DECADES = 3.0  # the log |J| scale spans this many decades below the top (Fi
 WEAK_ARROW = 0.02  # no arrows where |J| is below this fraction of the maximum
 MARKER_COLORS = {"supply": (1.0, 0.12, 0.08), "load": (0.1, 0.35, 1.0)}  # sRGB
 ARROW_COLOR = (1.0, 1.0, 1.0)
-ARROW_GROUP = "KLS_DC_Arrows_v1"
+LEGEND_TEXT = (0.92, 0.92, 0.92)  # sRGB
+LEGEND_NOTE = (0.6, 0.6, 0.6)
+FLOW_GROUP = "KLS_DC_Flow_v1"
+FLOW_STEPS = 40  # streamline points after each seed
+FLOW_MIN_POINTS = 4  # shorter streamlines get no particle
+FLOW_POINTS_PER_S = 10.0  # a particle passes this many streamline points a second at speed 1
+FLOW_FADE = 6.0  # particles grow in and fade out over the first and last 1/6 of their way
+FLOW_TICK_S = 1 / 30  # the viewport clock's step
 # Colour maps as sRGB stops, low to high: plasma for current density (no black, which reads
 # as unlit inner copper), viridis for voltage drop.
 CMAPS = {
@@ -52,6 +61,7 @@ CMAPS = {
 _syncing = False  # applying the bridge's setup to the panel's properties: do not echo it back
 _eyes = {}  # the Layers list's eyes before a layer was isolated (isolate), restored for "All"
 _layer_items = []  # Blender needs the enum item strings kept alive
+_clock = {"now": 0.0, "last": 0.0}  # seconds of viewport flow (flow_group's Clock)
 
 
 # --- Frames ---------------------------------------------------------------------------
@@ -269,15 +279,24 @@ def refresh():
                 continue
             wanted.add(_draw_map(result, index, layer))
             if bpy.context.scene.kileido_dc_arrows:
-                name = _draw_arrows(result, index, layer)
+                name = _draw_flow(result, index, layer)
                 if name:
                     wanted.add(name)
         if bpy.context.scene.kileido_dc_vias and len(result["via"]):
             wanted.add(_draw_vias(result))
+        if bpy.context.scene.kileido_dc_legend:
+            wanted |= _draw_legend(result)
     wanted |= refresh_markers()
     for obj in tuple(board.collection.all_objects):
         if obj.get(TAG) and obj.name not in wanted:
-            hide_copy(obj)
+            _hide(obj)
+
+
+def _hide(obj):
+    if obj.type == "MESH":
+        hide_copy(obj)
+    else:  # a legend text: nothing to clear
+        set_visible(obj, False)
 
 
 def recolor():
@@ -290,6 +309,10 @@ def recolor():
         image = bpy.data.images.get(f"KLS DC {layer}")
         if image is not None:
             _paint(image, field_values(result, index), low, high, log)
+    if bpy.context.scene.kileido_dc_legend:
+        stale = {obj.name for obj in board.collection.all_objects if obj.get(TAG) == "legend"} - _draw_legend(result)
+        for name in stale:  # fewer ticks than before
+            _hide(board.collection.all_objects[name])
 
 
 def _surface_z(layer, lift):
@@ -382,13 +405,18 @@ def _draw_map(result, index, layer):
     return name
 
 
-def arrow_group():
-    """Cones along each point's "kls_dir", marching back and forth over `Travel` with
-    the scene time at `Speed` cycles per second (illustrative)."""
-    group, source, sink = _group(ARROW_GROUP, (("Material", "NodeSocketMaterial"),
-                                               ("Size", "NodeSocketFloat", 1e-3),
-                                               ("Travel", "NodeSocketFloat", 1e-3),
-                                               ("Speed", "NodeSocketFloat", 1.0)))
+def flow_group():
+    """Particles along streamlines. The input holds every streamline's points in order;
+    each streamline's first point (`kls_head`) also carries where it starts in that
+    list (`kls_start`), how many points it has (`kls_count`) and a phase. Each head
+    becomes one cone that walks its streamline at `Rate` points per second, the
+    position interpolated between the two points around it, the cone turned along the
+    step; it grows in at the start and fades out at the end, then starts over. Time
+    is the scene time plus `Clock` (the viewport's clock while the timeline stands)."""
+    group, source, sink = _group(FLOW_GROUP, (("Material", "NodeSocketMaterial"),
+                                              ("Size", "NodeSocketFloat", 1e-3),
+                                              ("Rate", "NodeSocketFloat", FLOW_POINTS_PER_S),
+                                              ("Clock", "NodeSocketFloat", 0.0)))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -405,19 +433,46 @@ def arrow_group():
                 links.new(value, node.inputs[slot])
         return node.outputs[0]
 
-    time = nodes.new("GeometryNodeInputSceneTime")
-    cycle = math_node("FRACT", math_node("MULTIPLY", time.outputs["Seconds"], source.outputs["Speed"]))
-    along = math_node("MULTIPLY", math_node("SUBTRACT", cycle, 0.5), source.outputs["Travel"])
-    direction = nodes.new("GeometryNodeInputNamedAttribute")
-    direction.data_type = "FLOAT_VECTOR"
-    direction.inputs["Name"].default_value = "kls_dir"
-    offset = nodes.new("ShaderNodeVectorMath")
-    offset.operation = "SCALE"
-    links.new(direction.outputs["Attribute"], offset.inputs[0])
-    links.new(along, offset.inputs["Scale"])
+    def vector_node(operation, first, second):
+        node = nodes.new("ShaderNodeVectorMath")
+        node.operation = operation
+        links.new(first, node.inputs[0])
+        links.new(second, node.inputs["Scale"] if operation == "SCALE" else node.inputs[1])
+        return node.outputs["Vector"]
+
+    def attribute(name, data_type="FLOAT"):
+        node = nodes.new("GeometryNodeInputNamedAttribute")
+        node.data_type = data_type
+        node.inputs["Name"].default_value = name
+        return node.outputs["Attribute"]
+
+    def sample(index):
+        node = nodes.new("GeometryNodeSampleIndex")
+        node.data_type, node.domain = "FLOAT_VECTOR", "POINT"
+        links.new(source.outputs["Geometry"], node.inputs["Geometry"])
+        links.new(nodes.new("GeometryNodeInputPosition").outputs["Position"], node.inputs["Value"])
+        links.new(index, node.inputs["Index"])
+        return node.outputs["Value"]
+
+    heads = nodes.new("GeometryNodeSeparateGeometry")
+    heads.domain = "POINT"
+    links.new(source.outputs["Geometry"], heads.inputs["Geometry"])
+    links.new(attribute("kls_head", "BOOLEAN"), heads.inputs["Selection"])
+    count, start = attribute("kls_count"), attribute("kls_start")
+    time = math_node("ADD", nodes.new("GeometryNodeInputSceneTime").outputs["Seconds"], source.outputs["Clock"])
+    progress = math_node("FRACT", math_node("ADD", math_node("DIVIDE", math_node(
+        "MULTIPLY", time, source.outputs["Rate"]), count), attribute("kls_phase")))
+    along = math_node("MULTIPLY", progress, math_node("SUBTRACT", count, 1.0))
+    first = math_node("FLOOR", along)
+    second = math_node("MINIMUM", math_node("ADD", first, 1.0), math_node("SUBTRACT", count, 1.0))
+    here = sample(math_node("ADD", start, first))
+    step = vector_node("SUBTRACT", sample(math_node("ADD", start, second)), here)
+    position = vector_node("ADD", here, vector_node("SCALE", step, math_node("SUBTRACT", along, first)))
+    fade = math_node("MINIMUM", math_node("MULTIPLY", math_node("MINIMUM", progress, math_node(
+        "SUBTRACT", 1.0, progress)), FLOW_FADE), 1.0)
     moved = nodes.new("GeometryNodeSetPosition")
-    links.new(source.outputs["Geometry"], moved.inputs["Geometry"])
-    links.new(offset.outputs["Vector"], moved.inputs["Offset"])
+    links.new(heads.outputs["Selection"], moved.inputs["Geometry"])
+    links.new(position, moved.inputs["Position"])
     cone = nodes.new("GeometryNodeMeshCone")
     cone.inputs["Vertices"].default_value = 10
     cone.inputs["Radius Top"].default_value = 0.0
@@ -425,12 +480,12 @@ def arrow_group():
     cone.inputs["Depth"].default_value = 1.0
     align = nodes.new("FunctionNodeAlignRotationToVector")
     align.axis = "Z"
-    links.new(direction.outputs["Attribute"], align.inputs["Vector"])
+    links.new(step, align.inputs["Vector"])
     instances = nodes.new("GeometryNodeInstanceOnPoints")
     links.new(moved.outputs["Geometry"], instances.inputs["Points"])
     links.new(cone.outputs["Mesh"], instances.inputs["Instance"])
     links.new(align.outputs["Rotation"], instances.inputs["Rotation"])
-    links.new(source.outputs["Size"], instances.inputs["Scale"])
+    links.new(math_node("MULTIPLY", source.outputs["Size"], fade), instances.inputs["Scale"])
     realized = nodes.new("GeometryNodeRealizeInstances")
     links.new(instances.outputs["Instances"], realized.inputs["Geometry"])
     painted = nodes.new("GeometryNodeSetMaterial")
@@ -467,24 +522,73 @@ def _color_material():
     return material
 
 
-def arrow_points(result, index):
-    """(KiCad nm positions, unit directions in Blender's XY) of one layer's arrows:
-    every `kileido_dc_arrow_mm` on the grid, where the current is not weak."""
+def flow_paths(result, index, spacing_nm):
+    """Streamlines of one layer's current, as (n, 2) arrays of KiCad nm.
+
+    Seeds lie every `spacing_nm` (a staggered, slightly jittered lattice) on copper
+    where the current is not weak; each is traced FLOW_STEPS steps along J (bilinear
+    field, midpoint rule) until it leaves the copper or the current fades. The
+    steps are equal in time, at a speed of sqrt(|J| / top) clipped to 0.1 .. 1, so a
+    particle walking the points at a steady rate runs faster where the current is
+    denser (illustrative, not the electrons' drift velocity)."""
     grid = result["grid"]
     pitch = float(grid["pitch_nm"])
-    j, jx, jy = (np.asarray(result[key][index], np.float64) for key in ("j", "jx", "jy"))
-    step = max(1, round(bpy.context.scene.kileido_dc_arrow_mm * 1e6 / pitch))
-    rows = np.arange(step // 2, j.shape[0], step)
-    columns = np.arange(step // 2, j.shape[1], step)
-    r, c = np.meshgrid(rows, columns, indexing="ij")
-    r, c = r.ravel(), c.ravel()
-    value, x, y = j[r, c], jx[r, c], jy[r, c]
-    norm = np.hypot(x, y)
-    keep = np.isfinite(value) & np.isfinite(norm) & (norm > 0) & (value >= WEAK_ARROW * float(result["j_max"]))
-    r, c, x, y, norm = r[keep], c[keep], x[keep], y[keep], norm[keep]
-    positions = np.column_stack([grid["x0_nm"] + (c + 0.5) * pitch, grid["y0_nm"] + (r + 0.5) * pitch])
-    directions = np.column_stack([x / norm, -y / norm, np.zeros(len(x))])  # KiCad y points down
-    return positions, directions, step * pitch * 1e-9
+    fields = [np.asarray(result[key][index], np.float64) for key in ("j", "jx", "jy")]
+    copper = np.isfinite(fields[0])
+    j, jx, jy = (np.nan_to_num(values) for values in fields)
+    rows, columns = j.shape
+    top = max(float(result["j_max"]), 1e-12)
+    spacing = max(1.0, spacing_nm / pitch)  # in cells
+    random = np.random.default_rng(1)
+    seeds = []
+    for number, row in enumerate(np.arange(spacing / 2, rows, spacing)):
+        for column in np.arange(spacing / 2 + (number % 2) * spacing / 2, columns, spacing):
+            seeds.append((column, row))
+    if not seeds:
+        return []
+    position = np.asarray(seeds) + random.uniform(-0.35, 0.35, (len(seeds), 2)) * spacing
+
+    def velocity(points):
+        """Speed-scaled direction and whether the point is on copper with current."""
+        x, y = points[:, 0] - 0.5, points[:, 1] - 0.5  # cell centres at integer + 0.5
+        x0 = np.clip(np.floor(x).astype(np.int64), 0, columns - 2)
+        y0 = np.clip(np.floor(y).astype(np.int64), 0, rows - 2)
+        fx, fy = np.clip(x - x0, 0, 1), np.clip(y - y0, 0, 1)
+        total, weight = np.zeros((len(points), 3)), np.zeros(len(points))
+        for dy, dx, w in ((0, 0, (1 - fx) * (1 - fy)), (0, 1, fx * (1 - fy)), (1, 0, (1 - fx) * fy),
+                          (1, 1, fx * fy)):
+            on = copper[y0 + dy, x0 + dx]
+            w = w * on
+            total += w[:, None] * np.column_stack([j[y0 + dy, x0 + dx], jx[y0 + dy, x0 + dx], jy[y0 + dy, x0 + dx]])
+            weight += w
+        near = copper[np.clip(np.round(y).astype(np.int64), 0, rows - 1), np.clip(np.round(x).astype(np.int64),
+                                                                                  0, columns - 1)]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            magnitude, vx, vy = (total / weight[:, None]).T
+            norm = np.hypot(vx, vy)
+            speed = np.clip(np.sqrt(np.maximum(magnitude, 0) / top), 0.1, 1.0)
+            direction = np.column_stack([vx, vy]) / norm[:, None]
+        alive = near & (weight > 0) & (norm > 0) & (magnitude >= WEAK_ARROW * top)
+        return np.nan_to_num(direction * speed[:, None]), alive  # no current: no step
+
+    _, alive = velocity(position)
+    position = position[alive]
+    step = spacing / 5  # cells per time step at full speed
+    path = np.empty((len(position), FLOW_STEPS + 1, 2))
+    path[:, 0] = position
+    count = np.ones(len(position), np.int64)
+    alive = np.ones(len(position), bool)
+    for number in range(FLOW_STEPS):
+        first, ok_first = velocity(position)
+        middle, ok_middle = velocity(position + 0.5 * step * first)
+        moved = position + step * middle
+        _, ok_moved = velocity(moved)
+        alive &= ok_first & ok_middle & ok_moved
+        position = np.where(alive[:, None], moved, position)
+        path[:, number + 1] = position
+        count += alive
+    origin = np.array([grid["x0_nm"], grid["y0_nm"]])
+    return [origin + path[n, :count[n]] * pitch for n in range(len(path)) if count[n] >= FLOW_MIN_POINTS]
 
 
 def _write(mesh, name, data_type, key, values):
@@ -493,39 +597,102 @@ def _write(mesh, name, data_type, key, values):
     attribute.data.foreach_set(key, np.ascontiguousarray(values, np.float32).ravel())
 
 
-def _draw_arrows(result, index, layer):
-    positions, directions, spacing = arrow_points(result, index)
+def _draw_flow(result, index, layer):
+    spacing = bpy.context.scene.kileido_dc_arrow_mm * 1e6
+    paths = flow_paths(result, index, spacing)
     name = f"KLS {layer} dc arrows"
-    if not len(positions):
+    if not paths:
         return None
+    counts = np.array([len(path) for path in paths])
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    points = np.concatenate(paths)
     obj = owned_object(name)
     obj[TAG] = layer
     mesh = obj.data
     mesh.clear_geometry()
-    mesh.vertices.add(len(positions))
-    coordinates = np.zeros((len(positions), 3), np.float32)
-    coordinates[:, :2] = transform.xy_m(positions, board.origin_nm)
-    size = 0.7 * spacing
+    mesh.vertices.add(len(points))
+    coordinates = np.zeros((len(points), 3), np.float32)
+    coordinates[:, :2] = transform.xy_m(points, board.origin_nm)
+    size = 0.7 * spacing * 1e-9
     coordinates[:, 2] = outward(layer) * 0.3 * size  # cones lie on the map
     mesh.vertices.foreach_set("co", coordinates.ravel())
-    _write(mesh, "kls_dir", "FLOAT_VECTOR", "vector", directions)
+    head = np.zeros(len(points), bool)
+    head[starts] = True
+    write_attribute(mesh, "kls_head", "BOOLEAN", head)
+    write_attribute(mesh, "kls_start", "FLOAT", np.repeat(starts, counts).astype(np.float32))
+    write_attribute(mesh, "kls_count", "FLOAT", np.repeat(counts, counts).astype(np.float32))
+    phase = np.random.default_rng(2).uniform(0, 1, len(paths))
+    write_attribute(mesh, "kls_phase", "FLOAT", np.repeat(phase, counts).astype(np.float32))
     mesh.update()
     obj.location.z = _surface_z(layer, ARROW_LIFT_M)
-    set_modifier(obj, arrow_group(), _flat_material("KLS DC arrows", ARROW_COLOR),
-                 {"Size": size, "Travel": spacing * 0.5, "Speed": float(bpy.context.scene.kileido_dc_flow_speed)})
+    set_modifier(obj, flow_group(), _flat_material("KLS DC arrows", ARROW_COLOR),
+                 {"Size": size, "Rate": flow_rate(), "Clock": _clock["now"]})
     show_copy(obj)
+    start_flow()
     return name
 
 
-def set_flow_speed():
+def flow_rate():
+    return FLOW_POINTS_PER_S * float(bpy.context.scene.kileido_dc_flow_speed)
+
+
+def _flow_objects():
     if board.collection is None:
-        return
+        return []
+    return [obj for obj in board.collection.all_objects
+            if obj.get(TAG) and obj.name.endswith(" dc arrows") and obj.modifiers and not obj.hide_get()]
+
+
+def set_flow_speed():
     from .nodes import modifier_input
-    for obj in tuple(board.collection.all_objects):
-        if obj.get(TAG) and obj.name.endswith(" dc arrows") and obj.modifiers:
+    for obj in _flow_objects():
+        modifier = obj.modifiers[0]
+        modifier_input(modifier, modifier.node_group, "Rate", flow_rate())
+        obj.update_tag()
+
+
+def start_flow():
+    """Keep the particles moving in the viewport (a timer advances `Clock`)."""
+    if bpy.app.background or bpy.app.timers.is_registered(_flow_tick):
+        return
+    _clock["last"] = time.monotonic()
+    bpy.app.timers.register(_flow_tick, first_interval=FLOW_TICK_S)
+
+
+def stop_flow():
+    if bpy.app.timers.is_registered(_flow_tick):
+        bpy.app.timers.unregister(_flow_tick)
+
+
+def _cycles_viewport():
+    from .objects import view3d_spaces
+    return any(space.shading.type == "RENDERED" for space in view3d_spaces())
+
+
+def _flow_tick():
+    """While the timeline stands still, advance the particles' clock: the flow runs
+    in the viewport. Paused in a Cycles viewport (each step would restart its
+    samples) and while the timeline plays (the scene time moves them then)."""
+    try:
+        objects = _flow_objects()
+        if not objects:
+            return None  # no arrows: start_flow starts again with the next ones
+        now = time.monotonic()
+        elapsed, _clock["last"] = now - _clock["last"], now
+        scene = bpy.context.scene
+        screen = bpy.context.screen
+        if (not scene.kileido_dc_flow or _cycles_viewport() or
+                (screen is not None and screen.is_animation_playing)):
+            return FLOW_TICK_S
+        _clock["now"] += min(elapsed, 0.2)
+        from .nodes import modifier_input
+        for obj in objects:
             modifier = obj.modifiers[0]
-            modifier_input(modifier, modifier.node_group, "Speed", float(bpy.context.scene.kileido_dc_flow_speed))
+            modifier_input(modifier, modifier.node_group, "Clock", _clock["now"])
             obj.update_tag()
+    except ReferenceError:  # the board's data went away (a file load)
+        return None
+    return FLOW_TICK_S
 
 
 def via_range(result):
@@ -663,7 +830,123 @@ def hide_all():
         return
     for obj in tuple(board.collection.all_objects):
         if obj.get(TAG):
-            hide_copy(obj)
+            _hide(obj)
+
+
+# --- The legend beside the board ------------------------------------------------------
+
+def legend_ticks(low, high, log):
+    """(position 0..1 up the bar, label) of the tick values: both ends of the range,
+    and between them every decade on a log scale, round steps on a linear one."""
+    if log:
+        values = [10.0 ** k for k in range(math.floor(math.log10(low)), math.ceil(math.log10(high)) + 1)]
+        position = lambda value: math.log(value / low) / math.log(high / low)  # noqa: E731
+    else:
+        raw = (high - low) / 4
+        step = 10 ** math.floor(math.log10(raw))
+        step *= next(factor for factor in (1, 2, 5, 10) if factor * step >= raw)
+        values = [step * k for k in range(math.ceil(low / step), math.floor(high / step) + 1)]
+        position = lambda value: (value - low) / (high - low)  # noqa: E731
+    ticks = [(position(value), f"{value:g}") for value in values if 0.07 <= position(value) <= 0.93]
+    return [(0.0, _format(low))] + ticks + [(1.0, _format(high))]
+
+
+def legend_lines(result):
+    """(title, unit line, footer lines) of the legend card."""
+    low, high, log = value_range(result)
+    if field() == "CURRENT":
+        title, scale = "Current density |J|", "A/mm², log scale" if log else "A/mm²"
+    else:
+        title, scale = "Voltage drop", f"mV below {float(result['v_ref']):.3g} V"
+    draw = sum(load["i_a"] for load in result["loads"])
+    footer = [f"DC, steady current: {result['net']}, {_si(draw, 'A')}"]
+    if len(result["via"]) and bpy.context.scene.kileido_dc_vias:
+        footer.append(f"Vias: 0 to {_si(via_range(result)[1], 'A')} (same colours)")
+    if bpy.context.scene.kileido_dc_arrows:
+        footer.append("Arrows: current direction")
+    return title, scale, footer
+
+
+def _legend_image(name, log):
+    image = bpy.data.images.get("KLS DC legend")
+    if image is None:
+        image = bpy.data.images.new("KLS DC legend", 1, 256, alpha=True, float_buffer=True)
+    pixels = np.ones((256, 1, 4), np.float32)
+    pixels[:, 0, :3] = _linear(_lut(name))
+    image.pixels.foreach_set(pixels.ravel())
+    image.update()
+    return image
+
+
+def _text(name, body, x, y, z, size, color=LEGEND_TEXT):
+    """A flat text object (the board collection's), left-aligned, centred on y."""
+    obj = board.collection.all_objects.get(name)
+    if obj is None:
+        from .objects import link_owned
+        obj = bpy.data.objects.new(name, bpy.data.curves.new(name, "FONT"))
+        obj["kileido_owned"] = 1
+        link_owned(obj)
+    obj[TAG] = "legend"
+    curve = obj.data
+    curve.body, curve.size = body, size
+    curve.align_x, curve.align_y = "LEFT", "CENTER"
+    material = _flat_material("KLS DC legend text", color)
+    if curve.materials:
+        curve.materials[0] = material
+    else:
+        curve.materials.append(material)
+    obj.location = (x, y, z)
+    show_copy(obj)
+    return name
+
+
+def _draw_legend(result):
+    """The colour bar with its values, right of the board outline, on its top face."""
+    from .objects import outline_bounds
+    bounds = outline_bounds()
+    if bounds is None:
+        return set()
+    left, bottom, right, top = bounds
+    extent = max(right - left, top - bottom)
+    width, height = 0.035 * extent, 0.55 * (top - bottom)
+    x0, y0 = right + 0.06 * extent, (bottom + top) / 2 - height / 2
+    z = board.heights.get("F.Cu", board.thickness_m) + LIFT_M
+    text = 0.026 * extent
+    low, high, log = value_range(result)
+    name = "KLS dc legend"
+    obj = owned_object(name)
+    obj[TAG] = "legend"
+    mesh = obj.data
+    mesh.clear_geometry()
+    mesh.vertices.add(4)
+    mesh.vertices.foreach_set("co", np.array([(x0, y0, 0), (x0 + width, y0, 0), (x0 + width, y0 + height, 0),
+                                              (x0, y0 + height, 0)], np.float32).ravel())
+    mesh.loops.add(4)
+    mesh.loops.foreach_set("vertex_index", np.arange(4, dtype=np.int32))
+    mesh.polygons.add(1)
+    mesh.polygons.foreach_set("loop_start", np.zeros(1, np.int32))
+    mesh.polygons.foreach_set("loop_total", np.full(1, 4, np.int32))
+    uv = mesh.uv_layers.new(name="UVMap") if not mesh.uv_layers else mesh.uv_layers[0]
+    uv.data.foreach_set("uv", np.array([(0, 0), (1, 0), (1, 1), (0, 1)], np.float32).ravel())
+    mesh.update()
+    material = _map_material("legend", _legend_image(field(), log))
+    material.node_tree.nodes["KLS map"].interpolation = "Linear"
+    if mesh.materials:
+        mesh.materials[0] = material
+    else:
+        mesh.materials.append(material)
+    obj.location.z = z
+    show_copy(obj)
+    names = {name}
+    title, scale, footer = legend_lines(result)
+    names.add(_text("KLS dc legend title", title, x0, y0 + height + 2.6 * text, z, 1.2 * text))
+    names.add(_text("KLS dc legend unit", scale, x0, y0 + height + 1.2 * text, z, text))
+    for number, (position, label) in enumerate(legend_ticks(low, high, log)):
+        names.add(_text(f"KLS dc legend tick {number}", f"– {label}", x0 + width, y0 + position * height, z, text))
+    for number, line in enumerate(footer):
+        names.add(_text(f"KLS dc legend note {number}", line, x0, y0 - (1.4 + 1.3 * number) * text, z,
+                        0.8 * text, LEGEND_NOTE))
+    return names
 
 
 # --- Panel text -----------------------------------------------------------------------

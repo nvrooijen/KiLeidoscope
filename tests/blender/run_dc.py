@@ -163,10 +163,21 @@ def main():
         legend = dc.legend()
         assert len(legend) == 5 and float(legend[0][1]) == float(f"{result['j_max']:.3g}")
         assert float(legend[-1][1]) == float(f"{result['j_max'] / 1000:.2e}")
+        # The legend: a colour bar right of the board with the decades of |J| and the top value.
+        bar = objects()["KLS dc legend"]
+        from kileido.objects import outline_bounds
+        assert min(v.co.x for v in bar.data.vertices) > outline_bounds()[2] and not bar.hide_get()
+        texts = {obj.data.body for obj in objects() if obj.type == "FONT" and not obj.hide_get()}
+        assert {"Current density |J|", "A/mm², log scale", "– 0.01", "– 0.1", "– 1"} <= texts, texts
+        assert f"– {dc._format(result['j_max'])}" in texts and "Arrows: current direction" in texts
+        assert any(text.startswith("DC, steady current: +3V3, 5 A") for text in texts)
         before = pixels.copy()
         scene.kileido_dc_field = "DROP"
         image.pixels.foreach_get(pixels.ravel())
         assert not np.array_equal(pixels, before) and dc.unit() == "mV"
+        texts = {obj.data.body for obj in objects() if obj.type == "FONT" and not obj.hide_get()}
+        assert {"Voltage drop", "mV below 3.3 V", "– 5", "– 10", "– 15", f"– {dc._format(dc.value_range()[1])}",
+                f"– {dc._format(dc.value_range()[0])}"} <= texts, texts
         assert dc.legend()[-1][1] == "0" or float(dc.legend()[-1][1]) >= 0
         scene.kileido_dc_auto_range = False
         low, high, _ = dc.value_range()
@@ -174,22 +185,33 @@ def main():
         scene.kileido_dc_field = "CURRENT"
         assert scene.kileido_dc_auto_range  # a range in mV means nothing for A/mm2
 
-        # Arrows along the current: F.Cu flows from J1 (left) toward the vias, +x in Blender.
+        # Particles along streamlines of the current: on F.Cu from J1 (left) toward the vias.
+        shown = state.board.dc["result"]
+        paths = dc.flow_paths(shown, 0, scene.kileido_dc_arrow_mm * 1e6)
+        assert len(paths) > 50 and all(len(path) >= dc.FLOW_MIN_POINTS for path in paths)
+        assert np.median([path[-1][0] - path[0][0] for path in paths]) > 1 * MM
         arrows = objects()["KLS F.Cu dc arrows"]
-        directions = np.empty(len(arrows.data.vertices) * 3, np.float32)
-        arrows.data.attributes["kls_dir"].data.foreach_get("vector", directions)
-        directions = directions.reshape(-1, 3)
-        assert len(directions) > 50 and np.median(directions[:, 0]) > 0.5
-        assert arrows.modifiers[0].node_group.name == dc.ARROW_GROUP
+        assert arrows.modifiers[0].node_group.name == dc.FLOW_GROUP
+        heads = np.zeros(len(arrows.data.vertices), bool)
+        arrows.data.attributes["kls_head"].data.foreach_get("value", heads)
+        assert heads.sum() == len(paths)
+        from kileido.nodes import modifier_input
+
+        def particles(clock):
+            modifier = arrows.modifiers[0]
+            modifier_input(modifier, modifier.node_group, "Clock", clock)
+            arrows.update_tag()
+            return evaluated(arrows)
+
         scene.frame_set(1)
-        first, faces = evaluated(arrows)
-        assert faces > 0 and np.isfinite(first).all()
-        scene.frame_set(7)
-        later, _ = evaluated(arrows)
-        assert not np.allclose(first, later)  # they march with the scene time
-        assert first[:, 2].min() > heights["F.Cu"]
+        first, faces = particles(0.0)
+        assert faces > 0 and np.isfinite(first).all() and first[:, 2].min() > heights["F.Cu"]
+        later, _ = particles(0.3)  # the viewport clock moves them without the timeline
+        assert len(later) == len(first) and np.mean(later[:, 0] - first[:, 0]) > 0  # downstream, +x
+        scene.frame_set(9)
+        assert not np.allclose(particles(0.3)[0], later)  # and so does the timeline
         scene.kileido_dc_arrow_mm = 4.0
-        assert len(objects()["KLS F.Cu dc arrows"].data.vertices) < len(directions)
+        assert len(dc.flow_paths(shown, 0, 4e6)) < len(paths)
 
         # Via currents: one column per via, the four sharing the 5 A.
         vias = objects()["KLS vias dc"]
@@ -240,6 +262,7 @@ def main():
         # The panel's check box hides everything; a resync snapshot keeps the result.
         scene.kileido_dc = False
         assert front.hide_get() and vias.hide_get() and supply.hide_get()
+        assert objects()["KLS dc legend title"].hide_get()
         scene.kileido_dc = True
         assert not front.hide_get() and not supply.hide_get()
         apply.load_frames(b"".join(protocol.snapshot_frames(snapshot, revision=2)))

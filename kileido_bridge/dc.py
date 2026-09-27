@@ -235,6 +235,93 @@ def describe_part(part) -> str:
     return str(part)
 
 
+AUTO_LOAD_A = 0.1  # what auto-detected loads draw until the user types their currents
+REGULATOR_PADS = 16  # an IC this small with another power net on it: a regulator (13 with its pad and vias)
+_VOLTS = re.compile(r"\+?\d+(\.\d+)?V\d*|V\d+(V\d*)?")  # 3V3, +5V, 1.8V, V12
+_RAILS = ("VCC", "VDD", "VBAT", "VBUS")  # anywhere in a word: AVDD, VDDIO, U3RXVDDQ
+_RAIL_STARTS = ("VIN", "VOUT", "VSYS", "VCORE", "VREG", "VPP", "VEE")
+_GROUNDS = {"GND", "AGND", "DGND", "PGND", "SGND", "GNDA", "GNDD", "VSS", "VSSA", "0V"}
+_SIGNALS = {"GOOD", "PG", "PGOOD", "EN", "ENABLE", "FB", "SENSE", "SNS", "SW", "NR", "SS", "RESET", "CLK"}
+
+
+def is_power(net: str) -> bool:
+    """A supply rail's net by its name: a voltage (3V3, +5V), VCC, VDD, VBUS, ...
+    word; not ground, not a signal about power (PWR_GOOD_1V2, EN_3V3), not one of
+    KiCad's unnamed nets."""
+    if not net or net.startswith("Net-("):
+        return False
+    name = net.rsplit("/", 1)[-1]  # a hierarchical sheet path may say GND
+    words = [word for word in re.split(r"[^A-Z0-9.+]+", name.upper()) if word]
+    if not words or any(word in _GROUNDS or word in _SIGNALS for word in words):
+        return False
+    return name.startswith("+") or any(
+        _VOLTS.fullmatch(word) or any(rail in word for rail in _RAILS) or word.startswith(_RAIL_STARTS)
+        for word in words)
+
+
+def _prefix(reference: str) -> str:
+    return re.match(r"[A-Za-z]*", reference)[0].upper()
+
+
+def auto_terminals(snapshot: model.BoardSnapshot, net: str) -> tuple[list, str]:
+    """Supplies and loads guessed from the components on `net`, and what was done.
+
+    The supply, best first: a switcher's output inductor (one pad on the net, the
+    other on a switch node), a small IC that also touches another power net (a
+    regulator), a ferrite, inductor or resistor from another power net, a
+    connector. The loads: every other IC on the net (all its pads on the net one
+    conductor) and every other ferrite, inductor or resistor to another power net
+    (it feeds that rail), each drawing AUTO_LOAD_A until the user types its
+    current. Capacitors and the rest are left out: at DC a capacitor carries no
+    current, and pull-ups and dividers draw next to nothing."""
+    references = {footprint.id: footprint.reference for footprint in snapshot.footprints}
+    pads_of: dict = {}
+    for pad in snapshot.pads:
+        pads_of.setdefault(pad.footprint_id, []).append(pad)
+    found = []  # (score, reference, pads on the net, regulator-like, feeds another rail)
+    for footprint_id, pads in pads_of.items():
+        reference = references.get(footprint_id, "")
+        mine = [pad for pad in pads if pad.net == net]
+        if not reference or not mine:
+            continue
+        prefix = _prefix(reference)
+        other_power = any(is_power(pad.net) for pad in pads if pad.net and pad.net != net)
+        regulator = prefix in ("U", "IC", "VR", "PS") and len(pads) <= REGULATOR_PADS and other_power
+        series = prefix in ("L", "FB", "R") and len(pads) == 2 and len(mine) == 1 and other_power
+        if prefix == "L" and len(pads) == 2 and len(mine) == 1 and not other_power:
+            score = 10
+        elif regulator:
+            score = 8
+        elif series:
+            score = 5 if prefix != "R" else 4
+        elif prefix in ("J", "P", "CN", "CON", "X"):
+            score = 3
+        else:
+            score = 0
+        found.append((score, reference, mine, regulator, series))
+    supplies = [entry for entry in found if entry[0] > 0]
+    if not supplies:
+        raise SetupError(f"No inductor, regulator or connector on {net} to feed it: mark the supply by hand")
+    _, source, mine, _, _ = max(supplies, key=lambda entry: (entry[0], -len(entry[2])))
+    terminals = [DcTerminal(source, "supply", [source if len(mine) > 1 else f"{source}.{mine[0].number}"],
+                            guess_voltage(net))]
+    skipped = []
+    for _, reference, mine, regulator, series in sorted(found, key=lambda entry: entry[1]):
+        if reference == source or not (series or _prefix(reference) in ("U", "IC")):
+            continue
+        if regulator:
+            skipped.append(reference)  # a regulator's feedback or sense pin, not a load
+            continue
+        terminals.append(DcTerminal(reference, "load", [reference], AUTO_LOAD_A, bonded=len(mine) > 1))
+    loads = len(terminals) - 1
+    message = (f"Supply {source}; {loads} load{'s' * (loads != 1)} at {AUTO_LOAD_A:g} A"
+               f"{' each' * (loads > 1)} (ICs and parts feeding other rails): type the real currents. "
+               "Capacitors draw no DC current")
+    if skipped:
+        message += f"; left out {', '.join(skipped)} (regulator)"
+    return terminals, message
+
+
 def guess_voltage(net: str) -> float:
     """A supply's first value from its net name: +3V3 -> 3.3, 1V8 -> 1.8, +5V -> 5, VCC_12V -> 12."""
     match = re.search(r"(\d+)V(\d+)", net, re.IGNORECASE) or re.search(r"(\d+(?:\.\d+)?)V", net, re.IGNORECASE)
@@ -596,6 +683,14 @@ class DcAnalysis:
             value = guess_voltage(setup.net) if role == "supply" else DEFAULT_LOAD_A
             terminals.append(DcTerminal(name, role, [], value))
             self.active = len(terminals) - 1
+        elif op == "auto":
+            if not setup.net:
+                raise SetupError("Choose the power net first")
+            if snapshot is None:
+                raise SetupError("No board yet")
+            setup.terminals, message = auto_terminals(snapshot, setup.net)
+            self.active = 0
+            self.message = message
         elif op == "remove":
             del terminals[int(request["index"])]
             self.active = min(self.active, len(terminals) - 1)

@@ -659,6 +659,8 @@ class KILEIDO_OT_dc(bpy.types.Operator):
         return {"add": f"Add a {properties.role}: then click its pads or vias in the view",
                 "remove": "Remove the chosen supply or load",
                 "net_selection": "Analyse the net selected in KiCad",
+                "auto": "Replace the supplies and loads with a guess from the parts on the net: an inductor, "
+                        "regulator or connector as supply, every other IC as a load (type their currents)",
                 "solve": "Solve again now, without waiting for edits to settle"}.get(properties.op, cls.bl_description)
 
     @classmethod
@@ -701,16 +703,6 @@ class KILEIDO_OT_dc_via(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class KILEIDO_OT_dc_flow(bpy.types.Operator):
-    """Play or stop the timeline, so the current arrows move (their speed is illustrative)"""
-    bl_idname = "kileido.dc_flow"
-    bl_label = "Play flow"
-
-    def execute(self, context):
-        bpy.ops.screen.animation_play()
-        return {"FINISHED"}
-
-
 class KILEIDO_PT_dc(bpy.types.Panel):
     """DC analysis of one power net: supplies and loads marked in the view, the
     solve in the bridge (Fill Resistance's solver), results on the copper."""
@@ -742,6 +734,7 @@ class KILEIDO_PT_dc(bpy.types.Panel):
             button = row.operator(KILEIDO_OT_dc.bl_idname, text=label, icon="ADD")
             button.op, button.role = "add", role
         row.operator(KILEIDO_OT_dc.bl_idname, text="", icon="REMOVE").op = "remove"
+        layout.operator(KILEIDO_OT_dc.bl_idname, text="Auto-detect supply and loads", icon="AUTO").op = "auto"
         items = scene.kileido_dc_terminals
         if 0 <= scene.kileido_dc_active < len(items):
             chosen = items[scene.kileido_dc_active]
@@ -791,6 +784,7 @@ class KILEIDO_PT_dc_display(bpy.types.Panel):
         if scene.kileido_dc_field == "CURRENT":
             row.prop(scene, "kileido_dc_log", text="Log scale")
         row.prop(scene, "kileido_dc_auto_range", text="Auto range")
+        row.prop(scene, "kileido_dc_legend", text="Legend")
         if not scene.kileido_dc_auto_range:
             row = layout.row(align=True)
             row.prop(scene, "kileido_dc_min", text="Min")
@@ -809,13 +803,14 @@ class KILEIDO_PT_dc_display(bpy.types.Panel):
         spacing.prop(scene, "kileido_dc_arrow_mm", text="Every")
         row = layout.row(align=True)
         row.active = scene.kileido_dc_arrows
-        row.operator(KILEIDO_OT_dc_flow.bl_idname, text="Stop" if context.screen and context.screen.is_animation_playing
-                     else "Play flow", icon="PAUSE" if context.screen and context.screen.is_animation_playing
-                     else "PLAY")
-        row.prop(scene, "kileido_dc_flow_speed", text="Speed")
-        note = layout.row()
+        row.prop(scene, "kileido_dc_flow", text="Flow", icon="PLAY" if not scene.kileido_dc_flow else "PAUSE")
+        speed = row.row(align=True)
+        speed.active = scene.kileido_dc_flow
+        speed.prop(scene, "kileido_dc_flow_speed", text="Speed")
+        note = layout.column(align=True)
         note.active = False
         note.label(text="Arrow speed is illustrative, not the electron drift")
+        note.label(text="Faster where the current is denser")
         result = board.dc.get("result")
         layout.prop(scene, "kileido_dc_vias", text="Via currents")
         if result and len(result["via"]) and scene.kileido_dc_vias:
@@ -934,7 +929,7 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_PG_dc_terminal, KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board,
            KILEIDO_OT_view_only_board, KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board,
            KILEIDO_OT_resync, KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers,
-           KILEIDO_OT_return_path_issue, KILEIDO_OT_dc, KILEIDO_OT_dc_via, KILEIDO_OT_dc_flow, KILEIDO_UL_dc_terminals,
+           KILEIDO_OT_return_path_issue, KILEIDO_OT_dc, KILEIDO_OT_dc_via, KILEIDO_UL_dc_terminals,
            KILEIDO_PT_panel, KILEIDO_PT_boards, KILEIDO_PT_return_path, KILEIDO_PT_dc, KILEIDO_PT_dc_display,
            KILEIDO_PT_dc_settings, KILEIDO_PT_status)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
@@ -1084,15 +1079,24 @@ def _scene_properties():
                                         update=_dc_manual_range),
         "kileido_dc_max": FloatProperty(name="Max", default=1.0, min=0.0, precision=3,
                                         update=_dc_manual_range),
+        "kileido_dc_legend": BoolProperty(
+            name="Legend", default=True,
+            description="A colour bar with its values beside the board (in renders too)",
+            update=lambda self, context: dc.refresh()),
         "kileido_dc_arrows": BoolProperty(
             name="Arrows", default=True, description="Arrows along the current, where it is not weak",
             update=lambda self, context: dc.refresh()),
         "kileido_dc_arrow_mm": FloatProperty(
             name="Arrow spacing", default=1.0, min=0.2, max=20.0, step=10, precision=1, unit="NONE",
             description="Distance between arrows in mm", update=lambda self, context: dc.refresh()),
+        "kileido_dc_flow": BoolProperty(
+            name="Flow", default=True,
+            description="Move the arrows along the current in the viewport (in a Cycles viewport, play the "
+                        "timeline instead; rendered animations follow the timeline)",
+            update=lambda self, context: dc.start_flow()),
         "kileido_dc_flow_speed": FloatProperty(
             name="Flow speed", default=1.0, min=0.0, max=10.0, step=10, precision=1,
-            description="How fast the arrows march while the timeline plays (illustrative)",
+            description="How fast the arrows move along the current (illustrative)",
             update=lambda self, context: dc.set_flow_speed()),
         "kileido_dc_vias": BoolProperty(
             name="Via currents", default=True, description="Colour each via and plated hole by its current",
@@ -1168,6 +1172,7 @@ def unregister():
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
     live.disconnect()
+    dc.stop_flow()
     models.stop_following()
     cosmetics.stop_following()
     render_depth.uninstall()

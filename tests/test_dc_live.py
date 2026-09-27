@@ -313,3 +313,51 @@ def test_viewer_edits_reach_the_bridge_and_results_come_back(tmp_path):
     finally:
         client.close()
         runtime.close()
+
+
+# --- Guessing the supply and the loads ----------------------------------------------------
+
+def test_power_nets_by_name():
+    for net in ("+3V3", "BUCK_1V2", "/MIPI SENSOR/VDD_IO_1V8_CAM", "VBUS", "/PRR & GND/AVDD", "1.8V", "VIN_12V"):
+        assert dc.is_power(net), net
+    for net in ("GND", "/power/AGND", "PWR_GOOD_1V2", "EN_3V3", "Net-(U6-{slash}HOLDor{slash}RESET(IO3))",
+                "Net-(U2-SW)", "SPI_MISO", ""):
+        assert not dc.is_power(net), net
+
+
+def auto_board():
+    """A buck converter: U1 (switch node SW, input VIN_5V) into L1, whose other pad
+    is +3V3; on +3V3 the MCU U2, a ferrite FB1 into +3V3A, output caps C1 and C2, a
+    pull-up R1, and the buck's feedback pin on U1."""
+    def pads(reference, *nets):
+        return [dc_board.smd_pad(f"{reference}-{n}", f"fp-{reference}", str(n + 1), "F.Cu", n * MM, 0,
+                                 n * MM + 500_000, 500_000, net=net) for n, net in enumerate(nets)]
+    parts = (pads("U1", "VIN_5V", "SW", "GND", "+3V3", "PWR_GOOD") + pads("L1", "SW", "+3V3") +
+             pads("U2", *(["+3V3"] * 3 + ["SIG"] * 20 + ["GND"] * 5)) + pads("FB1", "+3V3", "+3V3A") +
+             pads("C1", "+3V3", "GND") + pads("C2", "+3V3", "GND") + pads("R1", "+3V3", "RESET"))
+    footprints = [dc_board.footprint(f"fp-{reference}", reference, 0, 0)
+                  for reference in ("U1", "L1", "U2", "FB1", "C1", "C2", "R1")]
+    return dc_board.snapshot(pads=parts, footprints=footprints)
+
+
+def test_auto_finds_the_buck_inductor_and_the_loads():
+    terminals, message = dc.auto_terminals(auto_board(), "+3V3")
+    assert [(t.name, t.role, t.parts, t.value, t.bonded) for t in terminals] == [
+        ("L1", "supply", ["L1.2"], 3.3, False),
+        ("FB1", "load", ["FB1"], dc.AUTO_LOAD_A, False),  # feeds +3V3A
+        ("U2", "load", ["U2"], dc.AUTO_LOAD_A, True)]  # three pads, one conductor
+    assert "left out U1 (regulator)" in message and "Capacitors draw no DC current" in message
+
+
+def test_auto_takes_the_regulator_without_an_inductor(tmp_path):
+    board = auto_board()
+    board = replace(board, pads=tuple(pad for pad in board.pads if not pad.id.startswith("L1")))
+    session, _, _ = analysis(tmp_path)
+    session.setup.net = "+3V3"
+    ((header, _),) = frames_of(session.handle({"op": "auto"}, board), "dc_setup")
+    roles = [(t["name"], t["role"]) for t in header["terminals"]]
+    assert roles == [("U1", "supply"), ("FB1", "load"), ("U2", "load")]
+    assert header["active"] == 0 and header["message"].startswith("Supply U1; 2 loads at 0.1 A each")
+    session.setup.net = "SIG"
+    ((header, _),) = frames_of(session.handle({"op": "auto"}, board), "dc_setup")
+    assert header["message"].startswith("No inductor, regulator or connector on SIG")
