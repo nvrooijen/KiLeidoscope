@@ -3,7 +3,7 @@
 from dataclasses import replace
 
 import split_board
-from kileido_bridge import protocol
+from kileido_bridge import model, protocol
 from kileido_bridge.return_path import RETURN_VIA_RADIUS_NM, ReturnPathCheck, checked_nets
 from split_board import MM
 
@@ -66,6 +66,19 @@ def test_reference_change_between_nets_needs_a_capacitor():
     assert "In1.Cu (GND)" in found["via-lvds-0"].message and "In2.Cu (+1V8)" in found["via-lvds-0"].message
 
 
+def test_stripline_gaps_are_flagged_on_both_planes():
+    """Tracks on In1.Cu between a F.Cu ground pour with a void and the solid In2.Cu
+    plane: the void is flagged although In2.Cu covers the whole track."""
+    board = split_board.board()
+    void = split_board.rect(25 * MM, 14 * MM, 26 * MM, 16 * MM)
+    pour = model.ZoneFill("pour", "GND", "F.Cu", ((split_board.rect(MM, 12 * MM, 99 * MM, 18 * MM), void),))
+    strip = split_board.pair("STRIP_P", "STRIP_N", "In1.Cu", 10 * MM, 40 * MM, 15 * MM, "strip")
+    board = replace(board, zones=(pour, board.zones[2]), tracks=strip, vias=())
+    found = by_item(issues(board))
+    assert found.keys() == {"strip-0", "strip-1"}
+    assert found["strip-0"].kind == "gap" and found["strip-0"].reference == "F.Cu"
+
+
 def test_no_plane_at_all():
     found = issues(replace(split_board.board(), zones=()))
     assert {issue.kind for issue in found} == {"no_reference"}
@@ -95,3 +108,13 @@ def test_frame_carries_issues_and_marks():
     via = next(index for index, issue in enumerate(found) if issue.kind == "no_return_via")
     rows = arrays["mark"][arrays["mark_issue"] == via]
     assert (rows[:, 0] == rows[:, 2]).all() and (rows[:, 4] == 600_000).all()  # a disc on each layer
+
+
+def test_check_command_prints_the_issues(monkeypatch, capsys):
+    from kileido_bridge import cli
+    monkeypatch.setattr(cli, "connect_board", lambda timeout_ms: None)
+    monkeypatch.setattr(cli, "read_snapshot", lambda board: split_board.board())
+    assert cli.main(["check", "--net", "CLK"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("split_board.kicad_pcb: ") and "CLK" in lines[0]
+    assert any(line.startswith("split ") and "CLK on F.Cu" in line for line in lines[1:])

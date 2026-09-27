@@ -68,8 +68,8 @@ def test_split_under_a_diff_pair():
         assert abs(gap[0] - (39_750_000 - MARGIN)) <= PIXEL and abs(gap[1] - (40_250_000 + MARGIN)) <= PIXEL
         assert [net for _, _, net in cover.planes] == ["GND", "+3V3"]
         assert cover.covered_fraction == pytest.approx(1 - (gap[1] - gap[0]) / segment.length_nm)
-    assert planes.nets_near("In1.Cu", found["usb-0"].subpath(*found["usb-0"].below.gaps[0]), MARGIN) == \
-        ("+3V3", "GND")
+    gap_path = found["usb-0"].subpath(*found["usb-0"].below.gaps[0])
+    assert planes.nets_near("In1.Cu", gap_path, MARGIN, MARGIN) == ("+3V3", "GND")
 
 
 def test_solid_plane_covers_the_whole_track():
@@ -90,13 +90,55 @@ def test_arc_is_looked_up_along_its_path():
 
 def test_own_via_antipads_are_excused():
     board = split_board.board()
-    _, found = look_up(board, ["lvds-f-0", "lvds-b-0"])
+    _, found = look_up(board, ["lvds-f-0", "lvds-f-1", "lvds-b-0"])
     assert found["lvds-f-0"].below.gaps == () and found["lvds-b-0"].above.gaps == ()
-    # The same holes under a via of another net are voids.
+    assert found["lvds-f-1"].below.gaps == ()  # the partner's antipad beside it too
+    # The same holes under vias of another net are voids.
     foreign = replace(board, vias=tuple(replace(via, net="OTHER") for via in board.vias))
     _, found = look_up(foreign, ["lvds-f-0"])
     (gap,) = found["lvds-f-0"].below.gaps
     assert gap[1] == 10 * MM and gap[0] < 10 * MM - (split_board.ANTIPAD + MARGIN) + PIXEL
+
+
+def with_antipad(board, hole):
+    """The board with In1.Cu's GND antipad of the first LVDS via replaced by `hole`."""
+    gnd = board.zones[0]
+    outer, void, _, second = gnd.polygons[0]
+    return replace(board, zones=(replace(gnd, polygons=((outer, void, hole, second),)), *board.zones[1:]))
+
+
+def test_antipad_size_comes_from_the_geometry():
+    x, y = split_board.VIA_X, split_board.LVDS_Y
+    board = with_antipad(split_board.board(), split_board.square(x, y, 1_200_000))  # 0.9 mm clearance
+    _, found = look_up(board, ["lvds-f-0"])
+    assert found["lvds-f-0"].below.gaps == ()
+
+
+def test_a_slot_running_out_of_an_antipad_is_a_void():
+    x, y = split_board.VIA_X, split_board.LVDS_Y
+    slot = split_board.rect(x - 550_000, y - 4 * MM, x + 550_000, y + 550_000)  # the antipad, 4 mm long
+    planes, found = look_up(with_antipad(split_board.board(), slot), ["lvds-f-0"])
+    (gap,) = found["lvds-f-0"].below.gaps
+    assert gap[1] == 10 * MM and gap[0] < 10 * MM - 550_000
+    assert planes.stats["antipads"] >= 1
+
+
+def test_all_copper_on_a_layer_can_be_a_reference():
+    board = split_board.board()
+    graphic = model.CopperGraphic("gnd-graphic", "GND", "In1.Cu",
+                                  ((split_board.rect(5 * MM, 28 * MM, 45 * MM, 32 * MM),),))
+    wide = model.Track("gnd-wide", "In1.Cu", "GND", (5 * MM, 35_125_000), (45 * MM, 35_125_000), 4 * MM)
+    narrow = model.Track("sig", "In1.Cu", "SIG", (5 * MM, 10_125_000), (95 * MM, 10_125_000), 200_000)
+    pad = model.Pad("gnd-pad", "", "1", "GND", (20 * MM, 5 * MM), None,
+                    {"In1.Cu": ((split_board.rect(10 * MM, 3 * MM, 30 * MM, 7 * MM),),)})
+    board = replace(board, zones=board.zones[2:], graphics=(graphic,), tracks=(*board.tracks, wide, narrow),
+                    pads=(pad,))
+    _, found = look_up(board, ["eth-0", "sata-0", "usb-0", "clk"])
+    assert found["eth-0"].below.planes == ((0, 30 * MM, "GND"),)  # a copper graphic
+    assert found["sata-0"].below.covered_fraction == 1.0  # a 4 mm wide GND track
+    assert found["usb-0"].below.covered_fraction == 0.0  # a narrow track is no plane
+    # A pad 20 mm long under CLK, less the margin at both ends.
+    assert found["clk"].below.covered_fraction == pytest.approx((20 * MM - 2 * MARGIN) / (80 * MM), abs=0.002)
 
 
 def test_both_sides_are_reported_and_the_fuller_one_is_primary():
@@ -108,24 +150,29 @@ def test_both_sides_are_reported_and_the_fuller_one_is_primary():
     assert segment.primary is segment.below
 
 
-def test_only_changed_items_and_layers_are_looked_up_again():
+def test_only_changed_copper_and_items_are_looked_up_again():
     board = split_board.board()
     planes = ReferencePlanes()
     planes.update(board)
     planes.segments()
-    assert planes.stats == {"rasterized": 2, "eroded": 2, "computed": len(board.tracks)}
+    stats = dict(planes.stats)
+    assert (stats["rasterized"], stats["regions"], stats["computed"]) == (2, 0, len(board.tracks))
     assert planes.update(replace(board)) == frozenset()
     planes.segments()
-    assert planes.stats["computed"] == len(board.tracks)  # nothing new
+    assert planes.stats == stats  # nothing new
+    # A moved F.Cu track: F.Cu is nobody's reference here, so only that track is looked up.
     moved = replace(board.tracks[0], end=(80 * MM, 10 * MM))
     board = replace(board, tracks=(moved, *board.tracks[1:]))
-    planes.update(board)
+    assert planes.update(board) == frozenset({"F.Cu"})
     assert planes.segments()[moved.id].length_nm == 70 * MM
-    assert planes.stats == {"rasterized": 2, "eroded": 2, "computed": len(board.tracks) + 1}
-    # A refilled In2.Cu: only the B.Cu tracks it references are looked up again.
-    gnd = next(zone for zone in board.zones if zone.layer == "In2.Cu")
-    board = replace(board, zones=(*[zone for zone in board.zones if zone is not gnd],
-                                  replace(gnd, polygons=((gnd.polygons[0][0],),))))  # antipads gone
-    assert planes.update(board) == frozenset({"In2.Cu"})
-    planes.segments()
-    assert planes.stats == {"rasterized": 3, "eroded": 3, "computed": len(board.tracks) + 3}
+    assert planes.stats["computed"] == stats["computed"] + 1 and planes.stats["rasterized"] == 2
+    # GND copper over the SATA void: In1.Cu is patched there, and only the tracks near it
+    # (the SATA and ETH pairs) are looked up again.
+    patch = model.CopperGraphic("patch", "GND", "In1.Cu",
+                                ((split_board.rect(24 * MM, 33 * MM, 27 * MM, 37 * MM),),))
+    board = replace(board, graphics=(patch,))
+    assert planes.update(board) == frozenset({"In1.Cu"})
+    found = planes.segments()
+    assert found["sata-0"].below.gaps == ()
+    assert planes.stats["regions"] == 1 and planes.stats["rasterized"] == 2
+    assert planes.stats["computed"] == stats["computed"] + 1 + 4

@@ -4,7 +4,7 @@ Built on the reference-plane lookup (reference.py). Checked are the nets of
 differential pairs (selection.diff_pair_partner) and the nets highlighted from
 KiCad's selection, with their partners. Issue kinds:
 
-- "gap": the primary reference plane has a void, slot or edge under the track.
+- "gap": a reference plane has a void, slot or edge under the track.
 - "split": the gap lies between planes of different nets (a split plane).
 - "no_reference": no copper at all above or below the track.
 - "no_return_via": a via moves the signal to another reference layer of the same
@@ -13,8 +13,8 @@ KiCad's selection, with their partners. Issue kinds:
 - "reference_change": a via moves the signal between reference planes of different
   nets; the return current then needs a stitching capacitor, which is not checked.
 
-The primary reference of a track is the side (above or below) with the most copper
-under it (reference.SegmentReference.primary).
+Every side of a track with solid copper along it is a reference
+(reference.SegmentReference.references): both planes of a stripline are checked.
 """
 
 import math
@@ -61,6 +61,7 @@ class ReturnPathCheck:
     def __init__(self, planes: ReferencePlanes | None = None):
         self.planes = planes or ReferencePlanes()
         self._last = (None, ())
+        self._issues = {}  # track id -> (SegmentReference, its issues): kept while the lookup is
 
     def check(self, snapshot: model.BoardSnapshot, nets: frozenset[str]) -> tuple[Issue, ...]:
         # The reader builds a new snapshot every poll but keeps unchanged parts: compare those.
@@ -73,16 +74,21 @@ class ReturnPathCheck:
                        key=lambda item: (item.net, item.layer, item.id))
         found = self.planes.segments([item.id for item in items])
         segments = [found[item.id] for item in items if item.id in found]
-        issues = [issue for segment in segments for issue in self._segment_issues(segment)]
+        known, self._issues = self._issues, {}
+        for segment in segments:
+            cached = known.get(segment.id)
+            self._issues[segment.id] = (segment, cached[1] if cached and cached[0] is segment
+                                        else self._segment_issues(segment))
+        issues = [issue for segment in segments for issue in self._issues[segment.id][1]]
         issues += self._via_issues(snapshot, nets, segments)
         issues = tuple(issues)
         self._last = (key, issues)
         return issues
 
     def _segment_issues(self, segment: SegmentReference) -> list[Issue]:
-        primary = segment.primary
+        references = segment.references
         whole = ((segment.layer, segment.path, segment.width),)
-        if primary is None:
+        if not references:
             nearest = min(segment.covers, key=lambda cover: cover.distance_nm, default=None)
             return [Issue("no_reference", segment.net, segment.id, segment.layer,
                           nearest.layer if nearest else "", segment.point_at(segment.length_nm / 2), whole,
@@ -90,18 +96,20 @@ class ReturnPathCheck:
                           f"{segment.net} on {segment.layer}: no reference plane above or below "
                           f"({_mm(segment.length_nm)} of track)")]
         issues = []
-        for start, end in primary.gaps:
-            if end - start < MIN_GAP_NM:
-                continue
-            path = segment.subpath(start, end)
-            around = self.planes.nets_near(primary.layer, path, segment.width / 2 + primary.margin_nm)
-            split = len(around) > 1
-            where = " | ".join(net or "no net" for net in around)
-            message = (f"{segment.net} on {segment.layer}: crosses a split in {primary.layer} ({where})" if split
-                       else f"{segment.net} on {segment.layer}: gap in {primary.layer} under {_mm(end - start)}")
-            issues.append(Issue("split" if split else "gap", segment.net, segment.id, segment.layer, primary.layer,
-                                segment.point_at((start + end) / 2), ((segment.layer, path, segment.width),),
-                                end - start, message))
+        for cover in references:
+            for start, end in cover.gaps:
+                if end - start < MIN_GAP_NM:
+                    continue
+                path = segment.subpath(start, end)
+                around = self.planes.nets_near(cover.layer, path, segment.width / 2 + cover.margin_nm,
+                                               cover.margin_nm)
+                split = len(around) > 1
+                where = " | ".join(net or "no net" for net in around)
+                message = (f"{segment.net} on {segment.layer}: crosses a split in {cover.layer} ({where})" if split
+                           else f"{segment.net} on {segment.layer}: gap in {cover.layer} under {_mm(end - start)}")
+                issues.append(Issue("split" if split else "gap", segment.net, segment.id, segment.layer,
+                                    cover.layer, segment.point_at((start + end) / 2),
+                                    ((segment.layer, path, segment.width),), end - start, message))
         return issues
 
     def _via_issues(self, snapshot, nets, segments: list[SegmentReference]) -> list[Issue]:
@@ -119,9 +127,8 @@ class ReturnPathCheck:
                     if math.dist(end, via.pos) > reach:
                         continue
                     layers.append(segment.layer)
-                    primary = segment.primary
-                    if primary is not None and primary.planes and primary.planes[plane_index][2] is not None:
-                        references.add((primary.layer, primary.planes[plane_index][2]))
+                    references |= {(cover.layer, cover.planes[plane_index][2])
+                                   for cover in segment.references if cover.planes}
             reference_layers = {layer for layer, _ in references}
             if len(set(layers)) < 2 or len(reference_layers) < 2:
                 continue

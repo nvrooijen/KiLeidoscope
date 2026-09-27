@@ -168,8 +168,8 @@ class BridgeRuntime:
             self._refresh_copy()
             frames += self._appearance_frames()
         frames += self._selection_frames(snapshot, force=full_snapshot)
-        frames += self._return_path_frames(snapshot, force=full_snapshot)
         self._send(frames, snapshot=full_snapshot)
+        self._send(self._return_path_frames(snapshot, force=full_snapshot))  # after: never delays the board
         self._status("connected", snapshot.read_timings_ms.get("total"))
 
     def _on_board_changed(self, snapshot):
@@ -235,8 +235,8 @@ class BridgeRuntime:
             self.revision += 1
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
-        frames += self._return_path_frames(self.snapshot)
         self._send(frames)
+        self._send(self._return_path_frames(self.snapshot))
 
     def _selection_frames(self, snapshot, force: bool = False, selected=None) -> list[bytes]:
         """Highlighted nets (and components), sent when they change. `selected` is
