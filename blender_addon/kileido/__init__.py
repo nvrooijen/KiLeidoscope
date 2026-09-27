@@ -16,12 +16,12 @@ from pathlib import Path
 import bpy
 import bpy.utils.previews
 from bpy.app.handlers import persistent
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty,
-                       StringProperty)
+from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty,
+                       IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
-               render_depth, watcher)
+from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, phase,
+               pick, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -144,7 +144,7 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
         if item is not None:
-            live.request_select([item], self.extend)
+            live.request_select(item if isinstance(item, list) else [item], self.extend)
             self.report({"INFO"}, f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
         elif not self.extend:
             live.request_select([], False)  # clicking bare board clears KiCad's selection
@@ -519,6 +519,154 @@ class KILEIDO_PT_boards(bpy.types.Panel):
                     right.label(text=values)
 
 
+class KILEIDO_PG_phase_pair(bpy.types.PropertyGroup):
+    """One row of the dynamic-phase pair list (filled from the bridge's frames, phase.sync_list)."""
+    key: StringProperty()
+    name: StringProperty()
+    route: StringProperty()
+    delay_ps: FloatProperty()
+    skew_ps: FloatProperty()
+    max_ps: FloatProperty()
+    excursions: IntProperty()
+
+
+def _phase_columns(layout):
+    """The pair list's columns: pair, total delay, end-to-end skew, largest |Δt| (ps)."""
+    split = layout.split(factor=0.4, align=True)
+    first = split.row(align=True)
+    numbers = split.grid_flow(columns=3, even_columns=True, align=True)
+    return first, numbers
+
+
+def _ps(value, signed=False):
+    """Picoseconds for the panel, without a "-0.00" for a rounding residue."""
+    value = round(float(value), 2) + 0.0
+    return f"{value:+.2f}" if signed else f"{value:.2f}"
+
+
+class KILEIDO_UL_phase_pairs(bpy.types.UIList):
+    """A warning icon when the pair runs out of phase somewhere; its terminals are in the box below."""
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_property, index=0, flt_flag=0):
+        first, numbers = _phase_columns(layout)
+        first.label(text=item.name, icon="ERROR" if item.excursions else "BLANK1")
+        for value in (f"{item.delay_ps:.1f}", _ps(item.skew_ps, True), _ps(item.max_ps)):
+            numbers.label(text=value)
+
+
+class KILEIDO_OT_phase_flip(bpy.types.Operator):
+    bl_idname = "kileido.phase_flip"
+    bl_label = "Flip start"
+    bl_description = "Walk this pair from its other end: Δt then counts from there"
+
+    key: StringProperty()
+
+    def execute(self, context):
+        phase.flip(self.key)
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_phase_select(bpy.types.Operator):
+    bl_idname = "kileido.phase_select"
+    bl_label = "Select in KiCad"
+    bl_description = "Select this in KiCad"
+
+    ids: StringProperty()  # KiCad ids, one per line
+
+    @classmethod
+    def poll(cls, context):
+        return live.linked()
+
+    def execute(self, context):
+        live.request_select([item for item in self.ids.splitlines() if item])
+        return {"FINISHED"}
+
+
+class KILEIDO_PT_phase(bpy.types.Panel):
+    """Differential pairs: how far P and N are apart in time along the route."""
+    bl_label = "Dynamic phase"
+    bl_idname = "KILEIDO_PT_phase"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "KiLeidoscope"
+    bl_parent_id = "KILEIDO_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout, scene = self.layout, context.scene
+        row = layout.row(align=True)
+        row.prop(scene, "kileido_phase_show", text="Ribbons")
+        row.prop(scene, "kileido_phase_labels", text="Labels")
+        layout.prop(scene, "kileido_phase_follow_series", text="Through series parts (AC caps)")
+        column = layout.column(align=True)
+        column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
+        column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
+        column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
+        legend = layout.row(align=True)
+        for color, text in ((phase.COLORS["p_ahead"], "P ahead"), (phase.COLORS["in_phase"], "In phase"),
+                            (phase.COLORS["n_ahead"], "N ahead")):
+            legend.label(text=text, icon_value=_swatch("tile", color))
+        info = layout.column(align=True)
+        for line in _wrap(context, "Δt = t_P − t_N, gathered from the start terminal. P ahead: "
+                                   "P's edge arrives first (Δt < 0)."):
+            info.label(text=line)
+        guess = phase.sources_warning()
+        if guess:
+            for index, line in enumerate(_wrap(context, f"Delay: {guess}, no tuning profile or "
+                                                        "dielectric constant found")):
+                info.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+        pending = board.phase_list.get("pending", 0)
+        if pending:
+            info.label(text=f"Measuring {pending} more pair{'s' if pending > 1 else ''}…", icon="TIME")
+        for warning in board.phase_list.get("warnings", ())[:4]:
+            for index, line in enumerate(_wrap(context, warning)):
+                info.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+        if not len(scene.kileido_phase_pairs):
+            layout.label(text="No routed differential pairs" if live.connected() else "Live with KiCad only")
+            return
+        first, numbers = _phase_columns(layout)
+        first.label(text="Pair (ps)")
+        for title in ("Delay", "Skew", "Max |Δt|"):
+            numbers.label(text=title)
+        layout.template_list("KILEIDO_UL_phase_pairs", "", scene, "kileido_phase_pairs", scene,
+                             "kileido_phase_index", rows=4)
+        data = phase.active_pair()
+        if data is not None:
+            self._draw_pair(context, layout.box(), data)
+
+    def _draw_pair(self, context, box, data):
+        row = box.row(align=True)
+        row.label(text=f"{data['start']['label']} → {data['end']['label']}")
+        row.operator(KILEIDO_OT_phase_flip.bl_idname, text="", icon="ARROW_LEFTRIGHT").key = data["key"]
+        column = box.column(align=True)
+        for side in ("p", "n"):
+            column.label(text=f"{side.upper()}: {_ps(data[f'delay_{side}_ps'])} ps, "
+                              f"{data[f'length_{side}_mm']:.2f} mm")
+        column.label(text=f"End-to-end skew: {_ps(data['skew_ps'], True)} ps")
+        column.label(text=f"Largest |Δt|: {_ps(data['max_ps'])} ps")
+        lines = [f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"]
+        if data.get("parts"):
+            lines.append("Through " + ", ".join(data["parts"]))
+        lines.append("Delay: " + "; ".join(data.get("sources", ())))
+        for text in lines:
+            for line in _wrap(context, text):
+                column.label(text=line)
+        for excursion in data.get("excursions", ()):
+            line = box.row(align=True)
+            line.label(text=f"{excursion['at_mm']:.1f} mm: {_ps(excursion['peak_ps'], True)} ps "
+                            f"over {excursion['length_mm']:.1f} mm", icon="ERROR")
+            line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
+                          icon="RESTRICT_SELECT_OFF").ids = excursion["id"]
+        for branch in data.get("branches", ()):
+            line = box.row(align=True)
+            line.label(text=f"{branch['side']} branch to {branch['label']} at {branch['at_mm']:.1f} mm, "
+                            f"{branch['length_mm']:.1f} mm long")
+            line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
+                          icon="RESTRICT_SELECT_OFF").ids = branch["id"]
+        for warning in data.get("warnings", ()):
+            box.label(text=warning, icon="INFO")
+
+
 class KILEIDO_PT_status(bpy.types.Panel):
     """Link, loading progress and warnings, below the Boards panel."""
     bl_label = "Status"
@@ -588,7 +736,8 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
-           KILEIDO_PT_status)
+           KILEIDO_PT_status, KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip,
+           KILEIDO_OT_phase_select, KILEIDO_PT_phase)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -699,6 +848,37 @@ def _scene_properties():
             description="How much the silkscreen ink hides what lies under it. Printed on the mask, the "
                         "ink follows the copper, so traces under it show by their relief at any opacity",
             update=lambda self, context: cosmetics.apply_silk_settings()),
+        "kileido_phase_show": BoolProperty(
+            name="Dynamic phase", default=True,
+            description="Ribbons along differential pairs coloured by their delay difference, and their markers",
+            update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_labels": BoolProperty(
+            name="Terminal labels", default=True, description="Name the pads at both ends of each pair",
+            update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_scale_ps": FloatProperty(
+            name="Colour scale", default=5.0, min=0.01, soft_max=50.0, precision=2,
+            description="Δt in ps that shows full red or blue (display only)",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_tolerance_ps": FloatProperty(
+            name="Tolerance", default=phase.DEFAULTS["tolerance_ps"], min=0.0, soft_max=20.0, precision=2,
+            description="Mark where |Δt| stays above this many ps (it only places markers)",
+            update=phase.send_settings),
+        "kileido_phase_min_mm": FloatProperty(
+            name="Distance", default=phase.DEFAULTS["min_length_mm"], min=0.0, soft_max=100.0, precision=1,
+            description="Mark where |Δt| stays above the tolerance for at least this many mm; the marker sits "
+                        "where that stretch starts",
+            update=phase.send_settings),
+        "kileido_phase_follow_series": BoolProperty(
+            name="Follow series parts", default=phase.DEFAULTS["follow_series"],
+            description="Measure through 2-pad parts in series on both sides (AC-coupling caps) as one "
+                        "channel, terminal to terminal",
+            update=phase.send_settings),
+        "kileido_phase_flipped": StringProperty(
+            name="Flipped pairs", default="[]", options={"HIDDEN"},
+            description="Pairs walked from their other end (a JSON list of pair keys)"),
+        "kileido_phase_pairs": CollectionProperty(type=KILEIDO_PG_phase_pair),
+        "kileido_phase_index": IntProperty(
+            name="Pair", default=-1, update=lambda self, context: phase.select_row(self)),
         "kileido_clip_silkscreen": BoolProperty(
             name="Clip silkscreen to board outline", default=True,
             description="Hide silkscreen outside Edge.Cuts and inside board cutouts",

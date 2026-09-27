@@ -141,6 +141,11 @@ def export_board(filepath):
     selection = {"selected": board.highlight["selected"], "pair": board.highlight["pair"],
                  **board.highlight_components}
     highlight.apply_selection({})  # no highlight copies or X-ray fade in the package
+    # Nor the dynamic-phase ribbons: a live measurement, not part of the board.
+    phase_group = next((child for child in collection.children if child.get("kls_group") == "phase"), None)
+    if phase_group is not None:
+        phase_group.use_fake_user = True  # kept while unlinked
+        collection.children.unlink(phase_group)
     collection["kls_board_name"] = board.board_name
     collection["kls_thickness_m"] = board.thickness_m
     collection["kls_layers"] = json.dumps(layers.recorded())
@@ -180,6 +185,9 @@ def export_board(filepath):
         for material, _ in sheets:
             material.pop("kls_mask_colors", None)
         highlight.apply_selection({key: list(value) for key, value in selection.items()})
+        if phase_group is not None:
+            collection.children.link(phase_group)
+            phase_group.use_fake_user = False
 
 
 # --- Import ---------------------------------------------------------------------------------

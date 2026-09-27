@@ -4,13 +4,15 @@ import threading
 import time
 from collections import deque
 from dataclasses import replace
+from pathlib import Path
 
 from . import protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version
 from .board_text import copper_items
 from .kicad_reader import (KiCadBusy, PollResult, board_text, connect_reader, explain_connection_error,
-                           kicad_tools, saved_board_path, select_in_kicad, selected_ids)
+                           kicad_tools, net_classes, saved_board_path, select_in_kicad, selected_ids)
 from .live_copy import LiveBoardCopy
+from .phase import PhaseTracker
 from .selection import components, highlight_nets, selected_nets, unconnected
 
 
@@ -63,6 +65,7 @@ class BridgeRuntime:
         self.appearance_sig = None
         self.copy = live_copy or LiveBoardCopy()
         self.copy_enabled = True
+        self.phase = PhaseTracker()  # differential pairs' dynamic phase
         # Selection highlight
         self.highlight = ((), (), (), ())
         self.sticky_nets = frozenset()  # highlighted nets, kept through routing
@@ -106,6 +109,7 @@ class BridgeRuntime:
             self.appearance_sig = None
             self.tools = {}
             self.copy_enabled = True
+            self.phase.reset()
             self.timeout_count = 0
             self.next_connect_at = self.clock() + self.reconnect_interval_s
             self.sent_from_text = False
@@ -162,6 +166,7 @@ class BridgeRuntime:
                 self.copy.changed(self.clock())
             self._refresh_copy()
             frames += self._appearance_frames()
+        frames += self._phase_frames(everything=full_snapshot)
         frames += self._selection_frames(snapshot, force=full_snapshot)
         self._send(frames, snapshot=full_snapshot)
         self._status("connected", snapshot.read_timings_ms.get("total"))
@@ -175,6 +180,7 @@ class BridgeRuntime:
         set_kicad_version(self.tools.get("kicad_version"))
         self.copy.target(snapshot.board_name, self.board_path)
         self.copy_enabled = True
+        self.phase.reset()
 
     def _geometry_frames(self, result: PollResult, full_snapshot: bool) -> list[bytes]:
         """A complete snapshot after a board or stackup change, else one frame per dirty group."""
@@ -228,6 +234,7 @@ class BridgeRuntime:
             self.sent_from_text = True
             self.revision += 1
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
+            frames += self._phase_frames()
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
         self._send(frames)
 
@@ -282,6 +289,30 @@ class BridgeRuntime:
             self.requested = None
             return False
         return True
+
+    # --- Dynamic phase ------------------------------------------------------------------
+
+    def _phase_frames(self, everything: bool = False) -> list[bytes]:
+        """The differential pairs whose copper, delay inputs or settings changed; after a
+        full snapshot every pair (Blender drops frames it queued before the snapshot).
+
+        Delays come from the board text (the live copy: epsilon_r) and the project
+        file (tuning profiles); KiCad says which netclass each pair net has."""
+        with self.lock:  # the server takes Blender's requests on the main thread
+            request = self.server.take_phase_settings()
+        if request is not None:
+            self.phase.configure(request)
+        project = str(Path(self.board_path).with_suffix(".kicad_pro")) if self.board_path else ""
+        self.phase.set_files(self._appearance_source(), project)
+        board = getattr(self.reader, "board", None)
+        try:
+            frames = self.phase.update(self.snapshot, self.revision,
+                                       (lambda nets: net_classes(board, nets)) if board is not None else None)
+            return self.phase.snapshot_frames() if everything else frames
+        except Exception as exc:  # the viewer keeps its board; the panel says why the pairs stopped
+            return [protocol.phase_list_message([], self.phase.settings.as_json(),
+                                                [f"Dynamic phase stopped: {type(exc).__name__}: {exc}"], 0,
+                                                self.revision)]
 
     # --- Live board copy (kicad-cli exports) --------------------------------------------
 
@@ -355,6 +386,7 @@ class BridgeRuntime:
         if self.snapshot is not None:
             self.server.send_frames(self._snapshot_frames(), snapshot=True)
             self.server.send_frames([protocol.selection_message(*self.highlight, self.revision)])
+            self.server.send_frames(self.phase.snapshot_frames())
         self.server.send_frames([self._status_frame()])
 
     def step(self) -> None:

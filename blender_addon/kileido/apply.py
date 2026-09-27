@@ -12,7 +12,7 @@ import bpy
 import numpy as np
 
 from . import (cosmetics, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
-               render_depth, transform)
+               phase, render_depth, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
                       single_point, view3d_spaces, write_attribute, outline_bounds)
@@ -55,6 +55,8 @@ def apply_frame(header, arrays):
         _end_snapshot()
     elif message_type == "selection":
         highlight.apply_selection(header)
+    elif message_type in ("phase_list", "phase_pair"):
+        phase.apply(header, arrays)
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:
@@ -104,6 +106,8 @@ def _end_snapshot():
             continue
         if obj.get("kls_model_fp_id") is not None:
             set_visible(obj, False)
+        elif obj.get("kls_phase_key") is not None:
+            continue  # the pair list says which pairs remain (phase_list, after the snapshot)
         elif obj.get("kls_cosmetic_layer") is not None:
             if obj.get("kls_board_path") != board.board_path:
                 set_visible(obj, False)

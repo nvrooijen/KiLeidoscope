@@ -311,3 +311,22 @@ def snapshot_frames(snapshot: model.BoardSnapshot, revision: int = 1,
             board_message(snapshot, revision, origin_nm, board_path, appearance, export),
             *messages_for(snapshot, all_keys(snapshot), revision),
             encode_frame({"type": "snapshot_end", "revision": revision})]
+
+
+# --- Dynamic phase of differential pairs (kileido_bridge/phase.py) ------------------------
+# Not part of a snapshot: the bridge sends them after it, and when a pair's copper changes.
+# Blender asks for other settings with a `phase_settings` frame (client.request_phase_settings).
+
+def phase_list_message(keys, settings: dict, warnings, pending: int, revision: int) -> bytes:
+    """The pairs that exist now (Blender drops any other), the settings they were
+    computed with, and how many are still waiting for their turn."""
+    return encode_frame({"type": "phase_list", "revision": revision, "keys": list(keys),
+                         "settings": settings, "warnings": list(warnings), "pending": pending})
+
+
+def phase_pair_message(info: dict, centre_nm: np.ndarray, dt_ps: np.ndarray, revision: int) -> bytes:
+    """One pair: its terminals, delays and markers in the header; the centreline
+    (`centre`: x, y, z in nm) and Δt = t_P - t_N in ps at each point (`dt`)."""
+    return encode_frame({"type": "phase_pair", "revision": revision, **info},
+                        {"centre": np.rint(centre_nm).astype("<i4").reshape(-1, 3),
+                         "dt": np.asarray(dt_ps, dtype="<f4")})
