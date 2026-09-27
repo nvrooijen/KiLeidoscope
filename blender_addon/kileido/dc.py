@@ -23,6 +23,7 @@ the Vias eye. The panel's check box hides them all. Colours are computed here
 
 import math
 import time
+import zlib
 
 import bpy
 import numpy as np
@@ -39,6 +40,7 @@ LIFT_M = 4e-6  # maps sit this far out from the copper's outer surface (via land
 ARROW_LIFT_M = 6e-6
 VIA_HALO_M = 30e-6  # via current columns: this much wider than the land
 LOG_DECADES = 3.0  # the log |J| scale spans this many decades below the top (Fill Resistance's plots)
+MAX_MAP_PIXELS = 2_000_000  # per layer's map image, all nets together
 WEAK_ARROW = 0.02  # no arrows where |J| is below this fraction of the maximum
 MARKER_COLORS = {"supply": (1.0, 0.12, 0.08), "load": (0.1, 0.35, 1.0)}  # sRGB
 LEGEND_TEXT = (0.92, 0.92, 0.92)  # sRGB
@@ -67,6 +69,7 @@ _clock = {"now": 0.0, "last": 0.0}  # seconds of viewport flow (flow_group's Clo
 
 def apply_setup(header, arrays):
     board.dc["setup"] = header
+    board.dc["result"] = primary()  # the table may show another net now
     board.dc["markers"] = (np.array(arrays.get("marker", ()), np.int64).reshape(-1, 3),
                            np.array(arrays.get("marker_terminal", ()), np.int32),
                            np.array(arrays.get("marker_side", ()), np.int32))
@@ -81,13 +84,48 @@ def apply_status(header):
 
 
 def apply_result(header, arrays):
-    if not header.get("net"):
-        board.dc["result"] = None
+    """One net's result, or a clear: of that net, or of every net ("")."""
+    results = board.dc["results"]
+    net = header.get("net", "")
+    if header.get("clear") or not net:
+        if net:
+            results.pop(net, None)
+        else:
+            results.clear()
     else:
-        board.dc["result"] = {**header, **{key: np.asarray(arrays[key]) for key in
-                                           ("j", "v", "jx", "jy", "via", "via_current", "via_power")}}
+        results[net] = {**header, **{key: np.asarray(arrays[key]) for key in
+                                     ("j", "v", "jx", "jy", "via", "via_current", "via_power")}}
+    board.dc["result"] = primary()
     refresh()
     redraw()
+
+
+def primary():
+    """The result the panel details: the table's net's, else the first."""
+    results = board.dc["results"]
+    net = (board.dc.get("setup") or {}).get("net")
+    return results.get(net) or (results[min(results)] if results else None)
+
+
+def all_results():
+    return [board.dc["results"][net] for net in sorted(board.dc["results"])]
+
+
+def _tag(result):
+    """A short, stable name part per net (net names can be long, with slashes)."""
+    return f"{zlib.crc32(result['net'].encode('utf-8')) & 0xFFFFFF:06x}"
+
+
+def map_name(layer):
+    return f"KLS {layer} dc map"
+
+
+def arrows_name(layer, net):
+    return f"KLS {layer} dc arrows {_tag({'net': net})}"
+
+
+def vias_name(net):
+    return f"KLS vias dc {_tag({'net': net})}"
 
 
 def syncing():
@@ -115,6 +153,7 @@ def _sync_properties(header):
         scene.kileido_dc_plating_um = float(settings.get("plating_um", scene.kileido_dc_plating_um))
         scene.kileido_dc_cell_um = float(settings.get("cell_um") or 0.0)
         scene.kileido_dc_capped = bool(settings.get("vias_capped", False))
+        scene.kileido_dc_scope = "ALL" if header.get("scope") == "all" else "NET"
     finally:
         _syncing = False
 
@@ -136,13 +175,13 @@ def field():
     return getattr(bpy.context.scene, "kileido_dc_field", "CURRENT")
 
 
-def value_range(result=None):
-    """(low, high, log) of the shown field in its display unit (A/mm2, or mV of drop)."""
-    result = result or board.dc.get("result")
+def value_range():
+    """(low, high, log) of the shown field in its display unit (A/mm2, or mV of drop),
+    one range for every net shown."""
     scene = bpy.context.scene
     log = field() == "CURRENT" and scene.kileido_dc_log
     if scene.kileido_dc_auto_range:
-        low, high = _auto_range(result, log)
+        low, high = _auto_range(all_results(), log)
     else:
         low, high = float(scene.kileido_dc_min), float(scene.kileido_dc_max)
     if log:
@@ -150,24 +189,25 @@ def value_range(result=None):
     return low, max(high, low + (1e-12 if log else 1e-9)), log
 
 
-def _auto_range(result, log):
+def _auto_range(results, log):
     """|J|: the largest value down (three decades on the log scale); drop: its extent."""
+    if not results:
+        return 0.0, 1.0
     if field() == "CURRENT":
-        high = max(float(result["j_max"]), 1e-12)
+        high = max(max(float(result["j_max"]) for result in results), 1e-12)
         return (high * 10 ** -LOG_DECADES if log else 0.0), high
-    drop = (float(result["v_ref"]) - np.asarray(result["v"], np.float64)) * 1e3
-    finite = drop[np.isfinite(drop)]
+    drops = [(float(result["v_ref"]) - np.asarray(result["v"], np.float64)) * 1e3 for result in results]
+    finite = np.concatenate([drop[np.isfinite(drop)] for drop in drops])
     return (max(0.0, float(finite.min())), float(finite.max())) if len(finite) else (0.0, 1.0)
 
 
 def freeze_range():
     """Automatic range switched off: the manual one starts where the automatic one was."""
     global _syncing
-    result = board.dc.get("result")
-    if not result:
+    if not board.dc["results"]:
         return
     scene = bpy.context.scene
-    low, high = _auto_range(result, field() == "CURRENT" and scene.kileido_dc_log)
+    low, high = _auto_range(all_results(), field() == "CURRENT" and scene.kileido_dc_log)
     _syncing = True
     try:
         scene.kileido_dc_min, scene.kileido_dc_max = low, high
@@ -213,10 +253,9 @@ def _linear(srgb):
 
 def legend(rows=5):
     """(sRGB colour, label) from the top of the range down, for the panel."""
-    result = board.dc.get("result")
-    if not result:
+    if not board.dc["results"]:
         return []
-    low, high, log = value_range(result)
+    low, high, log = value_range()
     if log:
         values = np.geomspace(high, low, rows)
     else:
@@ -236,12 +275,12 @@ def _format(value):
 
 
 def layer_items(_scene=None, _context=None):
-    """"All" and the layers of the last result, for the panel's Layer chooser."""
-    result = board.dc.get("result") or {}
+    """"All" and the layers of the results, for the panel's Layer chooser."""
+    shown = {layer for result in all_results() for layer in result["layers"]}
     _layer_items[:] = [("ALL", "All layers", "Every layer as the Layers list shows it")]
     _layer_items.extend((layer, board.layer_names.get(layer) or layer,
                          f"Only {layer}: the board, mask, silkscreen, other copper and components hidden")
-                        for layer in result.get("layers", ()))
+                        for layer in sorted(shown, key=lambda layer: -board.heights.get(layer, 0.0)))
     return _layer_items
 
 
@@ -270,21 +309,23 @@ def refresh():
     snapshot: `snapshot_end` calls it once."""
     if board.collection is None or board.in_snapshot:
         return
-    result = board.dc.get("result") if enabled() else None
+    results = all_results() if enabled() else []
     wanted = set()
-    if result is not None:
+    scene = bpy.context.scene
+    for layer in {layer for result in results for layer in result["layers"] if layer in board.heights}:
+        wanted.add(_draw_map(layer))
+    for result in results:
         for index, layer in enumerate(result["layers"]):
             if layer not in board.heights:
                 continue
-            wanted.add(_draw_map(result, index, layer))
-            if bpy.context.scene.kileido_dc_arrows:
+            if scene.kileido_dc_arrows:
                 name = _draw_flow(result, index, layer)
                 if name:
                     wanted.add(name)
-        if bpy.context.scene.kileido_dc_vias and len(result["via"]):
+        if scene.kileido_dc_vias and len(result["via"]):
             wanted.add(_draw_vias(result))
-        if bpy.context.scene.kileido_dc_legend:
-            wanted |= _draw_legend(result)
+    if results and scene.kileido_dc_legend:
+        wanted |= _draw_legend()
     wanted |= refresh_markers()
     for obj in tuple(board.collection.all_objects):
         if obj.get(TAG) and obj.name not in wanted:
@@ -300,16 +341,16 @@ def _hide(obj):
 
 def recolor():
     """A new field, range or scale: only the map images change."""
-    result = board.dc.get("result")
-    if result is None or board.collection is None or not enabled():
+    results = all_results()
+    if not results or board.collection is None or not enabled():
         return
-    low, high, log = value_range(result)
-    for index, layer in enumerate(result["layers"]):
+    low, high, log = value_range()
+    for layer in {layer for result in results for layer in result["layers"]}:
         image = bpy.data.images.get(f"KLS DC {layer}")
         if image is not None:
-            _paint(image, field_values(result, index), low, high, log)
+            _paint(image, layer_field(layer)[3], low, high, log)
     if bpy.context.scene.kileido_dc_legend:
-        stale = {obj.name for obj in board.collection.all_objects if obj.get(TAG) == "legend"} - _draw_legend(result)
+        stale = {obj.name for obj in board.collection.all_objects if obj.get(TAG) == "legend"} - _draw_legend()
         for name in stale:  # fewer ticks than before
             _hide(board.collection.all_objects[name])
 
@@ -319,8 +360,8 @@ def _surface_z(layer, lift):
     return transform.copper_z(layer, "drills", board.heights) + outward(layer) * lift
 
 
-def _map_material(layer, image):
-    name = f"KLS DC map {layer}"
+def _map_material(key, image):
+    name = f"KLS DC map {key}"
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
@@ -344,8 +385,7 @@ def _map_material(layer, image):
     return material
 
 
-def _image(layer, width, height):
-    name = f"KLS DC {layer}"
+def _image(name, width, height):
     image = bpy.data.images.get(name)
     if image is not None and tuple(image.size) != (width, height):
         bpy.data.images.remove(image)
@@ -366,17 +406,45 @@ def _paint(image, values, low, high, log):
     image.update()
 
 
-def _draw_map(result, index, layer):
-    values = field_values(result, index)
+def layer_field(layer):
+    """(x0, y0, pitch in nm, values) of one layer: every net's shown field on one
+    grid (nets never share copper on a layer), NaN where none has copper. One map
+    per layer: coplanar transparent maps, one per net, hid each other."""
+    sources = [(result, result["layers"].index(layer)) for result in all_results() if layer in result["layers"]]
+    if not sources:
+        return None
+    extents = []
+    for result, _ in sources:
+        grid, (rows, columns) = result["grid"], np.asarray(result["j"]).shape[1:]
+        pitch = float(grid["pitch_nm"])
+        extents.append((grid["x0_nm"], grid["y0_nm"], grid["x0_nm"] + columns * pitch,
+                        grid["y0_nm"] + rows * pitch, pitch))
+    left, top = min(e[0] for e in extents), min(e[1] for e in extents)
+    right, bottom = max(e[2] for e in extents), max(e[3] for e in extents)
+    pitch = max(min(e[4] for e in extents), math.sqrt((right - left) * (bottom - top) / MAX_MAP_PIXELS))
+    columns, rows = max(1, math.ceil((right - left) / pitch)), max(1, math.ceil((bottom - top) / pitch))
+    xs, ys = left + (np.arange(columns) + 0.5) * pitch, top + (np.arange(rows) + 0.5) * pitch
+    values = np.full((rows, columns), np.nan)
+    for result, index in sources:
+        source = field_values(result, index)
+        grid = result["grid"]
+        column = np.floor((xs - grid["x0_nm"]) / grid["pitch_nm"]).astype(np.int64)
+        row = np.floor((ys - grid["y0_nm"]) / grid["pitch_nm"]).astype(np.int64)
+        inside = (row[:, None] >= 0) & (row[:, None] < source.shape[0]) & (column >= 0) & (column < source.shape[1])
+        picked = source[np.clip(row, 0, source.shape[0] - 1)][:, np.clip(column, 0, source.shape[1] - 1)]
+        values = np.where(np.isnan(values) & inside, picked, values)
+    return left, top, pitch, values
+
+
+def _draw_map(layer):
+    left_nm, top_nm, pitch, values = layer_field(layer)
     rows, columns = values.shape
-    image = _image(layer, columns, rows)
-    _paint(image, values, *value_range(result))
-    grid = result["grid"]
-    pitch = float(grid["pitch_nm"])
-    corners = transform.xy_m(np.array([(grid["x0_nm"], grid["y0_nm"] + rows * pitch),
-                                       (grid["x0_nm"] + columns * pitch, grid["y0_nm"])]), board.origin_nm)
+    image = _image(f"KLS DC {layer}", columns, rows)
+    _paint(image, values, *value_range())
+    corners = transform.xy_m(np.array([(left_nm, top_nm + rows * pitch), (left_nm + columns * pitch, top_nm)]),
+                             board.origin_nm)
     (left, bottom), (right, top) = corners
-    name = f"KLS {layer} dc map"
+    name = map_name(layer)
     obj = owned_object(name)
     obj[TAG] = layer
     # One quad just out from the copper's outer face and one just in from its inner
@@ -607,7 +675,7 @@ def _write(mesh, name, data_type, key, values):
 def _draw_flow(result, index, layer):
     spacing = bpy.context.scene.kileido_dc_arrow_mm * 1e6
     paths = flow_paths(result, index, spacing)
-    name = f"KLS {layer} dc arrows"
+    name = arrows_name(layer, result["net"])
     if not paths:
         return None
     counts = np.array([len(path) for path in paths])
@@ -647,7 +715,7 @@ def _flow_objects():
     if board.collection is None:
         return []
     return [obj for obj in board.collection.all_objects
-            if obj.get(TAG) and obj.name.endswith(" dc arrows") and obj.modifiers and not obj.hide_get()]
+            if obj.get(TAG) and " dc arrows " in obj.name and obj.modifiers and not obj.hide_get()]
 
 
 def set_flow_speed():
@@ -702,9 +770,10 @@ def _flow_tick():
     return FLOW_TICK_S
 
 
-def via_range(result):
-    currents = np.asarray(result["via_current"], np.float64)
-    return 0.0, max(float(currents.max()) if len(currents) else 0.0, 1e-12)
+def via_range():
+    """0 to the largest via current of every net shown."""
+    currents = [float(np.max(result["via_current"])) for result in all_results() if len(result["via_current"])]
+    return 0.0, max(max(currents, default=0.0), 1e-12)
 
 
 def _columns(centres, radii, bottoms, tops, sides=16):
@@ -739,7 +808,7 @@ def _draw_vias(result):
     centres = transform.xy_m(rows[:, :2], board.origin_nm).astype(np.float64)
     radii = rows[:, 2] * 0.5e-9 + VIA_HALO_M
     vertices, starts, totals, indices = _columns(centres, radii, bottoms, tops)
-    name = "KLS vias dc"
+    name = vias_name(result["net"])
     obj = owned_object(name)
     obj[TAG] = "vias"
     mesh = obj.data
@@ -751,7 +820,7 @@ def _draw_vias(result):
     mesh.polygons.add(len(starts))
     mesh.polygons.foreach_set("loop_start", starts)
     mesh.polygons.foreach_set("loop_total", totals)
-    low, high = via_range(result)
+    low, high = via_range()
     colors = _linear(colors_srgb(result["via_current"], low, high, False, "CURRENT"))
     per_vertex = np.repeat(np.column_stack([colors, np.ones(len(colors))]), 32, axis=0).astype(np.float32)
     _write(mesh, "kls_color", "FLOAT_COLOR", "color", per_vertex)
@@ -858,17 +927,23 @@ def legend_ticks(low, high, log):
     return [(0.0, _format(low))] + ticks + [(1.0, _format(high))]
 
 
-def legend_lines(result):
+def legend_lines():
     """(title, unit line, footer lines) of the legend card."""
-    low, high, log = value_range(result)
+    results = all_results()
+    low, high, log = value_range()
     if field() == "CURRENT":
         title, scale = "Current density |J|", "A/mm², log scale" if log else "A/mm²"
+    elif len(results) == 1:
+        title, scale = "Voltage drop", f"mV below {float(results[0]['v_ref']):.3g} V"
     else:
-        title, scale = "Voltage drop", f"mV below {float(result['v_ref']):.3g} V"
-    draw = sum(load["i_a"] for load in result["loads"])
-    footer = [f"DC, steady current: {result['net']}, {_si(draw, 'A')}"]
-    if len(result["via"]) and bpy.context.scene.kileido_dc_vias:
-        footer.append(f"Vias: 0 to {_si(via_range(result)[1], 'A')} (same colours)")
+        title, scale = "Voltage drop", "mV below each net's supply"
+    draw = sum(load["i_a"] for result in results for load in result["loads"])
+    names = results[0]["net"] if len(results) == 1 else f"{len(results)} power nets"
+    footer = [f"DC, steady current: {names}, {_si(draw, 'A')}"]
+    if any(result["guessed"] for result in results if "guessed" in result):
+        footer.append("Guessed loads draw a placeholder current")
+    if any(len(result["via"]) for result in results) and bpy.context.scene.kileido_dc_vias:
+        footer.append(f"Vias: 0 to {_si(via_range()[1], 'A')} (same colours)")
     if bpy.context.scene.kileido_dc_arrows:
         footer.append("Arrows: current direction")
     return title, scale, footer
@@ -907,7 +982,7 @@ def _text(name, body, x, y, z, size, color=LEGEND_TEXT):
     return name
 
 
-def _draw_legend(result):
+def _draw_legend():
     """The colour bar with its values, right of the board outline, on its top face."""
     from .objects import outline_bounds
     bounds = outline_bounds()
@@ -919,7 +994,7 @@ def _draw_legend(result):
     x0, y0 = right + 0.06 * extent, (bottom + top) / 2 - height / 2
     z = board.heights.get("F.Cu", board.thickness_m) + LIFT_M
     text = 0.026 * extent
-    low, high, log = value_range(result)
+    low, high, log = value_range()
     name = "KLS dc legend"
     obj = owned_object(name)
     obj[TAG] = "legend"
@@ -945,7 +1020,7 @@ def _draw_legend(result):
     obj.location.z = z
     show_copy(obj)
     names = {name}
-    title, scale, footer = legend_lines(result)
+    title, scale, footer = legend_lines()
     names.add(_text("KLS dc legend title", title, x0, y0 + height + 2.6 * text, z, 1.2 * text))
     names.add(_text("KLS dc legend unit", scale, x0, y0 + height + 1.2 * text, z, text))
     for number, (position, label) in enumerate(legend_ticks(low, high, log)):
@@ -987,6 +1062,8 @@ def summary_lines():
     for pair in result["pairs"]:
         if pair["r_ohm"] is not None:
             lines.append(f"R {pair['supply']} → {pair['load']}: {_si(pair['r_ohm'], 'Ω')}")
+    if result.get("left_out"):
+        lines.append(f"Left out, cut off from the supply: {', '.join(result['left_out'])}")
     lines.append(f"Copper loss {_si(result['p_copper_w'], 'W')} (vias {_si(result['p_vias_w'], 'W')})")
     lines.append(f"|J| up to {result['j_max']:.3g} A/mm² in 99.9% of the copper "
                  f"(peak {result.get('j_peak', result['j_max']):.3g} A/mm²)")
@@ -1001,6 +1078,19 @@ def timing_line():
     return (f"{result['cells']:,} cells of {result['cell_nm'] / 1000:.0f} µm, {result['unknowns']:,} unknowns; "
             f"raster {timings.get('raster', 0):.1f} s, solve {timings.get('solve', 0):.1f} s, "
             f"total {timings.get('total', 0):.1f} s")
+
+
+def net_overview():
+    """(net, line) per solved net for scope "all": its worst drop and what it assumed."""
+    lines = []
+    for result in all_results():
+        worst = max((load["drop_max_v"] for load in result["loads"]), default=0.0)
+        draw = sum(load["i_a"] for load in result["loads"])
+        guessed = f", {len(result['guessed'])} guessed" if result.get("guessed") else ""
+        cut_off = f", {', '.join(result['left_out'])} not connected" if result.get("left_out") else ""
+        lines.append((result["net"],
+                      f"{result['net']}: {_si(draw, 'A')}, worst drop {_si(worst, 'V')}{guessed}{cut_off}"))
+    return lines
 
 
 def top_vias(count=5):

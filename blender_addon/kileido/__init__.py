@@ -609,6 +609,11 @@ def _dc_settings(field, key):
     return update
 
 
+def _dc_scope(scene, _context):
+    if not dc.syncing():
+        live.request_dc("scope", scope=scene.kileido_dc_scope.lower())
+
+
 def _dc_active(scene, _context):
     if not dc.syncing():
         live.request_dc("activate", index=scene.kileido_dc_active)
@@ -653,6 +658,7 @@ class KILEIDO_OT_dc(bpy.types.Operator):
 
     op: StringProperty()
     role: StringProperty()
+    net: StringProperty()
 
     @classmethod
     def description(cls, context, properties):
@@ -661,7 +667,9 @@ class KILEIDO_OT_dc(bpy.types.Operator):
                 "net_selection": "Analyse the net selected in KiCad",
                 "auto": "Replace the supplies and loads with a guess from the parts on the net: an inductor, "
                         "regulator or connector as supply, every other IC as a load (type their currents)",
-                "solve": "Solve again now, without waiting for edits to settle"}.get(properties.op, cls.bl_description)
+                "solve": "Solve again now, without waiting for edits to settle",
+                "show_net": "Show this net's supplies and loads in the table, to set their currents"
+                }.get(properties.op, cls.bl_description)
 
     @classmethod
     def poll(cls, context):
@@ -678,6 +686,8 @@ class KILEIDO_OT_dc(bpy.types.Operator):
             live.request_dc("remove", index=scene.kileido_dc_active)
         elif self.op == "net_selection":
             live.request_dc("net", **{"from": "selection"})
+        elif self.op == "show_net":
+            live.request_dc("net", net=self.net)
         else:
             live.request_dc(self.op)
         return {"FINISHED"}
@@ -723,6 +733,9 @@ class KILEIDO_PT_dc(bpy.types.Panel):
         hint = layout.row()
         hint.active = False
         hint.label(text="Steady current (DC): resistance and IR drop")
+        layout.prop(scene, "kileido_dc_scope", expand=True)
+        if scene.kileido_dc_scope == "ALL":
+            self._draw_nets(context, setup)
         row = layout.row(align=True)
         row.label(text=setup.get("net") or "No net chosen", icon="NETWORK_DRIVE")
         row.operator(KILEIDO_OT_dc.bl_idname, text="", icon="RESTRICT_SELECT_OFF").op = "net_selection"
@@ -764,6 +777,32 @@ class KILEIDO_PT_dc(bpy.types.Panel):
             for line in summary:
                 for index, part in enumerate(_wrap(context, line)):
                     box.label(text=part, icon="BLANK1" if index else "NONE")
+
+
+    def _draw_nets(self, context, setup):
+        """Every power net solved: a line each (a click puts it in the table), and
+        the nets left out with why."""
+        box = self.layout.box()
+        column = box.column(align=True)
+        for net, line in dc.net_overview():
+            button = column.operator(KILEIDO_OT_dc.bl_idname, text=line[:90], emboss=False,
+                                     icon="RIGHTARROW_THIN" if net == setup.get("net") else "DOT")
+            button.op, button.net = "show_net", net
+        skipped = setup.get("skipped") or {}
+        for net, reason in sorted(skipped.items())[:6]:
+            line = column.row()
+            line.active = False
+            line.label(text=f"{net}: left out", icon="BLANK1")
+        if skipped:
+            note = column.row()
+            note.active = False
+            note.label(text="Left out: no supply or load found; set them up in the table", icon="BLANK1")
+        errors = (board.dc.get("status") or {}).get("errors") or {}
+        for net, message in sorted(errors.items())[:4]:
+            for index, part in enumerate(_wrap(context, f"{net}: {message}")):
+                column.label(text=part, icon="ERROR" if index == 0 else "BLANK1")
+        if not dc.net_overview() and not skipped:
+            column.label(text="No power nets solved yet")
 
 
 class KILEIDO_PT_dc_display(bpy.types.Panel):
@@ -814,7 +853,7 @@ class KILEIDO_PT_dc_display(bpy.types.Panel):
         result = board.dc.get("result")
         layout.prop(scene, "kileido_dc_vias", text="Via currents")
         if result and len(result["via"]) and scene.kileido_dc_vias:
-            low, high = dc.via_range(result)
+            low, high = dc.via_range()
             column = layout.column(align=True)
             column.label(text=f"0 to {high:.3g} A", icon_value=_swatch("vias", dc.colors_srgb(
                 [high], low, high, False, "CURRENT")[0]))
@@ -1059,6 +1098,11 @@ def _scene_properties():
         "kileido_dc_pick_net": BoolProperty(
             name="Pick the net", default=False,
             description="The next click in the view chooses the power net from the copper under it"),
+        "kileido_dc_scope": EnumProperty(
+            name="Scope", items=(("NET", "This net", "Solve the net in the table"),
+                                 ("ALL", "All power nets", "Solve every net named like a supply rail, each with the "
+                                         "supplies and loads set up for it, else guessed ones")),
+            default="NET", update=_dc_scope),
         "kileido_dc_terminals": CollectionProperty(type=KILEIDO_PG_dc_terminal),
         "kileido_dc_active": IntProperty(default=-1, update=_dc_active),
         "kileido_dc_field": EnumProperty(

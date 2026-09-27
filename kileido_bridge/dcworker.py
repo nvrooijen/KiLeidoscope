@@ -19,6 +19,7 @@ import math
 import os
 import pickle
 import queue
+import re
 import struct
 import subprocess
 import sys
@@ -39,8 +40,26 @@ _BOOT = ("import json, os, sys; sys.path[:0] = json.loads(os.environ['KILEIDO_DC
 
 # --- Worker side ----------------------------------------------------------------------
 
-def solve(built, cell_um=None) -> dict:
-    """Solve a dc.Built problem; everything the viewer shows, as plain data."""
+def solve(built, cell_um=None, display_cells=None) -> dict:
+    """Solve a dc.Built problem; everything the viewer shows, as plain data. A
+    guessed load (built.optional) on copper cut off from every supply is left out
+    (named in "left_out") and the net solved again, as long as a load remains."""
+    from .dcsolve.errors import ConnectivityError
+    left_out = []
+    while True:
+        try:
+            return {**_solve(built, cell_um, display_cells), "left_out": left_out}
+        except ConnectivityError as exc:
+            cut_off = re.search(r"Load '([^']+)'", str(exc))
+            loads = [terminal for terminal in built.problem.terminals if terminal.role == "load"]
+            if cut_off is None or cut_off[1] not in built.optional or len(loads) < 2:
+                raise
+            built.problem.terminals = [terminal for terminal in built.problem.terminals
+                                       if terminal.label != cut_off[1]]
+            left_out.append(cut_off[1])
+
+
+def _solve(built, cell_um, display_cells) -> dict:
     from .dcsolve import config, raster, solver
     started = time.perf_counter()
     config.CELL_UM_OVERRIDE = cell_um
@@ -56,7 +75,7 @@ def solve(built, cell_um=None) -> dict:
     _stage(f"solving {draw:g} A over {int(stack.masks.sum()):,} cells")
     result = solver.run_solve_pdn(problem, stack, masks, parts)
     solved = time.perf_counter()
-    display = display_fields(stack, result, problem)
+    display = display_fields(stack, result, problem, display_cells or MAX_DISPLAY_CELLS)
     finished = time.perf_counter()
     v_ref = max(s.v_oc for s in result.supplies)
     loads = [{"name": load.label, "i_a": load.i_a, "v_mean": load.v_mean, "v_min": load.v_min, "p_w": load.p_w,
@@ -134,12 +153,12 @@ def _flow(stack, V: np.ndarray, rho: float) -> tuple[np.ndarray, np.ndarray]:
     return jx, jy
 
 
-def display_fields(stack, result, problem) -> dict:
+def display_fields(stack, result, problem, max_cells=MAX_DISPLAY_CELLS) -> dict:
     """|J|, V and the current direction per layer, block-reduced to at most
-    MAX_DISPLAY_CELLS pixels: |J| keeps each block's maximum (hot spots stay
-    visible), V and the direction their mean. NaN where there is no copper."""
+    `max_cells` pixels: |J| keeps each block's maximum (hot spots stay visible),
+    V and the direction their mean. NaN where there is no copper."""
     L, ny, nx = stack.masks.shape
-    factor = max(1, math.ceil(math.sqrt(L * ny * nx / MAX_DISPLAY_CELLS)))
+    factor = max(1, math.ceil(math.sqrt(L * ny * nx / max_cells)))
     jx, jy = _flow(stack, result.V, problem.rho_ohm_m)
     norm = np.hypot(jx, jy)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -213,21 +232,24 @@ def main():
         job = _read(source)
         if job is None:
             return
-        job_id, built, options = job
-        if missing:
-            send(("error", job_id, missing))
-            continue
-        progress.report = lambda text, elapsed, job_id=job_id: send(("progress", job_id, (text, elapsed)))
-        progress.start()
-        try:
-            send(("result", job_id, solve(built, **options)))
-        except UserFacingError as exc:
-            send(("error", job_id, str(exc)))
-        except Exception as exc:  # a solver bug: report it, keep serving
-            traceback.print_exc()
-            send(("error", job_id, f"DC solve failed: {type(exc).__name__}: {exc}"))
-        finally:
-            progress.done()
+        job_id, items, options = job
+        for index, (net, built) in enumerate(items):
+            if missing:
+                send(("error", job_id, (net, missing)))
+                continue
+            progress.report = (lambda text, elapsed, job_id=job_id, index=index, net=net:
+                               send(("progress", job_id, (text, elapsed, index, len(items), net))))
+            progress.start()
+            try:
+                send(("result", job_id, {**solve(built, **options), "net": net}))
+            except UserFacingError as exc:
+                send(("error", job_id, (net, str(exc))))
+            except Exception as exc:  # a solver bug: report it, go on with the next net
+                traceback.print_exc()
+                send(("error", job_id, (net, f"DC solve failed: {type(exc).__name__}: {exc}")))
+            finally:
+                progress.done()
+        send(("done", job_id, None))
 
 
 def _read(source):
@@ -285,10 +307,12 @@ class SolverProcess:
                 return
             self.replies.put((process, message))
 
-    def submit(self, job_id, built, **options):
-        """Run a job; the process must be idle (cancel a running one first)."""
+    def submit(self, job_id, items, **options):
+        """Solve [(net, dc.Built), ...] in turn; the process must be idle (cancel a
+        running job first). Each net replies with a "result" or an "error"
+        (net, message), then the job with "done"."""
         self.start()
-        data = pickle.dumps((job_id, built, options), protocol=pickle.HIGHEST_PROTOCOL)
+        data = pickle.dumps((job_id, items, options), protocol=pickle.HIGHEST_PROTOCOL)
         try:
             self.process.stdin.write(_LENGTH.pack(len(data)) + data)
             self.process.stdin.flush()
@@ -309,7 +333,7 @@ class SolverProcess:
 
     def poll(self) -> list:
         """(kind, job id, payload) replies of the current process: "ready", "progress",
-        "log", "result", "error" and "exit" (it died)."""
+        "log", "result", "error", "done" and "exit" (it died)."""
         messages = []
         while True:
             try:
@@ -318,7 +342,7 @@ class SolverProcess:
                 return messages
             if process is not self.process:
                 continue
-            if message[0] in ("result", "error") and message[1] == self.job:
+            if message[0] == "done" and message[1] == self.job:
                 self.job = None
             elif message[0] == "exit":
                 self.process = None

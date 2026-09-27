@@ -40,6 +40,7 @@ from .dcsolve.errors import UserFacingError
 from .dcsolve.geometry import (Electrode, LayerFill, Polygon, Problem, Rect, Terminal, TrackSeg, ViaLink,
                                contact_solder_buildups, tht_joint_buildups)
 from .dcsolve.skin import parse_engineering
+from .dcworker import MAX_DISPLAY_CELLS
 
 RHO_CU_OHM_M = solver_config.RHO_CU_OHM_M  # copper at 20 degC
 PLATING_UM = solver_config.VIA_PLATING_UM  # via barrel plating: KiCad does not store it
@@ -64,20 +65,38 @@ class DcTerminal:
     parts: list = field(default_factory=list)  # part references (module docstring)
     value: float = 0.0
     bonded: bool = False  # all parts one lug (a package's internal metal)
+    guessed: bool = False  # auto_terminals made it and its value is still the placeholder
+
+    def key(self):
+        return (self.name, self.role, tuple(json.dumps(p, sort_keys=True) for p in self.parts), self.value,
+                self.bonded)
 
 
 @dataclass
 class DcSetup:
-    net: str = ""
+    net: str = ""  # the net shown in the panel's table (and the only one solved in scope "net")
     terminals: list = field(default_factory=list)
     plating_um: float = PLATING_UM
     cell_um: float | None = None  # solver grid; None: Fill Resistance's automatic size
     vias_capped: bool = False  # filled and capped vias: a thin copper cap over their outer mouths
+    scope: str = "net"  # "all": every power net (all_nets), each with its own terminals
+    saved: dict = field(default_factory=dict)  # net -> terminals, for the nets not in the table now
 
     def key(self):
-        return (self.net, tuple((t.name, t.role, tuple(json.dumps(p, sort_keys=True) for p in t.parts),
-                                 t.value, t.bonded) for t in self.terminals),
-                self.plating_um, self.cell_um, self.vias_capped)
+        return (self.net, tuple(t.key() for t in self.terminals), self.plating_um, self.cell_um,
+                self.vias_capped)
+
+    def for_net(self, net: str, terminals: list) -> "DcSetup":
+        """This setup's settings with one net and its terminals (what one solve takes)."""
+        return DcSetup(net, terminals, self.plating_um, self.cell_um, self.vias_capped)
+
+    def switch(self, net: str) -> None:
+        """Show `net` in the table; the old net's terminals are kept for later."""
+        if net == self.net:
+            return
+        if self.net and self.terminals:
+            self.saved[self.net] = self.terminals
+        self.net, self.terminals = net, self.saved.pop(net, [])
 
     def ready(self) -> str:
         """"" when there is something to solve, else what is missing."""
@@ -146,36 +165,54 @@ def setup_from_config(data: dict) -> DcSetup:
         setup.cell_um = _number(run["cell_um"])
     if physics.get("via_plating_um") is not None:
         setup.plating_um = _number(physics["via_plating_um"])
-    for entry in data.get("terminals", ()):
-        role = entry["role"]
-        if role not in ("supply", "load"):
-            raise ValueError(f"terminal {entry.get('name')!r}: unknown role {role!r}")
-        parts = [part for part in entry.get("parts", ()) if _part_kind(part)]
-        value = entry.get("v_oc" if role == "supply" else "i_draw_a")
-        default = DEFAULT_SUPPLY_V if role == "supply" else DEFAULT_LOAD_A
-        setup.terminals.append(DcTerminal(str(entry["name"]), role, parts,
-                                          default if value is None else _number(value), bool(entry.get("bonded"))))
+    setup.terminals = [_terminal_from_config(entry) for entry in data.get("terminals", ())]
+    ours = data.get("_kileidoscope", {}) or {}  # their loader skips "_" keys
+    setup.scope = "all" if ours.get("scope") == "all" else "net"
+    setup.saved = {str(net): [_terminal_from_config(entry) for entry in entries]
+                   for net, entries in (ours.get("nets", {}) or {}).items() if net != setup.net}
     return setup
 
 
+def _terminal_from_config(entry: dict) -> DcTerminal:
+    role = entry["role"]
+    if role not in ("supply", "load"):
+        raise ValueError(f"terminal {entry.get('name')!r}: unknown role {role!r}")
+    parts = [part for part in entry.get("parts", ()) if _part_kind(part)]
+    value = entry.get("v_oc" if role == "supply" else "i_draw_a")
+    default = DEFAULT_SUPPLY_V if role == "supply" else DEFAULT_LOAD_A
+    return DcTerminal(str(entry["name"]), role, parts, default if value is None else _number(value),
+                      bool(entry.get("bonded")), bool(entry.get("_guessed")))
+
+
+def _terminal_config(terminal: DcTerminal) -> dict:
+    entry = {"name": terminal.name, "role": terminal.role, "parts": list(terminal.parts),
+             "active": bool(terminal.parts)}  # their loader needs parts on active terminals
+    if terminal.role == "supply":
+        entry.update(r_out_ohm=0.0, v_oc=terminal.value)
+    else:
+        entry["i_draw_a"] = terminal.value
+    if terminal.bonded:
+        entry["bonded"] = True
+    if terminal.guessed:
+        entry["_guessed"] = True
+    return entry
+
+
 def config_from_setup(setup: DcSetup) -> dict:
-    terminals = []
-    for terminal in setup.terminals:
-        entry = {"name": terminal.name, "role": terminal.role, "parts": list(terminal.parts),
-                 "active": bool(terminal.parts)}  # their loader needs parts on active terminals
-        if terminal.role == "supply":
-            entry.update(r_out_ohm=0.0, v_oc=terminal.value)
-        else:
-            entry["i_draw_a"] = terminal.value
-        if terminal.bonded:
-            entry["bonded"] = True
-        terminals.append(entry)
-    return {"_comment": "KiLeidoscope's DC analysis setup, in Fill Resistance's fill_res_config format "
-                        "(https://git.b4l.co.th/B4L/kicad-zone-resistance)",
-            "version": 1, "mode": "pdn",
-            "run": {"net": setup.net, "vias_capped": setup.vias_capped, "cell_um": setup.cell_um},
-            "physics": {"via_plating_um": setup.plating_um},
-            "terminals": terminals}
+    """The net in the table as their config; the other nets and the scope in our section."""
+    config = {"_comment": "KiLeidoscope's DC analysis setup, in Fill Resistance's fill_res_config format "
+                          "(https://git.b4l.co.th/B4L/kicad-zone-resistance)",
+              "version": 1, "mode": "pdn",
+              "run": {"net": setup.net, "vias_capped": setup.vias_capped, "cell_um": setup.cell_um},
+              "physics": {"via_plating_um": setup.plating_um},
+              "terminals": [_terminal_config(terminal) for terminal in setup.terminals]}
+    if setup.scope == "all" or setup.saved:
+        config["_kileidoscope"] = {
+            "_comment": "The other nets' supplies and loads; scope \"all\" solves every power net",
+            "scope": setup.scope,
+            "nets": {net: [_terminal_config(terminal) for terminal in terminals]
+                     for net, terminals in sorted(setup.saved.items()) if terminals}}
+    return config
 
 
 # --- Parts -----------------------------------------------------------------------------
@@ -304,7 +341,7 @@ def auto_terminals(snapshot: model.BoardSnapshot, net: str) -> tuple[list, str]:
         raise SetupError(f"No inductor, regulator or connector on {net} to feed it: mark the supply by hand")
     _, source, mine, _, _ = max(supplies, key=lambda entry: (entry[0], -len(entry[2])))
     terminals = [DcTerminal(source, "supply", [source if len(mine) > 1 else f"{source}.{mine[0].number}"],
-                            guess_voltage(net))]
+                            guess_voltage(net), guessed=True)]
     skipped = []
     for _, reference, mine, regulator, series in sorted(found, key=lambda entry: entry[1]):
         if reference == source or not (series or _prefix(reference) in ("U", "IC")):
@@ -312,7 +349,7 @@ def auto_terminals(snapshot: model.BoardSnapshot, net: str) -> tuple[list, str]:
         if regulator:
             skipped.append(reference)  # a regulator's feedback or sense pin, not a load
             continue
-        terminals.append(DcTerminal(reference, "load", [reference], AUTO_LOAD_A, bonded=len(mine) > 1))
+        terminals.append(DcTerminal(reference, "load", [reference], AUTO_LOAD_A, bonded=len(mine) > 1, guessed=True))
     loads = len(terminals) - 1
     message = (f"Supply {source}; {loads} load{'s' * (loads != 1)} at {AUTO_LOAD_A:g} A"
                f"{' each' * (loads > 1)} (ICs and parts feeding other rails): type the real currents. "
@@ -468,6 +505,7 @@ class Built:
     barrel_ids: list  # KiCad id of each problem.vias entry (via or plated pad)
     barrel_layers: list  # (top, bottom) copper layer of each barrel
     warnings: list
+    optional: list = field(default_factory=list)  # loads the solver may leave out (guessed ones)
 
 
 def build_problem(snapshot: model.BoardSnapshot, setup: DcSetup, board_path: str = "") -> Built:
@@ -589,18 +627,28 @@ def inputs_key(snapshot: model.BoardSnapshot, setup: DcSetup):
 MAX_NAME = 40
 
 
+def power_nets(snapshot: model.BoardSnapshot) -> list:
+    """The nets named like a supply rail (is_power) that reach a pad, sorted."""
+    return sorted({pad.net for pad in snapshot.pads if is_power(pad.net)})
+
+
 class DcAnalysis:
     """The setup of the open board and its solves, for the live loop.
 
     `handle` applies the viewer's edits (protocol: "dc" requests) and saves the
-    setup. `step`, called every poll, re-solves when what the solve depends on
-    (`inputs_key`) has changed and then stayed the same for `settle_s`, like the
-    kicad-cli exports after edits; a change while a solve runs cancels it. Solves
-    run in a worker process (dcworker.SolverProcess). Both return frames to send.
+    setup. `step`, called every poll, makes the plan: the nets to solve now, each
+    with its supplies and loads (scope "net": the table's net; scope "all": every
+    power net, with the terminals the user gave it or auto_terminals' guess).
+    A net is solved again when what its solve depends on (`inputs_key`) has
+    changed and the board then stayed the same for `settle_s`, like the kicad-cli
+    exports after edits; a change while a solve runs cancels it. Solves run in a
+    worker process (dcworker.SolverProcess), all due nets in one job, one result
+    frame per net. Both return frames to send.
     """
 
     SETTLE_S = 1.5
     STATUS_INTERVAL_S = 1.0  # the elapsed time of a running solve, at most this often
+    DISPLAY_CELLS_EACH = 300_000  # at least this many display pixels per net when many are solved
 
     def __init__(self, clock=time.monotonic, solver_factory=None, settle_s: float = SETTLE_S):
         self.clock = clock
@@ -614,18 +662,21 @@ class DcAnalysis:
         self.file = ""  # where the setup was read or saved
         self.message = ""  # feedback on the last edit
         self.active = -1  # the terminal clicks add parts to
-        self.key = None  # inputs_key when a solve is possible, else None
+        self.keys = None  # net -> inputs_key of the plan at the last step
+        self.skipped = {}  # net -> why scope "all" leaves it out
         self.changed_at = 0.0
-        self.solved_key = None
+        self.solved = {}  # net -> the inputs_key its shown result (or error) belongs to
+        self.results = {}  # net -> its last result frame, for a viewer that reconnects
+        self.errors = {}  # net -> why its last solve failed
         self.force = False
         self.job = 0
-        self.running = None  # (job id, key, started, build seconds)
+        self.running = None  # (job id, {net: key}, started, build seconds, {net: guessed load names})
+        self.guesses = ({}, None)  # (net -> auto_terminals, the pads and footprints they were made from)
         self.notes = []  # the solver's notes and warnings for the running job
         self.status = {"state": "idle", "message": "", "elapsed_s": None, "notes": []}
         self.status_sent = (None, 0.0)
         self.setup_frame = None
-        self.result = None  # the last result frame, for a viewer that reconnects
-        self.outbox = []  # frames for the next step (a new board's cleared result)
+        self.outbox = []  # frames for the next step (a new board's cleared results)
         self.revision = 0
 
     # --- Board and setup --------------------------------------------------------------
@@ -643,10 +694,9 @@ class DcAnalysis:
             except (OSError, SetupError) as exc:
                 self.setup, self.file, self.message = DcSetup(), "", f"Setup not read: {exc}"
             self.active = len(self.setup.terminals) - 1
-            self.key = object()  # the next step sends the new board's setup
-            self.solved_key = self.setup_frame = None
-            self.result = protocol.dc_result_message(None, self.revision)
-            self.outbox = [self.result]
+            self.keys = None  # the next step sends the new board's setup
+            self.solved, self.results, self.errors, self.setup_frame = {}, {}, {}, None
+            self.outbox = [protocol.dc_result_message(None, self.revision)]
 
     def handle(self, request: dict, snapshot, selected_nets=frozenset()) -> list[bytes]:
         """One edit from the viewer; the frames that show it."""
@@ -659,20 +709,19 @@ class DcAnalysis:
                 return [self._setup_message(snapshot, force=True)]
             if request.get("op") not in ("solve", "activate"):
                 self._save()
+            if snapshot is not None:
+                self._plan(snapshot)  # the nets scope "all" leaves out, for the setup frame
             return [self._setup_message(snapshot, force=True)] + self.step(snapshot)
 
     def _edit(self, request, snapshot, selected_nets):
         op, setup = request.get("op"), self.setup
         terminals = setup.terminals
         if op == "net":
-            net = self._chosen_net(request, snapshot, selected_nets)
-            if net != setup.net:
-                setup.net = net
-                for terminal in terminals:  # parts on the old net cannot carry this one
-                    terminal.parts = [part for part in terminal.parts
-                                      if snapshot is not None and resolve_part(snapshot, part, net)]
-                    if terminal.role == "supply":
-                        terminal.value = guess_voltage(net)
+            self._show_net(self._chosen_net(request, snapshot, selected_nets), snapshot)
+        elif op == "scope":
+            setup.scope = "all" if request.get("scope") == "all" else "net"
+            if setup.scope == "all" and setup.net and not setup.terminals and snapshot is not None:
+                self._show_net(setup.net, snapshot, refill=True)
         elif op == "add":
             role = request["role"]
             if role not in ("supply", "load"):
@@ -704,9 +753,21 @@ class DcAnalysis:
             self._settings(request)
         elif op == "solve":
             self.force = True
-            self.solved_key = None
+            self.solved = {}
         else:
             raise ValueError(f"unknown DC request {op!r}")
+
+    def _show_net(self, net, snapshot, refill=False):
+        """The table shows `net`. In scope "all", a net without supplies and loads of
+        its own starts from the guess it was solved with."""
+        setup = self.setup
+        setup.switch(net)
+        if setup.scope == "all" and snapshot is not None and (refill or not setup.terminals):
+            try:
+                setup.terminals, self.message = auto_terminals(snapshot, net)
+            except SetupError as exc:
+                self.message = str(exc)
+        self.active = len(setup.terminals) - 1 if setup.terminals else -1
 
     def _edit_terminal(self, terminal, request):
         if "name" in request:
@@ -718,7 +779,7 @@ class DcAnalysis:
             value = float(request["value"])
             if not math.isfinite(value) or value < 0 or (terminal.role == "supply" and value <= 0):
                 raise ValueError("Supplies need a voltage above 0, loads a current of 0 or more")
-            terminal.value = value
+            terminal.value, terminal.guessed = value, False
         if "bonded" in request:
             terminal.bonded = bool(request["bonded"])
 
@@ -755,7 +816,8 @@ class DcAnalysis:
 
     def _mark(self, request, snapshot):
         """A click on a pad or via: add it to the active terminal, or take it off
-        again. Shift+click takes every pad of that component on the net."""
+        again. Shift+click takes every pad of that component on the net. In scope
+        "all", a click on another power net's part moves the table to that net."""
         if snapshot is None:
             raise SetupError("No board yet")
         found = part_for(snapshot, str(request["item"]), bool(request.get("whole")))
@@ -763,11 +825,9 @@ class DcAnalysis:
             raise SetupError("Click a pad or a via to mark it")
         part, net = found
         setup = self.setup
-        if not setup.net:
-            setup.net = net
-            for terminal in setup.terminals:
-                if terminal.role == "supply" and not terminal.parts:
-                    terminal.value = guess_voltage(net)
+        if not setup.net or (net != setup.net and setup.scope == "all" and is_power(net)):
+            self._show_net(net, snapshot)
+            self.active = -1
         elif net != setup.net:
             raise SetupError(f"{describe_part(part)} is on {net or 'no net'}, not {setup.net}")
         if not 0 <= self.active < len(setup.terminals):
@@ -796,13 +856,15 @@ class DcAnalysis:
     def setup_state(self) -> dict:
         setup = self.setup
         return {"net": setup.net, "active": self.active, "file": self.file, "message": self.message,
+                "scope": setup.scope, "skipped": dict(self.skipped),
                 "settings": {"plating_um": setup.plating_um, "cell_um": setup.cell_um or 0,
                              "vias_capped": setup.vias_capped, "rho_ohm_m": RHO_CU_OHM_M},
                 "terminals": [{"name": t.name, "role": t.role, "value": t.value, "bonded": t.bonded,
-                               "parts": [describe_part(part) for part in t.parts]} for t in setup.terminals]}
+                               "guessed": t.guessed, "parts": [describe_part(part) for part in t.parts]}
+                              for t in setup.terminals]}
 
     def _markers(self, snapshot) -> list:
-        """(x, y, size, terminal, side) of every pad and via the terminals name."""
+        """(x, y, size, terminal, side) of every pad and via the table's terminals name."""
         rows = []
         if snapshot is None:
             return rows
@@ -826,6 +888,41 @@ class DcAnalysis:
         self.setup_frame = frame
         return frame
 
+    # --- The plan ---------------------------------------------------------------------
+
+    def _guess(self, snapshot, net):
+        """auto_terminals for `net`, kept while the board's pads and footprints are."""
+        guesses, source = self.guesses
+        if source != (snapshot.pads, snapshot.footprints):
+            guesses = {}
+            self.guesses = (guesses, (snapshot.pads, snapshot.footprints))
+        if net not in guesses:
+            try:
+                guesses[net] = auto_terminals(snapshot, net)[0]
+            except SetupError as exc:
+                guesses[net] = str(exc)
+        return guesses[net]
+
+    def _plan(self, snapshot) -> tuple[dict, str]:
+        """(net -> the setup its solve takes, what is missing when nothing is due)."""
+        setup = self.setup
+        if setup.scope != "all":
+            missing = setup.ready()
+            self.skipped = {}
+            return ({} if missing else {setup.net: setup.for_net(setup.net, setup.terminals)}), missing
+        plan, self.skipped = {}, {}
+        nets = power_nets(snapshot)
+        for net in sorted(nets, key=lambda net: net != setup.net):  # the table's net first
+            own = setup.for_net(net, setup.terminals if net == setup.net else setup.saved.get(net, []))
+            if own.ready():
+                guess = self._guess(snapshot, net)
+                own = setup.for_net(net, [] if isinstance(guess, str) else guess)
+                if own.ready():
+                    self.skipped[net] = guess if isinstance(guess, str) else f"{net}: no load found"
+                    continue
+            plan[net] = own
+        return plan, ("" if plan else "No power net with a supply to solve")
+
     # --- Solving ----------------------------------------------------------------------
 
     def step(self, snapshot, revision: int | None = None) -> list[bytes]:
@@ -837,42 +934,54 @@ class DcAnalysis:
                 return []
             frames, self.outbox = self.outbox, []
             now = self.clock()
-            missing = self.setup.ready()
-            key = None if missing else inputs_key(snapshot, self.setup)
-            if key != self.key:
-                self.key, self.changed_at = key, now
+            plan, missing = self._plan(snapshot)
+            keys = {net: inputs_key(snapshot, one) for net, one in plan.items()}
+            if keys != self.keys:
+                self.keys, self.changed_at = keys, now
                 if (frame := self._setup_message(snapshot)) is not None:
                     frames.append(frame)  # the markers follow moved pads
-                if self.running is not None and self.running[1] != key:
+                if self.running is not None and any(keys.get(net) != key for net, key in self.running[1].items()):
                     self._cancel()
-                if key is None and self.result is not None and self.result not in frames:
-                    self.result = protocol.dc_result_message(None, self.revision)
-                    frames.append(self.result)
+                for net in [net for net in self.results if net not in keys]:
+                    frames.append(protocol.dc_result_message(None, self.revision, net))  # no longer solved
+                    del self.results[net]
+                for net in [net for net in self.solved if net not in keys]:
+                    del self.solved[net]
+                    self.errors.pop(net, None)
             frames += self._replies(now)
-            if key is None:
+            due = [net for net, key in keys.items() if self.solved.get(net) != key]
+            if not keys:
                 self._set_status(state="idle", message=missing)
-            elif self.running is None and key != self.solved_key:
+            elif self.running is None and due:
                 if self.force or now - self.changed_at >= self.settle_s:
-                    self._launch(snapshot, key, now)
+                    self._launch(snapshot, plan, keys, due, now)
                 else:
                     self._set_status(state="waiting", message="Edits settling; solving shortly")
             return frames + self._status_frames(now)
 
-    def _launch(self, snapshot, key, now):
+    def _launch(self, snapshot, plan, keys, due, now):
         self.force = False
         started = time.perf_counter()
-        try:
-            built = build_problem(snapshot, self.setup, self.board_path)
-        except UserFacingError as exc:
-            self.solved_key = key  # retried once the board or setup changes
-            self._set_status(state="error", message=str(exc))
+        items, guessed = [], {}
+        for net in due:
+            try:
+                items.append((net, build_problem(snapshot, plan[net], self.board_path)))
+            except UserFacingError as exc:
+                self.solved[net], self.errors[net] = keys[net], str(exc)  # retried once it changes
+                continue
+            guessed[net] = [t.name for t in plan[net].terminals if t.guessed and t.role == "load"]
+            items[-1][1].optional = guessed[net]
+        if not items:
+            self._finish(0.0)
             return
         if self.solver is None:
             self.solver = self.solver_factory()
         self.job += 1
-        self.notes = list(built.warnings)
-        self.solver.submit(self.job, built, cell_um=self.setup.cell_um)
-        self.running = (self.job, key, now, time.perf_counter() - started)
+        self.notes = [note for _, built in items for note in built.warnings]
+        cells = max(self.DISPLAY_CELLS_EACH, MAX_DISPLAY_CELLS // len(items))
+        self.solver.submit(self.job, [(net, built) for net, built in items], cell_um=self.setup.cell_um,
+                           display_cells=cells)
+        self.running = (self.job, {net: keys[net] for net, _ in items}, now, time.perf_counter() - started, guessed)
         self._set_status(state="solving", message="Starting the solver", elapsed_s=0.0)
 
     def _replies(self, now) -> list[bytes]:
@@ -885,21 +994,48 @@ class DcAnalysis:
                 self.notes = (self.notes + [payload])[-20:]
             if running is None or (job is not None and job != running[0]):
                 continue
+            nets = running[1]
             if kind == "progress":
-                self._set_status(state="solving", message=payload[0], elapsed_s=round(payload[1], 1))
+                text, elapsed, index, count, net = payload
+                where = f"{net} ({index + 1}/{count}): " if count > 1 else ""
+                self._set_status(state="solving", message=where + text, elapsed_s=round(elapsed, 1))
             elif kind == "result":
-                self.running, self.solved_key = None, running[1]
-                total = now - running[2]
-                payload["timings_s"].update(build=running[3], total=total)
+                net = payload["net"]
+                payload["timings_s"].update(build=running[3], total=now - running[2])
+                payload["guessed"] = [name for name in running[4].get(net, []) if name not in payload["left_out"]]
                 payload["notes"] = [note for note in self.notes if not note.startswith("adaptive grid")]
-                self.result = protocol.dc_result_message(payload, self.revision)
-                frames.append(self.result)
-                self._set_status(state="done", message=f"Solved in {total:.1f} s", elapsed_s=round(total, 2))
-            elif kind in ("error", "exit"):
-                self.running, self.solved_key = None, running[1]
-                message = payload if kind == "error" else "The DC solver stopped unexpectedly"
-                self._set_status(state="error", message=message)
+                self.results[net] = protocol.dc_result_message(payload, self.revision)
+                frames.append(self.results[net])
+                self.solved[net] = nets[net]
+                self.errors.pop(net, None)
+            elif kind == "error":
+                net, message = payload
+                self.solved[net], self.errors[net] = nets[net], message
+                if self.results.pop(net, None) is not None:
+                    frames.append(protocol.dc_result_message(None, self.revision, net))
+            elif kind in ("done", "exit"):
+                self.running = None
+                for net, key in nets.items():  # a process that died leaves its nets unsolved: say so
+                    if self.solved.get(net) != key:
+                        self.solved[net], self.errors[net] = key, "The DC solver stopped unexpectedly"
+                self._finish(now - running[2])
         return frames
+
+    def _finish(self, elapsed):
+        """The status after a job: done, or the errors of the nets that failed."""
+        failed = {net: message for net, message in self.errors.items() if net in (self.keys or {})}
+        if self.setup.scope != "all":
+            if failed:
+                self._set_status(state="error", message=next(iter(failed.values())))
+            else:
+                self._set_status(state="done", message=f"Solved in {elapsed:.1f} s", elapsed_s=round(elapsed, 2))
+            return
+        solved = len(self.results)
+        message = f"Solved {solved} net{'s' * (solved != 1)} in {elapsed:.1f} s"
+        if failed:
+            message += f"; {len(failed)} failed"
+        self._set_status(state="done" if solved else "error", message=message, elapsed_s=round(elapsed, 2),
+                         errors=failed)
 
     def _cancel(self):
         if self.running is not None and self.solver is not None:
@@ -909,6 +1045,8 @@ class DcAnalysis:
     def _set_status(self, **status):
         self.status = {"state": status["state"], "message": status.get("message", ""),
                        "elapsed_s": status.get("elapsed_s"), "notes": list(self.notes)[-6:]}
+        if status.get("errors"):
+            self.status["errors"] = dict(status["errors"])
 
     def _status_frames(self, now) -> list[bytes]:
         sent, at = self.status_sent
@@ -921,9 +1059,8 @@ class DcAnalysis:
     def resync_frames(self, snapshot) -> list[bytes]:
         """Everything for a viewer that (re)connects."""
         with self.lock:
-            frames = [self._setup_message(snapshot, force=True),
-                      protocol.dc_status_message(self.status, self.revision)]
-            return frames + ([self.result] if self.result is not None else [])
+            return [self._setup_message(snapshot, force=True), protocol.dc_status_message(self.status, self.revision),
+                    protocol.dc_result_message(None, self.revision), *self.results.values()]
 
     def close(self):
         with self.lock:

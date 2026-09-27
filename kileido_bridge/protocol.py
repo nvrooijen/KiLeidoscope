@@ -262,14 +262,15 @@ def dc_status_message(status: dict, revision: int) -> bytes:
     return encode_frame({"type": "dc_status", "revision": revision, **status})
 
 
-def dc_result_message(result: dict | None, revision: int) -> bytes:
-    """A finished DC solve (dcworker.solve), or None to clear the last one. Per copper
+def dc_result_message(result: dict | None, revision: int, net: str = "") -> bytes:
+    """A finished DC solve of one net (dcworker.solve), or None to clear `net`'s
+    result ("": every net's). Per copper
     layer in `layers`, on the grid (x0_nm, y0_nm, pitch_nm): `j` |J| in A/mm2, `v` the
     potential in V, `jx`, `jy` the current density along KiCad's x and y (NaN off
     copper). Barrels (vias and plated pads) by current: `via` (x, y, land size) rows,
     `via_current` (A) and `via_power` (W), with their ids and layer spans in the header."""
     if result is None:
-        return encode_frame({"type": "dc_result", "revision": revision, "net": ""})
+        return encode_frame({"type": "dc_result", "revision": revision, "net": net, "clear": True})
     fields, barrels = result["fields"], result["barrels"]
     header = {key: value for key, value in result.items() if key not in ("fields", "barrels")}
     header.update(type="dc_result", revision=revision, via_ids=list(barrels["ids"]),

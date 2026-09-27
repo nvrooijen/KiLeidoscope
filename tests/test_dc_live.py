@@ -40,15 +40,16 @@ def test_worker_process_solves_and_reports_progress(tmp_path):
     solver = SolverProcess(log_path=tmp_path / "worker.log")
     try:
         built = dc.build_problem(dc_board.strip(), strip_setup())
-        solver.submit(1, built, cell_um=250)
-        messages = wait_for(solver, lambda found: any(kind == "result" for kind, *_ in found))
+        solver.submit(1, [(dc_board.NET, built)], cell_um=250)
+        messages = wait_for(solver, lambda found: any(kind == "done" for kind, *_ in found))
         kinds = [kind for kind, *_ in messages]
         assert "ready" in kinds and "progress" in kinds
         (result,) = [payload for kind, job, payload in messages if kind == "result" and job == 1]
         inline = solve(built, cell_um=250)
         assert result["pairs"][0]["r_ohm"] == pytest.approx(inline["pairs"][0]["r_ohm"], rel=1e-12)
         assert result["fields"]["j"].shape == inline["fields"]["j"].shape
-        assert solver.job is None  # idle again
+        assert kinds[-1] == "done" and solver.job is None  # idle again
+        assert result["net"] == dc_board.NET
         # The solver's own notes arrive as log lines, never inside the replies stream.
         assert any(kind == "log" and "adaptive grid" in payload for kind, _, payload in messages)
     finally:
@@ -59,13 +60,13 @@ def test_superseded_job_is_dropped_and_the_process_replaced(tmp_path):
     solver = SolverProcess(log_path=tmp_path / "worker.log")
     try:
         board = dc_board.strip()
-        solver.submit(1, dc.build_problem(board, strip_setup()), cell_um=25)
+        solver.submit(1, [(dc_board.NET, dc.build_problem(board, strip_setup()))], cell_um=25)
         first = solver.process.pid
         solver.cancel()  # the copper changed: job 1 must never report
         assert solver.process.pid != first
-        solver.submit(2, dc.build_problem(board, strip_setup()), cell_um=500)
+        solver.submit(2, [(dc_board.NET, dc.build_problem(board, strip_setup()))], cell_um=500)
         messages = wait_for(solver, lambda found: any(kind == "result" for kind, *_ in found))
-        assert {job for kind, job, _ in messages if kind in ("result", "progress", "error")} == {2}
+        assert {job for kind, job, _ in messages if kind in ("result", "progress", "error", "done")} == {2}
     finally:
         solver.close()
 
@@ -75,10 +76,12 @@ def test_worker_reports_setup_errors(tmp_path):
     try:
         built = dc.build_problem(dc_board.strip(), strip_setup())
         built.problem.terminals[1].electrodes = built.problem.terminals[0].electrodes  # overlapping contacts
-        solver.submit(5, built, cell_um=500)
-        messages = wait_for(solver, lambda found: any(kind == "error" for kind, *_ in found))
-        (message,) = [payload for kind, job, payload in messages if kind == "error" and job == 5]
-        assert "overlap" in message
+        other = dc.build_problem(dc_board.strip(), strip_setup())
+        solver.submit(5, [("A", built), ("B", other)], cell_um=500)  # one net failing leaves the next
+        messages = wait_for(solver, lambda found: any(kind == "done" for kind, *_ in found))
+        ((net, message),) = [payload for kind, job, payload in messages if kind == "error" and job == 5]
+        assert net == "A" and "overlap" in message
+        assert [payload["net"] for kind, job, payload in messages if kind == "result"] == ["B"]
     finally:
         solver.close()
 
@@ -132,13 +135,15 @@ class InlineSolver:
     def __init__(self):
         self.pending, self.cancelled, self.submitted = [], [], []
 
-    def submit(self, job, built, **options):
-        self.pending.append((job, built, options))
+    def submit(self, job, items, **options):
+        self.pending.append((job, items, options))
         self.submitted.append(job)
 
     def poll(self):
         pending, self.pending = self.pending, []
-        return [("result", job, solve(built, **options)) for job, built, options in pending]
+        return [reply for job, items, options in pending
+                for reply in [("result", job, {**solve(built, **options), "net": net}) for net, built in items]
+                + [("done", job, None)]]
 
     def cancel(self):
         self.cancelled += [job for job, _, _ in self.pending]
@@ -231,10 +236,10 @@ def test_an_incomplete_setup_clears_the_result(tmp_path):
     clock.now += 2
     session.step(board)
     session.step(board)
-    assert frames_of([session.result], "dc_result")[0][0]["net"] == dc_board.NET
+    assert frames_of(session.results.values(), "dc_result")[0][0]["net"] == dc_board.NET
     frames = session.handle({"op": "remove", "index": 1}, board)
     ((header, _),) = frames_of(frames, "dc_result")
-    assert header["net"] == ""  # cleared
+    assert header["net"] == dc_board.NET and header["clear"]  # cleared
     status = frames_of(frames, "dc_status")[-1][0]
     assert status["state"] == "idle" and status["message"] == "Mark a load: a pad or via that draws current"
 
@@ -273,7 +278,7 @@ def test_resync_sends_setup_status_and_result(tmp_path):
     session.step(board)
     session.step(board)
     kinds = [header["type"] for header, _ in frames_of(session.resync_frames(board))]
-    assert kinds == ["dc_setup", "dc_status", "dc_result"]
+    assert kinds == ["dc_setup", "dc_status", "dc_result", "dc_result"]  # clear all, then each net's
 
 
 # --- Through the bridge ---------------------------------------------------------------
@@ -361,3 +366,73 @@ def test_auto_takes_the_regulator_without_an_inductor(tmp_path):
     session.setup.net = "SIG"
     ((header, _),) = frames_of(session.handle({"op": "auto"}, board), "dc_setup")
     assert header["message"].startswith("No inductor, regulator or connector on SIG")
+
+
+# --- Every power net ------------------------------------------------------------------
+
+def two_rails():
+    """+3V3 on F.Cu (0..30 x 0..5 mm) from connector J1 to U2; +1V8 on B.Cu
+    (0..30 x 10..15 mm) from inductor L1 (its other pad on SW) to U3; +5V only
+    reaches J2, so it has no load."""
+    pad = dc_board.smd_pad
+    zones = (model.ZoneFill("zone-3v3", "+3V3", "F.Cu", ((dc_board.rect(0, 0, 30 * MM, 5 * MM),),)),
+             model.ZoneFill("zone-1v8", "+1V8", "B.Cu", ((dc_board.rect(0, 10 * MM, 30 * MM, 15 * MM),),)))
+    pads = (pad("j1-1", "fp-j1", "1", "F.Cu", 0, 0, 2 * MM, 5 * MM, net="+3V3"),
+            pad("j1-2", "fp-j1", "2", "F.Cu", -5 * MM, 0, -3 * MM, 2 * MM, net="GND"),
+            pad("u2-1", "fp-u2", "1", "F.Cu", 28 * MM, 0, 30 * MM, 5 * MM, net="+3V3"),
+            pad("l1-1", "fp-l1", "1", "B.Cu", -5 * MM, 10 * MM, -3 * MM, 12 * MM, net="SW"),
+            pad("l1-2", "fp-l1", "2", "B.Cu", 0, 10 * MM, 2 * MM, 15 * MM, net="+1V8"),
+            pad("u3-1", "fp-u3", "1", "B.Cu", 28 * MM, 10 * MM, 30 * MM, 15 * MM, net="+1V8"),
+            pad("j2-1", "fp-j2", "1", "F.Cu", 40 * MM, 0, 41 * MM, MM, net="+5V"))
+    footprints = [dc_board.footprint(f"fp-{name.lower()}", name, 0, 0) for name in ("J1", "U2", "L1", "U3", "J2")]
+    return dc_board.snapshot(zones, pads, footprints)
+
+
+def test_all_power_nets_are_solved_each_with_its_own_terminals(tmp_path):
+    session, clock, solver = analysis(tmp_path)
+    board = two_rails()
+    session.handle({"op": "settings", "cell_um": 500}, board)
+    ((header, _), *_) = frames_of(session.handle({"op": "scope", "scope": "all"}, board), "dc_setup")
+    assert header["scope"] == "all" and header["skipped"] == {"+5V": "+5V: no load found"}
+    clock.now += 2
+    frames = session.step(board) + session.step(board)
+    results = {h["net"]: h for h, _ in frames_of(frames, "dc_result")}
+    assert set(results) == {"+3V3", "+1V8"} and solver.submitted == [1]
+    assert [t["name"] for t in results["+1V8"]["supplies"]] == ["L1"]
+    assert results["+1V8"]["guessed"] == ["U3"] and results["+1V8"]["supplies"][0]["v_oc"] == 1.8
+    assert results["+3V3"]["loads"][0]["i_a"] == dc.AUTO_LOAD_A
+    status = frames_of(frames, "dc_status")[-1][0]
+    assert status["state"] == "done" and status["message"].startswith("Solved 2 nets in")
+    # A typed current is the user's, saved per net; only the net whose inputs changed is solved again.
+    session.handle({"op": "net", "net": "+1V8"}, board)  # the table shows the guess to edit
+    assert [t.name for t in session.setup.terminals] == ["L1", "U3"]
+    session.handle({"op": "edit", "index": 1, "value": 0.5}, board)
+    clock.now += 2
+    frames = session.step(board) + session.step(board)
+    ((header, _),) = frames_of(frames, "dc_result")
+    assert header["net"] == "+1V8" and header["guessed"] == [] and header["loads"][0]["i_a"] == 0.5
+    assert solver.submitted == [1, 2]
+    saved, _ = dc.load_setup(str(tmp_path / "power.kicad_pcb"))
+    assert saved.scope == "all" and saved.net == "+1V8" and saved.terminals[1].value == 0.5
+    # Back to one net: the other rail's result is withdrawn.
+    frames = session.handle({"op": "scope", "scope": "net"}, board)
+    assert [(h["net"], h.get("clear")) for h, _ in frames_of(frames, "dc_result")] == [("+3V3", True)]
+
+
+def test_a_guessed_load_cut_off_from_the_supply_is_left_out():
+    """J9 sits on +3V3 copper of its own: as a guess it is dropped and the net still solves;
+    marked by the user it fails the solve, as before."""
+    board = dc_board.strip()
+    island = model.ZoneFill("zone-island", dc_board.NET, "F.Cu", ((dc_board.rect(0, 20 * MM, 5 * MM, 25 * MM),),))
+    board = replace(board, zones=(*board.zones, island),
+                    pads=(*board.pads, dc_board.smd_pad("pad-j9", "fp-j9", "1", "F.Cu", 0, 20 * MM, MM, 21 * MM)),
+                    footprints=(*board.footprints, dc_board.footprint("fp-j9", "J9", 0, 20 * MM)))
+    setup = strip_setup(cell_um=500)
+    setup.terminals.append(dc.DcTerminal("L9", "load", ["J9.1"], 0.1, guessed=True))
+    built = dc.build_problem(board, setup)
+    built.optional = ["L9"]
+    result = solve(built, cell_um=500)
+    assert result["left_out"] == ["L9"] and [load["name"] for load in result["loads"]] == ["L1"]
+    built = dc.build_problem(board, setup)
+    with pytest.raises(dc.UserFacingError, match="Load 'L9'"):
+        solve(built, cell_um=500)

@@ -100,7 +100,11 @@ def panel_text(panel):
     lines = []
     context = types.SimpleNamespace(scene=bpy.context.scene, screen=None, region=None,
                                     preferences=bpy.context.preferences)
-    panel.draw(types.SimpleNamespace(layout=Layout(lines)), context)
+    fake = types.SimpleNamespace(layout=Layout(lines))
+    for name in dir(panel):
+        if name.startswith("_draw"):  # the panel's own helpers, bound to the stand-in
+            setattr(fake, name, types.MethodType(getattr(panel, name), fake))
+    panel.draw(fake, context)
     return lines
 
 
@@ -145,7 +149,7 @@ def main():
         assert scene.kileido_dc_active == 1 and not dc.syncing()
 
         # A colour map per layer, just out from its copper, textured with the field.
-        front, back = objects()["KLS F.Cu dc map"], objects()["KLS B.Cu dc map"]
+        front, back = objects()[dc.map_name("F.Cu")], objects()[dc.map_name("B.Cu")]
         assert not front.hide_get() and not back.hide_get()
         # Two quads each: out from the copper's outer face and in from its inner face.
         for obj, layer, up in ((front, "F.Cu", 1), (back, "B.Cu", -1)):
@@ -198,7 +202,7 @@ def main():
         paths = dc.flow_paths(shown, 0, scene.kileido_dc_arrow_mm * 1e6)
         assert len(paths) > 50 and all(len(path) >= dc.FLOW_MIN_POINTS for path in paths)
         assert np.median([path[-1][0] - path[0][0] for path in paths]) > 1 * MM
-        arrows = objects()["KLS F.Cu dc arrows"]
+        arrows = objects()[dc.arrows_name("F.Cu", dc_board.NET)]
         assert arrows.modifiers[0].node_group.name == dc.FLOW_GROUP
         from kileido.nodes import modifier_value
         material = arrows.modifiers[0].node_group.interface.items_tree["Material"].identifier
@@ -225,7 +229,7 @@ def main():
         assert len(dc.flow_paths(shown, 0, 4e6)) < len(paths)
 
         # Via currents: one column per via, the four sharing the 5 A.
-        vias = objects()["KLS vias dc"]
+        vias = objects()[dc.vias_name(dc_board.NET)]
         assert len(vias.data.polygons) == 4 * 18 and not vias.hide_get()
         assert np.isclose(sum(result["barrels"]["current_a"]), 5.0, rtol=1e-6)
         points, _ = evaluated(vias)
@@ -254,7 +258,7 @@ def main():
 
         # Layer eyes: the F.Cu eye hides its map and arrows; Vias hides the via currents.
         scene.kileido_show_F_Cu = False
-        assert front.hide_get() and objects()["KLS F.Cu dc arrows"].hide_get() and not back.hide_get()
+        assert front.hide_get() and objects()[dc.arrows_name("F.Cu", dc_board.NET)].hide_get() and not back.hide_get()
         scene.kileido_show_F_Cu = True
         assert not front.hide_get()
         scene.kileido_show_vias = False
@@ -278,6 +282,35 @@ def main():
         assert not front.hide_get() and not supply.hide_get()
         apply.load_frames(b"".join(protocol.snapshot_frames(snapshot, revision=2)))
         assert not front.hide_get() and len(front.data.vertices) == 8 and not vias.hide_get()
+        # All power nets: a second net's result draws beside the first, on one shared colour range;
+        # clearing it takes only its displays away.
+        other = made_up_result()
+        other["net"] = "+1V8"
+        other["grid"]["y0_nm"] += 30 * MM  # its copper lies elsewhere
+        for key in ("j", "jx"):
+            other["fields"][key] = other["fields"][key] * 3  # a busier rail: the shared top rises
+        other["j_max"] = 3 * result["j_max"]
+        apply.load_frames(protocol.dc_result_message(other, 4))
+        assert set(state.board.dc["results"]) == {dc_board.NET, "+1V8"}
+        assert state.board.dc["result"]["net"] == dc_board.NET  # the table's net stays in the panel
+        # One map per layer holds both nets (coplanar maps, one per net, hid each other).
+        image = bpy.data.images["KLS DC F.Cu"]
+        assert image.size[1] > rows and not front.hide_get()
+        both = np.empty(len(image.pixels), np.float32)
+        image.pixels.foreach_get(both)
+        assert (both[3::4] > 0.5).sum() == 2 * (pixels[:, :, 3] > 0.5).sum()
+        second = objects()[dc.arrows_name("F.Cu", "+1V8")]
+        assert not second.hide_get() and second.name != objects()[dc.arrows_name("F.Cu", dc_board.NET)].name
+        assert np.isclose(dc.value_range()[1], 3 * result["j_max"], rtol=1e-6)
+        texts = {obj.data.body for obj in objects() if obj.type == "FONT" and not obj.hide_get()}
+        assert any(text.startswith("DC, steady current: 2 power nets, 10 A") for text in texts), texts
+        assert [net for net, _ in dc.net_overview()] == ["+1V8", dc_board.NET]
+        scene.kileido_dc_scope = "ALL"
+        assert any(line.startswith("+3V3: 5 A, worst drop 20 mV") for line in panel_text(kileido.KILEIDO_PT_dc))
+        apply.load_frames(protocol.dc_result_message(None, 5, "+1V8"))
+        assert second.hide_get() and not front.hide_get() and set(state.board.dc["results"]) == {dc_board.NET}
+        assert tuple(bpy.data.images["KLS DC F.Cu"].size) == (columns, rows)
+
         # A cleared result (setup incomplete) hides the maps; the markers stay.
         apply.load_frames(protocol.dc_result_message(None, 3))
         assert front.hide_get() and vias.hide_get() and not supply.hide_get()
