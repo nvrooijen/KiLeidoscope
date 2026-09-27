@@ -31,7 +31,7 @@ from . import transform
 from .highlight import hide_copy, show_copy
 from .nodes import _group
 from .objects import owned_object, set_modifier, set_visible, write_attribute
-from .placement import outward
+from .placement import copper_thickness, outward
 from .state import board
 
 TAG = "kls_dc"
@@ -41,7 +41,6 @@ VIA_HALO_M = 30e-6  # via current columns: this much wider than the land
 LOG_DECADES = 3.0  # the log |J| scale spans this many decades below the top (Fill Resistance's plots)
 WEAK_ARROW = 0.02  # no arrows where |J| is below this fraction of the maximum
 MARKER_COLORS = {"supply": (1.0, 0.12, 0.08), "load": (0.1, 0.35, 1.0)}  # sRGB
-ARROW_COLOR = (1.0, 1.0, 1.0)
 LEGEND_TEXT = (0.92, 0.92, 0.92)  # sRGB
 LEGEND_NOTE = (0.6, 0.6, 0.6)
 FLOW_GROUP = "KLS_DC_Flow_v1"
@@ -380,27 +379,35 @@ def _draw_map(result, index, layer):
     name = f"KLS {layer} dc map"
     obj = owned_object(name)
     obj[TAG] = layer
+    # One quad just out from the copper's outer face and one just in from its inner
+    # face, so the copper shows its current seen from either side (through the
+    # board in X-ray mode, an inner layer from below).
+    up = outward(layer)
+    outer = _surface_z(layer, LIFT_M)
+    inner = transform.copper_z(layer, "zones", board.heights) - up * (copper_thickness(layer) + LIFT_M)
+    corners = [(left, bottom), (right, bottom), (right, top), (left, top)]
     mesh = obj.data
     mesh.clear_geometry()
-    mesh.vertices.add(4)
-    mesh.vertices.foreach_set("co", np.array([(left, bottom, 0), (right, bottom, 0), (right, top, 0),
-                                              (left, top, 0)], np.float32).ravel())
-    mesh.loops.add(4)
-    mesh.loops.foreach_set("vertex_index", np.arange(4, dtype=np.int32))
-    mesh.polygons.add(1)
-    mesh.polygons.foreach_set("loop_start", np.zeros(1, np.int32))
-    mesh.polygons.foreach_set("loop_total", np.full(1, 4, np.int32))
+    mesh.vertices.add(8)
+    mesh.vertices.foreach_set("co", np.array([(x, y, z) for z in (outer, inner) for x, y in corners],
+                                             np.float32).ravel())
+    facing = [0, 1, 2, 3] if up > 0 else [0, 3, 2, 1]  # the outer quad faces away from the board
+    loops = facing + [4 + corner for corner in reversed(facing)]
+    mesh.loops.add(8)
+    mesh.loops.foreach_set("vertex_index", np.array(loops, np.int32))
+    mesh.polygons.add(2)
+    mesh.polygons.foreach_set("loop_start", np.array([0, 4], np.int32))
+    mesh.polygons.foreach_set("loop_total", np.full(2, 4, np.int32))
     uv = mesh.uv_layers.new(name="UVMap") if not mesh.uv_layers else mesh.uv_layers[0]
-    uv.data.foreach_set("uv", np.array([(0, 0), (1, 0), (1, 1), (0, 1)], np.float32).ravel())
-    if outward(layer) < 0:
-        mesh.flip_normals()  # the bottom layer's map faces down
+    corner_uv = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    uv.data.foreach_set("uv", np.array([corner_uv[loop % 4] for loop in loops], np.float32).ravel())
     mesh.update()
     material = _map_material(layer, image)
     if mesh.materials:
         mesh.materials[0] = material
     else:
         mesh.materials.append(material)
-    obj.location.z = _surface_z(layer, LIFT_M)
+    obj.location.z = 0.0
     show_copy(obj)
     return name
 
@@ -613,7 +620,7 @@ def _draw_flow(result, index, layer):
     mesh.vertices.add(len(points))
     coordinates = np.zeros((len(points), 3), np.float32)
     coordinates[:, :2] = transform.xy_m(points, board.origin_nm)
-    size = 0.7 * spacing * 1e-9
+    size = 0.45 * spacing * 1e-9
     coordinates[:, 2] = outward(layer) * 0.3 * size  # cones lie on the map
     mesh.vertices.foreach_set("co", coordinates.ravel())
     head = np.zeros(len(points), bool)
@@ -625,7 +632,7 @@ def _draw_flow(result, index, layer):
     write_attribute(mesh, "kls_phase", "FLOAT", np.repeat(phase, counts).astype(np.float32))
     mesh.update()
     obj.location.z = _surface_z(layer, ARROW_LIFT_M)
-    set_modifier(obj, flow_group(), _flat_material("KLS DC arrows", ARROW_COLOR),
+    set_modifier(obj, flow_group(), "highlight_selected",  # the red of KiCad's selection
                  {"Size": size, "Rate": flow_rate(), "Clock": _clock["now"]})
     show_copy(obj)
     start_flow()

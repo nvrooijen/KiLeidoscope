@@ -147,7 +147,15 @@ def main():
         # A colour map per layer, just out from its copper, textured with the field.
         front, back = objects()["KLS F.Cu dc map"], objects()["KLS B.Cu dc map"]
         assert not front.hide_get() and not back.hide_get()
-        assert front.location.z > heights["F.Cu"] + 3e-6 and back.location.z < heights["B.Cu"] - 3e-6
+        # Two quads each: out from the copper's outer face and in from its inner face.
+        for obj, layer, up in ((front, "F.Cu", 1), (back, "B.Cu", -1)):
+            zs = sorted({round(v.co.z, 9) for v in obj.data.vertices}, key=lambda z: -up * z)
+            copper = state.board.layer_thickness.get(layer, 0.0)
+            assert len(obj.data.polygons) == 2 and len(zs) == 2
+            assert up * (zs[0] - heights[layer]) > 3e-6  # outside the via lands
+            assert up * (heights[layer] - copper - zs[1]) > 0  # below the copper, on the laminate side
+            normals = [obj.data.polygons[n].normal.z for n in range(2)]
+            assert normals[0] * up > 0.99 and normals[1] * up < -0.99
         image = bpy.data.images["KLS DC F.Cu"]
         rows, columns = np.asarray(result["fields"]["j"][0]).shape
         assert tuple(image.size) == (columns, rows)
@@ -192,6 +200,9 @@ def main():
         assert np.median([path[-1][0] - path[0][0] for path in paths]) > 1 * MM
         arrows = objects()["KLS F.Cu dc arrows"]
         assert arrows.modifiers[0].node_group.name == dc.FLOW_GROUP
+        from kileido.nodes import modifier_value
+        material = arrows.modifiers[0].node_group.interface.items_tree["Material"].identifier
+        assert modifier_value(arrows.modifiers[0], material) == state.board.materials["highlight_selected"]
         heads = np.zeros(len(arrows.data.vertices), bool)
         arrows.data.attributes["kls_head"].data.foreach_get("value", heads)
         assert heads.sum() == len(paths)
@@ -266,7 +277,7 @@ def main():
         scene.kileido_dc = True
         assert not front.hide_get() and not supply.hide_get()
         apply.load_frames(b"".join(protocol.snapshot_frames(snapshot, revision=2)))
-        assert not front.hide_get() and len(front.data.vertices) == 4 and not vias.hide_get()
+        assert not front.hide_get() and len(front.data.vertices) == 8 and not vias.hide_get()
         # A cleared result (setup incomplete) hides the maps; the markers stay.
         apply.load_frames(protocol.dc_result_message(None, 3))
         assert front.hide_get() and vias.hide_get() and not supply.hide_get()
