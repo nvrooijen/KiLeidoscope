@@ -72,18 +72,35 @@ def main():
         ours = [n for n in range(len(item)) if item[n].value == index]
         xs = [front.data.vertices[n].co.x for n in ours]
         assert min(xs) < -0.0002 and max(xs) > 0.0002
-        assert math.isclose(width[ours[0]].value, split_board.WIDTH * 1e-9 + 2 * return_path.HALO_M, rel_tol=1e-5)
+        # A split: a thin stripe on the track; the plane's split channel glows on In1.Cu.
+        assert math.isclose(width[ours[0]].value, split_board.WIDTH * 1e-9 * return_path.STRIPE, rel_tol=1e-5)
+        via = next(n for n, issue in enumerate(issues) if issue.kind == "no_return_via")
+        disc = next(n for n in range(len(item)) if item[n].value == via)
+        assert math.isclose(width[disc].value, 600e-6 + 2 * return_path.HALO_M, rel_tol=1e-5)
+        area = bpy.data.collections[COLLECTION].all_objects["KLS In1.Cu highlight return path area"]
+        rects = sum(len(rects) for issue in issues for _, rects in issue.areas)
+        assert len(area.data.polygons) == rects and not area.hide_get()
+        assert area.data.materials[0] == material
+        assert area.location.z > state.board.heights["In1.Cu"]
+        void = [area.data.polygons[n] for n in range(rects)
+                if issues[area.data.attributes["item"].data[area.data.polygons[n].vertices[0]].value].item == "sata-0"]
+        xs = [area.data.vertices[v].co.x for polygon in void for v in polygon.vertices]
+        assert math.isclose(min(xs), -0.025, abs_tol=1e-6) and math.isclose(max(xs), -0.024, abs_tol=1e-6)
         assert return_path.summary() == f"{len(issues)} issues on 8 nets (3 ms)"
 
         scene.kileido_return_path = False
-        assert front.hide_get() and not len(front.data.vertices) and back.hide_get()
+        assert front.hide_get() and not len(front.data.vertices) and back.hide_get() and area.hide_get()
         scene.kileido_return_path = True
-        assert not front.hide_get() and len(front.data.vertices) == 2 * rows["F.Cu"]
+        assert not front.hide_get() and len(front.data.vertices) == 2 * rows["F.Cu"] and not area.hide_get()
 
         scene.kileido_show_F_Cu = False  # the Layers list's F.Cu eye hides its marks too
         assert front.hide_get() and not back.hide_get()
         scene.kileido_show_F_Cu = True
         assert not front.hide_get()
+        scene.kileido_show_In1_Cu = False  # and the plane's eye its patches
+        assert area.hide_get()
+        scene.kileido_show_In1_Cu = True
+        assert not area.hide_get()
 
         # A resync snapshot drops the marks until the bridge sends the check again;
         # a check with no issues hides them.
@@ -92,7 +109,7 @@ def main():
         apply.load_frames(check)
         assert not front.hide_get()
         apply.load_frames(return_path_message(checked_nets(snapshot), (), revision=3))
-        assert front.hide_get() and back.hide_get()
+        assert front.hide_get() and back.hide_get() and area.hide_get()
         assert return_path.summary().startswith("0 issues")
         apply.load_frames(encode_frame({"type": "return_path", "revision": 4, "nets": [], "layers": [],
                                         "issues": [], "error": "Return-path check failed: test"}))

@@ -123,6 +123,29 @@ def test_a_slot_running_out_of_an_antipad_is_a_void():
     assert planes.stats["antipads"] >= 1
 
 
+def test_an_antipad_run_together_with_another_nets_hole_is_split_between_them():
+    """A GND via 1 mm below the LVDS via, both in one hole: only the part nearer the
+    LVDS via is its antipad; the GND via's part still breaks the plane under the track."""
+    x, y = split_board.VIA_X, split_board.LVDS_Y
+    hole = split_board.rect(x - 550_000, y - 1_550_000, x + 550_000, y + 550_000)
+    board = with_antipad(split_board.board(), hole)
+    other = model.Via("via-other", "OTHER", (x, y - MM), 600_000, 300_000, "F.Cu", "B.Cu")
+    _, found = look_up(replace(board, vias=(*board.vias, other)), ["lvds-f-0"])
+    (gap,) = found["lvds-f-0"].below.gaps
+    assert gap[1] == 10 * MM
+    _, found = look_up(replace(board, vias=(*board.vias, replace(other, net="LVDS_P"))), ["lvds-f-0"])
+    assert found["lvds-f-0"].below.gaps == ()  # both vias its own: one antipad
+
+
+def test_plane_breaks_show_whole_holes_near_a_path():
+    planes, found = look_up(split_board.board(), ["sata-0"])
+    path = found["sata-0"].subpath(*found["sata-0"].below.gaps[0])
+    assert planes.plane_breaks("In1.Cu", path, MARGIN, ("GND",)) == ((25 * MM, 34 * MM, 26 * MM, 36 * MM),)
+    far = ((10 * MM, 30 * MM), (20 * MM, 30 * MM))
+    assert planes.plane_breaks("In1.Cu", far, MARGIN, ("GND",)) == ()
+    assert planes.plane_breaks("In1.Cu", path, MARGIN, ()) == ()  # nothing to compare with
+
+
 def test_all_copper_on_a_layer_can_be_a_reference():
     board = split_board.board()
     graphic = model.CopperGraphic("gnd-graphic", "GND", "In1.Cu",

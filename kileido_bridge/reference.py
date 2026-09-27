@@ -362,10 +362,9 @@ def _erode_window(labels: np.ndarray, window, radius: int) -> tuple[tuple[slice,
     return target, erode(labels[source], radius)[_inner(source, target)]
 
 
-def _flood(allowed: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
-    """The 4-connected region of `allowed` pixels around `seed`."""
-    region = np.zeros_like(allowed)
-    region[seed] = True
+def _flood(allowed: np.ndarray, seeds: np.ndarray) -> np.ndarray:
+    """The 4-connected region of `allowed` pixels around the `seeds` mask."""
+    region = seeds & allowed
     while True:
         grown = region.copy()
         grown[1:] |= region[:-1]
@@ -376,6 +375,50 @@ def _flood(allowed: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
         if np.array_equal(grown, region):
             return region
         region = grown
+
+
+def _grow_square(mask: np.ndarray) -> np.ndarray:
+    """`mask` grown by one pixel in all eight directions."""
+    rows = mask.copy()
+    rows[1:] |= mask[:-1]
+    rows[:-1] |= mask[1:]
+    grown = rows.copy()
+    grown[:, 1:] |= rows[:, :-1]
+    grown[:, :-1] |= rows[:, 1:]
+    return grown
+
+
+def _steps(sources: np.ndarray) -> np.ndarray:
+    """Per pixel, the square rings (8-connected steps) to the nearest `sources` pixel."""
+    distance = np.where(sources, 0, np.iinfo(np.int32).max).astype(np.int32)
+    reached, step = sources, 0
+    while True:
+        grown = _grow_square(reached)
+        new = grown & ~reached
+        if not new.any():
+            return distance
+        step += 1
+        distance[new] = step
+        reached = grown
+
+
+def _runs(mask: np.ndarray, grid: Grid, window: tuple[slice, slice]) -> tuple[Rect, ...]:
+    """A window's mask as rects: row runs, joined over rows where they repeat."""
+    edges = np.diff(np.pad(mask, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+    rows, starts = np.nonzero(edges == 1)
+    _, stops = np.nonzero(edges == -1)
+    rects, last = [], {}  # (start, stop) -> index of the rect that reached the row before
+    for row, start, stop in zip(rows.tolist(), starts.tolist(), stops.tolist()):
+        index = last.get((start, stop))
+        if index is not None and rects[index][3] == row:
+            rects[index][3] = row + 1
+        else:
+            last[(start, stop)] = len(rects)
+            rects.append([start, row, stop, row + 1])
+    x0 = grid.x0 + window[1].start * grid.pixel
+    y0 = grid.y0 + window[0].start * grid.pixel
+    return tuple((x0 + left * grid.pixel, y0 + top * grid.pixel, x0 + right * grid.pixel, y0 + bottom * grid.pixel)
+                 for left, top, right, bottom in rects)
 
 
 class _Plane:
@@ -564,6 +607,35 @@ class ReferencePlanes:
         window = grid.window((min(xs), min(ys), max(xs), max(ys)), math.ceil(reach_nm / grid.pixel) + radius + 1)
         return tuple(sorted(plane.nets[label - 1] for label in np.unique(labels[window]).tolist() if label))
 
+    def plane_breaks(self, layer: str, path, reach_nm: float, plane_nets) -> tuple[Rect, ...]:
+        """Where `layer`'s plane is broken within `reach_nm` of the path: every pixel that
+        is not copper of `plane_nets` (a void, slot, split channel, or another net's copper
+        in it), each hole shown whole but clipped MAX_ANTIPAD_NM beyond the reach, as
+        (left, top, right, bottom) rects. Empty without plane nets to compare with."""
+        plane, grid = self.planes.get(layer), self.grid
+        labels = plane.raw_labels(grid, self.stats) if plane is not None and grid is not None else None
+        solid_labels = [plane.label_of[net] for net in plane_nets if plane is not None and net in plane.label_of]
+        if labels is None or not solid_labels:
+            return ()
+        xs, ys = zip(*path)
+        window = grid.window(_grow((min(xs), min(ys), max(xs), max(ys)), reach_nm + MAX_ANTIPAD_NM))
+        solid = np.isin(labels[window], solid_labels)
+        near = np.zeros(solid.shape, bool)
+        for a, b in zip(path, path[1:] or path):  # a point per pixel along the path
+            count = max(2, math.ceil(math.dist(a, b) / grid.pixel) + 1)
+            columns = np.floor((np.linspace(a[0], b[0], count) - grid.x0) / grid.pixel).astype(np.int64)
+            rows = np.floor((np.linspace(a[1], b[1], count) - grid.y0) / grid.pixel).astype(np.int64)
+            columns -= window[1].start
+            rows -= window[0].start
+            inside = (rows >= 0) & (rows < near.shape[0]) & (columns >= 0) & (columns < near.shape[1])
+            near[rows[inside], columns[inside]] = True
+        for _ in range(math.ceil(reach_nm / grid.pixel)):  # the same square the erosion reads
+            near = _grow_square(near)
+        seeds = near & ~solid
+        if not seeds.any():
+            return ()
+        return _runs(_flood(~solid, seeds), grid, window)
+
     def radius_px(self, distance_nm: int) -> int:
         return math.ceil(self.margin_heights * distance_nm / self.grid.pixel) if self.grid else 0
 
@@ -680,8 +752,10 @@ class ReferencePlanes:
         None when none of them closes within MAX_ANTIPAD_NM of `hole`."""
         grid = self.grid
         key = (layer, hole, close, nets, radius)
-        search = (hole[0] - hole[2] - MAX_ANTIPAD_NM, hole[1] - hole[2] - MAX_ANTIPAD_NM,
-                  hole[0] + hole[2] + MAX_ANTIPAD_NM, hole[1] + hole[2] + MAX_ANTIPAD_NM)
+        # Around every hole of the group, so a neighbour's antipad is never cut by the window.
+        search = _union([(other[0] - other[2] - MAX_ANTIPAD_NM, other[1] - other[2] - MAX_ANTIPAD_NM,
+                          other[0] + other[2] + MAX_ANTIPAD_NM, other[1] + other[2] + MAX_ANTIPAD_NM)
+                         for other in (hole, *close)])
         extra = 2 * radius + math.ceil(half_width / grid.pixel) + 2
         cached = self._antipads.get(key)
         if cached is not None and not plane.changed_since(cached[0], _grow(search, (extra + radius) * grid.pixel)):
@@ -699,25 +773,29 @@ class ReferencePlanes:
         own = [plane.label_of[net] for net in nets if net in plane.label_of]
         allowed = (area == 0) | np.isin(area, own)
         region = np.zeros_like(allowed)
+        centres = np.zeros_like(allowed)
         for hole in holes:
             seed = (math.floor((hole[1] - grid.y0) / grid.pixel) - window[0].start,
                     math.floor((hole[0] - grid.x0) / grid.pixel) - window[1].start)
             if not (0 <= seed[0] < area.shape[0] and 0 <= seed[1] < area.shape[1]) or not allowed[seed] or region[seed]:
                 continue
-            found = _flood(allowed, seed)
+            centres[seed] = True
+            found = _flood(allowed, centres & ~region)
             if not (found[0].any() or found[-1].any() or found[:, 0].any() or found[:, -1].any()):
                 region |= found  # closed: an antipad; one running past the window is a real void
         if not region.any():
             return None
-        edge = np.zeros_like(region)
-        edge[1:] |= region[:-1]
-        edge[:-1] |= region[1:]
-        edge[:, 1:] |= region[:, :-1]
-        edge[:, :-1] |= region[:, 1:]
-        around = area[edge & ~region]
+        edge = _grow_square(region) & ~region
+        around = area[edge]
         if not len(around):
             return None
         fill = np.bincount(around).argmax()  # the plane the antipads are cut from
+        foreign = edge & (area != fill)  # another net's copper inside the same hole
+        if foreign.any():
+            # Holes that run together: keep only what lies nearer the own copper than
+            # the other net's, so its clearance is not filled with the own antipad.
+            own_copper = region & (np.isin(area, own) | centres)
+            region &= _steps(own_copper) <= _steps(foreign)
         rows, columns = np.nonzero(region)
         inside = (slice(window[0].start + rows.min(), window[0].start + rows.max() + 1),
                   slice(window[1].start + columns.min(), window[1].start + columns.max() + 1))

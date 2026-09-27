@@ -218,8 +218,10 @@ def return_path_message(nets, issues, revision: int, error: str = "", elapsed_ms
     """Return-path issues (return_path.Issue) of the checked nets. Each issue is a
     header entry; what to highlight goes in `mark` (x1, y1, x2, y2, width) rows, a
     point as a zero-length row, with `mark_issue` (index into `issues`) and
-    `mark_layer` (index into `layers`)."""
-    layers = sorted({layer for issue in issues for layer, _, _ in issue.marks})
+    `mark_layer` (index into `layers`); the broken parts of reference planes go in
+    `area` (left, top, right, bottom) rects with `area_issue` and `area_layer`."""
+    layers = sorted({layer for issue in issues for layer, _, _ in issue.marks} |
+                    {layer for issue in issues for layer, _ in issue.areas})
     index = {layer: position for position, layer in enumerate(layers)}
     rows, owners, on_layer = [], [], []
     for number, issue in enumerate(issues):
@@ -228,6 +230,9 @@ def return_path_message(nets, issues, revision: int, error: str = "", elapsed_ms
                 rows.append((*a, *b, width))
                 owners.append(number)
                 on_layer.append(index[layer])
+    areas = [(*rect, number, index[layer]) for number, issue in enumerate(issues)
+             for layer, rects in issue.areas for rect in rects]
+    area = np.array(areas, dtype=np.int64).reshape(-1, 6)
     header = {"type": "return_path", "revision": revision, "nets": sorted(nets), "layers": layers,
               "error": error, "elapsed_ms": elapsed_ms,
               "issues": [{"kind": issue.kind, "net": issue.net, "item": issue.item, "layer": issue.layer,
@@ -235,7 +240,9 @@ def return_path_message(nets, issues, revision: int, error: str = "", elapsed_ms
                           "message": issue.message} for issue in issues]}
     return encode_frame(header, {"mark": np.array(rows, dtype="<i4").reshape(-1, 5),
                                  "mark_issue": np.array(owners, dtype="<i4"),
-                                 "mark_layer": np.array(on_layer, dtype="<i4")})
+                                 "mark_layer": np.array(on_layer, dtype="<i4"),
+                                 "area": area[:, :4].astype("<i4"), "area_issue": area[:, 4].astype("<i4"),
+                                 "area_layer": area[:, 5].astype("<i4")})
 
 
 def stackup_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:

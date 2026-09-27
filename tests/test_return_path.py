@@ -37,6 +37,18 @@ def test_split_under_a_diff_pair_is_flagged():
     assert by_item(issues(split_board.board(), {"CLK"}))["clk"].kind == "split"
 
 
+def test_the_broken_part_of_the_plane_is_marked():
+    """Gaps and splits carry the holes in the reference plane that cause them, whole."""
+    found = by_item(issues(split_board.board()))
+    ((layer, rects),) = found["sata-0"].areas
+    assert layer == "In1.Cu" and rects == ((25 * MM, 34 * MM, 26 * MM, 36 * MM),)  # the void
+    ((layer, rects),) = found["usb-0"].areas
+    left, top, right, bottom = rects[0]
+    assert len(rects) == 1 and (left, right) == (49_750_000, 50_250_000)  # the split channel
+    assert top < 10 * MM - 2 * MM and bottom > 10 * MM + 2 * MM  # clipped near the pair, not the board
+    assert all(not issue.areas for issue in found.values() if issue.kind not in ("gap", "split"))
+
+
 def test_void_in_the_plane_is_a_gap_and_a_solid_plane_is_clean():
     found = by_item(issues(split_board.board()))
     assert found["sata-0"].kind == "gap" and found["sata-0"].reference == "In1.Cu"
@@ -102,12 +114,15 @@ def test_frame_carries_issues_and_marks():
         protocol.return_path_message(checked_nets(board), found, revision=7, elapsed_ms=1.5))[0]
     assert header["type"] == "return_path" and header["revision"] == 7
     assert [issue["item"] for issue in header["issues"]] == [issue.item for issue in found]
-    assert header["layers"] == ["B.Cu", "F.Cu"]
+    assert header["layers"] == ["B.Cu", "F.Cu", "In1.Cu"]
     marks = sum(max(1, len(points) - 1) for issue in found for _, points, _ in issue.marks)
     assert arrays["mark"].shape == (marks, 5)
     via = next(index for index, issue in enumerate(found) if issue.kind == "no_return_via")
     rows = arrays["mark"][arrays["mark_issue"] == via]
     assert (rows[:, 0] == rows[:, 2]).all() and (rows[:, 4] == 600_000).all()  # a disc on each layer
+    areas = sum(len(rects) for issue in found for _, rects in issue.areas)
+    assert arrays["area"].shape == (areas, 4) and len(arrays["area_issue"]) == len(arrays["area_layer"]) == areas
+    assert {header["layers"][index] for index in arrays["area_layer"].tolist()} == {"In1.Cu"}
 
 
 def test_check_command_prints_the_issues(monkeypatch, capsys):

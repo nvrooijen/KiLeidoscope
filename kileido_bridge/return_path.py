@@ -20,7 +20,7 @@ Every side of a track with solid copper along it is a reference
 import math
 from dataclasses import dataclass
 
-from . import model
+from . import model, reference
 from .reference import ReferencePlanes, SegmentReference
 from .selection import diff_pair_partner
 
@@ -28,6 +28,7 @@ RETURN_VIA_RADIUS_NM = 2_000_000  # a stitching via this close to a signal via c
 MIN_GAP_NM = 100_000  # shorter gaps are raster steps along a plane edge, not voids
 
 Mark = tuple[str, tuple[model.Point, ...], int]  # (layer, polyline to highlight, width); one point: a disc
+Area = tuple[str, tuple[reference.Rect, ...]]  # (reference layer, rects of the plane's holes to highlight)
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class Issue:
     marks: tuple[Mark, ...]
     length_nm: int  # of the uncovered track; 0 for a via
     message: str
+    areas: tuple[Area, ...] = ()  # where the reference plane is broken (gaps and splits)
 
 
 def checked_nets(snapshot: model.BoardSnapshot, selected=frozenset()) -> frozenset[str]:
@@ -101,15 +103,17 @@ class ReturnPathCheck:
                 if end - start < MIN_GAP_NM:
                     continue
                 path = segment.subpath(start, end)
-                around = self.planes.nets_near(cover.layer, path, segment.width / 2 + cover.margin_nm,
-                                               cover.margin_nm)
+                reach = segment.width / 2 + cover.margin_nm
+                around = self.planes.nets_near(cover.layer, path, reach, cover.margin_nm)
+                holes = self.planes.plane_breaks(cover.layer, path, reach, around)
                 split = len(around) > 1
                 where = " | ".join(net or "no net" for net in around)
                 message = (f"{segment.net} on {segment.layer}: crosses a split in {cover.layer} ({where})" if split
                            else f"{segment.net} on {segment.layer}: gap in {cover.layer} under {_mm(end - start)}")
                 issues.append(Issue("split" if split else "gap", segment.net, segment.id, segment.layer,
                                     cover.layer, segment.point_at((start + end) / 2),
-                                    ((segment.layer, path, segment.width),), end - start, message))
+                                    ((segment.layer, path, segment.width),), end - start, message,
+                                    ((cover.layer, holes),) if holes else ()))
         return issues
 
     def _via_issues(self, snapshot, nets, segments: list[SegmentReference]) -> list[Issue]:
