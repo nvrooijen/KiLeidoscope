@@ -51,7 +51,7 @@ def refresh(layer=None, kind=None):
         _refresh_component_boxes(board.highlight_components["footprints"])
 
 
-def _hide(obj):
+def hide_copy(obj):
     """An unused highlight copy: no geometry, hidden. Cheap when it already is."""
     if len(obj.data.vertices):
         obj.data.clear_geometry()
@@ -62,7 +62,7 @@ def _hide(obj):
     board.touched.add(obj.name)
 
 
-def _show(obj):
+def show_copy(obj):
     """Overlapping highlight segments share heights, like copper: camera rays only."""
     camera_rays_only(obj)
     set_visible(obj, True)
@@ -89,7 +89,7 @@ def _refresh_tracks(wanted, only_layer=None):
             for kind in wanted:
                 obj = board.collection.all_objects.get(f"KLS {layer} highlight {kind}")
                 if obj is not None:
-                    _hide(obj)
+                    hide_copy(obj)
             continue
         ids = list(source.get("kls_ids", ()))
         mesh = source.data
@@ -100,7 +100,7 @@ def _refresh_tracks(wanted, only_layer=None):
             keep = _item_mask(ids, chosen, item)
             if not keep.any():
                 if (obj := board.collection.all_objects.get(name)) is not None:
-                    _hide(obj)
+                    hide_copy(obj)
                 continue
             chosen_vertices = np.flatnonzero(keep)  # a segment's two vertices share its item
             if coordinates is None:
@@ -123,7 +123,7 @@ def _refresh_tracks(wanted, only_layer=None):
             else:
                 obj.location.z, lift = z + up * LIFT_M, 0.0
             set_modifier(obj, board.groups["tracks"], f"highlight_{kind}", {"Thickness": lift, "Up": up})
-            _show(obj)
+            show_copy(obj)
 
 
 def _refresh_zones(wanted, only_layer=None):
@@ -158,14 +158,14 @@ def _refresh_pad_sheet(source, layer, kind, chosen):
     existing = board.collection.all_objects.get(name)
     if not chosen:  # nothing selected: skip reading the pad mesh
         if existing is not None:
-            _hide(existing)
+            hide_copy(existing)
         return
     mesh = source.data
     item = read_attribute(mesh, "item", np.int32)
     keep = _item_mask(list(source.get("kls_ids", ())), chosen, item)
     if not keep.any():
         if existing is not None:
-            _hide(existing)
+            hide_copy(existing)
         return
     edges = read_edges(mesh)
     edges = edges[keep[edges[:, 0]] & keep[edges[:, 1]]]  # rings of the chosen pads only
@@ -185,7 +185,7 @@ def _refresh_pad_sheet(source, layer, kind, chosen):
     up = outward(layer)
     obj.location.z = transform.copper_z(layer, "pads", board.heights) + up * LIFT_M
     set_modifier(obj, board.groups["fill"], f"highlight_{kind}", {"Thickness": 0.0, "Up": up})
-    _show(obj)
+    show_copy(obj)
 
 
 def _refresh_vias(wanted):
@@ -201,7 +201,7 @@ def _refresh_vias(wanted):
                 if chosen and len(ids) == count else np.zeros(count, bool))
         if not keep.any():
             if (obj := board.collection.all_objects.get(name)) is not None:
-                _hide(obj)
+                hide_copy(obj)
             continue
         chosen_vertices = np.flatnonzero(keep)
         obj = owned_object(name)
@@ -219,7 +219,7 @@ def _refresh_vias(wanted):
                      {"Drill Material": board.materials[f"highlight_{kind}_barrel"],
                       "Top Thickness": copper_thickness("F.Cu"),
                       "Bottom Thickness": copper_thickness("B.Cu")})
-        _show(obj)
+        show_copy(obj)
 
 
 def _component_extent(footprint_id, footprint):
@@ -260,7 +260,7 @@ def _refresh_component_boxes(chosen):
         obj.matrix_world = footprint.matrix_world @ Matrix.Translation(Vector(tuple((low + high) / 2)))
         set_modifier(obj, board.groups["highlight_box"], "highlight_box",
                      {"Size": tuple(float(v) for v in np.abs(high - low))})
-        _show(obj)
+        show_copy(obj)
         active.add(obj.name)
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_highlight_box") == 1 and obj.name not in active:

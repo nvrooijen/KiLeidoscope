@@ -730,3 +730,45 @@ def test_routes_appear_while_kicad_is_busy_from_the_board_text():
     finally:
         client.close()
         runtime.close()
+
+
+def test_bridge_sends_return_path_issues_as_they_change():
+    """Diff pairs are checked from the first snapshot; a selected net joins them, a
+    refilled plane updates them, and a resync sends them again."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import split_board
+
+    class FakeBoard:
+        selected = []
+
+        def get_selection(self, types=None):
+            return [SimpleNamespace(id=SimpleNamespace(value=item)) for item in self.selected]
+
+    def issues(frames):
+        return {issue["item"]: issue for issue in next(h for h, _ in frames if h["type"] == "return_path")["issues"]}
+
+    snapshot = split_board.board()
+    reader = FakeReader(snapshot)
+    reader.board = FakeBoard()
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        first = issues(exchange(runtime, client, lambda f: any(h["type"] == "return_path" for h, _ in f)))
+        assert first["usb-0"]["kind"] == "split" and "clk" not in first
+        FakeBoard.selected = ["clk"]
+        selected = issues(exchange(runtime, client, lambda f: any(h["type"] == "return_path" for h, _ in f)))
+        assert selected["clk"]["kind"] == "split"
+        mm = split_board.MM
+        whole = replace(snapshot.zones[0], polygons=((split_board.rect(mm, mm, 99 * mm, 39 * mm),),))
+        reader.events.append((replace(snapshot, zones=(whole, snapshot.zones[2])), {("In1.Cu", "zones")}))
+        refilled = issues(exchange(runtime, client, lambda f: any(h["type"] == "return_path" for h, _ in f)))
+        assert not {"usb-0", "clk", "sata-0"} & refilled.keys()
+        client.request_resync()
+        again = exchange(runtime, client, lambda f: any(h["type"] == "return_path" for h, _ in f))
+        assert issues(again).keys() == refilled.keys()
+    finally:
+        client.close()
+        runtime.close()

@@ -24,6 +24,9 @@ PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}  # "|" = single byte, no byte order
 DEFAULT_THICKNESS_NM = 1_600_000  # board thickness when the stackup cannot give one
+# Every frame type the bridge sends; the add-on's client.py lists the same ones.
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "snapshot_end",
+                 "appearance", "selection", "return_path", "status")
 _LENGTH = struct.Struct(">I")
 
 
@@ -209,6 +212,30 @@ def selection_message(selected, pair, footprints, pads, revision: int) -> bytes:
     return encode_frame({"type": "selection", "revision": revision,
                          "selected": list(selected), "pair": list(pair),
                          "footprints": list(footprints), "pads": list(pads)})
+
+
+def return_path_message(nets, issues, revision: int, error: str = "", elapsed_ms: float | None = None) -> bytes:
+    """Return-path issues (return_path.Issue) of the checked nets. Each issue is a
+    header entry; what to highlight goes in `mark` (x1, y1, x2, y2, width) rows, a
+    point as a zero-length row, with `mark_issue` (index into `issues`) and
+    `mark_layer` (index into `layers`)."""
+    layers = sorted({layer for issue in issues for layer, _, _ in issue.marks})
+    index = {layer: position for position, layer in enumerate(layers)}
+    rows, owners, on_layer = [], [], []
+    for number, issue in enumerate(issues):
+        for layer, points, width in issue.marks:
+            for a, b in zip(points, points[1:]) if len(points) > 1 else ((points[0], points[0]),):
+                rows.append((*a, *b, width))
+                owners.append(number)
+                on_layer.append(index[layer])
+    header = {"type": "return_path", "revision": revision, "nets": sorted(nets), "layers": layers,
+              "error": error, "elapsed_ms": elapsed_ms,
+              "issues": [{"kind": issue.kind, "net": issue.net, "item": issue.item, "layer": issue.layer,
+                          "reference": issue.reference, "at": list(issue.at), "length_nm": issue.length_nm,
+                          "message": issue.message} for issue in issues]}
+    return encode_frame(header, {"mark": np.array(rows, dtype="<i4").reshape(-1, 5),
+                                 "mark_issue": np.array(owners, dtype="<i4"),
+                                 "mark_layer": np.array(on_layer, dtype="<i4")})
 
 
 def stackup_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:

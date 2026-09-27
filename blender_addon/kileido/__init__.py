@@ -21,7 +21,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
-               render_depth, watcher)
+               render_depth, return_path, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -519,6 +519,54 @@ class KILEIDO_PT_boards(bpy.types.Panel):
                     right.label(text=values)
 
 
+class KILEIDO_OT_return_path_issue(bpy.types.Operator):
+    """Select this track or via in KiCad"""
+    bl_idname = "kileido.return_path_issue"
+    bl_label = "Select in KiCad"
+    bl_options = {"INTERNAL"}
+
+    index: IntProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return live.linked()
+
+    def execute(self, context):
+        issues = board.return_path.get("issues", [])
+        if not 0 <= self.index < len(issues):
+            return {"CANCELLED"}
+        live.request_select([issues[self.index]["item"]])
+        return {"FINISHED"}
+
+
+class KILEIDO_PT_return_path(bpy.types.Panel):
+    """Where differential pairs and the selected nets lose their reference plane
+    (checked by the bridge), marked red in the view."""
+    bl_label = "Return path"
+    bl_idname = "KILEIDO_PT_return_path"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "KiLeidoscope"
+    bl_parent_id = "KILEIDO_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+    SHOWN = 8  # issues listed; the rest are counted
+
+    def draw_header(self, context):
+        self.layout.prop(context.scene, "kileido_return_path", text="")
+
+    def draw(self, context):
+        layout = self.layout
+        layout.active = context.scene.kileido_return_path
+        layout.label(text=return_path.summary())
+        issues = board.return_path.get("issues", [])
+        column = layout.column(align=True)
+        for index, issue in enumerate(issues[:self.SHOWN]):
+            column.operator(KILEIDO_OT_return_path_issue.bl_idname, text=issue["message"][:80],
+                            icon="ERROR", emboss=False).index = index
+        if len(issues) > self.SHOWN:
+            column.label(text=f"and {len(issues) - self.SHOWN} more", icon="BLANK1")
+
+
 class KILEIDO_PT_status(bpy.types.Panel):
     """Link, loading progress and warnings, below the Boards panel."""
     bl_label = "Status"
@@ -587,8 +635,8 @@ def _swatch(kind, color):
 
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
-           KILEIDO_PT_status)
+           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_return_path_issue,
+           KILEIDO_PT_panel, KILEIDO_PT_boards, KILEIDO_PT_return_path, KILEIDO_PT_status)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -699,6 +747,11 @@ def _scene_properties():
             description="How much the silkscreen ink hides what lies under it. Printed on the mask, the "
                         "ink follows the copper, so traces under it show by their relief at any opacity",
             update=lambda self, context: cosmetics.apply_silk_settings()),
+        "kileido_return_path": BoolProperty(
+            name="Return-path check", default=True,
+            description="Mark in red where differential pairs and the nets selected in KiCad lose their "
+                        "reference plane: gaps, splits, and vias to another plane with no return via near",
+            update=lambda self, context: return_path.refresh()),
         "kileido_clip_silkscreen": BoolProperty(
             name="Clip silkscreen to board outline", default=True,
             description="Hide silkscreen outside Edge.Cuts and inside board cutouts",
