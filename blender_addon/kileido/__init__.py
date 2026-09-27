@@ -20,7 +20,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
+from . import (apply, balance, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
                render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
@@ -735,6 +735,7 @@ def register():
         bpy.utils.register_class(cls)
     for name, prop in _scene_properties().items():
         setattr(bpy.types.Scene, name, prop)
+    balance.register()  # its own panel and properties, below Status
     keyconfig = bpy.context.window_manager.keyconfigs.addon
     if keyconfig is not None:  # None in background mode
         keymap = keyconfig.keymaps.new(name="3D View", space_type="VIEW_3D")
@@ -762,6 +763,7 @@ def unregister():
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
+    balance.unregister()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):
