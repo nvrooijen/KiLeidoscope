@@ -292,8 +292,9 @@ def test_viewer_edits_reach_the_bridge_and_results_come_back(tmp_path):
     runtime.dc.settle_s = 0.2
     client = live_link.addon_client().SocketClient("127.0.0.1", server.port, "dc-secret")
     try:
-        runtime.step()
-        runtime.dc.target(board.board_name, str(tmp_path / "strip.kicad_pcb"))
+        while runtime.snapshot is None:  # the first poll finds the board (and its setup: none)
+            runtime.step()
+        runtime.dc.target(board.board_name, str(tmp_path / "strip.kicad_pcb"))  # as if it were saved there
         client.connect()
         live_link.exchange(runtime, client, lambda frames: any(h["type"] == "snapshot_end" for h, _ in frames))
         client.request_dc("mark", item="pad-j1")
