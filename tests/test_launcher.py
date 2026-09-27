@@ -1,4 +1,5 @@
 """The plugin launches one isolated viewer and passes credentials without UI."""
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -105,3 +106,26 @@ def test_tarball_folders_sort_newest_first():
     paths = [Path("/opt/blender-4.5.3-linux-x64/blender"), Path("/opt/blender-5.1.0-linux-x64/blender"),
              Path("/opt/blender/blender")]
     assert sorted(paths, key=launcher._version_key, reverse=True)[0].parent.name == "blender-5.1.0-linux-x64"
+
+
+def test_open_from_a_terminal_uses_this_checkout(monkeypatch):
+    """`python -m kileido_bridge open`: KiCad's Open in Blender without the installed plugin."""
+    from kileido_bridge import cli
+    monkeypatch.delenv("KICAD_API_SOCKET", raising=False)
+    monkeypatch.setattr(cli, "connect_board", lambda: None)
+    monkeypatch.setattr(cli, "kicad_socket", lambda: "ipc://default")
+    calls = []
+    monkeypatch.setattr(cli, "launch", lambda root, socket: calls.append((root, socket)) or 0)
+    assert cli.main(["open"]) == 0
+    assert calls == [(Path(cli.__file__).resolve().parents[1], "ipc://default")]
+
+
+def test_open_reports_an_unreachable_kicad(monkeypatch, capsys):
+    from kileido_bridge import cli
+
+    def refused():
+        raise ConnectionError("Connection refused")
+
+    monkeypatch.setattr(cli, "connect_board", refused)
+    assert cli.main(["open"]) == 1
+    assert "Enable KiCad API" in capsys.readouterr().err
