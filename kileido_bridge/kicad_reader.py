@@ -668,7 +668,10 @@ class BoardReader:
             self._convert_stackup(raw["stackup"], raw["enabled_layers"])
             dirty.add(("", "stackup"))
         if changed & {"pads", "footprints", "enabled_layers"}:
+            before = {(pad.footprint_id, pad.net) for pad in self._parts["pads"]}
             dirty |= self._convert_pads(raw["pads"], digests["pads"])
+            if {(pad.footprint_id, pad.net) for pad in self._parts["pads"]} != before:
+                dirty.add(("", "footprints"))  # its frame lists each footprint's pad nets
         if "zones" in changed:
             records, added, removed = self._timed("convert", self._convert_cached, "zones", raw["zones"],
                                                   digests["zones"], _convert_zone)

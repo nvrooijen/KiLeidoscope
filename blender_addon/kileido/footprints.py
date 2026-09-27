@@ -64,6 +64,9 @@ def _apply_record(record):
     paths = list(record.get("model_paths", ()))
     model_visible = list(record.get("model_visible", ()))
     existing = board.collection.all_objects.get(name)
+    nets = list(record.get("nets", ()))  # its pads' nets (proximity.py), not part of the placement
+    if existing is not None and list(existing.get("kls_nets", ())) != nets:
+        existing["kls_nets"] = nets
     if (existing is not None and footprint_id in board.model_bound and
             list(existing.get("kls_model_paths", ())) != paths):
         _unbind_models(footprint_id)  # new model definitions: the next export rebinds
@@ -130,6 +133,7 @@ def _place_footprint(name, record, paths, model_visible):
     obj["kls_model_visible"] = model_visible
     obj["kls_footprint"] = 1
     obj["kls_active"] = 1
+    obj["kls_nets"] = list(record.get("nets", ()))
     # An Empty's default 1 m axes dwarf a millimetre-scale PCB and appear
     # as black lines throughout the viewport when Blender Extras is on.
     obj.empty_display_size = HIDDEN_EMPTY_SIZE_M

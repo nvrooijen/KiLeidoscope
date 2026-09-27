@@ -21,7 +21,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
-               render_depth, watcher)
+               proximity, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -588,7 +588,7 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
-           KILEIDO_PT_status)
+           *proximity.CLASSES, KILEIDO_PT_status)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -710,6 +710,7 @@ def _scene_properties():
     for row in (*layers.COPPER_LAYERS, "Vias", "Components", "Placeholders"):
         properties[layers.property_name(row)] = BoolProperty(
             name=row, default=True, update=_row_update(row))
+    properties.update(proximity.scene_properties())
     return properties
 
 
@@ -746,6 +747,7 @@ def register():
             entry.properties.extend = shift
             _KEYMAPS.append((keymap, entry))
     collisions.install()
+    proximity.install()
     bpy.app.handlers.load_post.append(_file_loaded)
 
 
@@ -762,6 +764,7 @@ def unregister():
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
+    proximity.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):

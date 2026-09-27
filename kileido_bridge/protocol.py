@@ -104,13 +104,15 @@ def _polygon_entries(index: int, polygons) -> list[tuple[int, bool, model.Ring]]
 
 
 def tracks_message(snapshot: model.BoardSnapshot, layer: str, revision: int) -> bytes:
-    """Straight tracks and sampled arcs of one layer as independent segments."""
-    ids, rows, items = [], [], []
+    """Straight tracks and sampled arcs of one layer as independent segments; `nets`
+    names each item's net (the add-on's proximity check finds differential pairs by it)."""
+    ids, nets, rows, items = [], [], [], []
     for track in snapshot.tracks:
         if track.layer == layer:
             items.append(len(ids))
             rows.append((*track.start, *track.end, track.width))
             ids.append(track.id)
+            nets.append(track.net)
     for arc in snapshot.arcs:
         if arc.layer == layer:
             points = sample_arc(arc.start, arc.mid, arc.end)
@@ -118,7 +120,9 @@ def tracks_message(snapshot: model.BoardSnapshot, layer: str, revision: int) -> 
                 items.append(len(ids))
                 rows.append((*a, *b, arc.width))
             ids.append(arc.id)
-    header = {"type": "layer_data", "layer": layer, "kind": "tracks", "revision": revision, "ids": ids}
+            nets.append(arc.net)
+    header = {"type": "layer_data", "layer": layer, "kind": "tracks", "revision": revision, "ids": ids,
+              "nets": nets}
     return encode_frame(header, {"seg": np.array(rows, dtype="<i4").reshape(-1, 5),
                                  "item": np.array(items, dtype="<i4")})
 
@@ -196,10 +200,16 @@ def outline_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
 
 
 def footprints_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
+    """Placements, models and the nets of each footprint's pads (a component on a net
+    is that net's own part, not an obstacle over it: the add-on's proximity check)."""
+    nets = {}
+    for pad in snapshot.pads:
+        if pad.net:
+            nets.setdefault(pad.footprint_id, set()).add(pad.net)
     return encode_frame({"type": "footprints", "revision": revision, "footprints": [
         {"id": f.id, "ref": f.reference, "x": f.pos[0], "y": f.pos[1], "rot": f.rotation_rad,
          "side": f.side, "bbox_nm": f.bbox_nm, "model_paths": f.model_paths,
-         "model_visible": f.model_visible}
+         "model_visible": f.model_visible, "nets": sorted(nets.get(f.id, ()))}
         for f in snapshot.footprints]})
 
 
