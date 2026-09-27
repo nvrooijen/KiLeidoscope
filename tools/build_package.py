@@ -30,7 +30,7 @@ def plugin_files() -> dict[str, Path]:
              for name in ("plugin.json", "launch.py", "requirements.txt", "icon_24.png", "icon_48.png")}
     files["LICENSE"] = ROOT / "LICENSE"
     files["blender_addon/start.py"] = ROOT / "blender_addon" / "start.py"
-    for folder, patterns in (("kileido_bridge", ("*.py",)),
+    for folder, patterns in (("kileido_bridge", ("*.py", "dcsolve/*.py")),
                              ("blender_addon/kileido", ("*.py", "icons/*.png", "native/*.c",
                                                         "native/*.dll", "native/*.so", "native/*.dylib"))):
         for pattern in patterns:
