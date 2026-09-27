@@ -25,7 +25,10 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_silk.py
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_exports.py
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_return_path.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_dc.py
 ```
+
+The DC analysis vendors the solver of [Fill Resistance](https://git.b4l.co.th/B4L/kicad-zone-resistance) by Janik Oltmanns / B4L in `kileido_bridge/dcsolve/`, changed as little as possible (see its `__init__.py`); keep changes to those files small and marked, so they can go upstream.
 
 `python tools/build_package.py` writes the KiCad package, `dist/kileidoscope-<version>.zip`.
 

@@ -15,7 +15,8 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import apply, cosmetics, highlight, layers, lighting, materials, nodes, render_depth, return_path, transform
+from . import (apply, cosmetics, dc, highlight, layers, lighting, materials, nodes, render_depth, return_path,
+               transform)
 from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
@@ -143,6 +144,7 @@ def export_board(filepath):
     highlight.apply_selection({})  # no highlight copies or X-ray fade in the package
     checked, board.return_path = board.return_path, {}
     return_path.refresh()  # nor return-path marks
+    dc.hide_all()  # nor DC analysis results
     collection["kls_board_name"] = board.board_name
     collection["kls_thickness_m"] = board.thickness_m
     collection["kls_layers"] = json.dumps(layers.recorded())
@@ -184,6 +186,7 @@ def export_board(filepath):
         highlight.apply_selection({key: list(value) for key, value in selection.items()})
         board.return_path = checked
         return_path.refresh()
+        dc.refresh()
 
 
 # --- Import ---------------------------------------------------------------------------------

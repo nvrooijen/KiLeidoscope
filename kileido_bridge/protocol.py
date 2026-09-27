@@ -26,7 +26,7 @@ DTYPES = {"<i4", "|u1", "<f4"}  # "|" = single byte, no byte order
 DEFAULT_THICKNESS_NM = 1_600_000  # board thickness when the stackup cannot give one
 # Every frame type the bridge sends; the add-on's client.py lists the same ones.
 MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "snapshot_end",
-                 "appearance", "selection", "return_path", "status")
+                 "appearance", "selection", "return_path", "dc_setup", "dc_status", "dc_result", "status")
 _LENGTH = struct.Struct(">I")
 
 
@@ -243,6 +243,41 @@ def return_path_message(nets, issues, revision: int, error: str = "", elapsed_ms
                                  "mark_layer": np.array(on_layer, dtype="<i4"),
                                  "area": area[:, :4].astype("<i4"), "area_issue": area[:, 4].astype("<i4"),
                                  "area_layer": area[:, 5].astype("<i4")})
+
+
+def dc_setup_message(setup: dict, markers, revision: int) -> bytes:
+    """The DC analysis setup (dc.DcAnalysis.setup_state) and where its parts are:
+    `marker` (x, y, size) rows with `marker_terminal` (index into its terminals) and
+    `marker_side` (1 top, -1 bottom, 0 through the board)."""
+    rows = np.array([row[:3] for row in markers], dtype=np.int64).reshape(-1, 3)
+    return encode_frame({"type": "dc_setup", "revision": revision, **setup},
+                        {"marker": rows.astype("<i4"),
+                         "marker_terminal": np.array([row[3] for row in markers], dtype="<i4"),
+                         "marker_side": np.array([row[4] for row in markers], dtype="<i4")})
+
+
+def dc_status_message(status: dict, revision: int) -> bytes:
+    """Where the DC solve is: "idle" (with what is missing), "waiting" for edits to
+    settle, "solving" (stage, elapsed_s), "done" or "error" (message)."""
+    return encode_frame({"type": "dc_status", "revision": revision, **status})
+
+
+def dc_result_message(result: dict | None, revision: int) -> bytes:
+    """A finished DC solve (dcworker.solve), or None to clear the last one. Per copper
+    layer in `layers`, on the grid (x0_nm, y0_nm, pitch_nm): `j` |J| in A/mm2, `v` the
+    potential in V, `jx`, `jy` the current density along KiCad's x and y (NaN off
+    copper). Barrels (vias and plated pads) by current: `via` (x, y, land size) rows,
+    `via_current` (A) and `via_power` (W), with their ids and layer spans in the header."""
+    if result is None:
+        return encode_frame({"type": "dc_result", "revision": revision, "net": ""})
+    fields, barrels = result["fields"], result["barrels"]
+    header = {key: value for key, value in result.items() if key not in ("fields", "barrels")}
+    header.update(type="dc_result", revision=revision, via_ids=list(barrels["ids"]),
+                  via_spans=[list(span) for span in barrels["spans"]])
+    via = np.column_stack([barrels["xy"].reshape(-1, 2), barrels["size"].reshape(-1)]).astype("<i4")
+    return encode_frame(header, {**{key: np.asarray(fields[key], dtype="<f4") for key in ("j", "v", "jx", "jy")},
+                                 "via": via, "via_current": np.asarray(barrels["current_a"], dtype="<f4"),
+                                 "via_power": np.asarray(barrels["power_w"], dtype="<f4")})
 
 
 def stackup_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:

@@ -16,11 +16,11 @@ from pathlib import Path
 import bpy
 import bpy.utils.previews
 from bpy.app.handlers import persistent
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty,
-                       StringProperty)
+from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty,
+                       IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
+from . import (apply, collisions, cosmetics, dc, dump, focus, layers, lighting, live, models, packages, pick,
                render_depth, return_path, watcher)
 from .objects import view3d_spaces
 from .state import board
@@ -140,7 +140,23 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         coordinate = (event.mouse_region_x, event.mouse_region_y)
         origin = view3d_utils.region_2d_to_origin_3d(context.region, context.region_data, coordinate)
         direction = view3d_utils.region_2d_to_vector_3d(context.region, context.region_data, coordinate)
-        item = pick.item_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
+        scene = context.scene
+        marking = scene.kileido_dc and scene.kileido_dc_mark
+        item = pick.item_at(scene, context.evaluated_depsgraph_get(), origin, direction, copper_only=marking)
+        if scene.kileido_dc_pick_net:  # the DC panel's Pick: this click chooses the power net
+            if item is None:
+                self.report({"WARNING"}, "KiLeidoscope: click the copper of the power net")
+                return {"FINISHED"}
+            scene.kileido_dc_pick_net = False
+            live.request_dc("net", item=item)
+            self.report({"INFO"}, f"KiLeidoscope: DC analysis on the net of {pick.describe(item)}")
+            return {"FINISHED"}
+        if marking:  # clicks mark supply and load pads and vias instead of selecting
+            if item is None:
+                self.report({"WARNING"}, "KiLeidoscope: click a pad or via to mark it")
+            else:
+                live.request_dc("mark", item=item, whole=self.extend)
+            return {"FINISHED"}
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
         if item is not None:
@@ -567,6 +583,288 @@ class KILEIDO_PT_return_path(bpy.types.Panel):
             column.label(text=f"and {len(issues) - self.SHOWN} more", icon="BLANK1")
 
 
+class KILEIDO_PG_dc_terminal(bpy.types.PropertyGroup):
+    """One supply or load of the DC analysis, as the bridge last sent it."""
+    index: IntProperty()
+    role: StringProperty()
+    name: StringProperty(update=lambda self, context: _dc_edit(self, "name"))
+    value: FloatProperty(min=0.0, soft_max=100.0, precision=3, step=10,
+                         description="Supplies: the voltage they hold. Loads: the current they draw",
+                         update=lambda self, context: _dc_edit(self, "value"))
+    bonded: BoolProperty(description="All its parts are one conductor (a package's internal metal): the "
+                                     "split between them is solved, not shared evenly",
+                         update=lambda self, context: _dc_edit(self, "bonded"))
+    parts: StringProperty()
+
+
+def _dc_edit(item, field):
+    if not dc.syncing():
+        live.request_dc("edit", index=item.index, **{field: getattr(item, field)})
+
+
+def _dc_settings(field, key):
+    def update(scene, _context):
+        if not dc.syncing():
+            live.request_dc("settings", **{key: getattr(scene, field)})
+    return update
+
+
+def _dc_active(scene, _context):
+    if not dc.syncing():
+        live.request_dc("activate", index=scene.kileido_dc_active)
+        dc.refresh_markers()
+
+
+def _dc_auto_range(scene, _context):
+    if not scene.kileido_dc_auto_range:
+        dc.freeze_range()
+    dc.recolor()
+
+
+def _dc_manual_range(_scene, _context):
+    if not dc.syncing():
+        dc.recolor()
+
+
+def _dc_field(scene, _context):
+    if not scene.kileido_dc_auto_range:
+        scene.kileido_dc_auto_range = True  # a range in the other field's unit means nothing here
+    dc.recolor()
+
+
+class KILEIDO_UL_dc_terminals(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_property, index=0, flt_flag=0):
+        row = layout.row(align=True)
+        row.label(text="", icon_value=_swatch("tile", dc.MARKER_COLORS[item.role]))
+        row.prop(item, "name", text="", emboss=False)
+        value = row.row(align=True)
+        value.prop(item, "value", text="V" if item.role == "supply" else "A")
+        count = len([part for part in item.parts.split(", ") if part])
+        hint = row.row(align=True)
+        hint.active = False
+        hint.label(text=f"{count} part{'s' * (count != 1)}" if count else "no parts")
+
+
+class KILEIDO_OT_dc(bpy.types.Operator):
+    bl_idname = "kileido.dc"
+    bl_label = "DC analysis"
+    bl_description = "Change the DC analysis setup"
+    bl_options = {"INTERNAL"}
+
+    op: StringProperty()
+    role: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        return {"add": f"Add a {properties.role}: then click its pads or vias in the view",
+                "remove": "Remove the chosen supply or load",
+                "net_selection": "Analyse the net selected in KiCad",
+                "solve": "Solve again now, without waiting for edits to settle"}.get(properties.op, cls.bl_description)
+
+    @classmethod
+    def poll(cls, context):
+        return live.linked()
+
+    def execute(self, context):
+        scene = context.scene
+        if self.op == "add":
+            live.request_dc("add", role=self.role)
+            scene.kileido_dc_mark = True
+        elif self.op == "remove":
+            if scene.kileido_dc_active < 0:
+                return {"CANCELLED"}
+            live.request_dc("remove", index=scene.kileido_dc_active)
+        elif self.op == "net_selection":
+            live.request_dc("net", **{"from": "selection"})
+        else:
+            live.request_dc(self.op)
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_dc_via(bpy.types.Operator):
+    """Select this via (or the component of this pad) in KiCad"""
+    bl_idname = "kileido.dc_via"
+    bl_label = "Select in KiCad"
+    bl_options = {"INTERNAL"}
+
+    index: IntProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return live.linked()
+
+    def execute(self, context):
+        ids = (board.dc.get("result") or {}).get("via_ids", [])
+        if not 0 <= self.index < len(ids):
+            return {"CANCELLED"}
+        live.request_select([ids[self.index]])
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_dc_flow(bpy.types.Operator):
+    """Play or stop the timeline, so the current arrows move (their speed is illustrative)"""
+    bl_idname = "kileido.dc_flow"
+    bl_label = "Play flow"
+
+    def execute(self, context):
+        bpy.ops.screen.animation_play()
+        return {"FINISHED"}
+
+
+class KILEIDO_PT_dc(bpy.types.Panel):
+    """DC analysis of one power net: supplies and loads marked in the view, the
+    solve in the bridge (Fill Resistance's solver), results on the copper."""
+    bl_label = "DC analysis"
+    bl_idname = "KILEIDO_PT_dc"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "KiLeidoscope"
+    bl_parent_id = "KILEIDO_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw_header(self, context):
+        self.layout.prop(context.scene, "kileido_dc", text="")
+
+    def draw(self, context):
+        layout, scene = self.layout, context.scene
+        setup = board.dc.get("setup") or {}
+        hint = layout.row()
+        hint.active = False
+        hint.label(text="Steady current (DC): resistance and IR drop")
+        row = layout.row(align=True)
+        row.label(text=setup.get("net") or "No net chosen", icon="NETWORK_DRIVE")
+        row.operator(KILEIDO_OT_dc.bl_idname, text="", icon="RESTRICT_SELECT_OFF").op = "net_selection"
+        row.prop(scene, "kileido_dc_pick_net", text="", icon="EYEDROPPER")
+        layout.template_list("KILEIDO_UL_dc_terminals", "", scene, "kileido_dc_terminals", scene,
+                             "kileido_dc_active", rows=3)
+        row = layout.row(align=True)
+        for role, label in (("supply", "Supply"), ("load", "Load")):
+            button = row.operator(KILEIDO_OT_dc.bl_idname, text=label, icon="ADD")
+            button.op, button.role = "add", role
+        row.operator(KILEIDO_OT_dc.bl_idname, text="", icon="REMOVE").op = "remove"
+        items = scene.kileido_dc_terminals
+        if 0 <= scene.kileido_dc_active < len(items):
+            chosen = items[scene.kileido_dc_active]
+            column = layout.column(align=True)
+            for line in _wrap(context, chosen.parts or "No parts yet"):
+                column.label(text=line)
+            column.prop(chosen, "bonded", text="One conductor (bonded)")
+        layout.prop(scene, "kileido_dc_mark", text="Mark pads and vias", icon="PINNED", toggle=True)
+        if scene.kileido_dc_mark:
+            note = layout.column(align=True)
+            note.active = False
+            note.label(text="Click: add to the chosen one, or take off")
+            note.label(text="Shift+click: the whole component")
+        if setup.get("message"):
+            for index, line in enumerate(_wrap(context, setup["message"])):
+                layout.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+        icon, text = dc.status_line()
+        row = layout.row(align=True)
+        lines = _wrap(context, text or "Idle")
+        row.label(text=lines[0], icon=icon)
+        row.operator(KILEIDO_OT_dc.bl_idname, text="", icon="FILE_REFRESH").op = "solve"
+        for line in lines[1:]:
+            layout.label(text=line, icon="BLANK1")
+        summary = dc.summary_lines()
+        if summary:
+            box = layout.box()
+            for line in summary:
+                for index, part in enumerate(_wrap(context, line)):
+                    box.label(text=part, icon="BLANK1" if index else "NONE")
+
+
+class KILEIDO_PT_dc_display(bpy.types.Panel):
+    """How the DC results show: the colour map, its legend, arrows, via currents."""
+    bl_label = "Display"
+    bl_idname = "KILEIDO_PT_dc_display"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "KiLeidoscope"
+    bl_parent_id = "KILEIDO_PT_dc"
+
+    def draw(self, context):
+        layout, scene = self.layout, context.scene
+        layout.active = scene.kileido_dc
+        layout.prop(scene, "kileido_dc_field", expand=True)
+        layout.prop(scene, "kileido_dc_layer", text="Layer")
+        row = layout.row(align=True)
+        if scene.kileido_dc_field == "CURRENT":
+            row.prop(scene, "kileido_dc_log", text="Log scale")
+        row.prop(scene, "kileido_dc_auto_range", text="Auto range")
+        if not scene.kileido_dc_auto_range:
+            row = layout.row(align=True)
+            row.prop(scene, "kileido_dc_min", text="Min")
+            row.prop(scene, "kileido_dc_max", text="Max")
+        rows = dc.legend()
+        if rows:
+            column = layout.column(align=True)
+            title = "Current density" if scene.kileido_dc_field == "CURRENT" else "Voltage drop"
+            column.label(text=f"{title} ({dc.unit()})")
+            for color, label in rows:
+                column.label(text=label, icon_value=_swatch("tile", color))
+        row = layout.row(align=True)
+        row.prop(scene, "kileido_dc_arrows", text="Arrows")
+        spacing = row.row(align=True)
+        spacing.active = scene.kileido_dc_arrows
+        spacing.prop(scene, "kileido_dc_arrow_mm", text="Every")
+        row = layout.row(align=True)
+        row.active = scene.kileido_dc_arrows
+        row.operator(KILEIDO_OT_dc_flow.bl_idname, text="Stop" if context.screen and context.screen.is_animation_playing
+                     else "Play flow", icon="PAUSE" if context.screen and context.screen.is_animation_playing
+                     else "PLAY")
+        row.prop(scene, "kileido_dc_flow_speed", text="Speed")
+        note = layout.row()
+        note.active = False
+        note.label(text="Arrow speed is illustrative, not the electron drift")
+        result = board.dc.get("result")
+        layout.prop(scene, "kileido_dc_vias", text="Via currents")
+        if result and len(result["via"]) and scene.kileido_dc_vias:
+            low, high = dc.via_range(result)
+            column = layout.column(align=True)
+            column.label(text=f"0 to {high:.3g} A", icon_value=_swatch("vias", dc.colors_srgb(
+                [high], low, high, False, "CURRENT")[0]))
+            for index, text in dc.top_vias():
+                column.operator(KILEIDO_OT_dc_via.bl_idname, text=text, emboss=False, icon="DOT").index = index
+
+
+class KILEIDO_PT_dc_settings(bpy.types.Panel):
+    """What KiCad does not store, the grid, the solver and its credit."""
+    bl_label = "Settings"
+    bl_idname = "KILEIDO_PT_dc_settings"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "KiLeidoscope"
+    bl_parent_id = "KILEIDO_PT_dc"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout, scene = self.layout, context.scene
+        column = layout.column(align=True)
+        column.prop(scene, "kileido_dc_plating_um", text="Via plating (µm)")
+        column.prop(scene, "kileido_dc_cell_um", text="Grid cell (µm, 0: auto)")
+        column.prop(scene, "kileido_dc_capped", text="Filled and capped vias")
+        setup = board.dc.get("setup") or {}
+        rho = (setup.get("settings") or {}).get("rho_ohm_m")
+        info = layout.column(align=True)
+        info.active = False
+        if rho:
+            info.label(text=f"Copper {rho:.3g} Ω·m (20 °C); thickness from the stackup")
+        timing = dc.timing_line()
+        for line in _wrap(context, timing) if timing else ():
+            info.label(text=line)
+        for note in (board.dc.get("status") or {}).get("notes", ()):
+            for index, line in enumerate(_wrap(context, note)):
+                info.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+        if setup.get("file"):
+            for line in _wrap(context, f"Setup: {setup['file']}"):
+                info.label(text=line)
+        credit = layout.column(align=True)
+        credit.active = False
+        for line in _wrap(context, "Solver: Fill Resistance by Janik Oltmanns / B4L "
+                                   "(git.b4l.co.th/B4L/kicad-zone-resistance), GPL-3.0-or-later"):
+            credit.label(text=line)
+
+
 class KILEIDO_PT_status(bpy.types.Panel):
     """Link, loading progress and warnings, below the Boards panel."""
     bl_label = "Status"
@@ -633,10 +931,12 @@ def _swatch(kind, color):
     return preview.icon_id
 
 
-CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
-           KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_return_path_issue,
-           KILEIDO_PT_panel, KILEIDO_PT_boards, KILEIDO_PT_return_path, KILEIDO_PT_status)
+CLASSES = (KILEIDO_PG_dc_terminal, KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board,
+           KILEIDO_OT_view_only_board, KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board,
+           KILEIDO_OT_resync, KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers,
+           KILEIDO_OT_return_path_issue, KILEIDO_OT_dc, KILEIDO_OT_dc_via, KILEIDO_OT_dc_flow, KILEIDO_UL_dc_terminals,
+           KILEIDO_PT_panel, KILEIDO_PT_boards, KILEIDO_PT_return_path, KILEIDO_PT_dc, KILEIDO_PT_dc_display,
+           KILEIDO_PT_dc_settings, KILEIDO_PT_status)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -752,6 +1052,63 @@ def _scene_properties():
             description="Mark in red where differential pairs and the nets selected in KiCad lose their "
                         "reference plane: gaps, splits, and vias to another plane with no return via near",
             update=lambda self, context: return_path.refresh()),
+        "kileido_dc": BoolProperty(
+            name="DC analysis", default=True,
+            description="Show the DC analysis on the board: current density or voltage drop, arrows, via "
+                        "currents and the marked supplies and loads",
+            update=lambda self, context: dc.refresh()),
+        "kileido_dc_mark": BoolProperty(
+            name="Mark pads and vias", default=False,
+            description="Clicks in the view mark pads and vias for the chosen supply or load (Shift: the "
+                        "whole component) instead of selecting in KiCad"),
+        "kileido_dc_pick_net": BoolProperty(
+            name="Pick the net", default=False,
+            description="The next click in the view chooses the power net from the copper under it"),
+        "kileido_dc_terminals": CollectionProperty(type=KILEIDO_PG_dc_terminal),
+        "kileido_dc_active": IntProperty(default=-1, update=_dc_active),
+        "kileido_dc_field": EnumProperty(
+            name="Show", items=(("CURRENT", "Current density", "|J| in the copper, A/mm²"),
+                                ("DROP", "Voltage drop", "Below the highest supply voltage, mV")),
+            default="CURRENT", update=_dc_field),
+        "kileido_dc_layer": EnumProperty(
+            name="Layer", items=dc.layer_items,
+            description="One copper layer's result alone, seen from above (inner layers lie under the board)",
+            update=lambda self, context: dc.isolate(self.kileido_dc_layer)),
+        "kileido_dc_log": BoolProperty(
+            name="Log scale", default=True, description="Current density on a log scale over three decades",
+            update=lambda self, context: dc.recolor()),
+        "kileido_dc_auto_range": BoolProperty(
+            name="Auto range", default=True, description="The colour range follows the result",
+            update=_dc_auto_range),
+        "kileido_dc_min": FloatProperty(name="Min", default=0.0, min=0.0, precision=3,
+                                        update=_dc_manual_range),
+        "kileido_dc_max": FloatProperty(name="Max", default=1.0, min=0.0, precision=3,
+                                        update=_dc_manual_range),
+        "kileido_dc_arrows": BoolProperty(
+            name="Arrows", default=True, description="Arrows along the current, where it is not weak",
+            update=lambda self, context: dc.refresh()),
+        "kileido_dc_arrow_mm": FloatProperty(
+            name="Arrow spacing", default=1.0, min=0.2, max=20.0, step=10, precision=1, unit="NONE",
+            description="Distance between arrows in mm", update=lambda self, context: dc.refresh()),
+        "kileido_dc_flow_speed": FloatProperty(
+            name="Flow speed", default=1.0, min=0.0, max=10.0, step=10, precision=1,
+            description="How fast the arrows march while the timeline plays (illustrative)",
+            update=lambda self, context: dc.set_flow_speed()),
+        "kileido_dc_vias": BoolProperty(
+            name="Via currents", default=True, description="Colour each via and plated hole by its current",
+            update=lambda self, context: dc.refresh()),
+        "kileido_dc_plating_um": FloatProperty(
+            name="Via plating", default=18.0, min=1.0, max=200.0, precision=1, step=100,
+            description="Copper plating in via barrels, µm (KiCad does not store it; IPC-6012 class 2: 20 µm "
+                        "average)", update=_dc_settings("kileido_dc_plating_um", "plating_um")),
+        "kileido_dc_cell_um": FloatProperty(
+            name="Grid cell", default=0.0, min=0.0, max=2000.0, precision=0, step=500,
+            description="The solver's cell size in µm; 0 picks it from the board size (Fill Resistance's rule)",
+            update=_dc_settings("kileido_dc_cell_um", "cell_um")),
+        "kileido_dc_capped": BoolProperty(
+            name="Filled and capped vias", default=False,
+            description="Vias filled and plated over: a thin copper cap over their mouths on the outer layers",
+            update=_dc_settings("kileido_dc_capped", "vias_capped")),
         "kileido_clip_silkscreen": BoolProperty(
             name="Clip silkscreen to board outline", default=True,
             description="Hide silkscreen outside Edge.Cuts and inside board cutouts",
