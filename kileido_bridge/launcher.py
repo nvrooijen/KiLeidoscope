@@ -145,11 +145,12 @@ def _stop_on_signals():
             signal.signal(getattr(signal, name), lambda number, frame: sys.exit(0))
 
 
-def launch(root=None) -> int:
-    """Run from kicad_plugin/launch.py: serve the board until the Blender window closes.
+def launch(root=None, socket: str | None = None) -> int:
+    """Run from kicad_plugin/launch.py (or `python -m kileido_bridge open` with the
+    `socket` it reaches KiCad on): serve the board until the Blender window closes.
     Blender's output goes to `<cache>/blender.log`."""
     try:
-        socket = os.environ.get("KICAD_API_SOCKET")
+        socket = socket or os.environ.get("KICAD_API_SOCKET")
         if not socket:
             raise RuntimeError("Start Open in Blender from the KiCad PCB Editor to select the correct board.")
         lock = viewer_lock(socket)

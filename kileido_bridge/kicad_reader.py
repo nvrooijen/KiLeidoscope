@@ -1,6 +1,7 @@
 """The bridge's only KiCad dependency. Every board call here is read-only."""
 
 import math
+import os
 import queue
 import sys
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kipy import KiCad
+from kipy.kicad import _default_socket_path
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
 from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape
 from kipy.proto.common import ApiStatusCode, commands
@@ -83,6 +85,12 @@ def explain_connection_error(exc: Exception) -> str:
         return ("KiCad's plugin connection is not reachable. Check that Preferences > Plugins > "
                 "Enable KiCad API is on. Another KiCad may be holding it. " + _LEFTOVER)
     return f"{type(exc).__name__}: {exc}"
+
+
+def kicad_socket() -> str:
+    """The KiCad API socket a connection uses: KiCad's own for a plugin, else the default
+    one, which the first KiCad running with the API on serves."""
+    return os.environ.get("KICAD_API_SOCKET") or _default_socket_path()
 
 
 def connect_board(timeout_ms: int = 3000):
