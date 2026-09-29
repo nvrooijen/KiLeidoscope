@@ -3,8 +3,9 @@ the KiLeidoscope panel (High speed; later DC), one at a time, and the sidebar wi
 make room; clicking the open tab again closes it.
 
 The tabs are drawn in the 3D view (Blender's panels cannot colour a button or turn its
-text), so they have no tooltip or hover. A click on one reaches `KILEIDO_OT_column_tab`
-through the add-on's 3D View keymap; anywhere else the click passes through.
+text), so they have no tooltip or hover. A press on one reaches `KILEIDO_OT_column_tab`
+through the add-on's 3D View keymap, before it can become the click that selects in
+KiCad; anywhere else the press passes through.
 
 Blender has no API for a region's width. The sidebar's stored width (ARegion.sizex,
 unscaled pixels) is written directly, at the offset measured for each Blender version

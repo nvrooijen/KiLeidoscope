@@ -753,6 +753,11 @@ def _scene_properties():
             name="Pulse tail", default=12.0, min=0.0, soft_max=60.0, precision=1,
             description="Length of the fading trail behind each pulse, in ps of travel (0: none)",
             update=lambda self, context: phase.set_scale()),
+        "kileido_phase_pulse_glow": FloatProperty(
+            name="Pulse brightness", default=2.0, min=0.0, soft_max=10.0, precision=1,
+            description="Emission of the pulses and their glow (1: as before). Brighter bleaches red and blue "
+                        "towards pink and white",
+            update=lambda self, context: phase.set_scale()),
         "kileido_phase_bloom": BoolProperty(
             name="Bloom", default=False,
             description="A glow halo round the pulses and colours (Blender's compositor, in the 3D views and "
@@ -821,9 +826,10 @@ def register():
     keyconfig = bpy.context.window_manager.keyconfigs.addon
     if keyconfig is not None:  # None in background mode
         keymap = keyconfig.keymaps.new(name="3D View", space_type="VIEW_3D")
-        # First: a click on a bookmark tab opens its column; elsewhere it passes through.
+        # A press on a bookmark tab opens its column: handled on the press, it never
+        # becomes the click that selects in KiCad below. Elsewhere it passes through.
         _KEYMAPS.append((keymap, keymap.keymap_items.new(columns.KILEIDO_OT_column_tab.bl_idname,
-                                                         "LEFTMOUSE", "CLICK")))
+                                                         "LEFTMOUSE", "PRESS")))
         # A click (press and release without moving) selects in KiCad while connected;
         # dragging still box-selects or navigates. Not connected, the operator's poll
         # fails and the click falls through to Blender's own selection.

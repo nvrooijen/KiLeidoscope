@@ -63,8 +63,11 @@ TAIL_SHARE = 0.6  # the comet tail's brightness next to the pulse's head
 BLOOM = "KLS Bloom"
 BLOOM_THRESHOLD = 0.6  # the trace tints (emission 1) and pulses bloom; lit copper and mask stay crisp
 BLOOM_SIZE = 0.6
-SCALE_NODE, CLOCK_NODE, WIDTH_NODE, PULSE_NODE = ("KLS phase scale", "KLS phase clock", "KLS phase pulse width",
-                                                  "KLS phase pulses")
+SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase pulse width", "KLS phase pulses",
+                                                   "KLS phase brightness")
+PULSES = 2  # per trace, evenly spaced over the loop
+CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
+NODES_VERSION = 2  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
 TICK_S = 1 / 30
 DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
@@ -167,15 +170,33 @@ def _value(tree, name, value):
 
 
 def _pulse(tree, delay):
-    """How lit a point is now: a Gaussian head at the pulse clock and a comet tail
-    fading behind it (points the pulse passed a moment ago); 0 while pulses are off."""
-    gap = _math(tree, "SUBTRACT", delay, _value(tree, CLOCK_NODE, -1e3))  # > 0: not reached yet
-    offset = _math(tree, "DIVIDE", gap, _value(tree, WIDTH_NODE, _pulse_width()))
-    head = _math(tree, "EXPONENT", _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", offset, offset), -1.0))
-    fading = _math(tree, "EXPONENT", _math(tree, "DIVIDE", _math(tree, "MINIMUM", gap, 0.0),
-                                           _value(tree, TAIL_NODE, _pulse_tail())))
-    tail = _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", fading, _math(tree, "LESS_THAN", gap, 0.0)), TAIL_SHARE)
-    return _math(tree, "MULTIPLY", _math(tree, "MAXIMUM", head, tail), _value(tree, PULSE_NODE, 0.0))
+    """How lit a point is now: for each pulse, a Gaussian head at its clock and a comet
+    tail fading behind it (points it passed a moment ago); 0 while pulses are off."""
+    width, fade = _value(tree, WIDTH_NODE, _pulse_width()), _value(tree, TAIL_NODE, _pulse_tail())
+    lit = None
+    for name in CLOCK_NODES:
+        gap = _math(tree, "SUBTRACT", delay, _value(tree, name, -1e3))  # > 0: not reached yet
+        offset = _math(tree, "DIVIDE", gap, width)
+        head = _math(tree, "EXPONENT", _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", offset, offset), -1.0))
+        fading = _math(tree, "EXPONENT", _math(tree, "DIVIDE", _math(tree, "MINIMUM", gap, 0.0), fade))
+        tail = _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", fading, _math(tree, "LESS_THAN", gap, 0.0)),
+                     TAIL_SHARE)
+        one = _math(tree, "MAXIMUM", head, tail)
+        lit = one if lit is None else _math(tree, "MAXIMUM", lit, one)
+    return _math(tree, "MULTIPLY", lit, _value(tree, PULSE_NODE, 0.0))
+
+
+def _fresh(name):
+    """The material `name`, emptied for building when it is new or an older add-on built
+    it; None when it is current."""
+    material = bpy.data.materials.get(name)
+    if material is not None and material.get("kls_nodes") == NODES_VERSION:
+        return None
+    material = material or bpy.data.materials.new(name)
+    material.use_nodes = True
+    material.node_tree.nodes.clear()
+    material["kls_nodes"] = NODES_VERSION
+    return material
 
 
 def _trace_material(side):
@@ -183,13 +204,10 @@ def _trace_material(side):
     over the colour scale), plus a flash in the same colour where the pulse is now:
     exp(-((t - clock) / width)^2). Open over drilled holes, like the copper."""
     name = f"{TRACE} {side.upper()}"
-    material = bpy.data.materials.get(name)
-    if material is None:
-        material = bpy.data.materials.new(name)
-        material.use_nodes = True
+    material = _fresh(name)
+    if material is not None:
         material.diffuse_color = (*COLORS[side], 1.0)
         tree = material.node_tree
-        tree.nodes.clear()
         lead = _node(tree, "ShaderNodeAttribute")
         lead.attribute_type, lead.attribute_name = "GEOMETRY", LEAD
         delay = _node(tree, "ShaderNodeAttribute")
@@ -205,13 +223,15 @@ def _trace_material(side):
         color.inputs["B"].default_value = (*COLORS[side], 1.0)
         emission = _node(tree, "ShaderNodeEmission")
         tree.links.new(color.outputs["Result"], emission.inputs["Color"])
-        tree.links.new(_math(tree, "ADD", _math(tree, "MULTIPLY", glow, FLASH_GLOW), TINT_GLOW),
-                       emission.inputs["Strength"])
+        flash = _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", glow, FLASH_GLOW),
+                      _value(tree, BRIGHT_NODE, _brightness()))
+        tree.links.new(_math(tree, "ADD", flash, TINT_GLOW), emission.inputs["Strength"])
         surface = _node(tree, "ShaderNodeMixShader")
         tree.links.new(_math(tree, "MAXIMUM", tint, glow), surface.inputs["Fac"])
         tree.links.new(_node(tree, "ShaderNodeBsdfTransparent").outputs[0], surface.inputs[1])
         tree.links.new(emission.outputs[0], surface.inputs[2])
         tree.links.new(surface.outputs[0], _node(tree, "ShaderNodeOutputMaterial").inputs["Surface"])
+    material = bpy.data.materials[name]
     holes.add_to(material)  # follows the hole mask (a new board, moved vias): cheap once built
     material.surface_render_method = "BLENDED"  # a see-through tint over the copper, not dithered noise
     return material
@@ -222,22 +242,21 @@ def _glow_material(side):
     tube's middle as seen from the camera (Layer Weight facing). It covers what is
     behind it rather than adding to it, so it stays pure red or blue."""
     name = f"{GLOW} {side.upper()}"
-    material = bpy.data.materials.get(name)
-    if material is not None:
-        return material
-    material = bpy.data.materials.new(name)
-    material.use_nodes = True
+    material = _fresh(name)
+    if material is None:
+        return bpy.data.materials[name]
     material.diffuse_color = (*COLORS[side], 0.3)
     material.surface_render_method = "BLENDED"
     material.use_backface_culling = True  # the near wall only: the far one would double the light
     tree = material.node_tree
-    tree.nodes.clear()
     delay = _node(tree, "ShaderNodeAttribute")
     delay.attribute_type, delay.attribute_name = "GEOMETRY", DELAY
     pulse = _pulse(tree, delay.outputs["Fac"])
     facing = _node(tree, "ShaderNodeLayerWeight", Blend=0.5)
     core = _math(tree, "POWER", _math(tree, "SUBTRACT", 1.0, facing.outputs["Facing"]), 1.5)
-    emission = _node(tree, "ShaderNodeEmission", Color=(*COLORS[side], 1.0), Strength=GLOW_STRENGTH)
+    emission = _node(tree, "ShaderNodeEmission", Color=(*COLORS[side], 1.0))
+    tree.links.new(_math(tree, "MULTIPLY", _value(tree, BRIGHT_NODE, _brightness()), GLOW_STRENGTH),
+                   emission.inputs["Strength"])
     light = _node(tree, "ShaderNodeMixShader")  # covers what is behind: pure red or blue, not added to it
     tree.links.new(_math(tree, "MULTIPLY", _math(tree, "MULTIPLY", pulse, core), GLOW_DENSITY, clamp=True),
                    light.inputs["Fac"])
@@ -281,6 +300,10 @@ def _pulse_tail():
     return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_pulse_tail_ps", 12.0)))
 
 
+def _brightness():
+    return max(0.0, float(getattr(bpy.context.scene, "kileido_phase_pulse_glow", 2.0)))
+
+
 def _set(name, value):
     for material in _trace_materials():
         node = material.node_tree.nodes.get(name)  # the glow has no colour scale
@@ -289,10 +312,11 @@ def _set(name, value):
 
 
 def set_scale():
-    """The colour scale changed: one value in each trace material."""
+    """The colour scale or a pulse setting changed: one value in each trace material."""
     _set(SCALE_NODE, _scale())
     _set(WIDTH_NODE, _pulse_width())
     _set(TAIL_NODE, _pulse_tail())
+    _set(BRIGHT_NODE, _brightness())
 
 
 # --- Pulses -------------------------------------------------------------------------------
@@ -314,7 +338,8 @@ def _set_clock(scene, seconds):
     period = longest + 6 * width + _pulse_tail() * 4  # in before the start, out with its tail past the end
     rate = max(0.1, float(getattr(scene, "kileido_phase_pulse_rate", 30.0)))
     _set(PULSE_NODE, 1.0)
-    _set(CLOCK_NODE, (seconds * rate) % period - 3 * width)
+    for index, name in enumerate(CLOCK_NODES):  # evenly spaced over the loop
+        _set(name, (seconds * rate + index * period / PULSES) % period - 3 * width)
 
 
 def _cycles_viewport(scene):

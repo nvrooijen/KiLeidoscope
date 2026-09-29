@@ -150,14 +150,24 @@ def modifier_input(modifier, group, name, value):
 
 
 def tracks():
-    group, source, sink = _group("KLS_Tracks_v3", (("Material", "NodeSocketMaterial"),
+    """Segments as ribbons with round caps. Joints the mesh marks `kls_merge` (apply._joints:
+    nearly straight, one width) merge, so the ribbon runs through; `kls_no_cap` ends get
+    no cap. A mesh without them (the highlight copies) gets a cap on every end."""
+    group, source, sink = _group("KLS_Tracks_v4", (("Material", "NodeSocketMaterial"),
                                                    ("Thickness", "NodeSocketFloat"),
                                                    ("Up", "NodeSocketFloat", 1.0)))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
+    joined = nodes.new("GeometryNodeInputNamedAttribute")
+    joined.data_type = "BOOLEAN"
+    joined.inputs["Name"].default_value = "kls_merge"
+    merged = nodes.new("GeometryNodeMergeByDistance")
+    merged.inputs["Distance"].default_value = 1e-8  # the same point: KiCad's joints are exact
+    links.new(source.outputs["Geometry"], merged.inputs["Geometry"])
+    links.new(joined.outputs["Attribute"], merged.inputs["Selection"])
     mesh_to_curve = nodes.new("GeometryNodeMeshToCurve")
-    links.new(source.outputs["Geometry"], mesh_to_curve.inputs["Mesh"])
+    links.new(merged.outputs["Geometry"], mesh_to_curve.inputs["Mesh"])
     normal = nodes.new("GeometryNodeSetCurveNormal")
     normal.inputs["Mode"].default_value = "Z Up"
     links.new(mesh_to_curve.outputs["Curve"], normal.inputs["Curve"])
@@ -178,8 +188,15 @@ def tracks():
     links.new(width.outputs["Attribute"], cap_scale.inputs["X"])
     links.new(width.outputs["Attribute"], cap_scale.inputs["Y"])
     links.new(height, cap_scale.inputs["Z"])
+    capless = nodes.new("GeometryNodeInputNamedAttribute")
+    capless.data_type = "BOOLEAN"
+    capless.inputs["Name"].default_value = "kls_no_cap"
+    capped = nodes.new("FunctionNodeBooleanMath")
+    capped.operation = "NOT"
+    links.new(capless.outputs["Attribute"], capped.inputs[0])
     caps = nodes.new("GeometryNodeInstanceOnPoints")
     links.new(source.outputs["Geometry"], caps.inputs["Points"])
+    links.new(capped.outputs[0], caps.inputs["Selection"])
     links.new(cap, caps.inputs["Instance"])
     links.new(cap_scale.outputs["Vector"], caps.inputs["Scale"])
     join = nodes.new("GeometryNodeJoinGeometry")

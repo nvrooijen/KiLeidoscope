@@ -76,7 +76,7 @@ def main():
         assert phase._pulse_tick() == phase.TICK_S
         nodes = material.node_tree.nodes
         assert nodes[phase.PULSE_NODE].outputs[0].default_value == 1.0
-        clock = nodes[phase.CLOCK_NODE].outputs[0].default_value
+        clock = nodes[phase.CLOCK_NODES[0]].outputs[0].default_value
         assert -3 * phase._pulse_width() <= clock <= max(result.delay_p_ps, result.delay_n_ps) + 3 * phase._pulse_width()
         # The energy field: a tube around each trace, lit by the same clock, only while pulsing;
         # it stands out of the board and is not clickable (a click reaches the copper).
@@ -84,7 +84,11 @@ def main():
         assert not glow.hide_get() and "kls_phase_ids" not in glow and len(glow.data.polygons) > 100
         assert read_coordinates(glow.data)[:, 2].max() > top + phase.GLOW_RADIUS_M
         assert glow.data.materials[0].name == f"{phase.GLOW} P"
-        assert glow.data.materials[0].node_tree.nodes[phase.CLOCK_NODE].outputs[0].default_value == clock
+        assert glow.data.materials[0].node_tree.nodes[phase.CLOCK_NODES[0]].outputs[0].default_value == clock
+        # Brighter pulses: one value in the tints and the glows.
+        scene.kileido_phase_pulse_glow = 4.0
+        assert all(m.node_tree.nodes[phase.BRIGHT_NODE].outputs[0].default_value == 4.0
+                   for m in (material, glow.data.materials[0]))
         # A comet tail behind each pulse, its length the panel's.
         scene.kileido_phase_pulse_tail_ps = 5.0
         assert glow.data.materials[0].node_tree.nodes[phase.TAIL_NODE].outputs[0].default_value == 5.0
@@ -100,7 +104,13 @@ def main():
         fps = scene.render.fps / scene.render.fps_base
         scene.frame_set(scene.frame_start + 12)
         expected = (12 / fps * scene.kileido_phase_pulse_rate) - 3 * phase._pulse_width()
-        assert abs(nodes[phase.CLOCK_NODE].outputs[0].default_value - expected) < 1e-3
+        assert abs(nodes[phase.CLOCK_NODES[0]].outputs[0].default_value - expected) < 1e-3
+        # The second pulse runs half a loop behind the first.
+        width = phase._pulse_width()
+        longest = max(max(data['delay_p_ps'], data['delay_n_ps']) for data in state.board.phase.values())
+        period = longest + 6 * width + 4 * phase._pulse_tail()  # the slowest pair sets the loop
+        second = nodes[phase.CLOCK_NODES[1]].outputs[0].default_value
+        assert abs((second - expected) % period - period / 2) < 1e-3
         assert not bpy.app.timers.is_registered(phase._pulse_tick)
         scene.kileido_phase_pulse_clock = "LIVE"
         scene.kileido_phase_pulses = False

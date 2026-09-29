@@ -131,6 +131,7 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     pulses.prop(scene, "kileido_phase_pulse_rate", text="Pulse speed (ps/s)")
     pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
     pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
+    pulses.prop(scene, "kileido_phase_pulse_glow", text="Pulse brightness")
     layout.prop(scene, "kileido_phase_bloom", text="Bloom (glow halo)")
     blocked = phase.bloom_blocked()
     if blocked and scene.kileido_phase_bloom:
