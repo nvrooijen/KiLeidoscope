@@ -241,6 +241,36 @@ def test_kirschning_jansen_odd_mode_is_near_kicads_coupled_microstrip():
     assert odd < alone and delays.PS_PER_MM_VACUUM * math.sqrt(odd) == pytest.approx(5.794, rel=0.03)
 
 
+# The field solver's eps_eff (tests/field_solver.py, 24 cells per dielectric height) for one
+# trace of a pair in its odd mode with a coplanar ground, er 4.5; lengths in dielectric
+# heights: (width, gap to the partner, gap to the pour, eps_eff).
+FIELD_SOLVER = ((0.97, 0.84, 0.25, 2.8358), (0.97, 0.84, 1.0, 2.8849), (0.97, 0.84, 4.0, 2.9159),
+                (1.0, 0.5, 0.5, 2.8280), (0.5, 1.0, 0.25, 2.7896), (0.5, 1.0, 2.0, 2.8498))
+
+
+@pytest.mark.parametrize("width, gap, ground, solved", FIELD_SOLVER)
+def test_a_grounded_coplanar_pair_is_within_1_5_percent_of_the_field_solver(width, gap, ground, solved):
+    h = 121_120
+    closed = delays.microstrip_epsilon(4.5, width * h, h, gap * h, ground * h)
+    assert closed == pytest.approx(solved, rel=0.015)
+    assert closed < delays.microstrip_epsilon(4.5, width * h, h, gap * h)  # a pour speeds it up
+
+
+def test_the_field_solver_still_gives_its_numbers():
+    pytest.importorskip("scipy")  # a development tool, not shipped
+    import field_solver
+    width, gap, ground, solved = FIELD_SOLVER[0]
+    assert field_solver.eps_eff(width, 1.0, gap, ground, 4.5) == pytest.approx(solved, rel=1e-3)
+
+
+def test_a_pour_beside_the_pair_makes_it_faster():
+    open_board, grounded = only_pair(boards.matched()), only_pair(boards.grounded(0.1))
+    assert grounded.delay_p_ps < open_board.delay_p_ps * 0.995  # 40 of its 50 mm run beside the pour
+    assert abs(grounded.skew_ps) < 1e-3  # both sides alike
+    far = only_pair(boards.grounded(5.0))  # 5 mm away: 25 dielectric heights, no effect
+    assert far.delay_p_ps == pytest.approx(open_board.delay_p_ps, rel=1e-6)
+
+
 def test_microstrip_is_faster_than_stripline():
     heights = protocol.layer_heights_nm(boards.matched())[0]
     model_ = delays.StackupDelays(boards.STACKUP.layers, heights)

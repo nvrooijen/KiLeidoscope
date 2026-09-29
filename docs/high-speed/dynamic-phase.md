@@ -31,7 +31,7 @@ Nets are paired by KiCad's differential-pair naming (`_P`/`_N`, `+`/`-`). A 2-pa
 
 **2. Copper graph per side** · [`channels.build_graph()`](../../kileido_bridge/channels.py)
 Track and arc ends are nodes. An end landing inside another track splits that track there, as KiCad connects a T. Vias and pads are nodes that touching ends connect to; stacked vias and vias in pads are joined.
-*Assumes:* two pieces touch when an end lies within half a track width. Zones (pours and planes) are not read.
+*Assumes:* two pieces touch when an end lies within half a track width. Zones (pours) don't join the route; they only change its speed (see Delay model).
 
 **3. Matching ends, route** · [`channels.pair_routes()`](../../kileido_bridge/channels.py)
 The possible ends are pads with a single connection. Of the parts both sides reach, the two farthest apart over P and N together become the pair's ends, so both sides always end on the same parts. Each side's route is the shortest copper path between them. Any other end (an ESD diode, a second receiver) is a branch: listed and warned about, but not walked.
@@ -81,7 +81,11 @@ Here $1/c$ = 3.3356 ps/mm. For microstrip, with $u = w/h$ (track width over the 
 - a lone trace has Hammerstad and Jensen's static $\varepsilon_\text{eff}(u)$;
 - in a coupled pair the differential signal runs in the odd mode, with more of its field in the air between the two traces: Kirschning and Jansen's odd-mode $\varepsilon_\text{eff}(u, g)$, which is lower and tends to the lone trace's as $g$ grows. So a stretch where one side meanders away or breaks out runs at the lone trace's speed.
 
-On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) that gives 5.70 ps/mm, against 5.79 from KiCad's calculator (a lone trace: 5.99). For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
+On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) that gives 5.70 ps/mm, against 5.79 from KiCad's calculator (a lone trace: 5.99).
+
+Beside a pour of another net on the same layer (a grounded coplanar waveguide), the trace runs faster again. A conformal mapping of the cross-section (Ghione and Naldi's method, with the pair's midline as an electric wall for the odd mode) gives $\varepsilon_\text{eff}$ with and without the pour; that ratio scales the value above. Against a 2D field solver it is within 1.5 %; a pour a quarter of a dielectric height away makes the MIPI pair about 3 % faster.
+
+For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
 
 ### Why Δt holds up when the estimate is off
 
@@ -95,14 +99,14 @@ On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) th
 - **Microstrip:** no solder mask (delay a few % too low), zero copper thickness, and the next copper layer is assumed to be the reference plane.
 - **Coupling** is modelled on outer layers without a tuning profile (see above). A tuning profile gives one value per layer, coupled or not, as KiCad's own tuning does. On inner layers (stripline) coupling doesn't change the speed.
 - **Meander self-coupling,** which shortens a tight meander's real delay, is not modelled.
-- **Grounded coplanar waveguide and pours** are not seen: zones aren't read. A pour on both sides of the pair cancels out; a pour hugging only one side makes that side really a bit faster.
+- **Grounded coplanar waveguide** is modelled on outer layers without a tuning profile: at each point, the distance to the nearest pour of another net on the same layer speeds that stretch up (a pour past 10 dielectric heights changes nothing). The pour is taken as one straight edge at that distance; stitching vias and the pour's own width are not considered.
 - **Vias** are treated as a piece of line. Pad and antipad capacitance and the via stub are ignored.
 - **Branches** (ESD stubs, second receivers) are shown but their loading isn't modelled.
 - **Glass-weave skew** (one trace over glass, the other over resin) can't be predicted from the layout.
 
 ## When not to trust it
 
-- P and N with a pour or plane edge next to only one of them.
+- P and N with a plane edge (a split) under them: the plane below is assumed whole.
 - Long stretches where P and N run far apart; Δt there is defined only by which points are nearest.
 - Unfinished routes: the pair list warns when a side isn't fully routed.
 - Pairs whose sides still end on different parts: the pair list warns.
@@ -135,6 +139,7 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 | Tuning profile | sets the delay before any estimate |
 | No εr in the stackup | FR-4 is used and named as the source |
 | Microstrip vs stripline | microstrip is faster |
+| Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../../tests/field_solver.py)), which itself matches Kirschning and Jansen and Hammerstad and Jensen within 0.4 % |
 | Stackup from the board file | εr is read from the `.kicad_pcb` text |
 | Live tracker | recomputes only changed pairs, spreads work over polls, follows Blender's settings |
 

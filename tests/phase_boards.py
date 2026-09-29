@@ -28,7 +28,7 @@ def nm(point):
 
 class Board:
     def __init__(self):
-        self.tracks, self.vias, self.pads, self.footprints = [], [], [], []
+        self.tracks, self.vias, self.pads, self.footprints, self.zones = [], [], [], [], []
         self._count = 0
 
     def _id(self, prefix):
@@ -58,10 +58,16 @@ class Board:
         self.vias.append(model.Via(self._id("v"), net, nm(where), 600_000, 300_000, top, bottom))
         return self
 
+    def pour(self, net, x0, y0, x1, y1, layer="F.Cu"):
+        """A filled zone: the rectangle (mm) between the two corners."""
+        corners = tuple(nm(point) for point in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
+        self.zones.append(model.ZoneFill(self._id("z"), net, layer, ((corners,),)))
+        return self
+
     def snapshot(self):
         outline = model.Outline(((tuple(nm(p) for p in ((-5, -5), (55, -5), (55, 15), (-5, 15))),),))
         return model.BoardSnapshot("phase.kicad_pcb", {}, tuple(self.tracks), (), tuple(self.vias),
-                                   tuple(self.pads), tuple(self.footprints), (), outline, STACKUP, (), {})
+                                   tuple(self.pads), tuple(self.footprints), tuple(self.zones), outline, STACKUP, (), {})
 
 
 def ends(board, p="D_P", n="D_N", start="U1", end="J1"):
@@ -142,6 +148,15 @@ def pass_through():
     board.path("D_P", (0, 0), (20, 0)).path("D_P", (20, 0), (22, 0)).path("D_P", (22, 0), (50, 0))
     board.path("D_P", (49.9, 0), (50, 0))  # a second end in J1.1's pad
     board.path("D_N", (0, 1), (50, 1)).path("D_N", (26, 1), (26, 4))
+    return board.snapshot()
+
+
+def grounded(gap_mm=0.1):
+    """The matched pair with a GND pour on F.Cu `gap_mm` from each trace's outer edge."""
+    board = ends(Board())
+    board.path("D_P", (0, 0), (50, 0)).path("D_N", (0, 1), (50, 1))
+    edge = WIDTH / 2 / MM + gap_mm
+    board.pour("GND", 5, -3, 45, -edge).pour("GND", 5, 1 + edge, 45, 4)
     return board.snapshot()
 
 

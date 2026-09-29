@@ -34,6 +34,7 @@ from . import board_text, channels, delays, model, protocol
 
 SAMPLES = 400  # per side at most; longer routes get a longer step
 COUPLE_STEP_NM = 50_000  # the gap to the partner, and so the coupled unit delay, every 50 um
+GROUND_REACH_NM = 2_000_000  # pour edges farther than this are not looked at (past 10 dielectric heights)
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
 
@@ -190,20 +191,68 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
                  np.asarray(widths, np.float64), nets, crossings, sources)
 
 
+def ground_edges(snapshot: model.BoardSnapshot) -> dict[str, tuple[np.ndarray, tuple[str, ...]]]:
+    """Per copper layer, every zone fill's edges ((m, 2, 2) nm) and the net of each."""
+    found: dict[str, tuple[list, list]] = {}
+    for zone in snapshot.zones:
+        segments, nets = found.setdefault(zone.layer, ([], []))
+        for polygon in zone.polygons:
+            for ring in polygon:
+                points = np.asarray(ring, np.float64).reshape(-1, 2)
+                if len(points) > 1:
+                    segments.append(np.stack((points, np.roll(points, -1, axis=0)), axis=1))
+                    nets.extend([zone.net] * len(points))
+    return {layer: (np.concatenate(segments) if segments else np.zeros((0, 2, 2)), tuple(nets))
+            for layer, (segments, nets) in found.items()}
+
+
+def _ground_distance(points: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Distance from each point (x, y) to the nearest of `edges`, up to GROUND_REACH_NM
+    (inf beyond: a pour that far changes nothing). Points go in groups of 32, each
+    against only the edges within reach of its own box."""
+    best = np.full(len(points), np.inf)
+    if not len(edges):
+        return best
+    lows, highs = edges.min(axis=1), edges.max(axis=1)
+    for first in range(0, len(points), 32):
+        group = points[first:first + 32]
+        low, high = group.min(axis=0) - GROUND_REACH_NM, group.max(axis=0) + GROUND_REACH_NM
+        near = edges[(highs >= low).all(axis=1) & (lows <= high).all(axis=1)]
+        if not len(near):
+            continue
+        start, span = near[:, 0], near[:, 1] - near[:, 0]
+        squared = np.maximum((span * span).sum(axis=1), 1e-12)
+        relative = group[:, None, :] - start[None]
+        t = np.clip((relative * span[None]).sum(axis=2) / squared[None], 0.0, 1.0)
+        distance = np.hypot(*(relative - t[..., None] * span[None]).transpose(2, 0, 1)).min(axis=1)
+        best[first:first + 32] = np.where(distance <= GROUND_REACH_NM, distance, np.inf)
+    return best
+
+
 def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.ndarray, model_: delays.DelayModel,
-            heights: dict[str, int]) -> _Walk:
+            heights: dict[str, int], grounds: dict | None = None, own_nets=()) -> _Walk:
     """The walk's delays again with the pair's coupling: along each track stretch, the
     unit delay at the gap to the partner there (the odd mode where they run close, the
     lone line where one meanders or breaks out). A tuning profile or an inner layer
     gives the same delay either way; a barrel, or a hop across a pad, keeps its own.
 
     `samples` (along, xyz) are this side's alignment samples: the gap is measured at
-    each (to the partner's nearest sample, centre to centre) and interpolated between."""
+    each (to the partner's nearest sample, centre to centre) and interpolated between;
+    so is the distance to the nearest pour of another net on the sample's layer
+    (`grounds`, from ground_edges), for a grounded coplanar waveguide."""
     total = walk.along[-1]
     if total <= 0 or len(partner) < 2:
         return walk
     at, points = samples
     nearest = np.sqrt(((points[:, None, :] - partner[None, :, :]) ** 2).sum(axis=2)).min(axis=1)
+    layer_at = {height: layer for layer, height in heights.items()}
+    ground = np.full(len(points), np.inf)
+    for height in np.unique(points[:, 2]):
+        edges, nets = (grounds or {}).get(layer_at.get(int(round(height))), (np.zeros((0, 2, 2)), ()))
+        if len(edges):
+            edges = edges[np.array([net not in own_nets for net in nets])]
+        on = points[:, 2] == height
+        ground[on] = _ground_distance(points[on, :2], edges)
     cuts = np.union1d(walk.along, np.linspace(0.0, total, max(2, int(total / COUPLE_STEP_NM) + 1)))
     delay = np.interp(cuts, walk.along, walk.delay)
     middle = (cuts[:-1] + cuts[1:]) / 2
@@ -212,16 +261,23 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
     ratio = np.ones(len(middle))
     if track.any():
         gaps = np.interp(middle[track], at, nearest)
-        layer_at = {height: layer for layer, height in heights.items()}
-        cache = {}
-        for index, gap in zip(np.flatnonzero(track), gaps):
+        finite = np.isfinite(ground)
+        pours = (np.interp(middle[track], at[finite], ground[finite]) if finite.sum() > 1 else
+                 np.full(len(gaps), ground[finite][0] if finite.any() else np.inf))
+        lone, cache = {}, {}
+        for index, gap, pour in zip(np.flatnonzero(track), gaps, pours):
             v = vertex[index]
             width, layer = int(walk.widths[v]), layer_at.get(int(round(walk.xyz[v, 2])))
-            key = (walk.nets[v], layer, width, round(max(gap - width, 0.0), -3))  # to the micrometre
-            if layer is not None and key not in cache:
-                alone = model_.track(walk.nets[v], layer, width).ps_per_mm
-                cache[key] = model_.track(walk.nets[v], layer, width, key[3]).ps_per_mm / alone if alone else 1.0
-            ratio[index] = cache.get(key, 1.0)
+            if layer is None:
+                continue
+            side = round(max(pour - width / 2, 0.0) / 10_000) * 10_000 if np.isfinite(pour) else None  # 10 um
+            key = (walk.nets[v], layer, width, round(max(gap - width, 0.0) / 2_000) * 2_000, side)  # the gap: 2 um
+            if key not in cache:
+                alone = lone.get(key[:3])
+                if alone is None:
+                    alone = lone[key[:3]] = model_.track(walk.nets[v], layer, width).ps_per_mm
+                cache[key] = model_.track(walk.nets[v], layer, width, key[3], side).ps_per_mm / alone if alone else 1.0
+            ratio[index] = cache[key]
     coupled = np.concatenate(([delay[0]], delay[0] + np.cumsum(np.diff(delay) * ratio)))
     crossings = [replace(crossing, reached_ps=float(np.interp(crossing.at_nm, cuts, coupled)))
                  for crossing in walk.crossings]
@@ -377,14 +433,15 @@ def end_label(p: channels.Terminal, n: channels.Terminal) -> str:
 
 
 def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, model_: delays.DelayModel,
-            heights: dict[str, int], settings: Settings) -> PairPhase:
+            heights: dict[str, int], settings: Settings, grounds: dict | None = None) -> PairPhase:
     flipped = channel.key in settings.flipped
     p, n = _orient(p, n, flipped)
     walks = (_walk(p, "P", model_, heights), _walk(n, "N", model_, heights))
     step = max(MIN_STEP_NM, max(walk.along[-1] for walk in walks) / SAMPLES)
     (a, t_p, items_p, s_a), (b, t_n, _, s_b) = (_resample(walk, step) for walk in walks)
     i, j = _align(a, b)
-    walks = (_couple(walks[0], (s_a, a), b, model_, heights), _couple(walks[1], (s_b, b), a, model_, heights))
+    walks = tuple(_couple(walk, samples, partner, model_, heights, grounds, channel.nets)
+                  for walk, samples, partner in ((walks[0], (s_a, a), b), (walks[1], (s_b, b), a)))
     t_p, t_n = np.interp(s_a, walks[0].along, walks[0].delay), np.interp(s_b, walks[1].along, walks[1].delay)
     # Matched samples are up to half a step apart along the pair; the side that moved
     # keeps its sample and the other is projected onto its own nearby copper, so a
@@ -429,9 +486,10 @@ def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | Non
     model_ = model_ or delays.StackupDelays(snapshot.stackup.layers, heights)
     by_net = channels.items_by_net(snapshot)
     references = {footprint.id: footprint.reference for footprint in snapshot.footprints}
+    grounds = ground_edges(snapshot)
     results, warnings = [], []
     for channel in channels.find_channels(snapshot, settings.follow_series):
-        result, warning = _analyze_channel(channel, by_net, heights, references, model_, settings)
+        result, warning = _analyze_channel(channel, by_net, heights, references, model_, settings, grounds)
         if result is not None:
             results.append(result)
         if warning:
@@ -439,12 +497,12 @@ def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | Non
     return results, warnings
 
 
-def _analyze_channel(channel, by_net, heights, references, model_, settings):
+def _analyze_channel(channel, by_net, heights, references, model_, settings, grounds=None):
     routes = channels.pair_routes(channels.combined(by_net, channel.p_nets), channels.combined(by_net, channel.n_nets),
                                   heights, references, channel.p_links, channel.n_links)
     if routes[0] is None or routes[1] is None:
         return None, f"{channel.name}: no routed path between two pads yet"
-    return analyze(channel, *routes, model_, heights, settings), ""
+    return analyze(channel, *routes, model_, heights, settings, grounds), ""
 
 
 # --- Live: recompute only pairs whose copper changed ---------------------------------------
@@ -475,6 +533,8 @@ class PhaseTracker:
         self._parts = None  # the snapshot's tuples last seen
         self._channels: list[channels.Channel] = []
         self._by_net = {}
+        self._grounds = {}  # layer -> (pour edges, their nets), from the snapshot's zone fills
+        self._grounds_of = None  # the zones tuple they came from
         self._inputs_stamp = None
         self._model = None
         self._model_key = ""
@@ -544,12 +604,14 @@ class PhaseTracker:
         until an edit replaces them."""
         started = self.clock()
         parts = (snapshot.tracks, snapshot.arcs, snapshot.vias, snapshot.pads, snapshot.footprints,
-                 snapshot.stackup)
+                 snapshot.stackup, snapshot.zones)
         stale = self._pending or self._parts is None or any(a is not b for a, b in zip(parts, self._parts))
         if stale:
             self._parts = parts
             self._channels = channels.find_channels(snapshot, self.settings.follow_series)
             self._by_net = channels.items_by_net(snapshot)
+            if self._grounds_of is not snapshot.zones:
+                self._grounds, self._grounds_of = ground_edges(snapshot), snapshot.zones
         missing = self.wanted_nets() - self.netclasses.keys()
         if missing and read_netclasses is not None and self._netclass_tries != missing:
             self._netclass_tries = missing  # asked once per set of nets: KiCad may not know them all
@@ -573,7 +635,7 @@ class PhaseTracker:
                 continue
             fingerprints[channel.key] = fingerprint
             result, warnings[channel.key] = _analyze_channel(channel, self._by_net, self._heights, references,
-                                                             self._model, self.settings)
+                                                             self._model, self.settings, self._grounds)
             if result is None:
                 results.pop(channel.key, None)
                 encoded.pop(channel.key, None)
@@ -602,7 +664,7 @@ class PhaseTracker:
         return hash((items.tracks, items.arcs, items.vias, tuple(_pad_key(pad) for pad in items.pads),
                      tuple(sorted({references.get(pad.footprint_id, "") for pad in items.pads})),
                      channel, channel.key in self.settings.flipped, self.settings.tolerance_ps,
-                     self.settings.min_length_nm, self._model_key))
+                     self.settings.min_length_nm, self._model_key, id(self._grounds_of)))
 
     def snapshot_frames(self) -> list[bytes]:
         """Everything for a viewer that (re)connected: the list, then every pair."""

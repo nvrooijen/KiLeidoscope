@@ -12,12 +12,15 @@ impedance or εeff module can replace `StackupDelays`. Sources, in order:
    10.0.3's IPC stackup has none, see kicad_reader._stackup): stripline inside;
    microstrip on the outer layers, alone (Hammerstad and Jensen) or, given the gap
    to its partner, the pair's differential (odd) mode (Kirschning and Jansen), which
-   runs faster where the pair is coupled.
+   runs faster where the pair is coupled; given the distance to a copper pour on the
+   same layer (grounded coplanar waveguide), faster again, by the ratio a conformal
+   mapping of the cross-section gives with and without that pour.
 3. FR-4, εr 4.2, when the stackup gives no dielectric constant: clearly a guess,
    and named as the source.
 """
 
 import fnmatch
+import functools
 import json
 import math
 from dataclasses import dataclass, field
@@ -42,8 +45,10 @@ class UnitDelay:
 class DelayModel:
     """Delay of track and via copper; override both methods."""
 
-    def track(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None) -> UnitDelay:
-        """`gap_nm`: to the pair's other trace there (edge to edge); None: alone."""
+    def track(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None,
+              ground_nm: float | None = None) -> UnitDelay:
+        """`gap_nm`: to the pair's other trace there (edge to edge); None: alone.
+        `ground_nm`: to copper of another net on the same layer (a pour); None: none."""
         raise NotImplementedError
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
@@ -105,21 +110,77 @@ def _single_microstrip(epsilon_r: float, u: float) -> float:
     return (epsilon_r + 1) / 2 + (epsilon_r - 1) / 2 * (1 + 10 / u) ** (-a * b)
 
 
-def microstrip_epsilon(epsilon_r: float, width_nm: float, height_nm: float, gap_nm: float | None = None) -> float:
+LONE_GAP_H = 40.0  # a trace without a partner, for the ground's effect: one this far away
+FAR_GROUND_H = 10.0  # a pour farther than this many dielectric heights changes nothing
+
+
+@functools.lru_cache(maxsize=65_536)  # the same few geometries, pair after pair and poll after poll
+def microstrip_epsilon(epsilon_r: float, width_nm: float, height_nm: float, gap_nm: float | None = None,
+                       ground_nm: float | None = None) -> float:
     """εeff of a microstrip: alone, or `gap_nm` from its partner for the pair's odd
     (differential) mode, which has more of its field in the air between the two and so
     runs faster (Kirschning and Jansen 1984); it tends to the lone line as the gap
-    widens. Static (no dispersion), zero thickness, no solder mask."""
-    u = max(width_nm, 1.0) / max(height_nm, 1.0)
+    widens. `ground_nm` from a pour on the same layer, it runs faster again: by the
+    ratio of `_coplanar_epsilon` with and without that pour (within 1 % of a field
+    solver, tests/field_solver.py). Static (no dispersion), zero thickness, no solder mask."""
+    h = max(height_nm, 1.0)
+    u = max(width_nm, 1.0) / h
     single = _single_microstrip(epsilon_r, u)
-    if gap_nm is None:
-        return single
-    g = max(gap_nm, 1.0) / max(height_nm, 1.0)
-    a = 0.7287 * (single - (epsilon_r + 1) / 2) * (1 - math.exp(-0.179 * u))
-    b = 0.747 * epsilon_r / (0.15 + epsilon_r)
-    c = b - (b - 0.207) * math.exp(-0.414 * u)
-    d = 0.593 + 0.694 * math.exp(-0.562 * u)
-    return ((epsilon_r + 1) / 2 + a - single) * math.exp(-c * g ** d) + single
+    effective = single
+    if gap_nm is not None:
+        g = max(gap_nm, 1.0) / h
+        a = 0.7287 * (single - (epsilon_r + 1) / 2) * (1 - math.exp(-0.179 * u))
+        b = 0.747 * epsilon_r / (0.15 + epsilon_r)
+        c = b - (b - 0.207) * math.exp(-0.414 * u)
+        d = 0.593 + 0.694 * math.exp(-0.562 * u)
+        effective = ((epsilon_r + 1) / 2 + a - single) * math.exp(-c * g ** d) + single
+    if ground_nm is not None and ground_nm / h < FAR_GROUND_H:
+        g = max(gap_nm, 1.0) / h if gap_nm is not None else LONE_GAP_H
+        s = max(ground_nm, 1.0) / h
+        effective *= _coplanar_epsilon(epsilon_r, u, g, s) / _coplanar_epsilon(epsilon_r, u, g, None)
+    return effective
+
+
+def _k_ratio(k2: float) -> float:
+    """K(k) / K(k') of the complete elliptic integral of the first kind, for k squared
+    (by the arithmetic-geometric mean: K(k) = pi / (2 AGM(1, k')))."""
+    k2 = min(max(k2, 1e-300), 1 - 1e-16)
+
+    def agm(a, b):
+        for _ in range(60):
+            if abs(a - b) <= 1e-15 * a:
+                break
+            a, b = (a + b) / 2, math.sqrt(a * b)
+        return a
+    return agm(1.0, math.sqrt(k2)) / agm(1.0, math.sqrt(1 - k2))
+
+
+def _strip_between(a: float | None, b: float, c: float, d: float | None) -> float:
+    """Capacitance / eps0 of a strip [b, c] between grounds (-inf, a] and [d, inf) along
+    a line bounding a half-plane (None: no ground on that side): K(k)/K(k'), with k
+    squared the cross ratio of the four edges."""
+    if a is None:
+        k2 = (c - b) / (d - b)
+    elif d is None:
+        k2 = (c - b) / (c - a)
+    else:
+        k2 = (c - b) * (d - a) / ((d - b) * (c - a))
+    return _k_ratio(k2)
+
+
+def _coplanar_epsilon(epsilon_r: float, u: float, g: float, s: float | None) -> float:
+    """Partial-capacitance εeff (Ghione and Naldi's method) of one trace of a pair in its
+    odd mode, lengths in dielectric heights: width u, the partner g away (the midline an
+    electric wall), a coplanar ground s from its outer edge (None: none), a plane below.
+    z squared folds the air's quarter-plane, cosh(pi z) the dielectric's half-strip, each
+    into a half-plane with the wall on its edge; the strip's capacitance there is then
+    exact for zero-thickness copper. It leaves out the air's fringing to the plane below,
+    so only its ratio with and without the pour is used (microstrip_epsilon)."""
+    inner, outer = g / 2, g / 2 + u
+    air = _strip_between(0.0, inner ** 2, outer ** 2, None if s is None else (outer + s) ** 2)
+    below = _strip_between(None if s is None else -math.cosh(math.pi * (outer + s)), -math.cosh(math.pi * outer),
+                           -math.cosh(math.pi * inner), -1.0)
+    return (air + epsilon_r * below) / (air + below)
 
 
 class StackupDelays(DelayModel):
@@ -159,7 +220,8 @@ class StackupDelays(DelayModel):
             return FR4_EPSILON_R, DEFAULT
         return sum(e * t for e, t in known) / sum(t for _, t in known), STACKUP
 
-    def track(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None) -> UnitDelay:
+    def track(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None,
+              ground_nm: float | None = None) -> UnitDelay:
         profile = self._profile(net)
         if profile is not None and layer in profile.layers:
             return UnitDelay(profile.layers[layer], f"{PROFILE} '{profile.name}'")
@@ -167,7 +229,7 @@ class StackupDelays(DelayModel):
         epsilon_r, source = self._epsilon(beside)
         if len(beside) == 1 or layer in ("F.Cu", "B.Cu"):  # an outer layer: microstrip over one dielectric
             height = (beside[0].thickness_nm if beside else None) or width_nm or 1
-            effective = microstrip_epsilon(epsilon_r, width_nm or height, height, gap_nm)
+            effective = microstrip_epsilon(epsilon_r, width_nm or height, height, gap_nm, ground_nm)
         else:
             effective = epsilon_r  # stripline: the field is all in the dielectric
         return UnitDelay(PS_PER_MM_VACUUM * math.sqrt(effective), source)
