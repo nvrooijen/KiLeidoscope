@@ -53,7 +53,9 @@ class FakeReader:
 def exchange(runtime, client, until, limit=100):
     received = []
     for _ in range(limit):
-        client.poll_io()  # send hello/resync if queued
+        # Sends hello/resync if queued, and keeps what arrived since the last round: on
+        # Linux, loopback data can land just after the step that sent it.
+        received.extend(client.poll_io())
         runtime.step()
         received.extend(client.poll_io())
         if until(received):
