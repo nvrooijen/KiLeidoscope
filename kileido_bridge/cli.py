@@ -1,5 +1,7 @@
 """Command-line entry points for the bridge process."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys

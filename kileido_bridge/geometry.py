@@ -1,5 +1,7 @@
 """Sampling only: no copper meshing, triangulation, or polygon unions."""
 
+from __future__ import annotations
+
 import math
 
 import numpy as np

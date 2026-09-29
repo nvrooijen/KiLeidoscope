@@ -2,6 +2,8 @@
 (kileido_bridge/protocol.py; tests/test_addon_protocol.py keeps them compatible)
 and one non-blocking socket."""
 
+from __future__ import annotations
+
 import errno
 import json
 import select
@@ -110,10 +112,12 @@ class SocketClient:
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "resync"}))
 
-    def request_select(self, ids, extend=False):
-        """Ask the bridge to select these KiCad items (a click in Blender)."""
+    def request_select(self, ids, extend=False, center=False):
+        """Ask the bridge to select these KiCad items (a click in Blender), and with
+        `center` to pan KiCad's PCB editor to them."""
         if self.state == "connected":
-            self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend)}))
+            self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend),
+                                               "center": bool(center)}))
 
     def request_phase_settings(self, settings: dict):
         """The dynamic-phase settings (kileido_bridge/phase.py Settings.from_request)."""

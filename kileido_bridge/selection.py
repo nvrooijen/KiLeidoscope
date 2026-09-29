@@ -4,6 +4,8 @@ KiCad's selection is only read here (`Board.get_selection`, ~0.16 ms on the
 reference board); `kicad_reader.select_in_kicad` is the one call that sets it.
 """
 
+from __future__ import annotations
+
 from . import model
 
 

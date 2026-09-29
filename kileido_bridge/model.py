@@ -1,5 +1,7 @@
 """Immutable board records. Coordinates and physical lengths are integer nanometres."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 

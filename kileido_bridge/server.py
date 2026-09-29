@@ -6,6 +6,8 @@ current viewer. An unauthenticated connection can therefore never disconnect
 the working viewer, and its frames are capped at a few kilobytes.
 """
 
+from __future__ import annotations
+
 import hmac
 import secrets
 import select
@@ -114,7 +116,8 @@ class BridgeServer:
             self.needs_snapshot = True
         elif header.get("type") == "select":  # a click in Blender
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
-            self.select_requests.append((ids, bool(header.get("extend", False))))
+            extend, center = bool(header.get("extend", False)), bool(header.get("center", False))
+            self.select_requests.append((ids, extend, center))
         elif header.get("type") == "phase_settings":  # the panel's dynamic-phase settings; the latest wins
             self.phase_settings = header
 
@@ -169,7 +172,7 @@ class BridgeServer:
             except OSError:
                 self._drop_client()
 
-    def take_select_requests(self) -> list[tuple[list[str], bool]]:
+    def take_select_requests(self) -> list[tuple[list[str], bool, bool]]:
         requests, self.select_requests = self.select_requests, []
         return requests
 

@@ -34,6 +34,11 @@ Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> b
 - Per-layer visibility, X-ray mode and adjustable layer thickness.
 - View-only boards: save a board as a `.blend` package, place several side by side and check them for collisions. In a future update, Linux users will be able to control multiple boards simultaneously in the same Blender UI, allowing for true multi-PCB assemblies. 
 
+<p align="center">
+  <img src="assets/collisions.png" width="480" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
+</p>
+<p align="center"><sub>Multi-board assembly mode, visualizing board and component collisions. Malformed board outlines are highlighted.</sub></p>
+
 ## Architecture
 
 <picture>

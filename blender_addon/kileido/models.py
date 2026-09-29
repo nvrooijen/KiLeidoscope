@@ -3,7 +3,9 @@
 kicad-cli exports the bridge's live board copy (else the saved board). Footprint
 moves never need an export: IPC moves the bound meshes. A new export runs only
 when a footprint's model definitions change (`model_signature`), and exports are
-cached by that signature, so reopening a board imports the cached GLB.
+cached by that signature and the path variables the models use, so reopening a
+board imports the cached GLB. An export with model files missing is not cached:
+the next open looks for them again (a path set in KiCad, a file added).
 """
 
 import bisect
@@ -26,6 +28,7 @@ from .watcher import BoardWatcher
 _BLENDER_SUFFIX = re.compile(r"\.\d{3}$")
 _REFERENCE = re.compile(r'\(property\s+"Reference"\s+"((?:[^"\\]|\\.)*)"')
 _MODEL = re.compile(r'\(model\s+"')
+_MODEL_PATH = re.compile(r'\(model\s+"((?:[^"\\]|\\.)*)"')
 _FOOTPRINT = re.compile(r'\(footprint\s+"')
 _UUID = re.compile(r'\(uuid\s+"([^"]+)"')
 MATCH_TOLERANCE_M = 0.0002  # a GLB root this close to a footprint origin belongs to it
@@ -83,18 +86,20 @@ def _read_positions(path):
 
 
 def _on_board_change(job, memory):
-    """Worker: export only when model definitions changed; moves alone are applied live.
-    The signature is kept once an export succeeded, so a failed one is retried on the
-    next file change."""
+    """Worker: export only when model definitions (or the path variables they use)
+    changed; moves alone are applied live. The key is kept once an export succeeded,
+    so a failed one is retried on the next file change. One with model files missing
+    is kept too: re-exporting on every edit would not find them either."""
     data = job.source.read_bytes()
-    signature = model_signature(data.decode("utf-8"))
-    if signature == memory.get("signature"):
-        return
+    text = data.decode("utf-8")
     cli = kicad_cli.executable(job.export)
     project = kicad_cli.project_dir(job.export, job.source)
-    key = kicad_cli.cache_key(signature, kicad_cli.identity(cli), project)
+    variables = kicad_cli.path_variables(_MODEL_PATH.findall(text), job.export.get("kicad_settings", ""))
+    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables)
+    if key == memory.get("key"):
+        return
     if _export(job, cli, key, data, project):
-        memory["signature"] = signature
+        memory["key"] = key
 
 
 def _export(job, cli, key, data, project):
@@ -128,8 +133,10 @@ def _export(job, cli, key, data, project):
         if job.stop.is_set():
             return False
         (directory / "meta.json").write_text(json.dumps({"missing_count": missing}), encoding="utf-8")
-        entry = kicad_cli.store("models", key, {name: directory / name for name in
-                                                ("models.glb", "positions.csv", "meta.json")}) or directory
+        entry = directory  # missing files may turn up (the key cannot see them): not cached
+        if not missing:
+            entry = kicad_cli.store("models", key, {name: directory / name for name in
+                                                    ("models.glb", "positions.csv", "meta.json")}) or directory
         job.emit(directory, glb=str(entry / "models.glb"), positions=positions, missing=missing, asset=key)
         return True
     return False  # the scratch folder reported the failure

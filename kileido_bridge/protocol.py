@@ -11,6 +11,8 @@ decoder needs only the standard library and numpy, so the Blender add-on
 vendors a copy of `FrameDecoder` and `decode_frame` (blender_addon/kileido/client.py).
 """
 
+from __future__ import annotations
+
 import json
 import struct
 
@@ -280,7 +282,8 @@ def board_origin_nm(snapshot: model.BoardSnapshot) -> tuple[int, int]:
 def board_message(snapshot: model.BoardSnapshot, revision: int, origin_nm: tuple[int, int] | None = None,
                   board_path: str = "", appearance: dict | None = None, export: dict | None = None) -> bytes:
     """`export`: where Blender's kicad-cli workers read the board (the bridge's live
-    copy with unsaved edits), the project folder for ${KIPRJMOD}, and kicad-cli."""
+    copy with unsaved edits), the project folder for ${KIPRJMOD}, kicad-cli, and
+    KiCad's settings folder (for the path variables kicad-cli substitutes)."""
     heights, thickness, warnings = layer_heights_nm(snapshot)
     return encode_frame({
         "type": "board", "revision": revision, "board_name": snapshot.board_name,

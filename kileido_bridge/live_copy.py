@@ -7,6 +7,8 @@ temporary folder; Blender's export workers watch that file. The user's board
 and project files are only read, never written.
 """
 
+from __future__ import annotations
+
 import hashlib
 import os
 import shutil
