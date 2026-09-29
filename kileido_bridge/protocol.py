@@ -11,6 +11,8 @@ decoder needs only the standard library and numpy, so the Blender add-on
 vendors a copy of `FrameDecoder` and `decode_frame` (blender_addon/kileido/client.py).
 """
 
+from __future__ import annotations
+
 import json
 import struct
 

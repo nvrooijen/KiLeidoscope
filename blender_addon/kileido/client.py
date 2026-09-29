@@ -2,6 +2,8 @@
 (kileido_bridge/protocol.py; tests/test_addon_protocol.py keeps them compatible)
 and one non-blocking socket."""
 
+from __future__ import annotations
+
 import errno
 import json
 import select

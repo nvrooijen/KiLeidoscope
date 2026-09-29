@@ -1,5 +1,7 @@
 """The bridge's only KiCad dependency. Every board call here is read-only."""
 
+from __future__ import annotations
+
 import math
 import queue
 import sys

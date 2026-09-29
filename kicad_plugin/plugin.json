@@ -5,7 +5,7 @@
   "description": "View the current PCB live in Blender, read-only.",
   "runtime": {
     "type": "python",
-    "min_version": "3.10"
+    "min_version": "3.9"
   },
   "actions": [
     {

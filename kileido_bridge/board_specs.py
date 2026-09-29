@@ -5,6 +5,8 @@ the saved board) supplies the colours and finish that KiCad 10's IPC stackup
 response omits; it is never modified here.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re

@@ -1,5 +1,7 @@
 """Read-only KiCad poll loop and complete/incremental Blender frame delivery."""
 
+from __future__ import annotations
+
 import threading
 import time
 from collections import deque

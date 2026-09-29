@@ -1,5 +1,7 @@
 """KiCad action: start a private bridge and its Blender viewer together."""
 
+from __future__ import annotations
+
 import hashlib
 import os
 import re

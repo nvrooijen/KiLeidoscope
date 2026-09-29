@@ -8,6 +8,8 @@ OS and CPU serves every Python and Blender version. Without it the add-on draws
 with numpy: same images, slower. tools/build_package.py ships whichever libraries
 are in the folder.
 """
+from __future__ import annotations
+
 import argparse
 import os
 import platform

@@ -6,6 +6,8 @@ current viewer. An unauthenticated connection can therefore never disconnect
 the working viewer, and its frames are capped at a few kilobytes.
 """
 
+from __future__ import annotations
+
 import hmac
 import secrets
 import select
