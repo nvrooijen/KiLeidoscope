@@ -13,6 +13,8 @@ import numpy as np
 PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "snapshot_end",
+                 "appearance", "selection", "return_path", "status")  # apply.apply_frame handles each
 _LENGTH = struct.Struct(">I")
 _CONNECT_PENDING = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                     *(getattr(errno, name) for name in ("WSAEWOULDBLOCK", "WSAEINPROGRESS", "WSAEALREADY")

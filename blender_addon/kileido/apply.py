@@ -12,7 +12,7 @@ import bpy
 import numpy as np
 
 from . import (cosmetics, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
-               render_depth, transform)
+               render_depth, return_path, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
                       single_point, view3d_spaces, write_attribute, outline_bounds)
@@ -55,6 +55,8 @@ def apply_frame(header, arrays):
         _end_snapshot()
     elif message_type == "selection":
         highlight.apply_selection(header)
+    elif message_type == "return_path":
+        return_path.apply_return_path(header, arrays)
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:
@@ -91,6 +93,7 @@ def _hide_collection(hidden):
 def _begin_snapshot():
     """Hide the board while a full snapshot rebuilds it (no half-drawn frames)."""
     board.in_snapshot = True
+    board.return_path = {}  # the bridge sends the check again after every snapshot
     board.footprint_state.clear()
     board.touched.clear()
     if board.collection is not None:
@@ -115,6 +118,7 @@ def _end_snapshot():
     board.in_snapshot = False
     board.status = f"Loaded {board.board_name}"
     highlight.refresh()  # skipped per frame during the snapshot
+    return_path.refresh()
     holes.rebuild()  # likewise: one redraw for the snapshot's pads, vias and outline
     for row, _ in layers.rows():  # rows switched off stay off for the new objects too
         if not layers.shown(row):
@@ -551,4 +555,5 @@ def refresh_thickness():
     if outline is not None:
         _place_board(outline)
     highlight.refresh()
+    return_path.refresh()
     cosmetics.recolor()

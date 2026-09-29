@@ -25,6 +25,7 @@ HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0)}  # re
 PLACEHOLDER_COLOR = (0.36, 0.43, 0.52)  # a component whose model file is missing: a grey-blue box
 OUTLINE_PROBLEM_COLOR = (1.0, 0.0, 0.0)  # a malformed board outline: bright red
 OUTLINE_PROBLEM_GLOW = 0.8  # higher reads orange in AgX
+RETURN_PATH_COLOR = (1.0, 0.0, 0.0)  # a return-path issue glows red like a malformed outline
 HIGHLIGHT_METALLIC = 1.0
 HIGHLIGHT_ROUGHNESS = 0.25
 HIGHLIGHT_GLOW = 0.5  # emission strength: vivid under any lighting (glow 1.0 washed to salmon)
@@ -70,6 +71,7 @@ def create_all():
         # A glow shell, not a surface: flat translucent red-orange in every mode.
         "highlight_box": make("KLS Highlight component", HIGHLIGHT_COLORS["selected"], HIGHLIGHT_BOX_ALPHA),
         "highlight_outline": make("KLS Highlight outline", OUTLINE_PROBLEM_COLOR),
+        "highlight_return_path": make("KLS Highlight return path", RETURN_PATH_COLOR),
     }
 
 
@@ -622,7 +624,8 @@ def _paint_board_faces(viewer):
 
 def _paint_highlights():
     painted = [(f"highlight_{kind}{part}", color) for kind, color in HIGHLIGHT_COLORS.items()
-               for part in ("", "_barrel")] + [("highlight_outline", OUTLINE_PROBLEM_COLOR)]
+               for part in ("", "_barrel")] + [("highlight_outline", OUTLINE_PROBLEM_COLOR),
+                                               ("highlight_return_path", RETURN_PATH_COLOR)]
     for key, color in painted:
         # Metallic and glowing in every mode: lit metal alone washed out to pink
         # under the 0.2 W softboxes and AgX (compared on the reference board).
@@ -634,10 +637,12 @@ def _paint_highlights():
         principled.inputs["Emission Strength"].default_value = HIGHLIGHT_GLOW
     # A malformed outline must read as pure red from every side and under any light:
     # only its glow (lit red, metal and softbox reflections read as salmon in AgX).
-    outline = board.materials["highlight_outline"]
-    set_surface(outline, True, 0.0, 0.6)
-    principled = next(node for node in outline.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
-    principled.inputs["Emission Strength"].default_value = OUTLINE_PROBLEM_GLOW
-    principled.inputs["Specular IOR Level"].default_value = 0.0  # no white softbox reflections
-    principled.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)  # unlit: only the glow shows
+    # Return-path marks glow the same, apart from the red-orange selection under them.
+    for key in ("highlight_outline", "highlight_return_path"):
+        material = board.materials[key]
+        set_surface(material, True, 0.0, 0.6)
+        principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
+        principled.inputs["Emission Strength"].default_value = OUTLINE_PROBLEM_GLOW
+        principled.inputs["Specular IOR Level"].default_value = 0.0  # no white softbox reflections
+        principled.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)  # unlit: only the glow shows
     paint(board.materials["highlight_box"], HIGHLIGHT_COLORS["selected"])
