@@ -65,9 +65,10 @@ BLOOM_THRESHOLD = 0.6  # the trace tints (emission 1) and pulses bloom; lit copp
 BLOOM_SIZE = 0.6
 SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase pulse width", "KLS phase pulses",
                                                    "KLS phase brightness")
+COLOUR_NODE = "KLS phase colours"  # 1: the tint shows; 0 (Colours off): only the pulses light the trace
 PULSES = 2  # per trace, evenly spaced over the loop
 CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
-NODES_VERSION = 3  # materials built by an older add-on (a saved .blend) are rebuilt
+NODES_VERSION = 4  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
 TICK_S = 1 / 30
 DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
@@ -215,6 +216,7 @@ def _trace_material(side):
         share = _math(tree, "DIVIDE", lead.outputs["Fac"], _value(tree, SCALE_NODE, _scale()))
         tint = _math(tree, "ADD", _math(tree, "MULTIPLY", _math(tree, "ABSOLUTE", share, clamp=True),
                                         1.0 - IN_PHASE_ALPHA), IN_PHASE_ALPHA)
+        tint = _math(tree, "MULTIPLY", tint, _value(tree, COLOUR_NODE, 1.0 if _shown() else 0.0))
         glow = _pulse(tree, delay.outputs["Fac"])
         color = _node(tree, "ShaderNodeMix")
         color.data_type = "RGBA"
@@ -322,7 +324,13 @@ def set_scale():
 # --- Pulses -------------------------------------------------------------------------------
 
 def _pulsing(scene):
-    return _shown() and getattr(scene, "kileido_phase_pulses", False) and bool(board.phase)
+    """Pulses run whether or not the colours show (Colours only fades the tint)."""
+    return getattr(scene, "kileido_phase_pulses", False) and bool(board.phase)
+
+
+def _trace_shown(scene):
+    """A trace copy carries both the tint and the pulses' flash: shown for either."""
+    return _shown() or _pulsing(scene)
 
 
 def _timeline(scene):
@@ -370,10 +378,13 @@ def on_frame(scene, _depsgraph=None):
 
 
 def _show_pulses(scene):
-    """The glows shown only while pulsing; out, or placed for the current frame."""
+    """The glows shown only while pulsing (and the trace copies that carry the flash);
+    out, or placed for the current frame."""
     for obj in _objects():
         if obj.get("kls_phase_glow"):
             set_visible(obj, _pulsing(scene) and len(obj.data.vertices) > 0)
+        elif obj.get("kls_phase_trace"):
+            set_visible(obj, _trace_shown(scene) and len(obj.data.vertices) > 0 and obj["kls_phase_key"] in board.phase)
     if not _pulsing(scene):
         _set(PULSE_NODE, 0.0)
     elif _timeline(scene):
@@ -675,7 +686,8 @@ def draw(key):
         write_attribute(trace.data, LEAD, "FLOAT", np.concatenate((lead, land_lead)).astype(np.float32))
         write_attribute(trace.data, DELAY, "FLOAT", np.concatenate((delay, land_delay)).astype(np.float32))
         trace.data.update()
-        set_visible(trace, shown)
+        trace["kls_phase_trace"] = 1
+        set_visible(trace, _trace_shown(bpy.context.scene))
         active.add(trace.name)
         glow = _owned(f"{PREFIX}glow {side} {slot}", key, _glow_material(side), None)
         glow["kls_phase_glow"] = 1
@@ -729,7 +741,10 @@ def draw(key):
 
 
 def refresh_visibility():
+    """Colours, labels or pulses switched: markers and labels follow Colours; the trace
+    copies stay while pulsing, with their tint faded out (COLOUR_NODE)."""
     shown, labels = _shown(), getattr(bpy.context.scene, "kileido_phase_labels", True)
+    _set(COLOUR_NODE, 1.0 if shown else 0.0)
     for obj in _objects():
         drawn = obj.type != "MESH" or len(obj.data.vertices) > 0
         set_visible(obj, drawn and shown and (labels or obj.type != "FONT") and

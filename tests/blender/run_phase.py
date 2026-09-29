@@ -170,6 +170,13 @@ def main():
         assert labels["D_P start"].hide_get() and not p_trace.hide_get()
         scene.kileido_phase_show = False
         assert p_trace.hide_get() and start.hide_get()
+        # Colours off, pulses on: the trace copies stay for the flash, their tint faded out.
+        scene.kileido_phase_pulses = True
+        assert not p_trace.hide_get() and start.hide_get()
+        assert p_trace.data.materials[0].node_tree.nodes[phase.COLOUR_NODE].outputs[0].default_value == 0.0
+        scene.kileido_phase_pulses = False
+        phase.stop_pulses()
+        assert p_trace.hide_get()
         scene.kileido_phase_show = scene.kileido_phase_labels = True
         assert not p_trace.hide_get() and not labels["D_P start"].hide_get()
         phase.flip("D_P")
