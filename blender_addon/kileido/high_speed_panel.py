@@ -38,13 +38,17 @@ def _ps(value, signed=False):
 
 
 class KILEIDO_UL_phase_pairs(bpy.types.UIList):
-    """A warning icon when the pair runs out of phase somewhere; its terminals are in the box below."""
+    """A warning icon when the pair runs out of phase somewhere; its terminals are in the box
+    below. The last button walks the pair from its other end (pressed while it does)."""
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_property, index=0, flt_flag=0):
-        first, numbers = _phase_columns(layout)
+        row = layout.row(align=True)
+        first, numbers = _phase_columns(row)
         first.label(text=item.name, icon="ERROR" if item.excursions else "BLANK1")
         for value in (f"{item.delay_ps:.1f}", _ps(item.skew_ps, True), _ps(item.max_ps)):
             numbers.label(text=value)
+        row.operator(KILEIDO_OT_phase_flip.bl_idname, text="", icon="ARROW_LEFTRIGHT",
+                     depress=item.key in phase.flipped()).key = item.key
 
 
 class KILEIDO_OT_phase_flip(bpy.types.Operator):
@@ -173,10 +177,12 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     if not len(scene.kileido_phase_pairs):
         layout.label(text="No routed differential pairs" if live.connected() else "Live with KiCad only")
         return
-    first, numbers = _phase_columns(layout)
+    header = layout.row(align=True)
+    first, numbers = _phase_columns(header)
     first.label(text="Pair (ps)")
     for title in ("Delay", "Skew", "Max |Δt|"):
         numbers.label(text=title)
+    header.label(text="", icon="BLANK1")  # over the rows' flip buttons
     layout.template_list("KILEIDO_UL_phase_pairs", "", scene, "kileido_phase_pairs", scene,
                          "kileido_phase_index", rows=4)
     data = phase.active_pair()
