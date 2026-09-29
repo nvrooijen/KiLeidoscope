@@ -161,7 +161,7 @@ def _finish_rgb(finish: str) -> list | None:
     return [channel / 255 for channel in _FINISH_COLORS[name]] + [1.0]
 
 
-def _root() -> Path:
+def settings_dir() -> Path:
     """KiCad's user settings folder (KiCad's `PATHS::GetUserSettingsPath`)."""
     base = os.environ.get("KICAD_CONFIG_HOME")
     if base:
@@ -182,7 +182,7 @@ def viewer_colors(stackup: dict, finish: str | None) -> dict:
     always reads that theme, not the PCB Editor's).  Then, with "Use stackup
     colours" on (KiCad's default), the saved stackup and finish override them.
     """
-    root = _root()
+    root = settings_dir()
     try:
         settings = json.loads((root / "3d_viewer.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -228,7 +228,7 @@ def viewer_colors(stackup: dict, finish: str | None) -> dict:
 
 def _theme() -> dict:
     """The PCB Editor's active colour theme, else the user theme, else nothing."""
-    root = _root()
+    root = settings_dir()
     try:
         settings = json.loads((root / "pcbnew.json").read_text(encoding="utf-8"))
         theme_id = settings.get("appearance", {}).get("color_theme") or "_builtin_default"
@@ -251,7 +251,7 @@ def appearance_signature(board_path: str = "") -> tuple:
     changes reach KiLeidoscope only through these files: the saved board (stackup colours,
     finish) and the PCB Editor settings/theme.
     """
-    root = _root()
+    root = settings_dir()
     paths = [Path(board_path)] if board_path else []
     paths += [root / "pcbnew.json", root / "3d_viewer.json", *sorted((root / "colors").glob("*.json"))]
     stamps = []

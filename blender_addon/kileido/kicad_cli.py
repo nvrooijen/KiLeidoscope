@@ -1,6 +1,7 @@
 """kicad-cli lookup and the persistent export cache (worker threads only)."""
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -10,6 +11,7 @@ from pathlib import Path
 
 
 CACHE_VERSION = "1"  # bump when an exporter's options or output layout change
+_VARIABLE = re.compile(r"\$\{([^}]+)\}|\$\(([^)]+)\)")  # KiCad's ${NAME} and $(NAME)
 
 
 def executable(export=None):
@@ -56,6 +58,30 @@ def defines(project):
     copy (`board_copy`), so point it back at the real project (measured: same models
     found as when exporting the saved board)."""
     return ["--define-var", f"KIPRJMOD={project}"]
+
+
+def path_variables(paths, settings=""):
+    """What each ${NAME} in `paths` stands for, as text for a cache key: a path changed
+    in KiCad's Configure Paths must bring a new export, not the old result. kicad-cli
+    takes them from its environment (KiCad hands its Configure Paths down to Blender
+    that way) and from kicad_common.json in the `settings` folder (the only source for
+    a Blender started by hand), so both values count. KIPRJMOD is `defines`'s."""
+    names = sorted({match[1] or match[2] for path in paths for match in _VARIABLE.finditer(path)}
+                   - {"KIPRJMOD"})
+    saved = _saved_variables(settings) if names else {}
+    return "\n".join(f"{name}={os.environ.get(name)!r}|{saved.get(name)!r}" for name in names)
+
+
+def _saved_variables(settings):
+    """Configure Paths as KiCad saved them; {} without a settings folder or file."""
+    if not settings:
+        return {}
+    try:
+        common = json.loads((Path(settings) / "kicad_common.json").read_text(encoding="utf-8"))
+        variables = common["environment"]["vars"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return {}
+    return variables if isinstance(variables, dict) else {}
 
 
 def board_copy(source, data, directory):

@@ -1,6 +1,7 @@
 """kicad-cli helpers and the export cache (`blender_addon/kileido/kicad_cli.py`), without Blender."""
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -45,6 +46,39 @@ def test_project_dir_prefers_the_saved_board():
     assert kicad_cli.project_dir({"project_dir": "/work/project"}, "/tmp/live/b.kicad_pcb") == "/work/project"
     assert kicad_cli.project_dir({"project_dir": ""}, Path("/work/b.kicad_pcb")) == str(Path("/work"))
     assert kicad_cli.defines("/work") == ["--define-var", "KIPRJMOD=/work"]
+
+
+def _settings(folder, variables):
+    folder.mkdir(exist_ok=True)
+    (folder / "kicad_common.json").write_text(json.dumps({"environment": {"vars": variables}}), encoding="utf-8")
+    return str(folder)
+
+
+def test_path_variables_follow_configure_paths(tmp_path, monkeypatch):
+    """A path variable changed in KiCad, saved or handed down through the environment,
+    makes a new cache key; variables the model paths do not use and KIPRJMOD do not."""
+    monkeypatch.delenv("KLS_TEST_3D", raising=False)
+    paths = ["${KLS_TEST_3D}/part.step", "$(KLS_TEST_3D)/other.wrl", "${KIPRJMOD}/local.step", "C:/abs.step"]
+    settings = _settings(tmp_path / "10.0", {"KLS_TEST_3D": "/models/a", "UNUSED": "/x"})
+    saved = kicad_cli.path_variables(paths, settings)
+    assert "KLS_TEST_3D" in saved and "/models/a" in saved
+    assert "UNUSED" not in saved and "KIPRJMOD" not in saved
+    _settings(tmp_path / "10.0", {"KLS_TEST_3D": "/models/b"})
+    assert kicad_cli.path_variables(paths, settings) != saved
+    monkeypatch.setenv("KLS_TEST_3D", "/models/b")
+    assert kicad_cli.path_variables(paths, settings) not in (saved, "")
+    _settings(tmp_path / "10.0", {"KLS_TEST_3D": "/models/a", "UNUSED": "/y"})
+    monkeypatch.delenv("KLS_TEST_3D")
+    assert kicad_cli.path_variables(paths, settings) == saved
+
+
+def test_path_variables_without_settings(tmp_path, monkeypatch):
+    """No settings folder, no file, or a file KiCad never gave variables: the
+    environment alone; no variables used: nothing to add."""
+    monkeypatch.setenv("KLS_TEST_3D", "/models")
+    for settings in ("", str(tmp_path / "absent"), _settings(tmp_path / "empty", None)):
+        assert kicad_cli.path_variables(["${KLS_TEST_3D}/p.step"], settings) == "KLS_TEST_3D='/models'|None"
+    assert kicad_cli.path_variables(["${KIPRJMOD}/p.step", "C:/p.step"], str(tmp_path)) == ""
 
 
 def test_store_and_lookup(tmp_path, monkeypatch):
