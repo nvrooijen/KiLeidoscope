@@ -12,7 +12,7 @@ FORBIDDEN_CALLS = {
     "create_items", "update_items", "remove_items", "remove_items_by_id",
     "push_commit", "begin_commit", "save", "save_as", "revert",
     "refill_zones", "interactive_move", "add_to_selection",
-    "remove_from_selection", "clear_selection",
+    "remove_from_selection", "clear_selection", "run_action",
 }
 
 
@@ -66,11 +66,38 @@ def test_no_board_mutation_calls_elsewhere_in_bridge():
 
 
 RAW_COMMANDS = {"GetKiCadBinaryPath", "GetVersion", "PathResponse", "GetVersionResponse"}
+VIEW_COMMANDS = {"RunAction", "RunActionResponse"}  # select_in_kicad: pan KiCad to the selection
+VIEW_ACTION = "common.Control.centerSelection"
+
+
+def _commands(tree):
+    return {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name) and node.value.id == "commands"}
+
+
+def _select_in_kicad(tree):
+    return next(node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "select_in_kicad")
 
 
 def test_raw_ipc_commands_are_read_only():
-    """`client.send` passes any command through kipy: only these queries may use it."""
+    """`client.send` passes any command through kipy: only these queries may use it,
+    and select_in_kicad may also run a view action."""
     tree = ast.parse((BRIDGE / "kicad_reader.py").read_text(encoding="utf-8"))
-    used = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name) and node.value.id == "commands"}
-    assert used <= RAW_COMMANDS
+    select = _select_in_kicad(tree)
+    assert _commands(select) <= RAW_COMMANDS | VIEW_COMMANDS
+    select.body = []
+    assert _commands(tree) <= RAW_COMMANDS
+
+
+def test_the_only_kicad_action_pans_the_view():
+    """RunAction runs any KiCad tool, editing ones too: the action is always
+    CENTER_ACTION, which only pans the PCB editor."""
+    tree = ast.parse((BRIDGE / "kicad_reader.py").read_text(encoding="utf-8"))
+    assigned = [node.value for node in ast.walk(_select_in_kicad(tree)) if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Attribute) and target.attr == "action" for target in node.targets)]
+    assert assigned and all(isinstance(value, ast.Name) and value.id == "CENTER_ACTION" for value in assigned)
+    constants = {target.id: node.value for node in tree.body if isinstance(node, ast.Assign)
+                 for target in node.targets if isinstance(target, ast.Name)}
+    assert isinstance(constants["CENTER_ACTION"], ast.Constant)
+    assert constants["CENTER_ACTION"].value == VIEW_ACTION

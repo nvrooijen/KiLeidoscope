@@ -211,7 +211,7 @@ def request_resync():
         link.client.request_resync()
 
 
-def request_select(ids, extend=False):
-    """A click in Blender: select these items in KiCad."""
+def request_select(ids, extend=False, center=False):
+    """A click in Blender: select these items in KiCad, and with `center` pan KiCad to them."""
     if link.client is not None:
-        link.client.request_select(ids, extend)
+        link.client.request_select(ids, extend, center)

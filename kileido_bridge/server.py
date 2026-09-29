@@ -113,7 +113,8 @@ class BridgeServer:
             self.needs_snapshot = True
         elif header.get("type") == "select":  # a click in Blender
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
-            self.select_requests.append((ids, bool(header.get("extend", False))))
+            extend, center = bool(header.get("extend", False)), bool(header.get("center", False))
+            self.select_requests.append((ids, extend, center))
 
     def pump(self, timeout: float = 0.0) -> None:
         if self.candidate is not None and time.monotonic() > self.candidate_deadline:
@@ -166,7 +167,7 @@ class BridgeServer:
             except OSError:
                 self._drop_client()
 
-    def take_select_requests(self) -> list[tuple[list[str], bool]]:
+    def take_select_requests(self) -> list[tuple[list[str], bool, bool]]:
         requests, self.select_requests = self.select_requests, []
         return requests
 

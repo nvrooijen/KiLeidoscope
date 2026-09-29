@@ -320,7 +320,7 @@ class BridgeRuntime:
         selecting it in KiCad for the worker. A pad selects its footprint. KiCad can take
         seconds to apply a selection and answer (measured 1-9 s with its window hidden
         behind Blender); later polls confirm it."""
-        for ids, extend in self.server.take_select_requests():
+        for ids, extend, center in self.server.take_select_requests():
             snapshot = self.snapshot
             if self.reader is None or snapshot is None:
                 continue
@@ -332,7 +332,7 @@ class BridgeRuntime:
             self.requested = (selected, self.clock() + self.REQUEST_GRACE_S)
             self.server.send_frames(self._selection_frames(snapshot, selected=selected))
             self.server.pump()
-            self.kicad_selects.append((wanted, extend))
+            self.kicad_selects.append((wanted, extend, center))
             self.wake.set()
 
     def _run_kicad_selects(self):
@@ -341,12 +341,12 @@ class BridgeRuntime:
         with self.lock:
             pending = list(self.kicad_selects)
             self.kicad_selects.clear()
-        plain = [index for index, (_, extend) in enumerate(pending) if not extend]
-        for wanted, extend in pending[plain[-1] if plain else 0:]:
+        plain = [index for index, (_, extend, _) in enumerate(pending) if not extend]
+        for wanted, extend, center in pending[plain[-1] if plain else 0:]:
             if self.reader is None:
                 return
             try:
-                select_in_kicad(self.reader.board, wanted, extend)
+                select_in_kicad(self.reader.board, wanted, extend, center)
             except Exception:
                 pass  # KiCad busy (a tool is running) or gone: the click is dropped
             self.next_poll_at = self.clock()  # read the new selection back promptly

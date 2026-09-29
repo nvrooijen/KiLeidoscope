@@ -144,7 +144,7 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
         if item is not None:
-            live.request_select([item], self.extend)
+            live.request_select([item], self.extend, context.scene.kileido_center_in_kicad)
             self.report({"INFO"}, f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
         elif not self.extend:
             live.request_select([], False)  # clicking bare board clears KiCad's selection
@@ -221,6 +221,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         layout.prop(context.scene, "kileido_silk_opacity", text="Silkscreen opacity", slider=True)
         for prop, label, icon in (("kileido_via_fill", "Via fill (capped vias)", "bucket"),
                                   ("kileido_focus", "X-ray mode", "xray"),
+                                  ("kileido_center_in_kicad", "Center KiCad on click", None),
                                   ("kileido_clip_silkscreen", "Clip silkscreen to board outline", "scissors")):
             row = layout.row(align=True)
             row.prop(context.scene, prop, text=label)
@@ -663,6 +664,9 @@ def _scene_properties():
             name="X-ray mode", default=False,
             description="While something is selected in KiCad, everything else turns see-through and grey",
             update=lambda self, context: focus.refresh()),
+        "kileido_center_in_kicad": BoolProperty(
+            name="Center KiCad on click", default=True,
+            description="Clicking an item here also pans KiCad's PCB editor to centre it, keeping its zoom"),
         "kileido_via_fill": BoolProperty(
             name="Via fill", default=False,
             description="Filled and capped vias: copper (or finish) caps under the mask and silkscreen. "

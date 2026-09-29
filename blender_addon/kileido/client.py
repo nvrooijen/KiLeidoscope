@@ -110,10 +110,12 @@ class SocketClient:
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "resync"}))
 
-    def request_select(self, ids, extend=False):
-        """Ask the bridge to select these KiCad items (a click in Blender)."""
+    def request_select(self, ids, extend=False, center=False):
+        """Ask the bridge to select these KiCad items (a click in Blender), and with
+        `center` to pan KiCad's PCB editor to them."""
         if self.state == "connected":
-            self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend)}))
+            self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend),
+                                               "center": bool(center)}))
 
     def poll_io(self) -> list[tuple[dict, dict[str, np.ndarray]]]:
         sock = self.socket
