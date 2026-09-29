@@ -767,6 +767,16 @@ def flip(key):
     send_settings()
 
 
+def short_name(data):
+    """A pair's name for the list, without its schematic sheet path: "CSI_D3_P/N", chained
+    pairs joined by an arrow. The pair's box still names its nets in full."""
+    nets = data.get("p_nets") or ()
+    if not nets:
+        return data.get("name", "")
+    return " → ".join(base[:-1] + ("±" if base.endswith("+") else "P/N")
+                      for base in (net.rsplit("/", 1)[-1] for net in nets))
+
+
 def sync_list():
     """The panel's pair list (a Scene collection, for Blender's UIList) from the frames."""
     global _syncing
@@ -785,7 +795,7 @@ def sync_list():
             scene.kileido_phase_index = keys.index(active) if active in keys else -1
         for row in rows:
             data = board.phase[row.key]
-            row.name = data.get("name", row.key)
+            row.name = short_name(data)
             row.route = f"{data['start']['label']} → {data['end']['label']}"
             row.skew_ps = float(data.get("skew_ps", 0.0))
             row.max_ps = float(data.get("max_ps", 0.0))

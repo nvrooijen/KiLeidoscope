@@ -169,6 +169,10 @@ def main():
         scene.kileido_column, scene.kileido_phase_enabled = "HIGH_SPEED", True
         assert not p_trace.hide_get() and not start.hide_get()
         scene.kileido_phase_show = False
+        # The list names pairs without their schematic sheet path.
+        assert phase.short_name({"p_nets": ["/MIPI SENSOR/CSI_D3_P"]}) == "CSI_D3_P/N"
+        assert phase.short_name({"p_nets": ["/USB/TX_P", "/USB/TX_C_P"]}) == "TX_P/N → TX_C_P/N"
+        assert phase.short_name({"p_nets": ["/USB/USB_D+"]}) == "USB_D±"
         # Reverse selected: a pair with a net selected in KiCad walks from its other end.
         state.board.highlight = {"selected": {"E_P"}, "pair": {"E_N"}}
         assert phase.selected_pairs() == ["E_P"]
