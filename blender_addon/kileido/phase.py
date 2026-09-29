@@ -295,11 +295,11 @@ def _scale():
 
 
 def _pulse_width():
-    return max(0.1, float(getattr(bpy.context.scene, "kileido_phase_pulse_width_ps", 3.0)))
+    return max(0.1, float(getattr(bpy.context.scene, "kileido_phase_pulse_width_ps", 1.5)))
 
 
 def _pulse_tail():
-    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_pulse_tail_ps", 12.0)))
+    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_pulse_tail_ps", 5.0)))
 
 
 def _brightness():

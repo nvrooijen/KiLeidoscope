@@ -746,11 +746,11 @@ def _scene_properties():
             name="Pulse speed", default=30.0, min=0.1, soft_min=5.0, soft_max=500.0, precision=0,
             description="Picoseconds of signal travel shown per second"),
         "kileido_phase_pulse_width_ps": FloatProperty(
-            name="Pulse width", default=3.0, min=0.1, soft_max=30.0, precision=1,
+            name="Pulse width", default=1.5, min=0.1, soft_max=30.0, precision=1,
             description="Length of the glow in ps of travel",
             update=lambda self, context: phase.set_scale()),
         "kileido_phase_pulse_tail_ps": FloatProperty(
-            name="Pulse tail", default=12.0, min=0.0, soft_max=60.0, precision=1,
+            name="Pulse tail", default=5.0, min=0.0, soft_max=60.0, precision=1,
             description="Length of the fading trail behind each pulse, in ps of travel (0: none)",
             update=lambda self, context: phase.set_scale()),
         "kileido_phase_pulse_glow": FloatProperty(
