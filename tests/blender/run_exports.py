@@ -1,8 +1,9 @@
 """Headless checks of the kicad-cli export workers and what they leave behind: a failed
-model export is retried, one missing a model file is not cached, exports read the
-bytes their cache key was made from, a new GLB import drops the one it replaces,
-re-applied overlays free the plots they replace, a reflection HDRI saved by another
-Blender install is found again, and no scratch folder outlives Blender. Needs kicad-cli.
+model export is retried, one with a model file missing or unreadable is shown but not
+cached, exports read the bytes their cache key was made from, a new GLB import drops
+the one it replaces, re-applied overlays free the plots they replace, a reflection
+HDRI saved by another Blender install is found again, and no scratch folder outlives
+Blender. Needs kicad-cli.
 
 blender --background --factory-startup --python tests/blender/run_exports.py
 """
@@ -79,15 +80,20 @@ def check_model_retry(scratch):
 
 
 def check_missing_models_not_cached(scratch):
-    """An export that could not find a model file is shown but not cached (the file may
-    be added, or its path variable set, before the next open), yet still remembered
-    for this watch so edits do not re-export; the unset variable's value is in the key."""
+    """An export that could not find one model file and could not read another (a
+    malformed VRML file: kicad-cli then exits 2 but still writes the GLB) is shown, not
+    failed, and not cached (the files may be added or fixed before the next open), yet
+    still remembered for this watch so edits do not re-export."""
     text = BOARD_FILE.read_text(encoding="utf-8")
     start = re.search(r'\(footprint\s+"', text).start()
     end = start + len(models._block(text, start)) - 1
     source = scratch / "missing" / BOARD_FILE.name
     source.parent.mkdir()
-    source.write_text(text[:end] + '(model "${KLS_UNSET_TEST_3D}/missing.step")' + text[end:], encoding="utf-8")
+    (source.parent / "bad.wrl").write_text(  # a point with two coordinates
+        "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        "coord Coordinate { point [ 0 0 0, 1 0 0, 1 1 ] }\ncoordIndex [ 0, 1, 2, -1 ] } }\n", encoding="utf-8")
+    models_text = '(model "${KLS_UNSET_TEST_3D}/missing.step") (model "${KIPRJMOD}/bad.wrl")'
+    source.write_text(text[:end] + models_text + text[end:], encoding="utf-8")
     stored = []
     real_lookup, real_store = kicad_cli.lookup, kicad_cli.store
     kicad_cli.lookup = lambda kind, key: None
@@ -98,7 +104,11 @@ def check_missing_models_not_cached(scratch):
         models._on_board_change(exporting, memory)
         result = exporting.results.get_nowait()
         assert result.error is None, result.error
-        assert result.data["missing"] == 1, result.data
+        problems = [re.split(r"[\\/]", path)[-1] for path in result.data["problems"]]
+        assert problems == ["missing.step", "bad.wrl"], result.data["problems"]
+        assert models.problems_text(result.data["problems"]) == "; 2 not found or unreadable: missing.step, bad.wrl"
+        assert models.problems_text(["a/1.step", "2.wrl", "a\\1.step", "3.wrl", "4.wrl"]) == \
+            "; 5 not found or unreadable: 1.step, 2.wrl, 3.wrl, …"
         assert not stored, "an export with a missing model was cached"
         assert Path(result.data["glb"]).parent == Path(result.directory), "not the scratch export"
         assert memory.get("key"), "an export with a missing model is re-run on every edit"

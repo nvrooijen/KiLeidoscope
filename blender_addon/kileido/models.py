@@ -105,23 +105,29 @@ def _on_board_change(job, memory):
 def _export(job, cli, key, data, project):
     """Worker: KiCad CLI resolves the board's STEP/VRML paths into one GLB, plus the
     saved footprint positions it was exported at, from `data` (the board bytes `key`
-    was made from). Results are cached by `key`. True once a result was handed over."""
+    was made from). Results are cached by `key`. True once a result was handed over.
+
+    A model kicad-cli cannot read (measured: a malformed VRML file) is left out of a
+    GLB that is still written, but kicad-cli then exits 2: the GLB is used whenever it
+    exists, and kicad-cli's messages go to Blender's output (blender.log)."""
     with job.scratch_directory("kileido_models_") as directory:
         entry = kicad_cli.lookup("models", key)
-        if entry is not None:
-            meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
+        if entry is not None:  # only exports without problems are cached
             job.emit(directory, glb=str(entry / "models.glb"), positions=_read_positions(entry / "positions.csv"),
-                     missing=meta.get("missing_count", 0), asset=key)
+                     problems=[], asset=key)
             return True
         board_file = kicad_cli.board_copy(job.source, data, directory)
         output = directory / "models.glb"
         result = kicad_cli.run(
             [cli, "pcb", "export", "glb", "--no-board-body", *kicad_cli.defines(project),
              "--output", output, board_file], 120)
-        if result.returncode != 0 or not output.is_file():
-            raise RuntimeError((result.stderr or result.stdout or
-                                f"kicad-cli exit code {result.returncode}").strip()[-400:])
-        missing = (result.stdout + result.stderr).count("File not found:")
+        messages = (result.stdout + result.stderr).strip()
+        problems = kicad_cli.model_problems(messages)
+        if result.returncode != 0 or problems:
+            print(f"KiLeidoscope model export, kicad-cli exit code {result.returncode}:\n{messages}")
+        if not output.is_file():
+            raise RuntimeError((messages or f"kicad-cli exit code {result.returncode}")[-400:])
+        missing = len(problems)
         positions_file = directory / "positions.csv"
         positions_result = kicad_cli.run(
             [cli, "pcb", "export", "pos", "--format", "csv", "--units", "mm",
@@ -137,7 +143,7 @@ def _export(job, cli, key, data, project):
         if not missing:
             entry = kicad_cli.store("models", key, {name: directory / name for name in
                                                     ("models.glb", "positions.csv", "meta.json")}) or directory
-        job.emit(directory, glb=str(entry / "models.glb"), positions=positions, missing=missing, asset=key)
+        job.emit(directory, glb=str(entry / "models.glb"), positions=positions, problems=problems, asset=key)
         return True
     return False  # the scratch folder reported the failure
 
@@ -145,10 +151,18 @@ def _export(job, cli, key, data, project):
 def _on_result(result):
     """Main thread: one import may briefly pause Blender."""
     loaded = load_glb(result.data["glb"], result.data["positions"], result.data["asset"])
-    status = f"Models loaded: {loaded['matched']} footprints, {loaded['parts']} parts"
-    if result.data["missing"]:
-        status += f"; {result.data['missing']} KiCad model paths missing"
-    return status
+    return (f"Models loaded: {loaded['matched']} footprints, {loaded['parts']} parts" +
+            problems_text(result.data["problems"]))
+
+
+def problems_text(problems):
+    """The status suffix naming the model files an export left out (first three names;
+    kicad-cli's full messages are in blender.log)."""
+    if not problems:
+        return ""
+    names = list(dict.fromkeys(re.split(r"[\\/]", path)[-1] for path in problems))
+    return (f"; {len(problems)} not found or unreadable: " + ", ".join(names[:3]) +
+            (", …" if len(names) > 3 else ""))
 
 
 _watcher = BoardWatcher(
