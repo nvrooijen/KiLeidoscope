@@ -1,14 +1,25 @@
 """Dynamic phase of differential pairs, as the bridge measures it (kileido_bridge/phase.py).
 
-Each pair gets a ribbon along its centreline coloured by Δt = t_P - t_N, the delay
-difference gathered from the start terminal up to each point: red where P is ahead
-(its edge arrives first, Δt < 0), blue where N is ahead, neutral grey in phase; the
-colour scale is the panel's and costs no new data. Markers stand on both terminals
-(green start, violet end) with their pads as labels, and on the start of every
-stretch the bridge found out of phase (amber); the markers stand on the board faces.
-Ribbons sit at their copper's height and draw in front in Solid view; in Material
-Preview, X-ray mode or the Board eye shows a pair inside the board. A click on a
-ribbon or marker selects its copper or pads in KiCad (pick.py).
+Both traces of each pair are tinted, P red and N blue (as the selection highlight
+shows a pair), the stronger the further the two are out of phase there: where
+they are in phase the copper shows almost as it is. Like the selection
+highlight, the tint is a copy of the trace laid just over its copper, open over
+drilled holes (holes.add_to). The colour scale is the panel's and costs no new data.
+
+Pulses: a flash in each trace's own colour travels along P and N, launched
+together at the start terminal, with an energy field around it: a glowing tube
+standing out of the board, lit only where the pulse is. It reaches each point of
+a trace at that point's delay (the same delays as the panel's numbers), slowed
+down to picoseconds per second, so the lagging side visibly falls behind the one
+ahead. Only one material value moves: the pulse clock. Live, a timer runs it
+(held while a view renders with Cycles, so that view converges); on the
+timeline, the frame sets it, so Cycles renders pulses in stills and animations.
+
+Markers stand on both terminals (green start, violet end) with their pads as
+labels, and at the start of every stretch the bridge found out of phase (amber);
+they stand on the board faces. A pair inside the board shows in Solid view
+(drawn in front); in Material Preview, X-ray mode or the Board eye shows it. A
+click on a trace copy or a marker selects its copper or pads in KiCad (pick.py).
 
 Frames: `phase_list` (the pairs that exist and the settings they were measured
 with) and `phase_pair` (one pair). The panel's settings go back as `phase_settings`.
@@ -17,25 +28,48 @@ with) and `phase_pair` (one pair). The panel's settings go back as `phase_settin
 import hashlib
 import json
 import math
+import time
 
 import bpy
 import numpy as np
+from bpy.app.handlers import persistent
 
-from . import live, transform
+from . import holes, live, transform
 from .objects import link_owned, owned_object, set_visible, write_attribute
+from .placement import copper_thickness
 from .state import board
 
 PREFIX = "KLS phase "
-LIFT_M = 10e-6  # the ribbon above (below, on the bottom) its copper
+LIFT_M = 2e-6  # the trace copy over (under, on the bottom) its copper's outer face
+GROW_M = 4e-6  # 2 um wider per side, so the copper edge never shows through
 MARKER_HEIGHT_M = 1.0e-3
 MARKER_RADIUS_M = 0.3e-3
 LABEL_SIZE_M = 0.7e-3
-COLORS = {"p_ahead": (0.95, 0.12, 0.08), "in_phase": (0.78, 0.78, 0.78), "n_ahead": (0.1, 0.3, 1.0),
-          "start": (0.15, 0.85, 0.3), "end": (0.7, 0.3, 1.0), "excursion": (1.0, 0.65, 0.0)}
-SCALE_NODE = "KLS phase scale"
-ATTRIBUTE = "kls_dt"
+# Pure primaries at low emission stay pure in AgX; brighter bleaches them to pink and white.
+COLORS = {"p": (1.0, 0.0, 0.0), "n": (0.0, 0.1, 1.0), "start": (0.15, 0.85, 0.3), "end": (0.7, 0.3, 1.0),
+          "excursion": (1.0, 0.65, 0.0)}
+TINT_GLOW = 1.0  # emission of the tint: brighter washes it pastel in AgX (as materials.HIGHLIGHT_GLOW found)
+FLASH_GLOW = 0.6  # extra emission of the trace at a pulse's peak (more bleaches it to pink and white)
+IN_PHASE_ALPHA = 0.12  # a faint tint: which traces are measured, with their copper still seen
+TRACE = "KLS Phase trace"  # + " P" / " N"
+GLOW = "KLS Phase glow"  # + " P" / " N": the pulse's energy field around the trace
+GLOW_RADIUS_M = 0.15e-3  # of the tube around each trace, its axis raised off the copper by half of it
+GLOW_STRENGTH = 1.0  # the glow's emission: a denser, not a brighter, field keeps it pure red or blue
+GLOW_DENSITY = 1.6  # how opaque the field's middle is at the pulse's peak (clamped at 1)
+GLOW_SIDES = 10
+COLUMN_GROW_M = 30e-6  # a via's light column: just outside its drill, over the plating
+TAIL_NODE = "KLS phase pulse tail"
+TAIL_SHARE = 0.6  # the comet tail's brightness next to the pulse's head
+BLOOM = "KLS Bloom"
+BLOOM_THRESHOLD = 0.6  # the trace tints (emission 1) and pulses bloom; lit copper and mask stay crisp
+BLOOM_SIZE = 0.6
+SCALE_NODE, CLOCK_NODE, WIDTH_NODE, PULSE_NODE = ("KLS phase scale", "KLS phase clock", "KLS phase pulse width",
+                                                  "KLS phase pulses")
+LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
+TICK_S = 1 / 30
 DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
 _syncing = False  # the pair list is being rebuilt: its index changes are not clicks
+_clock_start = None  # time.monotonic() when the pulses were launched
 
 
 def _slot(key):
@@ -75,11 +109,12 @@ def _apply_list(header):
 
 def _apply_pair(header, arrays):
     key = header["key"]
-    board.phase[key] = {**header, "centre": np.array(arrays["centre"]), "dt": np.array(arrays["dt"])}
+    board.phase[key] = {**header, **{name: np.array(values) for name, values in arrays.items()}}
     if board.collection is None:
         return  # no board yet: drawn with the next pair frame or setting change
     draw(key)
     sync_list()
+    set_pulses()
 
 
 def _clear(obj):
@@ -94,70 +129,301 @@ def redraw_all():
         draw(key)
 
 
-# --- Drawing ------------------------------------------------------------------------------
+# --- Materials ----------------------------------------------------------------------------
 
 def _shown():
     return bool(getattr(bpy.context.scene, "kileido_phase_show", True))
 
 
+def _node(tree, kind, name=None, **inputs):
+    node = tree.nodes.new(kind)
+    if name:
+        node.name = name
+    for socket, value in inputs.items():
+        node.inputs[socket].default_value = value
+    return node
+
+
+def _math(tree, operation, first, second=None, clamp=False):
+    """A Math node on sockets or numbers; returns its output."""
+    node = tree.nodes.new("ShaderNodeMath")
+    node.operation = operation
+    node.use_clamp = clamp
+    for index, value in enumerate((first, second)):
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            node.inputs[index].default_value = value
+        else:
+            tree.links.new(value, node.inputs[index])
+    return node.outputs[0]
+
+
+def _value(tree, name, value):
+    node = tree.nodes.new("ShaderNodeValue")
+    node.name = name
+    node.outputs[0].default_value = value
+    return node.outputs[0]
+
+
+def _pulse(tree, delay):
+    """How lit a point is now: a Gaussian head at the pulse clock and a comet tail
+    fading behind it (points the pulse passed a moment ago); 0 while pulses are off."""
+    gap = _math(tree, "SUBTRACT", delay, _value(tree, CLOCK_NODE, -1e3))  # > 0: not reached yet
+    offset = _math(tree, "DIVIDE", gap, _value(tree, WIDTH_NODE, _pulse_width()))
+    head = _math(tree, "EXPONENT", _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", offset, offset), -1.0))
+    fading = _math(tree, "EXPONENT", _math(tree, "DIVIDE", _math(tree, "MINIMUM", gap, 0.0),
+                                           _value(tree, TAIL_NODE, _pulse_tail())))
+    tail = _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", fading, _math(tree, "LESS_THAN", gap, 0.0)), TAIL_SHARE)
+    return _math(tree, "MULTIPLY", _math(tree, "MAXIMUM", head, tail), _value(tree, PULSE_NODE, 0.0))
+
+
+def _trace_material(side):
+    """P red or N blue, more opaque the further the pair is out of phase there (|lead|
+    over the colour scale), plus a flash in the same colour where the pulse is now:
+    exp(-((t - clock) / width)^2). Open over drilled holes, like the copper."""
+    name = f"{TRACE} {side.upper()}"
+    material = bpy.data.materials.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+        material.use_nodes = True
+        material.diffuse_color = (*COLORS[side], 1.0)
+        tree = material.node_tree
+        tree.nodes.clear()
+        lead = _node(tree, "ShaderNodeAttribute")
+        lead.attribute_type, lead.attribute_name = "GEOMETRY", LEAD
+        delay = _node(tree, "ShaderNodeAttribute")
+        delay.attribute_type, delay.attribute_name = "GEOMETRY", DELAY
+        share = _math(tree, "DIVIDE", lead.outputs["Fac"], _value(tree, SCALE_NODE, _scale()))
+        tint = _math(tree, "ADD", _math(tree, "MULTIPLY", _math(tree, "ABSOLUTE", share, clamp=True),
+                                        1.0 - IN_PHASE_ALPHA), IN_PHASE_ALPHA)
+        glow = _pulse(tree, delay.outputs["Fac"])
+        color = _node(tree, "ShaderNodeMix")
+        color.data_type = "RGBA"
+        tree.links.new(glow, color.inputs["Factor"])
+        color.inputs["A"].default_value = (*COLORS[side], 1.0)
+        color.inputs["B"].default_value = (*COLORS[side], 1.0)
+        emission = _node(tree, "ShaderNodeEmission")
+        tree.links.new(color.outputs["Result"], emission.inputs["Color"])
+        tree.links.new(_math(tree, "ADD", _math(tree, "MULTIPLY", glow, FLASH_GLOW), TINT_GLOW),
+                       emission.inputs["Strength"])
+        surface = _node(tree, "ShaderNodeMixShader")
+        tree.links.new(_math(tree, "MAXIMUM", tint, glow), surface.inputs["Fac"])
+        tree.links.new(_node(tree, "ShaderNodeBsdfTransparent").outputs[0], surface.inputs[1])
+        tree.links.new(emission.outputs[0], surface.inputs[2])
+        tree.links.new(surface.outputs[0], _node(tree, "ShaderNodeOutputMaterial").inputs["Surface"])
+    holes.add_to(material)  # follows the hole mask (a new board, moved vias): cheap once built
+    material.surface_render_method = "BLENDED"  # a see-through tint over the copper, not dithered noise
+    return material
+
+
+def _glow_material(side):
+    """The energy field around a trace: only where the pulse is, densest down the
+    tube's middle as seen from the camera (Layer Weight facing). It covers what is
+    behind it rather than adding to it, so it stays pure red or blue."""
+    name = f"{GLOW} {side.upper()}"
+    material = bpy.data.materials.get(name)
+    if material is not None:
+        return material
+    material = bpy.data.materials.new(name)
+    material.use_nodes = True
+    material.diffuse_color = (*COLORS[side], 0.3)
+    material.surface_render_method = "BLENDED"
+    material.use_backface_culling = True  # the near wall only: the far one would double the light
+    tree = material.node_tree
+    tree.nodes.clear()
+    delay = _node(tree, "ShaderNodeAttribute")
+    delay.attribute_type, delay.attribute_name = "GEOMETRY", DELAY
+    pulse = _pulse(tree, delay.outputs["Fac"])
+    facing = _node(tree, "ShaderNodeLayerWeight", Blend=0.5)
+    core = _math(tree, "POWER", _math(tree, "SUBTRACT", 1.0, facing.outputs["Facing"]), 1.5)
+    emission = _node(tree, "ShaderNodeEmission", Color=(*COLORS[side], 1.0), Strength=GLOW_STRENGTH)
+    light = _node(tree, "ShaderNodeMixShader")  # covers what is behind: pure red or blue, not added to it
+    tree.links.new(_math(tree, "MULTIPLY", _math(tree, "MULTIPLY", pulse, core), GLOW_DENSITY, clamp=True),
+                   light.inputs["Fac"])
+    tree.links.new(_node(tree, "ShaderNodeBsdfTransparent").outputs[0], light.inputs[1])
+    tree.links.new(emission.outputs[0], light.inputs[2])
+    tree.links.new(light.outputs[0], _node(tree, "ShaderNodeOutputMaterial").inputs["Surface"])
+    return material
+
+
+def _trace_materials():
+    """Every material the pulse clock and colour scale drive (trace tints and glows)."""
+    return [material for prefix in (TRACE, GLOW) for side in "PN"
+            if (material := bpy.data.materials.get(f"{prefix} {side}")) is not None]
+
+
 def _material(role):
+    """A flat marker colour ("start", "end", "excursion")."""
     name = f"KLS Phase {role}"
     material = bpy.data.materials.get(name)
     if material is not None:
         return material
     material = bpy.data.materials.new(name)
     material.use_nodes = True
+    material.diffuse_color = (*COLORS[role], 1.0)
     tree = material.node_tree
     tree.nodes.clear()
-    emission = tree.nodes.new("ShaderNodeEmission")
-    output = tree.nodes.new("ShaderNodeOutputMaterial")
-    tree.links.new(emission.outputs[0], output.inputs["Surface"])
-    if role != "ribbon":
-        material.diffuse_color = (*COLORS[role], 1.0)
-        emission.inputs["Color"].default_value = (*COLORS[role], 1.0)
-        return material
-    # Δt / scale, clamped to -1..1, on a red - grey - blue ramp.
-    attribute = tree.nodes.new("ShaderNodeAttribute")
-    attribute.attribute_type = "GEOMETRY"
-    attribute.attribute_name = ATTRIBUTE
-    scale = tree.nodes.new("ShaderNodeValue")
-    scale.name = SCALE_NODE
-    scale.outputs[0].default_value = _scale()
-    divide = tree.nodes.new("ShaderNodeMath")
-    divide.operation = "DIVIDE"
-    tree.links.new(attribute.outputs["Fac"], divide.inputs[0])
-    tree.links.new(scale.outputs[0], divide.inputs[1])
-    ramp_input = tree.nodes.new("ShaderNodeMapRange")
-    ramp_input.inputs["From Min"].default_value = -1.0
-    ramp_input.inputs["From Max"].default_value = 1.0
-    ramp_input.clamp = True
-    tree.links.new(divide.outputs[0], ramp_input.inputs["Value"])
-    ramp = tree.nodes.new("ShaderNodeValToRGB")
-    elements = ramp.color_ramp.elements
-    elements[0].color = (*COLORS["p_ahead"], 1.0)
-    elements[1].position = 1.0
-    elements[1].color = (*COLORS["n_ahead"], 1.0)
-    middle = elements.new(0.5)
-    middle.color = (*COLORS["in_phase"], 1.0)
-    tree.links.new(ramp_input.outputs["Result"], ramp.inputs["Fac"])
-    tree.links.new(ramp.outputs["Color"], emission.inputs["Color"])
-    material.diffuse_color = (*COLORS["in_phase"], 1.0)
+    emission = _node(tree, "ShaderNodeEmission", Color=(*COLORS[role], 1.0))
+    tree.links.new(emission.outputs[0], _node(tree, "ShaderNodeOutputMaterial").inputs["Surface"])
     return material
 
 
 def _scale():
-    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_scale_ps", 5.0)))
+    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_scale_ps", 3.0)))
+
+
+def _pulse_width():
+    return max(0.1, float(getattr(bpy.context.scene, "kileido_phase_pulse_width_ps", 3.0)))
+
+
+def _pulse_tail():
+    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_pulse_tail_ps", 12.0)))
+
+
+def _set(name, value):
+    for material in _trace_materials():
+        node = material.node_tree.nodes.get(name)  # the glow has no colour scale
+        if node is not None and node.outputs[0].default_value != value:
+            node.outputs[0].default_value = value
 
 
 def set_scale():
-    """The colour scale changed: one value in the ribbon material."""
-    material = bpy.data.materials.get("KLS Phase ribbon")
-    if material is not None:
-        material.node_tree.nodes[SCALE_NODE].outputs[0].default_value = _scale()
+    """The colour scale changed: one value in each trace material."""
+    _set(SCALE_NODE, _scale())
+    _set(WIDTH_NODE, _pulse_width())
+    _set(TAIL_NODE, _pulse_tail())
 
+
+# --- Pulses -------------------------------------------------------------------------------
+
+def _pulsing(scene):
+    return _shown() and getattr(scene, "kileido_phase_pulses", False) and bool(board.phase)
+
+
+def _timeline(scene):
+    return getattr(scene, "kileido_phase_pulse_clock", "LIVE") == "TIMELINE"
+
+
+def _set_clock(scene, seconds):
+    """The pulses `seconds` into a loop: from before the start terminals until the
+    slowest pair's far end, at the panel's picoseconds per second."""
+    width = _pulse_width()
+    longest = max(max(float(data.get("delay_p_ps", 0.0)), float(data.get("delay_n_ps", 0.0)))
+                  for data in board.phase.values())
+    period = longest + 6 * width + _pulse_tail() * 4  # in before the start, out with its tail past the end
+    rate = max(0.1, float(getattr(scene, "kileido_phase_pulse_rate", 30.0)))
+    _set(PULSE_NODE, 1.0)
+    _set(CLOCK_NODE, (seconds * rate) % period - 3 * width)
+
+
+def _cycles_viewport(scene):
+    """A 3D view path tracing with Cycles: a moving clock would restart it every tick."""
+    from .objects import view3d_spaces
+    return scene.render.engine == "CYCLES" and any(space.shading.type == "RENDERED" for space in view3d_spaces())
+
+
+def _pulse_tick():
+    """The live clock (wall time). It holds still while a view renders with Cycles, so
+    that view converges, and stops itself when the pulses go off or follow the timeline."""
+    scene = bpy.context.scene
+    if not _pulsing(scene) or _timeline(scene):
+        _show_pulses(scene)
+        return None
+    if not _cycles_viewport(scene):
+        _set_clock(scene, time.monotonic() - (_clock_start or time.monotonic()))
+    return TICK_S
+
+
+@persistent
+def on_frame(scene, _depsgraph=None):
+    """The timeline clock: the frame sets where the pulses are, so playback animates
+    them and Cycles renders each frame (stills and animations) with them in place."""
+    if _timeline(scene) and _pulsing(scene):
+        fps = scene.render.fps / (scene.render.fps_base or 1.0)
+        _set_clock(scene, (scene.frame_current + scene.frame_subframe - scene.frame_start) / fps)
+
+
+def _show_pulses(scene):
+    """The glows shown only while pulsing; out, or placed for the current frame."""
+    for obj in _objects():
+        if obj.get("kls_phase_glow"):
+            set_visible(obj, _pulsing(scene) and len(obj.data.vertices) > 0)
+    if not _pulsing(scene):
+        _set(PULSE_NODE, 0.0)
+    elif _timeline(scene):
+        on_frame(scene)
+
+
+def set_pulses():
+    """Pulses on, off or switched clock: start the live clock, place them for the
+    current frame, or put them out."""
+    global _clock_start
+    scene = bpy.context.scene
+    _show_pulses(scene)
+    if not _pulsing(scene) or _timeline(scene):
+        stop_pulses()
+    elif not bpy.app.timers.is_registered(_pulse_tick):
+        _clock_start = time.monotonic()
+        bpy.app.timers.register(_pulse_tick, first_interval=0.0)
+
+
+def stop_pulses():
+    if bpy.app.timers.is_registered(_pulse_tick):
+        bpy.app.timers.unregister(_pulse_tick)
+
+
+# --- Bloom: a real halo round the pulses, through the viewport compositor --------------------
+
+def _bloom_group():
+    """A compositor group that blooms what is brighter than BLOOM_THRESHOLD."""
+    group = bpy.data.node_groups.get(BLOOM)
+    if group is not None:
+        return group
+    group = bpy.data.node_groups.new(BLOOM, "CompositorNodeTree")
+    group.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+    # Blender 5: the scene's compositor group reads the render (or the 3D view) itself.
+    source, sink = group.nodes.new("CompositorNodeRLayers"), group.nodes.new("NodeGroupOutput")
+    glare = group.nodes.new("CompositorNodeGlare")
+    glare.inputs["Type"].default_value = "Bloom"
+    glare.inputs["Threshold"].default_value = BLOOM_THRESHOLD
+    glare.inputs["Size"].default_value = BLOOM_SIZE
+    group.links.new(source.outputs["Image"], glare.inputs["Image"])
+    group.links.new(glare.outputs["Image"], sink.inputs["Image"])
+    return group
+
+
+def bloom_blocked():
+    """The name of the scene's own compositor, which bloom leaves alone; else ""."""
+    scene = bpy.context.scene
+    current = getattr(scene, "compositing_node_group", None)
+    return current.name if current is not None and current.name != BLOOM else ""
+
+
+def set_bloom():
+    """Bloom on: the scene composites through the bloom group (renders too) and every
+    3D view shows the compositor; off: both back. A scene with its own compositor is
+    left as it is (the panel says so)."""
+    from .objects import view3d_spaces
+    scene = bpy.context.scene
+    on = getattr(scene, "kileido_phase_bloom", False)
+    if on and bloom_blocked():
+        return
+    if on:
+        scene.compositing_node_group = _bloom_group()
+    elif not bloom_blocked() and getattr(scene, "compositing_node_group", None) is not None:
+        scene.compositing_node_group = None
+    for space in view3d_spaces():
+        if on:
+            space.shading.use_compositor = "ALWAYS"
+        elif space.shading.use_compositor == "ALWAYS":
+            space.shading.use_compositor = "DISABLED"
+
+
+# --- Drawing ------------------------------------------------------------------------------
 
 def _mesh(obj, vertices, faces):
-    """A few hundred faces at most: from_pydata is quick enough."""
+    """A few thousand faces at most: from_pydata is quick enough."""
     mesh = obj.data
     mesh.clear_geometry()
     mesh.from_pydata(np.asarray(vertices, np.float64).tolist(), [], [list(map(int, face)) for face in faces])
@@ -165,9 +431,13 @@ def _mesh(obj, vertices, faces):
 
 
 def _owned(name, key, material, ids):
+    """`ids` None: not clickable, a click passes through it (the glow)."""
     obj = owned_object(name)
     obj["kls_phase_key"] = key
-    obj["kls_phase_ids"] = list(ids)
+    if ids is None:
+        obj.pop("kls_phase_ids", None)
+    else:
+        obj["kls_phase_ids"] = list(ids)
     obj.show_in_front = True  # Solid view: an inner-layer pair shows through the board
     if obj.data.materials:
         obj.data.materials[0] = material
@@ -177,38 +447,141 @@ def _owned(name, key, material, ids):
     return obj
 
 
-def _board_z(z_nm):
-    """Blender z of a point at a copper height, lifted off the copper outward."""
+def _surface_z(z_nm):
+    """Blender z just outside a copper layer's outer face (outer layers have thickness)."""
     z = np.asarray(z_nm, np.float64) * 1e-9
-    return z + np.where(z > board.thickness_m / 2, LIFT_M, -LIFT_M)
+    top = z >= board.thickness_m - 1e-9
+    bottom = z <= 1e-9
+    return (z + np.where(top, copper_thickness("F.Cu") + LIFT_M, 0.0)
+            - np.where(bottom, copper_thickness("B.Cu") + LIFT_M, 0.0) + np.where(top | bottom, 0.0, LIFT_M))
 
 
-def _ribbon(centre_nm, width_m):
-    """(vertices, quads) of a flat strip along the centreline; vertical where the pair
-    goes through vias (its cross direction stays the last horizontal one)."""
-    xy = transform.xy_m(centre_nm[:, :2], board.origin_nm).astype(np.float64)
-    z = _board_z(centre_nm[:, 2])
-    count = len(xy)
-    tangent = np.zeros((count, 2))
-    if count > 1:
-        forward = np.diff(xy, axis=0)
-        tangent[:-1] += forward
-        tangent[1:] += forward
-    length = np.hypot(*tangent.T)
-    valid = length > 1e-9
-    if not valid.any():
-        tangent[:] = (1.0, 0.0)
-    else:
-        last = np.maximum.accumulate(np.where(valid, np.arange(count), -1))
-        last[last < 0] = np.flatnonzero(valid)[0]  # before the first move: the first direction
-        tangent = tangent[last] / length[last][:, None]
-    across = np.column_stack((-tangent[:, 1], tangent[:, 0])) * width_m / 2
-    left = np.column_stack((xy + across, z))
-    right = np.column_stack((xy - across, z))
-    vertices = np.empty((count * 2, 3))
-    vertices[0::2], vertices[1::2] = left, right
-    faces = [np.array((2 * k, 2 * k + 1, 2 * k + 3, 2 * k + 2)) for k in range(count - 1)]
-    return vertices, faces
+def _strip(xyz_nm, width_nm):
+    """(vertices, quads, source index of each vertex) of a flat strip over a trace:
+    one run per layer (a via's barrel, where only z changes, ends a run), mitred
+    at the corners so neighbouring quads never overlap (they are see-through)."""
+    xy = transform.xy_m(xyz_nm[:, :2], board.origin_nm).astype(np.float64)
+    z = _surface_z(xyz_nm[:, 2])
+    half = np.asarray(width_nm, np.float64) * 1e-9 / 2 + GROW_M / 2
+    moved = np.hypot(*np.diff(xy, axis=0).T) > 1e-9  # a step along the board, not a barrel or a repeat
+    same_z = np.abs(np.diff(z)) < 1e-9
+    vertices, faces, source = [], [], []
+    start = 0
+    for index in range(len(xy)):
+        last = index == len(xy) - 1
+        if not last and moved[index] and same_z[index]:
+            continue  # the run goes on
+        run = [start] + [k + 1 for k in range(start, index) if moved[k]]  # drop repeated points
+        start = index + 1
+        if len(run) < 2:
+            continue
+        points = xy[run]
+        direction = np.diff(points, axis=0)
+        direction /= np.hypot(*direction.T)[:, None]
+        normal = np.column_stack((-direction[:, 1], direction[:, 0]))
+        at = np.vstack((normal[:1], normal[:-1] + normal[1:], normal[-1:]))
+        at /= np.maximum(np.hypot(*at.T), 1e-12)[:, None]
+        before = np.vstack((normal[:1], normal))  # each vertex's incoming segment normal
+        mitre = 1 / np.maximum((at * before).sum(axis=1), 0.5)  # at most 2x at a very sharp turn
+        offset = at * (half[run] * mitre)[:, None]
+        first = len(vertices)
+        for sign in (1, -1):
+            vertices.extend(np.column_stack((points + sign * offset, z[run])))
+        count = len(run)
+        faces += [(first + k, first + k + 1, first + count + k + 1, first + count + k) for k in range(count - 1)]
+        source += run * 2
+    return np.asarray(vertices).reshape(-1, 3), faces, np.asarray(source, np.int64)
+
+
+def _lands(vias, sides=24):
+    """(vertices, fans, lead, delay) of a disc over each via land the route uses, on
+    both layers it connects: tinted like the trace, the pulse crossing it as it
+    enters and leaves (the drill stays open through the hole mask)."""
+    vertices, faces, lead, delay = [], [], [], []
+    angles = np.linspace(0.0, 2 * math.pi, sides, endpoint=False)
+    for via in vias:
+        centre = transform.xy_m(np.array([[via["x"], via["y"]]]), board.origin_nm)[0]
+        radius = float(via.get("diameter", 0)) * 1e-9 / 2 + GROW_M / 2
+        for layer, reached in zip(via.get("layers", ()), via.get("t", ())):
+            if layer not in board.heights or radius <= 0:
+                continue
+            z = float(_surface_z([board.heights[layer] * 1e9])[0])
+            first = len(vertices)
+            vertices.append((*centre, z))
+            vertices += [(centre[0] + radius * math.cos(a), centre[1] + radius * math.sin(a), z) for a in angles]
+            faces += [(first, first + 1 + k, first + 1 + (k + 1) % sides) for k in range(sides)]
+            lead += [float(via.get("lead", 0.0))] * (sides + 1)
+            delay += [float(reached)] * (sides + 1)
+    return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(lead), np.asarray(delay)
+
+
+def _tube(xyz_nm, radius=GLOW_RADIUS_M, sides=GLOW_SIDES):
+    """(vertices, quads, source index of each vertex) of a tube along a trace, one per
+    layer (a via's barrel gets its own light column, `_columns`); its axis rises off
+    outer copper by half its radius, so it stands out of the board. Rings follow the
+    path by parallel transport (no twisting)."""
+    xy = transform.xy_m(xyz_nm[:, :2], board.origin_nm).astype(np.float64)
+    z = _surface_z(xyz_nm[:, 2])
+    raw = np.asarray(xyz_nm[:, 2], np.float64) * 1e-9
+    z += np.where(raw >= board.thickness_m - 1e-9, radius / 2, np.where(raw <= 1e-9, -radius / 2, 0.0))
+    points = np.column_stack((xy, z))
+    keep = np.concatenate(([True], np.linalg.norm(np.diff(points, axis=0), axis=1) > 1e-9))
+    index = np.flatnonzero(keep)
+    points = points[keep]
+    along_board = np.hypot(*np.diff(points[:, :2], axis=0).T) > 1e-9
+    vertices, faces, source = [], [], []
+    start = 0
+    for last in range(len(points)):
+        if last < len(points) - 1 and along_board[last]:
+            continue
+        if last > start:
+            run_vertices, run_faces = _tube_run(points[start:last + 1], radius, sides)
+            faces += [tuple(len(vertices) + corner for corner in face) for face in run_faces]
+            vertices += list(run_vertices)
+            source += list(np.repeat(index[start:last + 1], sides))
+        start = last + 1
+    return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(source, np.int64)
+
+
+def _tube_run(points, radius, sides):
+    step = np.diff(points, axis=0)
+    step /= np.linalg.norm(step, axis=1)[:, None]
+    tangent = np.vstack((step[:1], step[:-1] + step[1:], step[-1:]))
+    tangent /= np.maximum(np.linalg.norm(tangent, axis=1), 1e-12)[:, None]
+    normal = np.cross(tangent[0], (0.0, 0.0, 1.0) if abs(tangent[0][2]) < 0.9 else (1.0, 0.0, 0.0))
+    angles = np.linspace(0.0, 2 * math.pi, sides, endpoint=False)
+    rings = []
+    for point, along in zip(points, tangent):
+        normal = normal - np.dot(normal, along) * along
+        normal /= np.linalg.norm(normal)
+        binormal = np.cross(along, normal)
+        rings.append(point + radius * (np.outer(np.cos(angles), normal) + np.outer(np.sin(angles), binormal)))
+    faces = [(k * sides + a, k * sides + (a + 1) % sides, (k + 1) * sides + (a + 1) % sides, (k + 1) * sides + a)
+             for k in range(len(points) - 1) for a in range(sides)]
+    return np.vstack(rings), faces
+
+
+def _columns(vias, sides=GLOW_SIDES + 4):
+    """(vertices, quads, delay) of a light column in each via barrel the route passes,
+    between the two layers it connects, just outside the drill: the pulse lights it
+    on its way down (or up), as X-ray mode shows through the faded board."""
+    vertices, faces, delay = [], [], []
+    angles = np.linspace(0.0, 2 * math.pi, sides, endpoint=False)
+    for via in vias:
+        layers, reached = via.get("layers", ()), via.get("t", ())
+        if len(layers) != 2 or any(layer not in board.heights for layer in layers):
+            continue
+        centre = transform.xy_m(np.array([[via["x"], via["y"]]]), board.origin_nm)[0]
+        drill = float(via.get("drill") or 0) or float(via.get("diameter", 0)) / 2
+        radius = drill * 1e-9 / 2 + COLUMN_GROW_M
+        first = len(vertices)
+        for layer, at in zip(layers, reached):
+            z = board.heights[layer]
+            vertices += [(centre[0] + radius * math.cos(a), centre[1] + radius * math.sin(a), z) for a in angles]
+            delay += [float(at)] * sides
+        faces += [(first + a, first + (a + 1) % sides, first + sides + (a + 1) % sides, first + sides + a)
+                  for a in range(sides)]
+    return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(delay)
 
 
 def _cone(tip, up, height=MARKER_HEIGHT_M, radius=MARKER_RADIUS_M, sides=12):
@@ -224,7 +597,7 @@ def _cone(tip, up, height=MARKER_HEIGHT_M, radius=MARKER_RADIUS_M, sides=12):
     return vertices, faces
 
 
-def _surface_z(layer):
+def _board_face(layer):
     """The outer face on the terminal's side: markers stand outside the board."""
     bottom = layer.startswith("B.")
     return (0.0 if bottom else board.thickness_m), (-1.0 if bottom else 1.0)
@@ -255,35 +628,58 @@ def _label(name, key, role, text, location, up, ids, align):
 
 
 def draw(key):
-    """Build (or rebuild) one pair's ribbon and markers from its last frame."""
+    """Build (or rebuild) one pair's trace colours and markers from its last frame."""
     data = board.phase.get(key)
     if data is None or board.collection is None:
         return
     slot = _slot(key)
     shown = _shown()
-    ids = data.get("ids", ())
+    pulsing = _pulsing(bpy.context.scene)
     active = set()
-    centre = data["centre"]
-    if len(centre) >= 2:
-        ribbon = _owned(f"{PREFIX}ribbon {slot}", key, _material("ribbon"), ids)
-        vertices, faces = _ribbon(centre, max(float(data.get("width_nm", 0.0)) * 1e-9, 0.1e-3))
-        _mesh(ribbon, vertices, faces)
-        write_attribute(ribbon.data, ATTRIBUTE, "FLOAT", np.repeat(data["dt"].astype(np.float32), 2))
-        ribbon.data.update()
-        set_visible(ribbon, shown)
-        active.add(ribbon.name)
+    for side in ("p", "n"):
+        xyz = data.get(f"{side}_xyz")
+        if xyz is None or len(xyz) < 2:
+            continue
+        trace = _owned(f"{PREFIX}trace {side} {slot}", key, _trace_material(side), data.get("ids", ()))
+        vertices, faces, source = _strip(xyz, data[f"{side}_width"])
+        lead, delay = data[f"{side}_lead"][source], data[f"{side}_t"][source]
+        land_vertices, land_faces, land_lead, land_delay = _lands(
+            [via for via in data.get("vias", ()) if via.get("side") == side])
+        faces = list(faces) + [tuple(len(vertices) + index for index in face) for face in land_faces]
+        _mesh(trace, np.vstack((vertices, land_vertices)), faces)
+        write_attribute(trace.data, LEAD, "FLOAT", np.concatenate((lead, land_lead)).astype(np.float32))
+        write_attribute(trace.data, DELAY, "FLOAT", np.concatenate((delay, land_delay)).astype(np.float32))
+        trace.data.update()
+        set_visible(trace, shown)
+        active.add(trace.name)
+        glow = _owned(f"{PREFIX}glow {side} {slot}", key, _glow_material(side), None)
+        glow["kls_phase_glow"] = 1
+        glow.show_in_front = False  # light in the scene, not a flat overlay
+        glow.visible_shadow = False
+        vertices, faces, source = _tube(xyz)
+        column_vertices, column_faces, column_delay = _columns(
+            [via for via in data.get("vias", ()) if via.get("side") == side])
+        faces = list(faces) + [tuple(len(vertices) + corner for corner in face) for face in column_faces]
+        _mesh(glow, np.vstack((vertices, column_vertices)), faces)
+        glow.data.shade_smooth()  # a round field, not facets
+        write_attribute(glow.data, DELAY, "FLOAT",
+                        np.concatenate((data[f"{side}_t"][source], column_delay)).astype(np.float32))
+        glow.data.update()
+        set_visible(glow, pulsing)
+        active.add(glow.name)
     labels = getattr(bpy.context.scene, "kileido_phase_labels", True)
-    line = transform.xy_m(centre[:, :2], board.origin_nm).astype(np.float64) if len(centre) else np.zeros((1, 2))
+    path = data.get("p_xyz", np.zeros((1, 3)))
+    line = transform.xy_m(path[:, :2], board.origin_nm).astype(np.float64)
     for role, ahead in (("start", line[:12]), ("end", line[::-1][:12])):
         end = data[role]
         xy = transform.xy_m(np.array([[end["x"], end["y"]]]), board.origin_nm)[0]
-        surface, up = _surface_z(end.get("layer", "F.Cu"))
+        surface, up = _board_face(end.get("layer", "F.Cu"))
         tip = (float(xy[0]), float(xy[1]), surface + up * LIFT_M)
         marker = _owned(f"{PREFIX}{role} {slot}", key, _material(role), end.get("ids", ()))
         _mesh(marker, *_cone(tip, up))
         set_visible(marker, shown)
         active.add(marker.name)
-        outward = ahead[0] - ahead[-1]  # away from the pair, so the label clears marker and ribbon
+        outward = ahead[0] - ahead[-1]  # away from the pair, so the label clears marker and traces
         length = float(np.hypot(*outward))
         outward = outward / length if length > 1e-9 else np.array((-1.0 if role == "start" else 1.0, 0.0))
         where = np.asarray(tip[:2]) + outward * (MARKER_RADIUS_M + LABEL_SIZE_M / 2)
@@ -295,11 +691,11 @@ def draw(key):
     for index, excursion in enumerate(data.get("excursions", ())):
         xy = transform.xy_m(np.array([[excursion["x"], excursion["y"]]]), board.origin_nm)[0]
         # On the nearer board face, like the terminals: seen even where the pair runs inside.
-        surface, up = _surface_z("B.Cu" if excursion["z"] * 1e-9 < board.thickness_m / 2 else "F.Cu")
-        z = surface + up * LIFT_M
+        surface, up = _board_face("B.Cu" if excursion["z"] * 1e-9 < board.thickness_m / 2 else "F.Cu")
         marker = _owned(f"{PREFIX}excursion {slot} {index}", key, _material("excursion"), [excursion["id"]])
         marker["kls_phase_excursion"] = index
-        _mesh(marker, *_cone((float(xy[0]), float(xy[1]), z), up, MARKER_HEIGHT_M, 1.3 * MARKER_RADIUS_M))
+        _mesh(marker, *_cone((float(xy[0]), float(xy[1]), surface + up * LIFT_M), up, MARKER_HEIGHT_M,
+                             1.3 * MARKER_RADIUS_M))
         set_visible(marker, shown)
         active.add(marker.name)
     for obj in _objects(key):
@@ -313,6 +709,7 @@ def refresh_visibility():
         drawn = obj.type != "MESH" or len(obj.data.vertices) > 0
         set_visible(obj, drawn and shown and (labels or obj.type != "FONT") and
                     obj["kls_phase_key"] in board.phase)
+    set_pulses()  # the glows show only while pulsing
 
 
 # --- Settings and the pair list -----------------------------------------------------------

@@ -26,7 +26,7 @@ layers, barrel length, delay) for return-path and via-stub analyses to reuse.
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -75,6 +75,10 @@ class Crossing:
     length_nm: float  # barrel between from_layer and to_layer
     delay_ps: float
     at_nm: float  # along its side's route
+    diameter_nm: int = 0  # the via's land
+    drill_nm: int = 0  # and its hole
+    reached_ps: float = 0.0  # delay from the start terminal to where the barrel begins
+    lead_ps: float = 0.0  # how far this side is ahead of its partner there
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,17 @@ class Excursion:
     length_nm: float
     peak_ps: float  # signed, the largest |Δt| of the stretch
     item_id: str  # the P track there
+
+
+@dataclass(frozen=True)
+class Trace:
+    """One side's copper as Blender draws it: its path in walking order (the route's
+    own corners plus the alignment samples between them), and at each point the delay
+    from the start and how far this side is ahead of its partner there."""
+    xyz_nm: np.ndarray = field(repr=False)  # (v, 3)
+    delay_ps: np.ndarray = field(repr=False)  # (v,) from the start terminal
+    lead_ps: np.ndarray = field(repr=False)  # (v,) > 0: this side's edge arrives first
+    width_nm: np.ndarray = field(repr=False)  # (v,) of the track there
 
 
 @dataclass(frozen=True)
@@ -102,6 +117,7 @@ class PairPhase:
     crossings: tuple[Crossing, ...] = ()
     sources: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    traces: tuple = ()  # (P Trace, N Trace)
 
     @property
     def skew_ps(self) -> float:
@@ -120,20 +136,22 @@ class _Walk:
     along: np.ndarray  # (v,) nm of copper
     delay: np.ndarray  # (v,) ps
     items: list  # (v,) item id of the piece each vertex ends
+    widths: np.ndarray  # (v,) track width there (a barrel or hop keeps the last one)
     crossings: list
     sources: set
 
 
 def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: dict[str, int]) -> _Walk:
-    xyz, along, delay, items = [], [], [], []
+    xyz, along, delay, items, widths = [], [], [], [], []
     crossings, sources = [], set()
     s = t = 0.0
 
-    def add(point, layer_z, item_id):
+    def add(point, layer_z, item_id, width=0):
         xyz.append((point[0], point[1], layer_z))
         along.append(s)
         delay.append(t)
         items.append(item_id)
+        widths.append(width or (widths[-1] if widths else 0))
 
     for piece in route.pieces:
         z = heights.get(piece.layer, 0)
@@ -141,7 +159,8 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
             ps, source = model_.barrel(piece.net, piece.layer, piece.to_layer, piece.span, piece.length_nm)
             sources.add(source)
             crossings.append(Crossing(side, piece.item_id, piece.net, piece.points[0], piece.layer,
-                                      piece.to_layer, piece.span, piece.length_nm, ps, s))
+                                      piece.to_layer, piece.span, piece.length_nm, ps, s, piece.diameter,
+                                      piece.drill, t))
             if not xyz:
                 add(piece.points[0], z, piece.item_id)
             s += piece.length_nm
@@ -153,28 +172,49 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
         points = piece.points
         chords = [math.dist(a, b) for a, b in zip(points, points[1:])]
         scale = piece.length_nm / sum(chords) if sum(chords) else 0.0
-        if not xyz:
-            add(points[0], z, piece.item_id)
-        elif (xyz[-1][0], xyz[-1][1]) != tuple(points[0]):
-            add(points[0], z, piece.item_id)  # a barrel ended at the via centre; the track starts off it
+        if not xyz or (xyz[-1][0], xyz[-1][1]) != tuple(points[0]):
+            add(points[0], z, piece.item_id, piece.width)  # also where a barrel ended at the via centre
         for point, chord in zip(points[1:], chords):
             s += chord * scale
             t += chord * scale * unit.ps_per_mm / 1e6
-            add(point, z, piece.item_id)
+            add(point, z, piece.item_id, piece.width)
     if not xyz:
         add(route.start.pos, heights.get(route.start.layer, 0), "")
-    return _Walk(np.asarray(xyz, np.float64), np.asarray(along), np.asarray(delay), items, crossings, sources)
+    first = next((width for width in widths if width), 0)
+    widths = [width or first for width in widths]  # a route that starts through a via
+    return _Walk(np.asarray(xyz, np.float64), np.asarray(along), np.asarray(delay), items,
+                 np.asarray(widths, np.float64), crossings, sources)
 
 
-def _resample(walk: _Walk, step: float) -> tuple[np.ndarray, np.ndarray, list]:
-    """Points and delays every `step` nm along the copper, ends included."""
+def _resample(walk: _Walk, step: float) -> tuple[np.ndarray, np.ndarray, list, np.ndarray]:
+    """Points, delays and item ids every `step` nm along the copper, ends included, and
+    where along the copper each sample is."""
     total = walk.along[-1]
     count = max(2, int(math.ceil(total / step)) + 1)
     s = np.linspace(0.0, total, count)
     xyz = np.column_stack([np.interp(s, walk.along, walk.xyz[:, axis]) for axis in range(3)])
     t = np.interp(s, walk.along, walk.delay)
     vertex = np.clip(np.searchsorted(walk.along, s, side="left"), 0, len(walk.items) - 1)
-    return xyz, t, [walk.items[index] for index in vertex]
+    return xyz, t, [walk.items[index] for index in vertex], s
+
+
+def _trace(walk: _Walk, s: np.ndarray, lead: np.ndarray) -> Trace:
+    """The side's own vertices (its corners stay sharp) with the samples between them;
+    the lead is known at the samples and interpolated along the copper."""
+    extra = s[~np.isin(s, walk.along)]
+    along = np.concatenate((walk.along, extra))
+    order = np.argsort(along, kind="stable")  # a jump (one position, two points) keeps its order
+    between = np.column_stack([np.interp(extra, walk.along, walk.xyz[:, axis]) for axis in range(3)])
+    xyz = np.vstack((walk.xyz, between.reshape(-1, 3)))[order]
+    delay = np.concatenate((walk.delay, np.interp(extra, walk.along, walk.delay)))[order]
+    after = np.clip(np.searchsorted(walk.along, extra), 0, len(walk.widths) - 1)
+    width = np.concatenate((walk.widths, walk.widths[after]))[order]
+    return Trace(xyz, delay, np.interp(along[order], s, lead), width)
+
+
+def _per_sample(index: np.ndarray, values: np.ndarray, count: int) -> np.ndarray:
+    """The mean of `values` over each sample's matches (every sample has at least one)."""
+    return np.bincount(index, values, count) / np.maximum(np.bincount(index, minlength=count), 1)
 
 
 def _align(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -282,7 +322,7 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     p, n = _orient(p, n, flipped)
     walks = (_walk(p, "P", model_, heights), _walk(n, "N", model_, heights))
     step = max(MIN_STEP_NM, max(walk.along[-1] for walk in walks) / SAMPLES)
-    (a, t_p, items_p), (b, t_n, _) = (_resample(walk, step) for walk in walks)
+    (a, t_p, items_p, s_a), (b, t_n, _, s_b) = (_resample(walk, step) for walk in walks)
     i, j = _align(a, b)
     # Matched samples are up to half a step apart along the pair; the side that moved
     # keeps its sample and the other is projected onto its own nearby copper, so a
@@ -306,9 +346,13 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
             warnings.append(f"{side} side is not fully routed")
         if route.branches:
             warnings.append(f"{side} side has {len(route.branches)} branch" + ("es" if len(route.branches) > 1 else ""))
+    leads = (-_per_sample(i, dt, len(a)), _per_sample(j, dt, len(b)))  # Δt < 0: P ahead
+    traces = (_trace(walks[0], s_a, leads[0]), _trace(walks[1], s_b, leads[1]))
+    crossings = tuple(replace(crossing, lead_ps=float(np.interp(crossing.at_nm, s, lead)))
+                      for walk, s, lead in zip(walks, (s_a, s_b), leads) for crossing in walk.crossings)
     return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
-                     width, excursions, tuple(walks[0].crossings + walks[1].crossings),
-                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings))
+                     width, excursions, crossings,
+                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces)
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
@@ -516,7 +560,7 @@ def pair_frame(result: PairPhase, revision: int) -> bytes:
         "start": end(p.start, n.start), "end": end(p.end, n.end),
         "delay_p_ps": result.delay_p_ps, "delay_n_ps": result.delay_n_ps, "skew_ps": result.skew_ps,
         "max_ps": result.max_abs_ps, "length_p_mm": p.length_nm / 1e6, "length_n_mm": n.length_nm / 1e6,
-        "width_nm": result.width_nm, "flipped": result.flipped, "vias": len(result.crossings),
+        "width_nm": result.width_nm, "flipped": result.flipped,
         "excursions": [{"x": e.pos[0], "y": e.pos[1], "z": e.pos[2], "at_mm": e.at_nm / 1e6,
                         "length_mm": e.length_nm / 1e6, "peak_ps": e.peak_ps, "id": e.item_id}
                        for e in result.excursions],
@@ -525,5 +569,12 @@ def pair_frame(result: PairPhase, revision: int) -> bytes:
                      for side, route in (("P", p), ("N", n)) for branch in route.branches],
         "sources": list(result.sources), "warnings": list(result.warnings),
         "ids": list(dict.fromkeys(p.item_ids + n.item_ids)),
+        "vias": [{"side": crossing.side.lower(), "x": crossing.pos[0], "y": crossing.pos[1],
+                  "diameter": crossing.diameter_nm, "drill": crossing.drill_nm,
+                  "layers": [crossing.from_layer, crossing.to_layer],
+                  "t": [crossing.reached_ps, crossing.reached_ps + crossing.delay_ps], "lead": crossing.lead_ps}
+                 for crossing in result.crossings],
     }
-    return protocol.phase_pair_message(info, result.centre_nm, result.dt_ps, revision)
+    traces = {side: (trace.xyz_nm, trace.delay_ps, trace.lead_ps, trace.width_nm)
+              for side, trace in zip("pn", result.traces)}
+    return protocol.phase_pair_message(info, traces, revision)

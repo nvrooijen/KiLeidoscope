@@ -582,6 +582,35 @@ class KILEIDO_OT_phase_select(bpy.types.Operator):
         return {"FINISHED"}
 
 
+PHASE_HELP = (
+    "A differential pair carries its signal as the difference between P and N. KiCad matches their total "
+    "delay end to end; this view shows how far apart they are along the way.",
+    "Where P and N are out of phase, part of the differential signal turns into common mode. Common-mode "
+    "current radiates far more than differential current (its fields no longer cancel), above all once it "
+    "reaches a connector or cable. The same imbalance lets outside noise turn into differential noise at the "
+    "receiver. Skew made up only at the far end does not undo what the stretch in between radiated or picked up.",
+    "Colours: P red, N blue, the stronger the further apart they are there. Pulses start together at the start "
+    "terminal and travel at each trace's own delay, slowed down: the one in front is ahead.",
+    "Amber markers: |Δt| above your tolerance for longer than your distance. Delays come from the netclass's "
+    "tuning profile, else an estimate from the stackup (see Delay for each pair).",
+)
+
+
+class KILEIDO_OT_phase_help(bpy.types.Operator):
+    bl_idname = "kileido.phase_help"
+    bl_label = "About dynamic phase"
+    bl_description = "\n\n".join(PHASE_HELP)
+
+    def execute(self, context):
+        def draw(menu, _context):
+            for paragraph in PHASE_HELP:
+                for line in textwrap.wrap(paragraph, 70):
+                    menu.layout.label(text=line)
+                menu.layout.separator()
+        context.window_manager.popup_menu(draw, title="Dynamic phase", icon="QUESTION")
+        return {"FINISHED"}
+
+
 class KILEIDO_PT_phase(bpy.types.Panel):
     """Differential pairs: how far P and N are apart in time along the route."""
     bl_label = "Dynamic phase"
@@ -592,23 +621,36 @@ class KILEIDO_PT_phase(bpy.types.Panel):
     bl_parent_id = "KILEIDO_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
 
+    def draw_header_preset(self, context):
+        self.layout.operator(KILEIDO_OT_phase_help.bl_idname, text="", icon="QUESTION", emboss=False)
+
     def draw(self, context):
         layout, scene = self.layout, context.scene
         row = layout.row(align=True)
-        row.prop(scene, "kileido_phase_show", text="Ribbons")
+        row.prop(scene, "kileido_phase_show", text="Colours")
         row.prop(scene, "kileido_phase_labels", text="Labels")
+        row.prop(scene, "kileido_phase_pulses", text="Pulses")
         layout.prop(scene, "kileido_phase_follow_series", text="Through series parts (AC caps)")
         column = layout.column(align=True)
         column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
         column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
         column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
+        pulses = layout.column(align=True)
+        pulses.active = scene.kileido_phase_pulses
+        pulses.row().prop(scene, "kileido_phase_pulse_clock", expand=True)
+        pulses.prop(scene, "kileido_phase_pulse_rate", text="Pulse speed (ps/s)")
+        pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
+        pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
+        layout.prop(scene, "kileido_phase_bloom", text="Bloom (glow halo)")
+        blocked = phase.bloom_blocked()
+        if blocked and scene.kileido_phase_bloom:
+            layout.label(text=f"The scene composites with {blocked}: bloom left out", icon="INFO")
         legend = layout.row(align=True)
-        for color, text in ((phase.COLORS["p_ahead"], "P ahead"), (phase.COLORS["in_phase"], "In phase"),
-                            (phase.COLORS["n_ahead"], "N ahead")):
+        for color, text in ((phase.COLORS["p"], "P"), (phase.COLORS["n"], "N")):
             legend.label(text=text, icon_value=_swatch("tile", color))
         info = layout.column(align=True)
-        for line in _wrap(context, "Δt = t_P − t_N, gathered from the start terminal. P ahead: "
-                                   "P's edge arrives first (Δt < 0)."):
+        for line in _wrap(context, "The stronger the colour, the further P and N are out of phase there. "
+                                   "Pulses start together: the one in front is ahead."):
             info.label(text=line)
         guess = phase.sources_warning()
         if guess:
@@ -737,7 +779,7 @@ CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_boar
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
            KILEIDO_PT_status, KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip,
-           KILEIDO_OT_phase_select, KILEIDO_PT_phase)
+           KILEIDO_OT_phase_select, KILEIDO_OT_phase_help, KILEIDO_PT_phase)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -850,14 +892,43 @@ def _scene_properties():
             update=lambda self, context: cosmetics.apply_silk_settings()),
         "kileido_phase_show": BoolProperty(
             name="Dynamic phase", default=True,
-            description="Ribbons along differential pairs coloured by their delay difference, and their markers",
+            description="Colour both traces of each differential pair where one runs ahead of the other, "
+                        "with markers at their terminals and where they stay out of phase",
             update=lambda self, context: phase.refresh_visibility()),
         "kileido_phase_labels": BoolProperty(
             name="Terminal labels", default=True, description="Name the pads at both ends of each pair",
             update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_pulses": BoolProperty(
+            name="Pulses", default=True,
+            description="A glow launched on both traces together at the start terminal, travelling at each "
+                        "trace's own delay (slowed down), so the lagging trace falls behind",
+            update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_clock": EnumProperty(
+            name="Pulse clock",
+            items=(("LIVE", "Live", "The pulses run by themselves (paused while a view renders with Cycles, "
+                                    "so it can finish)"),
+                   ("TIMELINE", "Timeline", "The frame sets where the pulses are: Play animates them, and "
+                                            "Cycles renders them in stills and animations")),
+            default="LIVE", update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_rate": FloatProperty(
+            name="Pulse speed", default=30.0, min=0.1, soft_min=5.0, soft_max=500.0, precision=0,
+            description="Picoseconds of signal travel shown per second"),
+        "kileido_phase_pulse_width_ps": FloatProperty(
+            name="Pulse width", default=3.0, min=0.1, soft_max=30.0, precision=1,
+            description="Length of the glow in ps of travel",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_pulse_tail_ps": FloatProperty(
+            name="Pulse tail", default=12.0, min=0.0, soft_max=60.0, precision=1,
+            description="Length of the fading trail behind each pulse, in ps of travel (0: none)",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_bloom": BoolProperty(
+            name="Bloom", default=False,
+            description="A glow halo round the pulses and colours (Blender's compositor, in the 3D views and "
+                        "in renders). Left out when the scene has its own compositor",
+            update=lambda self, context: phase.set_bloom()),
         "kileido_phase_scale_ps": FloatProperty(
-            name="Colour scale", default=5.0, min=0.01, soft_max=50.0, precision=2,
-            description="Δt in ps that shows full red or blue (display only)",
+            name="Colour scale", default=3.0, min=0.01, soft_max=50.0, precision=2,
+            description="How many ps out of phase shows a trace in its full colour (display only)",
             update=lambda self, context: phase.set_scale()),
         "kileido_phase_tolerance_ps": FloatProperty(
             name="Tolerance", default=phase.DEFAULTS["tolerance_ps"], min=0.0, soft_max=20.0, precision=2,
@@ -927,11 +998,14 @@ def register():
             _KEYMAPS.append((keymap, entry))
     collisions.install()
     bpy.app.handlers.load_post.append(_file_loaded)
+    bpy.app.handlers.frame_change_pre.append(phase.on_frame)
 
 
 def unregister():
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
+    if phase.on_frame in bpy.app.handlers.frame_change_pre:
+        bpy.app.handlers.frame_change_pre.remove(phase.on_frame)
     if bpy.app.timers.is_registered(dump.drain):
         bpy.app.timers.unregister(dump.drain)
     for keymap, entry in _KEYMAPS:
@@ -939,6 +1013,7 @@ def unregister():
     _KEYMAPS.clear()
     live.disconnect()
     models.stop_following()
+    phase.stop_pulses()
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()

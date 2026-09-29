@@ -53,8 +53,10 @@ def test_phase_settings_request_reaches_the_bridge_settings():
 
 def test_phase_frames_decode_in_addon():
     addon = _addon_client()
-    centre = np.array([[0, 0, 1_600_000], [1_000_000, 0, 1_600_000]])
-    payload = protocol.phase_pair_message({"key": "D_P"}, centre, np.array([0.0, -1.5]), 7)
+    path = np.array([[0, 0, 1_600_000], [1_000_000, 0, 1_600_000]])
+    side = (path, np.array([0.0, 5.5]), np.array([0.0, -1.5]), np.array([150_000, 150_000]))
+    payload = protocol.phase_pair_message({"key": "D_P"}, {"p": side, "n": side}, 7)
     [(header, arrays)] = addon.FrameDecoder().feed(payload)
     assert header["type"] == "phase_pair" and header["key"] == "D_P"
-    assert arrays["centre"].tolist() == centre.tolist() and arrays["dt"].tolist() == [0.0, -1.5]
+    assert arrays["p_xyz"].tolist() == path.tolist() and arrays["n_lead"].tolist() == [0.0, -1.5]
+    assert arrays["p_t"].tolist() == [0.0, 5.5] and arrays["n_width"].tolist() == [150_000, 150_000]

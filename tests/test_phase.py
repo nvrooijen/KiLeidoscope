@@ -54,6 +54,25 @@ def test_compensation_far_from_the_mismatch_is_an_excursion_despite_zero_skew():
     assert excursion.item_id in {track.id for track in snapshot.tracks if track.net == "D_P"}
 
 
+def test_each_side_carries_its_delay_and_how_far_it_is_ahead():
+    """What Blender colours and pulses: both traces follow their own copper, corners
+    included, with the delay from the start and the lead over the partner at each point."""
+    snapshot = boards.compensated_far()
+    result = only_pair(snapshot)
+    p, n = result.traces
+    for trace, total, route in ((p, result.delay_p_ps, result.p), (n, result.delay_n_ps, result.n)):
+        assert trace.delay_ps[0] == 0 and trace.delay_ps[-1] == pytest.approx(total)
+        assert np.all(np.diff(trace.delay_ps) >= 0)
+        corners = {tuple(point) for piece in route.pieces for point in piece.points}
+        assert corners <= {(round(x), round(y)) for x, y in trace.xyz_nm[:, :2]}  # its own corners
+        assert set(trace.width_nm) == {boards.WIDTH}
+    plateau = 0.5 * unit_delay(snapshot)
+    middle = [np.abs(trace.xyz_nm[:, 0] - 25 * MM) < 5 * MM for trace in (p, n)]
+    assert np.allclose(p.lead_ps[middle[0]], plateau, atol=0.01)  # N took the detour: P ahead...
+    assert np.allclose(n.lead_ps[middle[1]], -plateau, atol=0.01)  # ...and N lagging by as much
+    assert abs(p.lead_ps[0]) < 1e-9 and abs(p.lead_ps[-1]) < 1e-6  # in phase at both ends
+
+
 def test_compensation_close_to_the_mismatch_is_not_an_excursion():
     snapshot = boards.compensated_locally()
     result = only_pair(snapshot)
@@ -73,6 +92,9 @@ def test_a_layer_change_adds_each_via_barrel_between_its_layers():
     crossing = result.crossings[0]
     assert crossing.length_nm == barrel and crossing.pos == (20 * MM, 0) and crossing.span == ("F.Cu", "B.Cu")
     assert crossing.at_nm == pytest.approx(30 * MM)  # from J1
+    assert crossing.diameter_nm == 600_000 and crossing.drill_nm == 300_000
+    assert abs(crossing.lead_ps) < 1e-6  # in phase there
+    assert crossing.reached_ps == pytest.approx(30 * unit_delay(snapshot, "B.Cu"))
     model_ = delays.StackupDelays(snapshot.stackup.layers, heights)
     expected = (20 * unit_delay(snapshot) + 30 * unit_delay(snapshot, "B.Cu")
                 + model_.barrel("D_P", "B.Cu", "F.Cu", ("F.Cu", "B.Cu"), barrel)[0])
@@ -226,7 +248,10 @@ def test_the_tracker_recomputes_only_pairs_whose_copper_changed():
     header, arrays = first[1]
     assert header["name"] == "D_P/N" and header["start"]["label"] == "J1.1/2" and header["end"]["label"] == "U1.1/2"
     assert header["start"]["ids"] == ["J1.1", "J1.2"] and header["start"]["layer"] == "F.Cu"
-    assert arrays["centre"].shape[1] == 3 and arrays["dt"].shape == (arrays["centre"].shape[0],)
+    for side in "pn":
+        count = len(arrays[f"{side}_xyz"])
+        assert arrays[f"{side}_xyz"].shape == (count, 3) and count > 2
+        assert all(arrays[f"{side}_{name}"].shape == (count,) for name in ("t", "lead", "width"))
     assert tracker.update(two_pairs(), revision=2) == []  # the same copper (equal records): nothing to send
     changed = decoded(tracker.update(two_pairs(detour=True), revision=3))
     assert [(header["type"], header.get("key")) for header, _ in changed] == [("phase_pair", "E_P")]

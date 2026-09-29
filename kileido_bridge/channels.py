@@ -51,6 +51,8 @@ class Piece:
     width: int = 0
     span: tuple[str, str] = ("", "")  # a barrel's via or hole layers (top, bottom)
     net: str = ""
+    diameter: int = 0  # a barrel's via land
+    drill: int = 0  # and its hole
 
 
 @dataclass(frozen=True)
@@ -523,6 +525,13 @@ def route(items: NetItems, heights: dict[str, int], references: dict[str, str], 
                  pieces, tuple(sorted(branches, key=lambda branch: branch.at_nm)), complete)
 
 
+def _drill(hub) -> int:
+    """A via's drill, or a plated pad's smaller drill side; 0 for anything else."""
+    if isinstance(hub, model.Via):
+        return hub.drill
+    return min(hub.drill) if isinstance(hub, model.Pad) and hub.drill else 0
+
+
 def _pieces(graph: _Graph, steps, heights: dict[str, int]) -> tuple[Piece, ...]:
     """The path's tracks in walking order, with a barrel wherever it changes layer
     and a straight hop across pads and series parts."""
@@ -536,7 +545,7 @@ def _pieces(graph: _Graph, steps, heights: dict[str, int]) -> tuple[Piece, ...]:
                     else (hub.layers[0], hub.layers[-1]) if isinstance(hub, model.Pad) else (layer, edge.layer))
             pieces.append(Piece("barrel", getattr(hub, "id", ""), layer, edge.layer, (at, at),
                                 float(abs(heights.get(layer, 0) - heights.get(edge.layer, 0))), 0, span,
-                                getattr(hub, "net", "")))
+                                getattr(hub, "net", ""), getattr(hub, "diameter", 0), _drill(hub)))
             point = point if point is not None else at
         if edge.layer:
             layer = edge.layer

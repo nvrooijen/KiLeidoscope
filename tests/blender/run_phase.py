@@ -1,4 +1,4 @@
-"""Headless Blender check of the dynamic-phase ribbons, terminal markers and pair list."""
+"""Headless Blender check of the dynamic-phase p_traces, terminal markers and pair list."""
 
 import sys
 import tempfile
@@ -38,26 +38,89 @@ def main():
         slots = {key: phase._slot(key) for key in ("D_P", "E_P")}
         assert set(state.board.phase) == {"D_P", "E_P"}
 
-        # The ribbon: a strip of two vertices per centreline point, Δt on each, drawn in front.
-        ribbon = state.board.collection.all_objects[f"KLS phase ribbon {slots['D_P']}"]
+        # Both traces get a see-through copy over their copper: the lead over the partner and
+        # the delay from the start at each point. N's detour at x = 47 comes first from J1,
+        # so P is ahead (red) and N n_trace (blue) over the middle of the pair.
         result = tracker.results["D_P"]
-        assert len(ribbon.data.vertices) == 2 * len(result.centre_nm) and len(ribbon.data.polygons) > 0
-        dt = read_attribute(ribbon.data, phase.ATTRIBUTE, np.float32)
-        assert np.allclose(dt[0::2], result.dt_ps, atol=1e-4) and dt.min() < -2.5  # N ahead from J1
-        assert ribbon.show_in_front and not ribbon.hide_get()
-        assert ribbon.users_collection[0].get("kls_group") == "phase"
-        material = ribbon.data.materials[0]
-        attribute = next(node for node in material.node_tree.nodes if node.type == "ATTRIBUTE")
-        assert attribute.attribute_name == phase.ATTRIBUTE
-        width = np.ptp(read_coordinates(ribbon.data)[:2, 1])  # the first cross-section, across y
-        assert abs(width - (1e-3 + phase_boards.WIDTH * 1e-9)) < 1e-6
+        p_trace, n_trace = (state.board.collection.all_objects[f"KLS phase trace {side} {slots['D_P']}"]
+                           for side in "pn")
+        plateau = -result.dt_ps[len(result.dt_ps) // 2]
+        for trace, sign, delay in ((p_trace, 1, result.delay_p_ps), (n_trace, -1, result.delay_n_ps)):
+            lead = read_attribute(trace.data, phase.LEAD, np.float32)
+            reached = read_attribute(trace.data, phase.DELAY, np.float32)
+            assert abs(np.median(lead) - sign * plateau) < 0.01 and abs(reached.max() - delay) < 1e-3
+            assert trace.show_in_front and not trace.hide_get() and len(trace.data.polygons) > 10
+        assert plateau > 2.5
+        assert p_trace.users_collection[0].get("kls_group") == "phase"
+        first = read_coordinates(p_trace.data)
+        count = len(first) // 2  # left edge, then right edge
+        width = np.hypot(*(first[0, :2] - first[count, :2]))
+        assert abs(width - (phase_boards.WIDTH * 1e-9 + phase.GROW_M)) < 1e-7  # just over the track
+        top = state.board.thickness_m + state.board.layer_thickness.get("F.Cu", 0.0)
+        assert np.all(first[:, 2] > top)  # over the copper's outer face
+        material = p_trace.data.materials[0]
+        names = {node.attribute_name for node in material.node_tree.nodes if node.type == "ATTRIBUTE"}
+        assert names == {phase.LEAD, phase.DELAY} and material.surface_render_method == "BLENDED"
+        # P red and N blue, each flashing in its own colour; open over drilled holes like the copper.
+        assert (material.name, n_trace.data.materials[0].name) == (f"{phase.TRACE} P", f"{phase.TRACE} N")
+        for trace, side in ((p_trace, "p"), (n_trace, "n")):
+            nodes = trace.data.materials[0].node_tree.nodes
+            mix = next(node for node in nodes if node.type == "MIX" and node.data_type == "RGBA")
+            assert np.allclose(tuple(mix.inputs["A"].default_value)[:3], phase.COLORS[side])
+            assert nodes.get("KLS holes plot") is not None
         scene.kileido_phase_scale_ps = 2.0
         assert material.node_tree.nodes[phase.SCALE_NODE].outputs[0].default_value == 2.0
 
-        # A pair through vias: its ribbon climbs from B.Cu to F.Cu.
-        dive = state.board.collection.all_objects[f"KLS phase ribbon {slots['E_P']}"]
-        z = read_coordinates(dive.data)[:, 2]
-        assert z.min() < 0 and z.max() > state.board.thickness_m - 1e-4
+        # Pulses: the clock runs on a timer (ticked by hand here) while they are on.
+        scene.kileido_phase_pulses = True
+        assert phase._pulse_tick() == phase.TICK_S
+        nodes = material.node_tree.nodes
+        assert nodes[phase.PULSE_NODE].outputs[0].default_value == 1.0
+        clock = nodes[phase.CLOCK_NODE].outputs[0].default_value
+        assert -3 * phase._pulse_width() <= clock <= max(result.delay_p_ps, result.delay_n_ps) + 3 * phase._pulse_width()
+        # The energy field: a tube around each trace, lit by the same clock, only while pulsing;
+        # it stands out of the board and is not clickable (a click reaches the copper).
+        glow = state.board.collection.all_objects[f"KLS phase glow p {slots['D_P']}"]
+        assert not glow.hide_get() and "kls_phase_ids" not in glow and len(glow.data.polygons) > 100
+        assert read_coordinates(glow.data)[:, 2].max() > top + phase.GLOW_RADIUS_M
+        assert glow.data.materials[0].name == f"{phase.GLOW} P"
+        assert glow.data.materials[0].node_tree.nodes[phase.CLOCK_NODE].outputs[0].default_value == clock
+        # A comet tail behind each pulse, its length the panel's.
+        scene.kileido_phase_pulse_tail_ps = 5.0
+        assert glow.data.materials[0].node_tree.nodes[phase.TAIL_NODE].outputs[0].default_value == 5.0
+        # Bloom: the scene composites through the bloom group, and back without it.
+        scene.kileido_phase_bloom = True
+        assert scene.compositing_node_group.name == phase.BLOOM
+        glare = next(node for node in scene.compositing_node_group.nodes if node.type == "GLARE")
+        assert glare.inputs["Type"].default_value == "Bloom"
+        scene.kileido_phase_bloom = False
+        assert scene.compositing_node_group is None
+        # On the timeline, the frame sets the clock, so Cycles renders the pulses in place.
+        scene.kileido_phase_pulse_clock = "TIMELINE"
+        fps = scene.render.fps / scene.render.fps_base
+        scene.frame_set(scene.frame_start + 12)
+        expected = (12 / fps * scene.kileido_phase_pulse_rate) - 3 * phase._pulse_width()
+        assert abs(nodes[phase.CLOCK_NODE].outputs[0].default_value - expected) < 1e-3
+        assert not bpy.app.timers.is_registered(phase._pulse_tick)
+        scene.kileido_phase_pulse_clock = "LIVE"
+        scene.kileido_phase_pulses = False
+        assert phase._pulse_tick() is None and nodes[phase.PULSE_NODE].outputs[0].default_value == 0.0
+        assert glow.hide_get()
+        phase.stop_pulses()
+
+        # A pair through vias: its copy runs on F.Cu, then on B.Cu (the barrel is left open).
+        dive = state.board.collection.all_objects[f"KLS phase trace p {slots['E_P']}"]
+        coordinates = read_coordinates(dive.data)
+        z = coordinates[:, 2]
+        assert z.min() < 0 and z.max() > state.board.thickness_m
+        # Its via land is tinted on both layers too: a disc centred on the via (x 20, y 10 mm in KiCad).
+        centres = np.flatnonzero(np.hypot(coordinates[:, 0] + 0.005, coordinates[:, 1] + 0.005) < 1e-7)
+        assert {bool(z[index] > 0) for index in centres} == {True, False}
+        # And its barrel is a light column: just outside the 0.3 mm drill, from B.Cu up to F.Cu.
+        field = read_coordinates(state.board.collection.all_objects[f"KLS phase glow p {slots['E_P']}"].data)
+        ring = np.abs(np.hypot(field[:, 0] + 0.005, field[:, 1] + 0.005) - (0.15e-3 + phase.COLUMN_GROW_M)) < 1e-7
+        assert ring.sum() >= 2 * phase.GLOW_SIDES
+        assert field[ring, 2].min() == 0 and abs(field[ring, 2].max() - state.board.heights["F.Cu"]) < 1e-9
 
         # Terminal markers and labels: the start (J1, sorts first) green, the end violet;
         # J2 sits on the bottom, so its marker hangs below the board and its label reads from below.
@@ -82,11 +145,11 @@ def main():
         assert [row.key for row in rows] == ["D_P", "E_P"] and rows[0].excursions == 1
         assert rows[0].route == "J1.1/2 → U1.1/2" and abs(rows[0].skew_ps) < 1e-6
 
-        # A click on the ribbon from above picks the pair's copper; on a terminal marker, its pads.
+        # A click on a trace copy from above picks the pair's copper; on a terminal marker, its pads.
         bpy.context.view_layer.update()
         depsgraph = bpy.context.evaluated_depsgraph_get()
         down = Vector((0, 0, -1))
-        middle = ribbon.matrix_world @ Vector(tuple(read_coordinates(ribbon.data)[len(dt) // 2]))
+        middle = p_trace.matrix_world @ Vector(tuple((first[count // 2] + first[count + count // 2]) / 2))
         ids = pick.item_at(scene, depsgraph, middle + Vector((0, 0, 0.05)), down)
         assert set(ids) == set(result.p.item_ids + result.n.item_ids)
         assert pick.item_at(scene, depsgraph, Vector(tuple(read_coordinates(start.data)[-1])) + Vector((0, 0, 0.05)),
@@ -94,11 +157,11 @@ def main():
 
         # Showing, labels only, flipping.
         scene.kileido_phase_labels = False
-        assert labels["D_P start"].hide_get() and not ribbon.hide_get()
+        assert labels["D_P start"].hide_get() and not p_trace.hide_get()
         scene.kileido_phase_show = False
-        assert ribbon.hide_get() and start.hide_get()
+        assert p_trace.hide_get() and start.hide_get()
         scene.kileido_phase_show = scene.kileido_phase_labels = True
-        assert not ribbon.hide_get() and not labels["D_P start"].hide_get()
+        assert not p_trace.hide_get() and not labels["D_P start"].hide_get()
         phase.flip("D_P")
         assert phase.settings()["flipped"] == ["D_P"]
         tracker.configure(phase.settings())
@@ -112,17 +175,18 @@ def main():
             with bpy.data.libraries.load(path) as (data_from, _):
                 exported = list(data_from.objects)
         assert exported and not any(name.startswith("KLS phase") for name in exported)
-        assert ribbon.users_collection[0].get("kls_group") == "phase" and not ribbon.hide_get()
+        assert p_trace.users_collection[0].get("kls_group") == "phase" and not p_trace.hide_get()
 
         # A resync snapshot keeps the pairs; a pair list without E removes E's objects.
         apply.load_frames(b"".join(snapshot_frames(snapshot, revision=3)))
-        assert len(ribbon.data.vertices) and not ribbon.hide_get()
+        assert len(p_trace.data.vertices) and not p_trace.hide_get()
         fewer = replace(snapshot, tracks=tuple(t for t in snapshot.tracks if not t.net.startswith("E_")),
                         vias=())
         apply.load_frames(b"".join(tracker.update(fewer, revision=4)))
         assert set(state.board.phase) == {"D_P"} and [row.key for row in rows] == ["D_P"]
         assert not len(dive.data.vertices) and dive.hide_get()
         assert labels["E_P start"].hide_get()
+
     finally:
         kileido.unregister()
     print("KLS_PHASE_OK")
