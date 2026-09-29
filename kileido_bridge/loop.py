@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import replace
 
 from . import protocol
-from .board_specs import appearance_signature, read_appearance, set_kicad_version
+from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items
 from .kicad_reader import (KiCadBusy, PollResult, board_text, connect_reader, explain_connection_error,
                            kicad_tools, saved_board_path, select_in_kicad, selected_ids)
@@ -310,7 +310,8 @@ class BridgeRuntime:
         return {"path": str(self.copy.path) if live else self.board_path,
                 "live": live,
                 "project_dir": self.copy.project_dir if live else "",
-                "kicad_cli": self.tools.get("kicad_cli", "")}
+                "kicad_cli": self.tools.get("kicad_cli", ""),
+                "kicad_settings": str(settings_dir())}  # its kicad_common.json: Configure Paths
 
     # --- Blender requests and the main loop ---------------------------------------------
 

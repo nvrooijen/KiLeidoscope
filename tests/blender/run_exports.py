@@ -1,8 +1,8 @@
 """Headless checks of the kicad-cli export workers and what they leave behind: a failed
-model export is retried, exports read the bytes their cache key was made from, a new
-GLB import drops the one it replaces, re-applied overlays free the plots they replace,
-a reflection HDRI saved by another Blender install is found again, and no scratch
-folder outlives Blender. Needs kicad-cli.
+model export is retried, one missing a model file is not cached, exports read the
+bytes their cache key was made from, a new GLB import drops the one it replaces,
+re-applied overlays free the plots they replace, a reflection HDRI saved by another
+Blender install is found again, and no scratch folder outlives Blender. Needs kicad-cli.
 
 blender --background --factory-startup --python tests/blender/run_exports.py
 """
@@ -10,6 +10,7 @@ blender --background --factory-startup --python tests/blender/run_exports.py
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -39,7 +40,7 @@ def job(source):
 
 
 def check_model_retry(scratch):
-    """A failed export keeps no signature (retried on the next change); a good one does,
+    """A failed export keeps no key (retried on the next change); a good one does,
     and it exported the hashed bytes even though the watched file changed meanwhile."""
     source = scratch / BOARD_FILE.name
     source.write_bytes(BOARD_FILE.read_bytes())
@@ -50,7 +51,7 @@ def check_model_retry(scratch):
     try:
         kicad_cli.run = lambda arguments, timeout: subprocess.CompletedProcess(arguments, 1, "", "simulated failure")
         models._on_board_change(failing, memory)
-        assert "signature" not in memory, "a failed export was remembered"
+        assert "key" not in memory, "a failed export was remembered"
         assert "simulated failure" in failing.results.get_nowait().error
 
         exported = []
@@ -67,7 +68,7 @@ def check_model_retry(scratch):
         models._on_board_change(good, memory)
         result = good.results.get_nowait()
         assert result.error is None, result.error
-        assert memory.get("signature"), "a good export was not remembered"
+        assert memory.get("key"), "a good export was not remembered"
         assert {name for name, *_ in exported} == {BOARD_FILE.name}, exported
         assert all(data == BOARD_FILE.read_bytes() for _, data, *_ in exported), "kicad-cli read other bytes"
         glb = next(arguments for *_, arguments in exported if "glb" in arguments)
@@ -75,6 +76,35 @@ def check_model_retry(scratch):
         assert Path(result.data["glb"]).is_file() and result.data["asset"]
     finally:
         kicad_cli.run, kicad_cli.lookup = real_run, real_lookup
+
+
+def check_missing_models_not_cached(scratch):
+    """An export that could not find a model file is shown but not cached (the file may
+    be added, or its path variable set, before the next open), yet still remembered
+    for this watch so edits do not re-export; the unset variable's value is in the key."""
+    text = BOARD_FILE.read_text(encoding="utf-8")
+    start = re.search(r'\(footprint\s+"', text).start()
+    end = start + len(models._block(text, start)) - 1
+    source = scratch / "missing" / BOARD_FILE.name
+    source.parent.mkdir()
+    source.write_text(text[:end] + '(model "${KLS_UNSET_TEST_3D}/missing.step")' + text[end:], encoding="utf-8")
+    stored = []
+    real_lookup, real_store = kicad_cli.lookup, kicad_cli.store
+    kicad_cli.lookup = lambda kind, key: None
+    kicad_cli.store = lambda kind, key, files: stored.append(key)
+    try:
+        exporting = job(source)
+        memory = {}
+        models._on_board_change(exporting, memory)
+        result = exporting.results.get_nowait()
+        assert result.error is None, result.error
+        assert result.data["missing"] == 1, result.data
+        assert not stored, "an export with a missing model was cached"
+        assert Path(result.data["glb"]).parent == Path(result.directory), "not the scratch export"
+        assert memory.get("key"), "an export with a missing model is re-run on every edit"
+        watcher.remove_later(result.directory)
+    finally:
+        kicad_cli.lookup, kicad_cli.store = real_lookup, real_store
 
 
 def export_glb(path, name, size):
@@ -232,6 +262,7 @@ def main():
     scratch = Path(tempfile.mkdtemp())
     try:
         check_model_retry(scratch)
+        check_missing_models_not_cached(scratch)
         snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))
         apply.load_frames(b"".join(snapshot_frames(snapshot, board_path=str(BOARD_FILE))))
         check_overlay_images()
