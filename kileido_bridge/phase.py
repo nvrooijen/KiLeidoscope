@@ -118,6 +118,7 @@ class PairPhase:
     sources: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     traces: tuple = ()  # (P Trace, N Trace)
+    pads: tuple = ()  # dicts for the frame: see _pads
 
     @property
     def skew_ps(self) -> float:
@@ -283,6 +284,24 @@ def _at(line: np.ndarray, fraction: np.ndarray) -> np.ndarray:
     return line[whole] + (fraction - whole)[:, None] * (line[after] - line[whole])
 
 
+def _pads(route: channels.Route, trace: Trace, side: str, heights: dict[str, int]) -> list[dict]:
+    """Each pad the route starts, ends or runs through, on the layer the route meets it:
+    its outline (nm), and the delay and lead of the route's nearest point, so Blender
+    tints it and a pulse lights it as it passes."""
+    layer_at = {height: layer for layer, height in heights.items()}
+    found = []
+    for pad in route.pads:
+        near = int(np.argmin(np.hypot(*(trace.xyz_nm[:, :2] - np.asarray(pad.pos, np.float64)).T)))
+        layer = layer_at.get(int(round(trace.xyz_nm[near, 2])))
+        polygons = pad.polygons.get(layer) if layer else None
+        if not polygons:
+            continue  # no copper shape on that layer (an old dump)
+        found.append({"side": side, "id": pad.id, "layer": layer,
+                      "rings": [[int(value) for point in polygon[0] for value in point] for polygon in polygons],
+                      "t": float(trace.delay_ps[near]), "lead": float(trace.lead_ps[near])})
+    return found
+
+
 def find_excursions(along: np.ndarray, dt: np.ndarray, tolerance_ps: float, min_length_nm: float):
     """(first index, last index) of every stretch where |Δt| > tolerance for at least min_length."""
     over = np.abs(dt) > tolerance_ps
@@ -354,9 +373,10 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     traces = (_trace(walks[0], s_a, leads[0]), _trace(walks[1], s_b, leads[1]))
     crossings = tuple(replace(crossing, lead_ps=float(np.interp(crossing.at_nm, s, lead)))
                       for walk, s, lead in zip(walks, (s_a, s_b), leads) for crossing in walk.crossings)
+    pads = tuple(_pads(p, traces[0], "p", heights) + _pads(n, traces[1], "n", heights))
     return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
                      width, excursions, crossings,
-                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces)
+                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads)
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
@@ -573,6 +593,7 @@ def pair_frame(result: PairPhase, revision: int) -> bytes:
                      for side, route in (("P", p), ("N", n)) for branch in route.branches],
         "sources": list(result.sources), "warnings": list(result.warnings),
         "ids": list(dict.fromkeys(p.item_ids + n.item_ids)),
+        "pads": list(result.pads),
         "vias": [{"side": crossing.side.lower(), "x": crossing.pos[0], "y": crossing.pos[1],
                   "diameter": crossing.diameter_nm, "drill": crossing.drill_nm,
                   "layers": [crossing.from_layer, crossing.to_layer],

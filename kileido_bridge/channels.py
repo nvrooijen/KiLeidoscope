@@ -70,6 +70,7 @@ class Route:
     pieces: tuple[Piece, ...]
     branches: tuple[Branch, ...] = ()
     complete: bool = True  # every pad of the nets is on the route's copper
+    pads: tuple[model.Pad, ...] = ()  # the pads it starts, ends or runs through, in walking order
 
     @property
     def length_nm(self) -> float:
@@ -85,7 +86,7 @@ class Route:
         pieces = tuple(replace(piece, layer=piece.to_layer, to_layer=piece.layer, points=piece.points[::-1])
                        for piece in reversed(self.pieces))
         branches = tuple(replace(branch, at_nm=total - branch.at_nm) for branch in self.branches)
-        return Route(self.end, self.start, pieces, branches, self.complete)
+        return Route(self.end, self.start, pieces, branches, self.complete, self.pads[::-1])
 
 
 @dataclass(frozen=True)
@@ -571,6 +572,7 @@ def _route(ends: _Ends, first: int, second: int, references: dict[str, str]) -> 
         total += edge.length
         along[node] = total
     branches = []
+    pads = [(along[node], node) for node in along if graph.kind[node] == "pad"]
     for leaf in candidates:
         if leaf in on_route:
             continue
@@ -579,12 +581,14 @@ def _route(ends: _Ends, first: int, second: int, references: dict[str, str]) -> 
             continue  # on copper not connected to the route
         joint = min((node for node in on_route if node in distances), key=lambda node: distances[node])
         if distances[joint] <= 0:
-            continue  # a pad the route runs through or over: no stub, not a branch
+            pads.append((along[joint], leaf))  # a pad the route runs through or over: no stub, not a branch
+            continue
         branches.append(Branch(_terminal(graph, leaf, references, adjacent), along[joint], distances[joint]))
     reached = _distances(adjacent, first)[0]
     complete = all(node in reached for node in range(len(graph.kind)) if graph.kind[node] == "pad")
+    pads = tuple(graph.item[node] for _, node in sorted(pads, key=lambda entry: entry[0]))
     return Route(_terminal(graph, first, references, adjacent), _terminal(graph, second, references, adjacent),
-                 pieces, tuple(sorted(branches, key=lambda branch: branch.at_nm)), complete)
+                 pieces, tuple(sorted(branches, key=lambda branch: branch.at_nm)), complete, pads)
 
 
 def _drill(hub) -> int:

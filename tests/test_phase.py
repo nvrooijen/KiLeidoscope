@@ -35,6 +35,12 @@ def test_matched_pair_stays_in_phase():
     assert result.excursions == ()
     assert result.sources == (delays.STACKUP,)
     assert result.width_nm == pytest.approx(MM + boards.WIDTH)  # across both tracks
+    # The pads at both ends go to Blender with their outlines, tinted and pulsed like the trace there.
+    pads = {pad["id"]: pad for pad in result.pads}
+    assert set(pads) == {"U1.1", "J1.1", "U1.2", "J1.2"}
+    assert pads["J1.1"]["side"] == "p" and pads["J1.1"]["layer"] == "F.Cu" and len(pads["J1.1"]["rings"][0]) == 8
+    assert pads["J1.1"]["t"] == 0.0  # the start end
+    assert pads["U1.1"]["t"] == pytest.approx(result.delay_p_ps)
 
 
 def test_compensation_far_from_the_mismatch_is_an_excursion_despite_zero_skew():
@@ -144,6 +150,7 @@ def test_pads_that_connect_twice_still_end_or_carry_the_route():
     assert {result.p.start.label, result.p.end.label} == {"J1.1", "U1.1"}
     assert result.p.length_nm == pytest.approx(49.9 * MM)  # to where the copper first reaches J1.1's pad
     assert not result.p.branches  # the signal runs through D1, it does not branch to it
+    assert {pad["id"] for pad in result.pads if pad["side"] == "p"} == {"J1.1", "D1.1", "D1.2", "U1.1"}
     assert [branch.terminal.label for branch in result.n.branches] == ["D1.3"]
 
 

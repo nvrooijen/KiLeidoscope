@@ -53,7 +53,12 @@ def main():
         assert plateau > 2.5
         assert p_trace.users_collection[0].get("kls_group") == "phase"
         first = read_coordinates(p_trace.data)
-        count = len(first) // 2  # left edge, then right edge
+        data = state.board.phase["D_P"]
+        strip_vertices, strip_faces, _ = phase._strip(data["p_xyz"], data["p_width"])  # first, then the pads
+        count = len(strip_vertices) // 2  # left edge, then right edge
+        # Both end pads join the copy: one face per pad outline (this pair has no vias).
+        p_pads = [pad for pad in data["pads"] if pad["side"] == "p"]
+        assert len(p_pads) == 2 and len(p_trace.data.polygons) == len(strip_faces) + sum(len(pad["rings"]) for pad in p_pads)
         width = np.hypot(*(first[0, :2] - first[count, :2]))
         assert abs(width - (phase_boards.WIDTH * 1e-9 + phase.GROW_M)) < 1e-7  # just over the track
         top = state.board.thickness_m + state.board.layer_thickness.get("F.Cu", 0.0)

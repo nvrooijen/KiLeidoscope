@@ -1,6 +1,6 @@
 """Dynamic phase of differential pairs, as the bridge measures it (kileido_bridge/phase.py).
 
-Both traces of each pair are tinted, P red and N blue (as the selection highlight
+Both traces of each pair are tinted, with the pads they start, end or run through, P red and N blue (as the selection highlight
 shows a pair), the stronger the further the two are out of phase there: where
 they are in phase the copper shows almost as it is. Like the selection
 highlight, the tint is a copy of the trace laid just over its copper, open over
@@ -494,6 +494,28 @@ def _lands(vias, sides=24):
     return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(lead), np.asarray(delay)
 
 
+def _pads(pads):
+    """(vertices, faces, lead, delay) of the pads the route starts, ends or runs through:
+    each outline one face on its layer, tinted and pulsed like the trace where it meets it."""
+    vertices, faces, lead, delay = [], [], [], []
+    for pad in pads:
+        if pad.get("layer") not in board.heights:
+            continue
+        z = float(_surface_z([board.heights[pad["layer"]] * 1e9])[0])
+        for ring in pad.get("rings", ()):
+            xy = transform.xy_m(np.asarray(ring, np.float64).reshape(-1, 2), board.origin_nm).astype(np.float64)
+            if len(xy) > 1 and np.allclose(xy[0], xy[-1]):
+                xy = xy[:-1]  # a closed ring repeats its first point
+            if len(xy) < 3:
+                continue
+            first = len(vertices)
+            vertices += [(float(x), float(y), z) for x, y in xy]
+            faces.append(tuple(range(first, first + len(xy))))
+            lead += [float(pad.get("lead", 0.0))] * len(xy)
+            delay += [float(pad.get("t", 0.0))] * len(xy)
+    return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(lead), np.asarray(delay)
+
+
 def _tube(xyz_nm, radius=GLOW_RADIUS_M, sides=GLOW_SIDES):
     """(vertices, quads, source index of each vertex) of a tube along a trace, one per
     layer (a via's barrel gets its own light column, `_columns`); its axis rises off
@@ -622,12 +644,16 @@ def draw(key):
         trace = _owned(f"{PREFIX}trace {side} {slot}", key, _trace_material(side), data.get("ids", ()))
         vertices, faces, source = _strip(xyz, data[f"{side}_width"])
         lead, delay = data[f"{side}_lead"][source], data[f"{side}_t"][source]
-        land_vertices, land_faces, land_lead, land_delay = _lands(
-            [via for via in data.get("vias", ()) if via.get("side") == side])
-        faces = list(faces) + [tuple(len(vertices) + index for index in face) for face in land_faces]
-        _mesh(trace, np.vstack((vertices, land_vertices)), faces)
-        write_attribute(trace.data, LEAD, "FLOAT", np.concatenate((lead, land_lead)).astype(np.float32))
-        write_attribute(trace.data, DELAY, "FLOAT", np.concatenate((delay, land_delay)).astype(np.float32))
+        faces = list(faces)
+        for extra_vertices, extra_faces, extra_lead, extra_delay in (
+                _lands([via for via in data.get("vias", ()) if via.get("side") == side]),
+                _pads([pad for pad in data.get("pads", ()) if pad.get("side") == side])):
+            faces += [tuple(len(vertices) + index for index in face) for face in extra_faces]
+            vertices = np.vstack((vertices, extra_vertices))
+            lead, delay = np.concatenate((lead, extra_lead)), np.concatenate((delay, extra_delay))
+        _mesh(trace, vertices, faces)
+        write_attribute(trace.data, LEAD, "FLOAT", lead.astype(np.float32))
+        write_attribute(trace.data, DELAY, "FLOAT", delay.astype(np.float32))
         trace.data.update()
         trace["kls_phase_trace"] = 1
         set_visible(trace, _trace_shown(bpy.context.scene))
