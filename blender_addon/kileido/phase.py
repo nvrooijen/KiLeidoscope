@@ -131,8 +131,15 @@ def redraw_all():
 
 # --- Materials ----------------------------------------------------------------------------
 
+def _enabled():
+    """Dynamic phase draws only with the High speed column open and its section on."""
+    scene = bpy.context.scene
+    return (getattr(scene, "kileido_column", "NONE") == "HIGH_SPEED"
+            and bool(getattr(scene, "kileido_phase_enabled", True)))
+
+
 def _shown():
-    return bool(getattr(bpy.context.scene, "kileido_phase_show", True))
+    return _enabled() and bool(getattr(bpy.context.scene, "kileido_phase_show", True))
 
 
 def _node(tree, kind, name=None, **inputs):
@@ -321,7 +328,7 @@ def set_scale():
 
 def _pulsing(scene):
     """Pulses run whether or not the colours show (Colours only fades the tint)."""
-    return getattr(scene, "kileido_phase_pulses", False) and bool(board.phase)
+    return _enabled() and getattr(scene, "kileido_phase_pulses", False) and bool(board.phase)
 
 
 def _trace_shown(scene):
@@ -795,6 +802,20 @@ def select_row(scene):
     data = board.phase.get(scene.kileido_phase_pairs[scene.kileido_phase_index].key)
     if data is not None and data.get("ids"):
         live.request_select(list(data["ids"]))
+
+
+def selected_pairs():
+    """Pairs with a net selected in KiCad (or clicked in Blender, which selects there)."""
+    nets = set(board.highlight.get("selected", ())) | set(board.highlight.get("pair", ()))
+    return [key for key, data in board.phase.items()
+            if nets & set(data.get("p_nets", ())) | nets & set(data.get("n_nets", ()))]
+
+
+def flip_selected():
+    """Walk every selected pair from its other end."""
+    keys = flipped() ^ set(selected_pairs())
+    bpy.context.scene.kileido_phase_flipped = json.dumps(sorted(keys))
+    send_settings()
 
 
 def active_pair():

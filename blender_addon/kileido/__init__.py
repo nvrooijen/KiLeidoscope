@@ -721,7 +721,12 @@ def _scene_properties():
             update=lambda self, context: cosmetics.apply_silk_settings()),
         "kileido_column": EnumProperty(
             name="Column", items=columns.column_items(), default=columns.NONE, options={"HIDDEN"},
-            description="The column open left of the KiLeidoscope panel (its bookmark tab)"),
+            description="The column open left of the KiLeidoscope panel (its bookmark tab)",
+            update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_enabled": BoolProperty(
+            name="Dynamic phase", default=True,
+            description="Show dynamic phase (colours, pulses, markers) while the High speed column is open",
+            update=lambda self, context: phase.refresh_visibility()),
         "kileido_phase_show": BoolProperty(
             name="Dynamic phase", default=True,
             description="Colour both traces of each differential pair where one runs ahead of the other, "

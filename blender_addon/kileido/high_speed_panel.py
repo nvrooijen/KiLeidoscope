@@ -59,6 +59,24 @@ class KILEIDO_OT_phase_flip(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_phase_flip_selected(bpy.types.Operator):
+    bl_idname = "kileido.phase_flip_selected"
+    bl_label = "Reverse selected"
+    bl_description = ("Walk the selected pairs from their other end (select a trace in KiCad, or click it "
+                      "here): Δt then counts from there")
+
+    @classmethod
+    def poll(cls, context):
+        if not phase.selected_pairs():
+            cls.poll_message_set("Select a trace of a pair in KiCad, or click one here")
+            return False
+        return True
+
+    def execute(self, context):
+        phase.flip_selected()
+        return {"FINISHED"}
+
+
 class KILEIDO_OT_phase_select(bpy.types.Operator):
     bl_idname = "kileido.phase_select"
     bl_label = "Select in KiCad"
@@ -108,9 +126,11 @@ def draw(layout, context, wrap, swatch):
     """The High speed column. `wrap(context, text)` and `swatch(kind, color)` are the
     KiLeidoscope panel's own helpers."""
     header, body = layout.panel("KILEIDO_dynamic_phase", default_closed=False)
+    header.prop(context.scene, "kileido_phase_enabled", text="")
     header.label(text="Dynamic phase")
     header.operator(KILEIDO_OT_phase_help.bl_idname, text="", icon="QUESTION", emboss=False)
     if body is not None:
+        body.active = context.scene.kileido_phase_enabled
         _draw_dynamic_phase(body, context, wrap, swatch)
 
 
@@ -121,6 +141,7 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     row.prop(scene, "kileido_phase_labels", text="Labels")
     row.prop(scene, "kileido_phase_pulses", text="Pulses")
     layout.prop(scene, "kileido_phase_follow_series", text="Through series parts (AC caps)")
+    layout.operator(KILEIDO_OT_phase_flip_selected.bl_idname, icon="ARROW_LEFTRIGHT")
     column = layout.column(align=True)
     column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
     column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
@@ -196,5 +217,5 @@ def _draw_pair(context, box, data, wrap):
         box.label(text=warning, icon="INFO")
 
 
-CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip,
+CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip, KILEIDO_OT_phase_flip_selected,
            KILEIDO_OT_phase_select, KILEIDO_OT_phase_help)

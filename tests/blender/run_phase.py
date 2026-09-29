@@ -31,6 +31,7 @@ def main():
     kileido.register()  # the panel's scene properties and the pair list exist
     try:
         scene = bpy.context.scene
+        scene.kileido_column = "HIGH_SPEED"  # dynamic phase shows only with its column open
         snapshot = phase_boards.two_channels()
         apply.load_frames(b"".join(snapshot_frames(snapshot)))
         tracker = PhaseTracker()
@@ -160,6 +161,22 @@ def main():
         assert labels["D_P start"].hide_get() and not p_trace.hide_get()
         scene.kileido_phase_show = False
         assert p_trace.hide_get() and start.hide_get()
+        # Closing the High speed column, or switching the section off, hides everything.
+        scene.kileido_phase_show = True
+        for off in (("kileido_column", "NONE"), ("kileido_phase_enabled", False)):
+            setattr(scene, *off)
+            assert p_trace.hide_get() and start.hide_get()
+        scene.kileido_column, scene.kileido_phase_enabled = "HIGH_SPEED", True
+        assert not p_trace.hide_get() and not start.hide_get()
+        scene.kileido_phase_show = False
+        # Reverse selected: a pair with a net selected in KiCad walks from its other end.
+        state.board.highlight = {"selected": {"E_P"}, "pair": {"E_N"}}
+        assert phase.selected_pairs() == ["E_P"]
+        phase.flip_selected()
+        assert phase.flipped() == {"E_P"}
+        phase.flip_selected()
+        assert phase.flipped() == set()
+        state.board.highlight = {"selected": set(), "pair": set()}
         # Colours off, pulses on: the trace copies stay for the flash, their tint faded out.
         scene.kileido_phase_pulses = True
         assert not p_trace.hide_get() and start.hide_get()
