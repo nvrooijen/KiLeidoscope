@@ -139,6 +139,14 @@ def test_both_sides_end_on_the_same_parts():
     assert abs(result.skew_ps) < 1e-9 and result.max_abs_ps < 1e-9
 
 
+def test_pads_that_connect_twice_still_end_or_carry_the_route():
+    result = only_pair(boards.pass_through())  # J1.1 and D1's pads each connect twice
+    assert {result.p.start.label, result.p.end.label} == {"J1.1", "U1.1"}
+    assert result.p.length_nm == pytest.approx(49.9 * MM)  # to where the copper first reaches J1.1's pad
+    assert not result.p.branches  # the signal runs through D1, it does not branch to it
+    assert [branch.terminal.label for branch in result.n.branches] == ["D1.3"]
+
+
 def test_flipping_walks_from_the_other_end():
     snapshot = boards.compensated_far()
     forward = only_pair(snapshot)

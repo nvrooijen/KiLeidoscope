@@ -754,8 +754,8 @@ def _scene_properties():
             description="Length of the fading trail behind each pulse, in ps of travel (0: none)",
             update=lambda self, context: phase.set_scale()),
         "kileido_phase_pulse_glow": FloatProperty(
-            name="Pulse brightness", default=2.0, min=0.0, soft_max=10.0, precision=1,
-            description="Emission of the pulses and their glow (1: as before). Brighter bleaches red and blue "
+            name="Pulse brightness", default=5.0, min=0.0, soft_max=20.0, precision=1,
+            description="Emission of the pulses and their glow. Brighter bleaches the core of red and blue "
                         "towards pink and white",
             update=lambda self, context: phase.set_scale()),
         "kileido_phase_bloom": BoolProperty(

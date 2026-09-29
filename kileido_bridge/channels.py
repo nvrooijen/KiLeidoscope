@@ -511,7 +511,11 @@ def _ends(items: NetItems, heights: dict[str, int], links=()) -> _Ends | None:
         return None
     degree = {node: len({other for other, _ in neighbours}) for node, neighbours in adjacent.items()}
     leaves = [node for node, count in degree.items() if count == 1]
-    pads = [node for node in leaves if graph.kind[node] == "pad"]
+    # Every connected pad, not only those with one connection: an end pad often has two
+    # (a second track end in it), and a route can run through a part's pads (an ESD
+    # array in the line). The two farthest apart are the ends; pads on the route between
+    # them are not branches.
+    pads = [node for node in degree if graph.kind[node] == "pad"]
     candidates = pads if len(pads) >= 2 else leaves
     if len(candidates) < 2:  # a ring without ends: walk from any node round to itself is not a route
         return None
@@ -574,6 +578,8 @@ def _route(ends: _Ends, first: int, second: int, references: dict[str, str]) -> 
         if not any(node in distances for node in on_route):
             continue  # on copper not connected to the route
         joint = min((node for node in on_route if node in distances), key=lambda node: distances[node])
+        if distances[joint] <= 0:
+            continue  # a pad the route runs through or over: no stub, not a branch
         branches.append(Branch(_terminal(graph, leaf, references, adjacent), along[joint], distances[joint]))
     reached = _distances(adjacent, first)[0]
     complete = all(node in reached for node in range(len(graph.kind)) if graph.kind[node] == "pad")

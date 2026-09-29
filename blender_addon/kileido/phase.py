@@ -49,13 +49,13 @@ LABEL_SIZE_M = 0.7e-3
 COLORS = {"p": (1.0, 0.0, 0.0), "n": (0.0, 0.1, 1.0), "start": (0.15, 0.85, 0.3), "end": (0.7, 0.3, 1.0),
           "excursion": (1.0, 0.65, 0.0)}
 TINT_GLOW = 1.0  # emission of the tint: brighter washes it pastel in AgX (as materials.HIGHLIGHT_GLOW found)
-FLASH_GLOW = 0.6  # extra emission of the trace at a pulse's peak (more bleaches it to pink and white)
+FLASH_GLOW = 1.0  # extra emission of the trace at a pulse's peak, times the panel's pulse brightness
 IN_PHASE_ALPHA = 0.12  # a faint tint: which traces are measured, with their copper still seen
 TRACE = "KLS Phase trace"  # + " P" / " N"
 GLOW = "KLS Phase glow"  # + " P" / " N": the pulse's energy field around the trace
 GLOW_RADIUS_M = 0.15e-3  # of the tube around each trace, its axis raised off the copper by half of it
 GLOW_STRENGTH = 1.0  # the glow's emission: a denser, not a brighter, field keeps it pure red or blue
-GLOW_DENSITY = 1.6  # how opaque the field's middle is at the pulse's peak (clamped at 1)
+GLOW_DENSITY = 2.5  # how opaque the field's middle is at the pulse's peak (clamped at 1)
 GLOW_SIDES = 10
 COLUMN_GROW_M = 30e-6  # a via's light column: just outside its drill, over the plating
 TAIL_NODE = "KLS phase pulse tail"
@@ -67,7 +67,7 @@ SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase
                                                    "KLS phase brightness")
 PULSES = 2  # per trace, evenly spaced over the loop
 CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
-NODES_VERSION = 2  # materials built by an older add-on (a saved .blend) are rebuilt
+NODES_VERSION = 3  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
 TICK_S = 1 / 30
 DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
@@ -301,7 +301,7 @@ def _pulse_tail():
 
 
 def _brightness():
-    return max(0.0, float(getattr(bpy.context.scene, "kileido_phase_pulse_glow", 2.0)))
+    return max(0.0, float(getattr(bpy.context.scene, "kileido_phase_pulse_glow", 5.0)))
 
 
 def _set(name, value):

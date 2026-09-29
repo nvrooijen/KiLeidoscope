@@ -135,6 +135,16 @@ def multi_drop():
     return board.snapshot()
 
 
+def pass_through():
+    """P runs through an ESD part's pads (in at D1.1, out at D1.2) and ends at J1 with a
+    second short track inside its pad: both pads connect twice, as on real boards."""
+    board = ends(Board()).part("D1", (1, "D_P", (20, 0)), (2, "D_P", (22, 0)), (3, "D_N", (26, 4)))
+    board.path("D_P", (0, 0), (20, 0)).path("D_P", (20, 0), (22, 0)).path("D_P", (22, 0), (50, 0))
+    board.path("D_P", (49.9, 0), (50, 0))  # a second end in J1.1's pad
+    board.path("D_N", (0, 1), (50, 1)).path("D_N", (26, 1), (26, 4))
+    return board.snapshot()
+
+
 def two_channels():
     """The far-compensated pair D, and a pair E at y = 10 that dives to B.Cu at x = 20."""
     board = ends(Board())
