@@ -126,6 +126,15 @@ def esd_stub():
     return board.snapshot()
 
 
+def multi_drop():
+    """A second receiver U3 on stubs: P's tees off at x = 25 (10 mm), N's at x = 20
+    (30 mm), so on its own N's farthest ends are J1 and U3, not U1 and J1."""
+    board = ends(Board()).part("U3", (1, "D_P", (25, -10)), (2, "D_N", (20, 31)))
+    board.path("D_P", (0, 0), (50, 0)).path("D_P", (25, 0), (25, -10))
+    board.path("D_N", (0, 1), (50, 1)).path("D_N", (20, 1), (20, 31))
+    return board.snapshot()
+
+
 def two_channels():
     """The far-compensated pair D, and a pair E at y = 10 that dives to B.Cu at x = 20."""
     board = ends(Board())

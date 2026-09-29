@@ -18,6 +18,7 @@ counts as the straight line between where the tracks meet it.
 """
 
 import heapq
+import itertools
 import math
 from dataclasses import dataclass, replace
 
@@ -474,8 +475,36 @@ def _terminal(graph: _Graph, node: int, references: dict[str, str], adjacent) ->
     return Terminal("track end", track.item_id if track else "", graph.pos[node], graph.layer[node])
 
 
-def route(items: NetItems, heights: dict[str, int], references: dict[str, str], links=()) -> Route | None:
-    """The routed path between the two terminals farthest apart; None without copper."""
+@dataclass
+class _Ends:
+    """One side's copper ready to route: its possible terminals and the distances
+    along the copper from each."""
+    graph: _Graph
+    adjacent: dict
+    candidates: list[int]
+    tables: dict
+    heights: dict[str, int]
+
+    def parts(self) -> dict[str, list[int]]:
+        """Candidate pads by the part they are on (none for an unfinished side)."""
+        found = {}
+        for node in self.candidates:
+            if self.graph.kind[node] == "pad":
+                pad = self.graph.item[node]
+                found.setdefault(pad.footprint_id or pad.id, []).append(node)
+        return found
+
+    def farthest(self, pairs) -> tuple[float, int, int] | None:
+        """(distance, first, second) of the connected pair farthest apart."""
+        best = None
+        for first, second in pairs:
+            distances = self.tables[first][0]
+            if first != second and second in distances and (best is None or distances[second] > best[0]):
+                best = (distances[second], first, second)
+        return best
+
+
+def _ends(items: NetItems, heights: dict[str, int], links=()) -> _Ends | None:
     graph = build_graph(items, heights, links)
     adjacent = _adjacency(graph)
     if not any(edge.kind == "track" for edge in graph.edges):
@@ -486,16 +515,43 @@ def route(items: NetItems, heights: dict[str, int], references: dict[str, str], 
     candidates = pads if len(pads) >= 2 else leaves
     if len(candidates) < 2:  # a ring without ends: walk from any node round to itself is not a route
         return None
-    best = None
-    tables = {node: _distances(adjacent, node) for node in candidates}
-    for index, first in enumerate(candidates):
-        distances = tables[first][0]
-        for second in candidates[index + 1:]:
-            if second in distances and (best is None or distances[second] > best[0]):
-                best = (distances[second], first, second)
-    if best is None:
-        return None
-    _, first, second = best
+    return _Ends(graph, adjacent, candidates, {node: _distances(adjacent, node) for node in candidates}, heights)
+
+
+def _alone(ends: _Ends | None, references: dict[str, str]) -> Route | None:
+    best = ends.farthest(itertools.combinations(ends.candidates, 2)) if ends else None
+    return _route(ends, best[1], best[2], references) if best else None
+
+
+def route(items: NetItems, heights: dict[str, int], references: dict[str, str], links=()) -> Route | None:
+    """The routed path between the two terminals farthest apart; None without copper."""
+    return _alone(_ends(items, heights, links), references)
+
+
+def pair_routes(p_items: NetItems, n_items: NetItems, heights: dict[str, int], references: dict[str, str],
+                p_links=(), n_links=()) -> tuple[Route | None, Route | None]:
+    """Both sides of a pair, ending on the same two parts: of the parts both sides
+    reach, the two farthest apart over both sides together. With a second receiver
+    on stubs, one side alone could otherwise pick it as its far end. A side without
+    pads at its ends, or two sides with no part in common, each route on their own."""
+    sides = (_ends(p_items, heights, p_links), _ends(n_items, heights, n_links))
+    if None not in sides:
+        parts = [side.parts() for side in sides]
+        shared = sorted(parts[0].keys() & parts[1].keys())
+        best = None
+        for index, a in enumerate(shared):
+            for b in shared[index:]:
+                found = [side.farthest(itertools.product(nodes[a], nodes[b])) for side, nodes in zip(sides, parts)]
+                if None not in found and (best is None or found[0][0] + found[1][0] > best[0]):
+                    best = (found[0][0] + found[1][0], found)
+        if best is not None:
+            return tuple(_route(side, first, second, references) for side, (_, first, second) in zip(sides, best[1]))
+    return _alone(sides[0], references), _alone(sides[1], references)
+
+
+def _route(ends: _Ends, first: int, second: int, references: dict[str, str]) -> Route:
+    """The path from terminal `first` to `second`, with the other terminals as branches."""
+    graph, adjacent, candidates, tables = ends.graph, ends.adjacent, ends.candidates, ends.tables
     previous = tables[first][1]
     steps, node = [], second
     while node != first:
@@ -503,7 +559,7 @@ def route(items: NetItems, heights: dict[str, int], references: dict[str, str], 
         steps.append((before, edge, node))
         node = before
     steps.reverse()
-    pieces = _pieces(graph, steps, heights)
+    pieces = _pieces(graph, steps, ends.heights)
     on_route = {first} | {node for _, _, node in steps}
     along = {first: 0.0}
     total = 0.0

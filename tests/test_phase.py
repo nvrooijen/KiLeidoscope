@@ -131,6 +131,14 @@ def test_an_esd_stub_is_a_branch_not_a_terminal():
     assert "P side has 1 branch" in result.warnings
 
 
+def test_both_sides_end_on_the_same_parts():
+    result = only_pair(boards.multi_drop())  # N alone would run J1 -> U3
+    assert (result.p.start.label, result.p.end.label) == ("J1.1", "U1.1")
+    assert (result.n.start.label, result.n.end.label) == ("J1.2", "U1.2")
+    assert [branch.terminal.label for branch in result.n.branches] == ["U3.2"]
+    assert abs(result.skew_ps) < 1e-9 and result.max_abs_ps < 1e-9
+
+
 def test_flipping_walks_from_the_other_end():
     snapshot = boards.compensated_far()
     forward = only_pair(snapshot)

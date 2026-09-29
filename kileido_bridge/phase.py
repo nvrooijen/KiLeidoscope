@@ -341,6 +341,10 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
                   next((item for item in items_p[i[first]:] if item), ""))
         for first, last in find_excursions(along, dt, settings.tolerance_ps, settings.min_length_nm))
     warnings = []
+    parts = [{terminal.label.partition(".")[0] for terminal in (route.start, route.end) if "." in terminal.label}
+             for route in (p, n)]
+    if len(parts[0]) == len(parts[1]) == 2 and parts[0] != parts[1]:
+        warnings.append("P and N end on different parts")
     for side, route in (("P", p), ("N", n)):
         if not route.complete:
             warnings.append(f"{side} side is not fully routed")
@@ -373,8 +377,8 @@ def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | Non
 
 
 def _analyze_channel(channel, by_net, heights, references, model_, settings):
-    routes = [channels.route(channels.combined(by_net, nets), heights, references, links)
-              for nets, links in ((channel.p_nets, channel.p_links), (channel.n_nets, channel.n_links))]
+    routes = channels.pair_routes(channels.combined(by_net, channel.p_nets), channels.combined(by_net, channel.n_nets),
+                                  heights, references, channel.p_links, channel.n_links)
     if routes[0] is None or routes[1] is None:
         return None, f"{channel.name}: no routed path between two pads yet"
     return analyze(channel, *routes, model_, heights, settings), ""
