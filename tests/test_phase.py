@@ -305,6 +305,14 @@ def test_the_tracker_spreads_work_over_polls():
     assert second[0][0]["pending"] == 0 and second[0][0]["keys"] == ["D_P", "E_P"]
 
 
+def test_a_merged_netclass_falls_back_to_the_project_patterns():
+    project = {"net_settings": {"classes": [{"name": "Default", "tuning_profile": ""},
+                                            {"name": "USB_90", "tuning_profile": "USB_90"}],
+                                "netclass_patterns": [{"pattern": "/USB/USB*", "netclass": "USB_90"}]}}
+    kicad = {"/USB/USB_SSRX1_P": "Effective for net: /USB/USB_SSRX1_P"}  # several netclasses apply
+    assert delays.net_profiles_from_project(project, ["/USB/USB_SSRX1_P"], kicad) == {"/USB/USB_SSRX1_P": "USB_90"}
+
+
 def test_kicad_names_each_pair_nets_netclass_and_its_tuning_profile():
     from types import SimpleNamespace
 

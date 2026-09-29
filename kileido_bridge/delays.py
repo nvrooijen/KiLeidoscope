@@ -186,7 +186,9 @@ def net_profiles_from_project(project: dict, nets, netclasses: dict[str, str] | 
     found = {}
     for net in nets:
         netclass = (netclasses or {}).get(net)
-        if netclass is None:
+        if netclass is None or not any(name in classes for name in netclass.split(",")):
+            # Unknown to KiCad, or a merged netclass KiCad names "Effective for net: ..."
+            # (several netclasses apply): the project's patterns say which it is.
             netclass = next((name for pattern, name in patterns
                              if fnmatch.fnmatchcase(net, pattern) or fnmatch.fnmatchcase(net.lstrip("/"), pattern)),
                             "Default")
