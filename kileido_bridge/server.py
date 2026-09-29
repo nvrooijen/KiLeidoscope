@@ -21,6 +21,7 @@ HELLO_MAX_BYTES = 64 * 1024  # a hello frame is a few hundred bytes
 VIEWER_MAX_BYTES = 4 * 1024 * 1024  # viewer frames are small; a selection holds at most MAX_SELECT_IDS ids
 HELLO_TIMEOUT_S = 5.0
 MAX_SELECT_IDS = 10_000
+MAX_DC_REQUESTS = 64  # DC setup edits queued between two loop steps
 RECV_BYTES = 1 << 20
 
 
@@ -44,6 +45,7 @@ class BridgeServer:
         self.candidate_deadline = 0.0
         self.needs_snapshot = False
         self.select_requests = []
+        self.dc_requests = []
         self.outgoing = bytearray()
         self.snapshot_bytes = 0  # of `outgoing`: the latest snapshot, exempt from the backlog cap
 
@@ -114,6 +116,8 @@ class BridgeServer:
         elif header.get("type") == "select":  # a click in Blender
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
             self.select_requests.append((ids, bool(header.get("extend", False))))
+        elif header.get("type") == "dc" and len(self.dc_requests) < MAX_DC_REQUESTS:  # a DC setup edit
+            self.dc_requests.append({key: value for key, value in header.items() if key not in ("type", "protocol")})
 
     def pump(self, timeout: float = 0.0) -> None:
         if self.candidate is not None and time.monotonic() > self.candidate_deadline:
@@ -168,6 +172,10 @@ class BridgeServer:
 
     def take_select_requests(self) -> list[tuple[list[str], bool]]:
         requests, self.select_requests = self.select_requests, []
+        return requests
+
+    def take_dc_requests(self) -> list[dict]:
+        requests, self.dc_requests = self.dc_requests, []
         return requests
 
     def take_resync(self) -> bool:

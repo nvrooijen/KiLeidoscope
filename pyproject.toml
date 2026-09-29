@@ -9,7 +9,13 @@ description = "View the board open in KiCad live in Blender, read-only"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-dependencies = ["kicad-python>=0.7,<1", "numpy>=1.24"]
+dependencies = [
+    "kicad-python>=0.7,<1",
+    "numpy>=1.24",
+    "scipy>=1.10",  # the DC solver (kileido_bridge/dcsolve)
+    # No PyAMG wheel for Linux aarch64: the DC solver falls back to Jacobi-CG there.
+    "pyamg>=5 ; sys_platform != 'linux' or platform_machine != 'aarch64'",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]

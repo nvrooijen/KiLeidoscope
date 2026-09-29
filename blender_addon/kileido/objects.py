@@ -60,6 +60,7 @@ GROUPS = (
     ("drawings", "Drawings"),
     ("components", "Components"),
     ("highlights", "Highlights"),
+    ("analysis", "DC analysis"),
 )
 _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zone": "pours", "drill": "drills",
                  "solder": "paste"}
@@ -67,6 +68,8 @@ _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zo
 
 def group_of(name):
     """The GROUPS key for a KiLeidoscope object name ("KLS F.Cu zone <id>" -> "pours")."""
+    if " dc " in f"{name} ":  # "KLS F.Cu dc map", "KLS vias dc", "KLS dc markers supply"
+        return "analysis"
     if "highlight" in name:
         return "highlights"
     if name.startswith("KLS overlay "):  # "KLS overlay F.SilkS", "KLS overlay F.SilkS walls"

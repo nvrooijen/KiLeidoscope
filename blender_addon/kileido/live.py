@@ -211,6 +211,12 @@ def request_resync():
         link.client.request_resync()
 
 
+def request_dc(op, **fields):
+    """A DC analysis edit: the net, a terminal, a click on a pad or via, a setting."""
+    if link.client is not None:
+        link.client.request_dc(op, **fields)
+
+
 def request_select(ids, extend=False):
     """A click in Blender: select these items in KiCad."""
     if link.client is not None:

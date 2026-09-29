@@ -13,6 +13,9 @@ import numpy as np
 PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "snapshot_end",
+                 "appearance", "selection", "return_path", "dc_setup", "dc_status", "dc_result",
+                 "status")  # apply.apply_frame handles each
 _LENGTH = struct.Struct(">I")
 _CONNECT_PENDING = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                     *(getattr(errno, name) for name in ("WSAEWOULDBLOCK", "WSAEINPROGRESS", "WSAEALREADY")
@@ -114,6 +117,11 @@ class SocketClient:
         """Ask the bridge to select these KiCad items (a click in Blender)."""
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend)}))
+
+    def request_dc(self, op, **fields):
+        """A DC analysis edit (the bridge's dc.DcAnalysis.handle)."""
+        if self.state == "connected":
+            self.outgoing.extend(encode_frame({**fields, "type": "dc", "op": op}))
 
     def poll_io(self) -> list[tuple[dict, dict[str, np.ndarray]]]:
         sock = self.socket

@@ -68,8 +68,9 @@ def _via_at(obj, point):
     return best if distance[best] <= diameters[best] / 2 + TOLERANCE_M else None
 
 
-def _item(obj, location):
-    """(KiCad id or None, stop): stop=True ends the ray even without an item."""
+def _item(obj, location, copper_only=False):
+    """(KiCad id or None, stop): stop=True ends the ray even without an item.
+    `copper_only`: components let the ray through (marking the pads under them)."""
     ids = list(obj.get("kls_ids", ()))
     placement = obj.get("kls_copper")
     if placement:
@@ -83,9 +84,9 @@ def _item(obj, location):
         index = _via_at(obj, _local_xy(obj, location))
         return (ids[index] if index is not None and index < len(ids) else None), index is not None
     if obj.get("kls_model_fp_id") is not None:
-        return obj["kls_model_fp_id"], True
+        return (None, False) if copper_only else (obj["kls_model_fp_id"], True)
     if obj.get("kls_footprint_placeholder") == 1:
-        return obj.get("kls_footprint_id"), True
+        return (None, False) if copper_only else (obj.get("kls_footprint_id"), True)
     if obj.name == OUTLINE:
         return None, True
     return None, False  # overlays, highlights, solder, drill walls: look further
@@ -105,7 +106,7 @@ def describe(item_id):
     return "a component"
 
 
-def item_at(scene, depsgraph, origin, direction, max_hits=32):
+def item_at(scene, depsgraph, origin, direction, max_hits=32, copper_only=False):
     """The KiCad id under a view ray, or None."""
     collection = board.collection
     if collection is None:
@@ -116,7 +117,7 @@ def item_at(scene, depsgraph, origin, direction, max_hits=32):
         if not hit:
             return None
         if obj.name in collection.all_objects and not obj.name.startswith(SKIP_PREFIXES) and "highlight" not in obj.name:
-            item, stop = _item(obj, location)
+            item, stop = _item(obj, location, copper_only)
             if item is not None or stop:
                 return item
         origin = location + direction * 1e-7

@@ -8,9 +8,11 @@ from dataclasses import replace
 from . import protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items
+from .dc import DcAnalysis
 from .kicad_reader import (KiCadBusy, PollResult, board_text, connect_reader, explain_connection_error,
                            kicad_tools, saved_board_path, select_in_kicad, selected_ids)
 from .live_copy import LiveBoardCopy
+from .return_path import ReturnPathCheck, checked_nets
 from .selection import components, highlight_nets, selected_nets, unconnected
 
 
@@ -70,6 +72,11 @@ class BridgeRuntime:
         self.busy_seen = False
         self.selected = frozenset()  # KiCad's selection as last read or requested
         self.requested = None  # (ids, deadline) of a Blender click KiCad has not shown yet
+        # Return-path check of diff pairs and the highlighted nets (worker thread only)
+        self.return_paths = ReturnPathCheck()
+        self.return_path = None  # (nets, issues, error) as last sent
+        # DC analysis of one power net: its setup and solves (a worker process)
+        self.dc = DcAnalysis(clock=clock)
         # Threads (start): KiCad calls run on a worker, so a stalled KiCad delays no click.
         self.lock = threading.RLock()  # the server and the highlight; never held during a KiCad call
         self.kicad_selects = deque()  # clicks the worker still has to select in KiCad
@@ -109,6 +116,7 @@ class BridgeRuntime:
             self.timeout_count = 0
             self.next_connect_at = self.clock() + self.reconnect_interval_s
             self.sent_from_text = False
+            self.return_path = None
             self._status("disconnected", error=error)
 
     def _connect(self):
@@ -164,6 +172,8 @@ class BridgeRuntime:
             frames += self._appearance_frames()
         frames += self._selection_frames(snapshot, force=full_snapshot)
         self._send(frames, snapshot=full_snapshot)
+        self._send(self._return_path_frames(snapshot, force=full_snapshot))  # after: never delays the board
+        self._send(self.dc.step(snapshot, self.revision))
         self._status("connected", snapshot.read_timings_ms.get("total"))
 
     def _on_board_changed(self, snapshot):
@@ -175,6 +185,7 @@ class BridgeRuntime:
         set_kicad_version(self.tools.get("kicad_version"))
         self.copy.target(snapshot.board_name, self.board_path)
         self.copy_enabled = True
+        self.dc.target(snapshot.board_name, self.board_path)
 
     def _geometry_frames(self, result: PollResult, full_snapshot: bool) -> list[bytes]:
         """A complete snapshot after a board or stackup change, else one frame per dirty group."""
@@ -230,6 +241,8 @@ class BridgeRuntime:
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
         self._send(frames)
+        self._send(self._return_path_frames(self.snapshot))
+        self._send(self.dc.step(self.snapshot, self.revision))
 
     def _selection_frames(self, snapshot, force: bool = False, selected=None) -> list[bytes]:
         """Highlighted nets (and components), sent when they change. `selected` is
@@ -269,6 +282,23 @@ class BridgeRuntime:
                 return []
             self.highlight = current
             return [protocol.selection_message(*current, self.revision)]
+
+    def _return_path_frames(self, snapshot, force: bool = False) -> list[bytes]:
+        """Return-path issues, sent when they change. Only changed tracks and zone
+        layers are looked up again (reference.ReferencePlanes)."""
+        nets = checked_nets(snapshot, self.sticky_nets)
+        started = time.perf_counter()
+        try:
+            issues, error = self.return_paths.check(snapshot, nets), ""
+        except Exception as exc:  # a failed check must not stop the live view
+            self.return_paths = ReturnPathCheck()
+            issues, error = (), f"Return-path check failed: {type(exc).__name__}: {exc}"
+        current = (nets, issues, error)
+        if current == self.return_path and not force:
+            return []
+        self.return_path = current
+        return [protocol.return_path_message(nets, issues, self.revision, error,
+                                             round((time.perf_counter() - started) * 1000, 2))]
 
     def _before_requested(self, selected) -> bool:
         """A read from before KiCad applied a Blender click: the bridge reads over
@@ -335,6 +365,12 @@ class BridgeRuntime:
             self.kicad_selects.append((wanted, extend))
             self.wake.set()
 
+    def _take_dc_requests(self):
+        """DC setup edits from the viewer (main thread, under the lock): applied and
+        answered at once; a solve they make due starts in the worker process."""
+        for request in self.server.take_dc_requests():
+            self.server.send_frames(self.dc.handle(request, self.snapshot, self.sticky_nets))
+
     def _run_kicad_selects(self):
         """The worker's half of a click. Clicks queued behind a stalled KiCad collapse
         to the last plain click and the Shift+clicks after it."""
@@ -356,6 +392,10 @@ class BridgeRuntime:
         if self.snapshot is not None:
             self.server.send_frames(self._snapshot_frames(), snapshot=True)
             self.server.send_frames([protocol.selection_message(*self.highlight, self.revision)])
+            if self.return_path is not None:
+                self.server.send_frames([protocol.return_path_message(*self.return_path[:2], self.revision,
+                                                                      self.return_path[2])])
+            self.server.send_frames(self.dc.resync_frames(self.snapshot))
         self.server.send_frames([self._status_frame()])
 
     def step(self) -> None:
@@ -363,6 +403,7 @@ class BridgeRuntime:
         with self.lock:
             self.server.pump()
             self._take_select_requests()
+            self._take_dc_requests()
             if self.server.take_resync():
                 self._send_resync()
         if self.worker is None:
@@ -416,6 +457,7 @@ class BridgeRuntime:
         if self.reader is not None:
             self.reader.close()
             self.reader = None
+        self.dc.close()
         with self.lock:
             self.server.close()
         self.copy.close()

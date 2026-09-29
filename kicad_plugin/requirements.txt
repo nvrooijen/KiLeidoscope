@@ -1,2 +1,6 @@
 kicad-python>=0.7,<1
 numpy>=1.24
+# The DC solver (kileido_bridge/dcsolve). No PyAMG wheel for Linux aarch64, and KiCad
+# installs wheels only: skipped there, the solver falls back to Jacobi-CG.
+scipy>=1.10
+pyamg>=5 ; sys_platform != "linux" or platform_machine != "aarch64"

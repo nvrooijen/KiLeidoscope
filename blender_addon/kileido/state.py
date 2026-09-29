@@ -44,6 +44,10 @@ class BoardState:
         # KiCad's selection (protocol.selection_message).
         self.highlight = {"selected": set(), "pair": set()}
         self.highlight_components = {"footprints": set(), "pads": set()}
+        # Return-path issues of the checked nets (protocol.return_path_message), as return_path keeps them.
+        self.return_path = {}
+        # DC analysis of one power net (protocol.dc_*_message), as dc keeps it.
+        self.dc = {"setup": None, "status": None, "results": {}, "result": None, "markers": None}
         self.outline_problem = False  # a malformed outline is drawn red (apply._apply_outline_problem)
         self.xray_for_outline = False  # X-ray mode was ticked for it (and is unticked once fixed)
 
