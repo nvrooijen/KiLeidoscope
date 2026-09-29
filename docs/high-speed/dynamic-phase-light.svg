@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="930" viewBox="0 0 680 930" role="img">
+<title>Dynamic phase: how it is calculated</title>
+<desc>KiCad 10 gives the board, stackup, netclasses and tuning profiles to the KiLeidoscope bridge. In the bridge: find pairs, build each side's copper graph, choose matching ends and route, walk and add up delay from the delay model (tuning profile, microstrip, stripline, via barrel, FR-4 fallback), align P and N, compute delta t, mark excursions, recompute changed pairs live and send frames to Blender. The Blender add-on draws the result; its panel settings go back to the bridge.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
+.th { font-size: 14px; font-weight: 500; }
+.ts { font-size: 12px; font-weight: 400; }
+.code { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+.lbl { fill: #59636E; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+.arr { stroke: #818B98; stroke-width: 1.5; fill: none; }
+.frame { stroke: #818B98; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+</style>
+</defs>
+<rect x="40" y="40" width="600" height="54" rx="4" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="340" y="62" text-anchor="middle" fill="#FFFFFF">KiCad 10</text>
+<text class="ts" x="340" y="81" text-anchor="middle" fill="#D6DDF5">board over IPC · stackup · netclasses · tuning profiles (.kicad_pro)</text>
+
+<rect class="frame" x="24" y="110" width="632" height="680" rx="8"/>
+<text class="lbl" x="40" y="132">kileido_bridge/</text>
+<rect x="40" y="146" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="168" text-anchor="middle" fill="#173404">Find pairs</text>
+<text class="code" x="220" y="187" text-anchor="middle" fill="#3B6D11">channels.find_channels()</text>
+
+<rect x="40" y="218" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="240" text-anchor="middle" fill="#173404">Copper graph per side</text>
+<text class="code" x="220" y="259" text-anchor="middle" fill="#3B6D11">channels.build_graph()</text>
+
+<line class="arr" x1="220" y1="200" x2="220" y2="216" marker-end="url(#arrow)"/>
+<rect x="40" y="290" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="312" text-anchor="middle" fill="#173404">Matching ends, route</text>
+<text class="code" x="220" y="331" text-anchor="middle" fill="#3B6D11">channels.pair_routes() → _route()</text>
+
+<line class="arr" x1="220" y1="272" x2="220" y2="288" marker-end="url(#arrow)"/>
+<rect x="40" y="362" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="384" text-anchor="middle" fill="#173404">Walk and add up delay</text>
+<text class="code" x="220" y="403" text-anchor="middle" fill="#3B6D11">phase._walk()</text>
+
+<line class="arr" x1="220" y1="344" x2="220" y2="360" marker-end="url(#arrow)"/>
+<rect x="40" y="434" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="456" text-anchor="middle" fill="#173404">Resample, align P and N</text>
+<text class="code" x="220" y="475" text-anchor="middle" fill="#3B6D11">phase._resample() · _align()</text>
+
+<line class="arr" x1="220" y1="416" x2="220" y2="432" marker-end="url(#arrow)"/>
+<rect x="40" y="506" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="528" text-anchor="middle" fill="#173404">Δt(s) = t_P − t_N</text>
+<text class="code" x="220" y="547" text-anchor="middle" fill="#3B6D11">phase.analyze() · _nearby()</text>
+
+<line class="arr" x1="220" y1="488" x2="220" y2="504" marker-end="url(#arrow)"/>
+<rect x="40" y="578" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="600" text-anchor="middle" fill="#173404">Excursions</text>
+<text class="code" x="220" y="619" text-anchor="middle" fill="#3B6D11">phase.find_excursions()</text>
+
+<line class="arr" x1="220" y1="560" x2="220" y2="576" marker-end="url(#arrow)"/>
+<rect x="40" y="650" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="672" text-anchor="middle" fill="#173404">Live: changed pairs only</text>
+<text class="code" x="220" y="691" text-anchor="middle" fill="#3B6D11">phase.PhaseTracker.update() ← loop.py</text>
+
+<line class="arr" x1="220" y1="632" x2="220" y2="648" marker-end="url(#arrow)"/>
+<rect x="40" y="722" width="360" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="220" y="744" text-anchor="middle" fill="#173404">Frames to Blender</text>
+<text class="code" x="220" y="763" text-anchor="middle" fill="#3B6D11">pair_frame() → protocol.phase_pair_message()</text>
+
+<line class="arr" x1="220" y1="704" x2="220" y2="720" marker-end="url(#arrow)"/>
+<text class="lbl" x="420" y="276">delays.py · StackupDelays</text>
+<rect x="420" y="286" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="530" y="308" text-anchor="middle" fill="#173404">Tuning profile</text>
+<text class="code" x="530" y="327" text-anchor="middle" fill="#3B6D11">tuning_profiles()</text>
+
+<rect x="420" y="352" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="530" y="374" text-anchor="middle" fill="#173404">Outer: microstrip</text>
+<text class="code" x="530" y="393" text-anchor="middle" fill="#3B6D11">microstrip_epsilon()</text>
+
+<rect x="420" y="418" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="530" y="440" text-anchor="middle" fill="#173404">Inner: stripline</text>
+<text class="code" x="530" y="459" text-anchor="middle" fill="#3B6D11">track(): εeff = εr</text>
+
+<rect x="420" y="484" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="530" y="506" text-anchor="middle" fill="#173404">Via barrel</text>
+<text class="code" x="530" y="525" text-anchor="middle" fill="#3B6D11">barrel()</text>
+
+<rect x="420" y="550" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="530" y="572" text-anchor="middle" fill="#173404">No εr: FR-4 4.2</text>
+<text class="code" x="530" y="591" text-anchor="middle" fill="#3B6D11">_epsilon()</text>
+
+<line class="arr" x1="420" y1="379" x2="402" y2="379" marker-end="url(#arrow)"/>
+<line class="arr" x1="220" y1="94" x2="220" y2="144" marker-end="url(#arrow)"/>
+<line class="arr" x1="620" y1="94" x2="620" y2="284" marker-end="url(#arrow)"/>
+<rect class="frame" x="24" y="806" width="632" height="100" rx="8"/>
+<text class="lbl" x="40" y="826">blender_addon/kileido/</text>
+<line class="arr" x1="220" y1="776" x2="220" y2="836" marker-end="url(#arrow)"/>
+<rect x="40" y="838" width="360" height="54" rx="4" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="220" y="860" text-anchor="middle" fill="#412402">Draw tint, pulses, markers</text>
+<text class="code" x="220" y="879" text-anchor="middle" fill="#633806">phase.py apply() → draw()</text>
+
+<rect x="420" y="838" width="220" height="54" rx="4" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="530" y="860" text-anchor="middle" fill="#412402">Panel settings</text>
+<text class="code" x="530" y="879" text-anchor="middle" fill="#633806">phase.send_settings()</text>
+
+<path class="arr" d="M530 838 L530 677 L402 677" marker-end="url(#arrow)"/>
+</svg>
