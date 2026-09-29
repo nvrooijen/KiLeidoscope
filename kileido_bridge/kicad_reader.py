@@ -136,15 +136,25 @@ def selected_ids(board) -> frozenset[str]:
     return frozenset(ids)
 
 
-def select_in_kicad(board, ids, extend: bool = False) -> None:
+CENTER_ACTION = "common.Control.centerSelection"  # View > Pan to Center Selected Objects
+
+
+def select_in_kicad(board, ids, extend: bool = False, center: bool = False) -> None:
     """The one KiCad-changing call (tests/test_boundaries.py allows only this one):
     replace (or extend) KiCad's selection with these item ids after a click in
-    Blender. Selection is editor state only; nothing on the board changes."""
+    Blender, and with `center` pan the PCB editor to it, keeping its zoom. Selection
+    and the view are editor state only; nothing on the board changes."""
     with _busy_aware():
         if not extend:
             board.clear_selection()
         if ids:
             board.add_to_selection([SimpleNamespace(id=KIID(value=item_id)) for item_id in ids])
+            client = getattr(board, "_kicad", None)
+            if center and client is not None:
+                # RunAction runs any KiCad tool, editing ones too: only ever this one.
+                request = commands.RunAction()
+                request.action = CENTER_ACTION
+                client.send(request, commands.RunActionResponse)
 
 
 def kicad_tools(board) -> dict:

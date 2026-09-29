@@ -444,8 +444,13 @@ def test_blender_click_selects_in_kicad_and_pads_select_their_footprint():
         def get_selection(self, types=None):
             return []
 
+    class FakeClient:
+        def send(self, request, _response_type):
+            calls.append(("action", request.action))
+
     reader = FakeReader(snapshot)
     reader.board = FakeBoard()
+    reader.board._kicad = FakeClient()
     server = BridgeServer(port=0, token="t")
     runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
     client = addon_client().SocketClient("127.0.0.1", server.port, "t")
@@ -470,6 +475,15 @@ def test_blender_click_selects_in_kicad_and_pads_select_their_footprint():
                 break
             time.sleep(0.001)
         assert calls == [("add", [snapshot.tracks[1].id])]  # Shift+click keeps the rest
+        calls.clear()
+        client.request_select([pad.id], center=True)  # "Center KiCad on click" ticked
+        for _ in range(50):
+            client.poll_io()
+            runtime.step()
+            if len(calls) == 3:
+                break
+            time.sleep(0.001)
+        assert calls == [("clear",), ("add", [pad.footprint_id]), ("action", "common.Control.centerSelection")]
     finally:
         client.close()
         runtime.close()
