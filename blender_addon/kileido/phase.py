@@ -11,9 +11,8 @@ together at the start terminal, with an energy field around it: a glowing tube
 standing out of the board, lit only where the pulse is. It reaches each point of
 a trace at that point's delay (the same delays as the panel's numbers), slowed
 down to picoseconds per second, so the lagging side visibly falls behind the one
-ahead. Only one material value moves: the pulse clock. Live, a timer runs it
-(held while a view renders with Cycles, so that view converges); on the
-timeline, the frame sets it, so Cycles renders pulses in stills and animations.
+ahead. Only the pulse clocks move, on a timer (held while a view renders with
+Cycles, so that view converges).
 
 Markers stand on both terminals (green start, violet end) with their pads as
 labels, and at the start of every stretch the bridge found out of phase (amber);
@@ -32,7 +31,6 @@ import time
 
 import bpy
 import numpy as np
-from bpy.app.handlers import persistent
 
 from . import holes, live, transform
 from .objects import link_owned, owned_object, set_visible, write_attribute
@@ -60,9 +58,7 @@ GLOW_SIDES = 10
 COLUMN_GROW_M = 30e-6  # a via's light column: just outside its drill, over the plating
 TAIL_NODE = "KLS phase pulse tail"
 TAIL_SHARE = 0.6  # the comet tail's brightness next to the pulse's head
-BLOOM = "KLS Bloom"
-BLOOM_THRESHOLD = 0.6  # the trace tints (emission 1) and pulses bloom; lit copper and mask stay crisp
-BLOOM_SIZE = 0.6
+OLD_BLOOM = "KLS Bloom"  # a compositor group earlier versions set on the scene; removed when seen
 SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase pulse width", "KLS phase pulses",
                                                    "KLS phase brightness")
 COLOUR_NODE = "KLS phase colours"  # 1: the tint shows; 0 (Colours off): only the pulses light the trace
@@ -333,10 +329,6 @@ def _trace_shown(scene):
     return _shown() or _pulsing(scene)
 
 
-def _timeline(scene):
-    return getattr(scene, "kileido_phase_pulse_clock", "LIVE") == "TIMELINE"
-
-
 def _set_clock(scene, seconds):
     """The pulses `seconds` into a loop: from before the start terminals until the
     slowest pair's far end, at the panel's picoseconds per second."""
@@ -357,10 +349,10 @@ def _cycles_viewport(scene):
 
 
 def _pulse_tick():
-    """The live clock (wall time). It holds still while a view renders with Cycles, so
-    that view converges, and stops itself when the pulses go off or follow the timeline."""
+    """The pulse clock (wall time). It holds still while a view renders with Cycles, so
+    that view converges, and stops itself when the pulses go off."""
     scene = bpy.context.scene
-    if not _pulsing(scene) or _timeline(scene):
+    if not _pulsing(scene):
         _show_pulses(scene)
         return None
     if not _cycles_viewport(scene):
@@ -368,18 +360,8 @@ def _pulse_tick():
     return TICK_S
 
 
-@persistent
-def on_frame(scene, _depsgraph=None):
-    """The timeline clock: the frame sets where the pulses are, so playback animates
-    them and Cycles renders each frame (stills and animations) with them in place."""
-    if _timeline(scene) and _pulsing(scene):
-        fps = scene.render.fps / (scene.render.fps_base or 1.0)
-        _set_clock(scene, (scene.frame_current + scene.frame_subframe - scene.frame_start) / fps)
-
-
 def _show_pulses(scene):
-    """The glows shown only while pulsing (and the trace copies that carry the flash);
-    out, or placed for the current frame."""
+    """The glows shown only while pulsing (and the trace copies that carry the flash)."""
     for obj in _objects():
         if obj.get("kls_phase_glow"):
             set_visible(obj, _pulsing(scene) and len(obj.data.vertices) > 0)
@@ -387,17 +369,15 @@ def _show_pulses(scene):
             set_visible(obj, _trace_shown(scene) and len(obj.data.vertices) > 0 and obj["kls_phase_key"] in board.phase)
     if not _pulsing(scene):
         _set(PULSE_NODE, 0.0)
-    elif _timeline(scene):
-        on_frame(scene)
 
 
 def set_pulses():
-    """Pulses on, off or switched clock: start the live clock, place them for the
-    current frame, or put them out."""
+    """Pulses on or off: start the clock, or put them out."""
     global _clock_start
     scene = bpy.context.scene
+    _drop_old_bloom(scene)
     _show_pulses(scene)
-    if not _pulsing(scene) or _timeline(scene):
+    if not _pulsing(scene):
         stop_pulses()
     elif not bpy.app.timers.is_registered(_pulse_tick):
         _clock_start = time.monotonic()
@@ -409,51 +389,14 @@ def stop_pulses():
         bpy.app.timers.unregister(_pulse_tick)
 
 
-# --- Bloom: a real halo round the pulses, through the viewport compositor --------------------
-
-def _bloom_group():
-    """A compositor group that blooms what is brighter than BLOOM_THRESHOLD."""
-    group = bpy.data.node_groups.get(BLOOM)
-    if group is not None:
-        return group
-    group = bpy.data.node_groups.new(BLOOM, "CompositorNodeTree")
-    group.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
-    # Blender 5: the scene's compositor group reads the render (or the 3D view) itself.
-    source, sink = group.nodes.new("CompositorNodeRLayers"), group.nodes.new("NodeGroupOutput")
-    glare = group.nodes.new("CompositorNodeGlare")
-    glare.inputs["Type"].default_value = "Bloom"
-    glare.inputs["Threshold"].default_value = BLOOM_THRESHOLD
-    glare.inputs["Size"].default_value = BLOOM_SIZE
-    group.links.new(source.outputs["Image"], glare.inputs["Image"])
-    group.links.new(glare.outputs["Image"], sink.inputs["Image"])
-    return group
-
-
-def bloom_blocked():
-    """The name of the scene's own compositor, which bloom leaves alone; else ""."""
-    scene = bpy.context.scene
-    current = getattr(scene, "compositing_node_group", None)
-    return current.name if current is not None and current.name != BLOOM else ""
-
-
-def set_bloom():
-    """Bloom on: the scene composites through the bloom group (renders too) and every
-    3D view shows the compositor; off: both back. A scene with its own compositor is
-    left as it is (the panel says so)."""
-    from .objects import view3d_spaces
-    scene = bpy.context.scene
-    on = getattr(scene, "kileido_phase_bloom", False)
-    if on and bloom_blocked():
+def _drop_old_bloom(scene):
+    """Earlier versions could composite the scene through a bloom group: take it out."""
+    group = bpy.data.node_groups.get(OLD_BLOOM)
+    if group is None:
         return
-    if on:
-        scene.compositing_node_group = _bloom_group()
-    elif not bloom_blocked() and getattr(scene, "compositing_node_group", None) is not None:
+    if getattr(scene, "compositing_node_group", None) == group:
         scene.compositing_node_group = None
-    for space in view3d_spaces():
-        if on:
-            space.shading.use_compositor = "ALWAYS"
-        elif space.shading.use_compositor == "ALWAYS":
-            space.shading.use_compositor = "DISABLED"
+    bpy.data.node_groups.remove(group)
 
 
 # --- Drawing ------------------------------------------------------------------------------
