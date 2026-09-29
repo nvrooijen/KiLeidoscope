@@ -20,8 +20,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, phase,
-               pick, render_depth, watcher)
+from . import (apply, collisions, cosmetics, dump, focus, high_speed_panel, layers, lighting, live, models,
+               packages, phase, pick, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -196,15 +196,36 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         if icon is not None:
             self.layout.label(text="", icon_value=icon.icon_id)
 
+    def draw_header_preset(self, context):
+        self.layout.operator(high_speed_panel.KILEIDO_OT_high_speed.bl_idname, text="High speed",
+                             depress=context.scene.kileido_high_speed)
+
     def draw(self, context):
+        """With High speed open, two columns: High speed left, the rest right."""
+        global _share
         layout = self.layout
+        _share = 1.0
+        if context.scene.kileido_high_speed:
+            split = layout.split(factor=0.5)
+            left, layout = split.column(), split.column()
+            _share = 0.5
+            high_speed_panel.draw(left, context, _wrap, _swatch)
+        self._draw_main(context, layout)
+        for idname, title, section in (("KILEIDO_boards", "Boards", _Boards),
+                                       ("KILEIDO_status", "Status", _Status)):
+            header, body = layout.panel(idname, default_closed=False)
+            header.label(text=title)
+            if body is not None:
+                section(body).draw(context)
+
+    def _draw_main(self, context, layout):
         icon = _icons.get("logo") if _icons is not None else None
         if icon is not None:
             logo = layout.row()
             logo.alignment = "CENTER"
             logo.template_icon(icon_value=icon.icon_id, scale=LOGO_SCALE)
-        self._draw_link(context)
-        self._draw_outline_warnings(context)
+        self._draw_link(context, layout)
+        self._draw_outline_warnings(context, layout)
         row = layout.row(align=True)
         current = _viewport_mode(context)
         for mode, label in (("MATERIAL", "Preview"), ("RENDERED", "Cycles")):
@@ -227,7 +248,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             if _icons is not None and icon in _icons:
                 row.label(text="", icon_value=_icons[icon].icon_id)
 
-    def _draw_outline_warnings(self, context):
+    def _draw_outline_warnings(self, context, layout):
         """KiCad's own words when a board has no usable Edge.Cuts outline, then where."""
         found = [(board.board_name, warning) for warning in packages.outline_warnings()]
         for root in packages.roots():
@@ -235,7 +256,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             found += [(root["kls_board_name"], warning) for warning in packages.outline_warnings(index)]
         if not found:
             return
-        box = self.layout.box()
+        box = layout.box()
         box.label(text="Board outline is missing or malformed.", icon="ERROR")
         box.label(text="Run DRC in KiCad for a full analysis.", icon="BLANK1")
         named = len({name for name, _ in found}) > 1 or bool(packages.roots())
@@ -244,24 +265,27 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             for line in _wrap(context, f"{name}: {detail}" if named else detail):
                 box.label(text=line, icon="BLANK1")
 
-    def _draw_link(self, context):
+    def _draw_link(self, context, layout):
         """A status LED: green live, amber waiting or KiCad editing, red lost, grey offline."""
         health = live.health()
         text = {"ok": "Live with KiCad",
                 "off": "Not live: use Open in Blender in KiCad"}.get(health, live.status_text())
-        self.layout.label(text=text, icon_value=_swatch("led", LED_COLORS[health]))
+        layout.label(text=text, icon_value=_swatch("led", LED_COLORS[health]))
         error = live.error_text()
         if error:  # e.g. a second KiCad on Windows: say why the scene is empty
-            box = self.layout.box()
+            box = layout.box()
             for index, line in enumerate(_wrap(context, error)):
                 box.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+
+
+_share = 1.0  # of the sidebar's width the column being drawn has (High speed open: half)
 
 
 def _wrap(context, text):
     """Lines that fit the sidebar at its current width (Blender cuts a longer label in
     its middle): ~7 px per character and an icon and box margins, at the UI scale."""
     scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
-    width = context.region.width if context.region else 300 * scale
+    width = (context.region.width if context.region else 300 * scale) * _share
     return textwrap.wrap(text, max(16, int((width - 50 * scale) / (7 * scale))))
 
 
@@ -360,16 +384,14 @@ class KILEIDO_OT_all_boards_row(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class KILEIDO_PT_boards(bpy.types.Panel):
-    """The live board (it follows KiCad) and the view-only boards beside it; then one
-    board's layers top to bottom, an eye each, like KiCad's layer list: the live
-    board's (layers.rows), a view-only board's as exported (layers.recorded), or all."""
-    bl_label = "Boards"
-    bl_idname = "KILEIDO_PT_boards"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "KiLeidoscope"
-    bl_parent_id = "KILEIDO_PT_panel"
+class _Boards:
+    """The Boards section: the live board (it follows KiCad) and the view-only boards
+    beside it; then one board's layers top to bottom, an eye each, like KiCad's layer
+    list: the live board's (layers.rows), a view-only board's as exported
+    (layers.recorded), or all."""
+
+    def __init__(self, layout):
+        self.layout = layout
 
     def draw(self, context):
         scene = context.scene
@@ -519,204 +541,11 @@ class KILEIDO_PT_boards(bpy.types.Panel):
                     right.label(text=values)
 
 
-class KILEIDO_PG_phase_pair(bpy.types.PropertyGroup):
-    """One row of the dynamic-phase pair list (filled from the bridge's frames, phase.sync_list)."""
-    key: StringProperty()
-    name: StringProperty()
-    route: StringProperty()
-    delay_ps: FloatProperty()
-    skew_ps: FloatProperty()
-    max_ps: FloatProperty()
-    excursions: IntProperty()
+class _Status:
+    """The Status section: link, loading progress and warnings, below Boards."""
 
-
-def _phase_columns(layout):
-    """The pair list's columns: pair, total delay, end-to-end skew, largest |Δt| (ps)."""
-    split = layout.split(factor=0.4, align=True)
-    first = split.row(align=True)
-    numbers = split.grid_flow(columns=3, even_columns=True, align=True)
-    return first, numbers
-
-
-def _ps(value, signed=False):
-    """Picoseconds for the panel, without a "-0.00" for a rounding residue."""
-    value = round(float(value), 2) + 0.0
-    return f"{value:+.2f}" if signed else f"{value:.2f}"
-
-
-class KILEIDO_UL_phase_pairs(bpy.types.UIList):
-    """A warning icon when the pair runs out of phase somewhere; its terminals are in the box below."""
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_property, index=0, flt_flag=0):
-        first, numbers = _phase_columns(layout)
-        first.label(text=item.name, icon="ERROR" if item.excursions else "BLANK1")
-        for value in (f"{item.delay_ps:.1f}", _ps(item.skew_ps, True), _ps(item.max_ps)):
-            numbers.label(text=value)
-
-
-class KILEIDO_OT_phase_flip(bpy.types.Operator):
-    bl_idname = "kileido.phase_flip"
-    bl_label = "Flip start"
-    bl_description = "Walk this pair from its other end: Δt then counts from there"
-
-    key: StringProperty()
-
-    def execute(self, context):
-        phase.flip(self.key)
-        return {"FINISHED"}
-
-
-class KILEIDO_OT_phase_select(bpy.types.Operator):
-    bl_idname = "kileido.phase_select"
-    bl_label = "Select in KiCad"
-    bl_description = "Select this in KiCad"
-
-    ids: StringProperty()  # KiCad ids, one per line
-
-    @classmethod
-    def poll(cls, context):
-        return live.linked()
-
-    def execute(self, context):
-        live.request_select([item for item in self.ids.splitlines() if item])
-        return {"FINISHED"}
-
-
-PHASE_HELP = (
-    "A differential pair carries its signal as the difference between P and N. KiCad matches their total "
-    "delay end to end; this view shows how far apart they are along the way.",
-    "Where P and N are out of phase, part of the differential signal turns into common mode. Common-mode "
-    "current radiates far more than differential current (its fields no longer cancel), above all once it "
-    "reaches a connector or cable. The same imbalance lets outside noise turn into differential noise at the "
-    "receiver. Skew made up only at the far end does not undo what the stretch in between radiated or picked up.",
-    "Colours: P red, N blue, the stronger the further apart they are there. Pulses start together at the start "
-    "terminal and travel at each trace's own delay, slowed down: the one in front is ahead.",
-    "Amber markers: |Δt| above your tolerance for longer than your distance. Delays come from the netclass's "
-    "tuning profile, else an estimate from the stackup (see Delay for each pair).",
-)
-
-
-class KILEIDO_OT_phase_help(bpy.types.Operator):
-    bl_idname = "kileido.phase_help"
-    bl_label = "About dynamic phase"
-    bl_description = "\n\n".join(PHASE_HELP)
-
-    def execute(self, context):
-        def draw(menu, _context):
-            for paragraph in PHASE_HELP:
-                for line in textwrap.wrap(paragraph, 70):
-                    menu.layout.label(text=line)
-                menu.layout.separator()
-        context.window_manager.popup_menu(draw, title="Dynamic phase", icon="QUESTION")
-        return {"FINISHED"}
-
-
-class KILEIDO_PT_phase(bpy.types.Panel):
-    """Differential pairs: how far P and N are apart in time along the route."""
-    bl_label = "Dynamic phase"
-    bl_idname = "KILEIDO_PT_phase"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "KiLeidoscope"
-    bl_parent_id = "KILEIDO_PT_panel"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    def draw_header_preset(self, context):
-        self.layout.operator(KILEIDO_OT_phase_help.bl_idname, text="", icon="QUESTION", emboss=False)
-
-    def draw(self, context):
-        layout, scene = self.layout, context.scene
-        row = layout.row(align=True)
-        row.prop(scene, "kileido_phase_show", text="Colours")
-        row.prop(scene, "kileido_phase_labels", text="Labels")
-        row.prop(scene, "kileido_phase_pulses", text="Pulses")
-        layout.prop(scene, "kileido_phase_follow_series", text="Through series parts (AC caps)")
-        column = layout.column(align=True)
-        column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
-        column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
-        column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
-        pulses = layout.column(align=True)
-        pulses.active = scene.kileido_phase_pulses
-        pulses.row().prop(scene, "kileido_phase_pulse_clock", expand=True)
-        pulses.prop(scene, "kileido_phase_pulse_rate", text="Pulse speed (ps/s)")
-        pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
-        pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
-        layout.prop(scene, "kileido_phase_bloom", text="Bloom (glow halo)")
-        blocked = phase.bloom_blocked()
-        if blocked and scene.kileido_phase_bloom:
-            layout.label(text=f"The scene composites with {blocked}: bloom left out", icon="INFO")
-        legend = layout.row(align=True)
-        for color, text in ((phase.COLORS["p"], "P"), (phase.COLORS["n"], "N")):
-            legend.label(text=text, icon_value=_swatch("tile", color))
-        info = layout.column(align=True)
-        for line in _wrap(context, "The stronger the colour, the further P and N are out of phase there. "
-                                   "Pulses start together: the one in front is ahead."):
-            info.label(text=line)
-        guess = phase.sources_warning()
-        if guess:
-            for index, line in enumerate(_wrap(context, f"Delay: {guess}, no tuning profile or "
-                                                        "dielectric constant found")):
-                info.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
-        pending = board.phase_list.get("pending", 0)
-        if pending:
-            info.label(text=f"Measuring {pending} more pair{'s' if pending > 1 else ''}…", icon="TIME")
-        for warning in board.phase_list.get("warnings", ())[:4]:
-            for index, line in enumerate(_wrap(context, warning)):
-                info.label(text=line, icon="INFO" if index == 0 else "BLANK1")
-        if not len(scene.kileido_phase_pairs):
-            layout.label(text="No routed differential pairs" if live.connected() else "Live with KiCad only")
-            return
-        first, numbers = _phase_columns(layout)
-        first.label(text="Pair (ps)")
-        for title in ("Delay", "Skew", "Max |Δt|"):
-            numbers.label(text=title)
-        layout.template_list("KILEIDO_UL_phase_pairs", "", scene, "kileido_phase_pairs", scene,
-                             "kileido_phase_index", rows=4)
-        data = phase.active_pair()
-        if data is not None:
-            self._draw_pair(context, layout.box(), data)
-
-    def _draw_pair(self, context, box, data):
-        row = box.row(align=True)
-        row.label(text=f"{data['start']['label']} → {data['end']['label']}")
-        row.operator(KILEIDO_OT_phase_flip.bl_idname, text="", icon="ARROW_LEFTRIGHT").key = data["key"]
-        column = box.column(align=True)
-        for side in ("p", "n"):
-            column.label(text=f"{side.upper()}: {_ps(data[f'delay_{side}_ps'])} ps, "
-                              f"{data[f'length_{side}_mm']:.2f} mm")
-        column.label(text=f"End-to-end skew: {_ps(data['skew_ps'], True)} ps")
-        column.label(text=f"Largest |Δt|: {_ps(data['max_ps'])} ps")
-        lines = [f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"]
-        if data.get("parts"):
-            lines.append("Through " + ", ".join(data["parts"]))
-        lines.append("Delay: " + "; ".join(data.get("sources", ())))
-        for text in lines:
-            for line in _wrap(context, text):
-                column.label(text=line)
-        for excursion in data.get("excursions", ()):
-            line = box.row(align=True)
-            line.label(text=f"{excursion['at_mm']:.1f} mm: {_ps(excursion['peak_ps'], True)} ps "
-                            f"over {excursion['length_mm']:.1f} mm", icon="ERROR")
-            line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
-                          icon="RESTRICT_SELECT_OFF").ids = excursion["id"]
-        for branch in data.get("branches", ()):
-            line = box.row(align=True)
-            line.label(text=f"{branch['side']} branch to {branch['label']} at {branch['at_mm']:.1f} mm, "
-                            f"{branch['length_mm']:.1f} mm long")
-            line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
-                          icon="RESTRICT_SELECT_OFF").ids = branch["id"]
-        for warning in data.get("warnings", ()):
-            box.label(text=warning, icon="INFO")
-
-
-class KILEIDO_PT_status(bpy.types.Panel):
-    """Link, loading progress and warnings, below the Boards panel."""
-    bl_label = "Status"
-    bl_idname = "KILEIDO_PT_status"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "KiLeidoscope"
-    bl_parent_id = "KILEIDO_PT_panel"
+    def __init__(self, layout):
+        self.layout = layout
 
     def draw(self, context):
         column = self.layout.column(align=True)
@@ -777,9 +606,7 @@ def _swatch(kind, color):
 
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
-           KILEIDO_PT_status, KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip,
-           KILEIDO_OT_phase_select, KILEIDO_OT_phase_help, KILEIDO_PT_phase)
+           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, *high_speed_panel.CLASSES, KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -890,6 +717,9 @@ def _scene_properties():
             description="How much the silkscreen ink hides what lies under it. Printed on the mask, the "
                         "ink follows the copper, so traces under it show by their relief at any opacity",
             update=lambda self, context: cosmetics.apply_silk_settings()),
+        "kileido_high_speed": BoolProperty(
+            name="High speed", default=False, options={"HIDDEN"},
+            description="The High speed column left of the KiLeidoscope panel"),
         "kileido_phase_show": BoolProperty(
             name="Dynamic phase", default=True,
             description="Colour both traces of each differential pair where one runs ahead of the other, "
@@ -947,7 +777,7 @@ def _scene_properties():
         "kileido_phase_flipped": StringProperty(
             name="Flipped pairs", default="[]", options={"HIDDEN"},
             description="Pairs walked from their other end (a JSON list of pair keys)"),
-        "kileido_phase_pairs": CollectionProperty(type=KILEIDO_PG_phase_pair),
+        "kileido_phase_pairs": CollectionProperty(type=high_speed_panel.KILEIDO_PG_phase_pair),
         "kileido_phase_index": IntProperty(
             name="Pair", default=-1, update=lambda self, context: phase.select_row(self)),
         "kileido_clip_silkscreen": BoolProperty(

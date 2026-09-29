@@ -147,4 +147,4 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 | [`kileido_bridge/delays.py`](../../kileido_bridge/delays.py) | delay model: tuning profiles, microstrip, stripline, vias |
 | [`kileido_bridge/phase.py`](../../kileido_bridge/phase.py) | walk, alignment, Δt, excursions, live tracker, frames |
 | [`blender_addon/kileido/phase.py`](../../blender_addon/kileido/phase.py) | drawing: tint, pulses, glow, via light, markers, labels |
-| [`blender_addon/kileido/__init__.py`](../../blender_addon/kileido/__init__.py) | the Dynamic phase panel and pair list |
+| [`blender_addon/kileido/high_speed_panel.py`](../../blender_addon/kileido/high_speed_panel.py) | the High speed column: Dynamic phase settings and pair list |
