@@ -70,6 +70,8 @@ def _via_at(obj, point):
 
 def _item(obj, location):
     """(KiCad id or None, stop): stop=True ends the ray even without an item."""
+    if obj.get("kls_phase_ids") is not None:  # just above the copper it measures
+        return list(obj["kls_phase_ids"]) or None, True
     ids = list(obj.get("kls_ids", ()))
     placement = obj.get("kls_copper")
     if placement:
@@ -93,6 +95,8 @@ def _item(obj, location):
 
 def describe(item_id):
     """"track", "via", "pad", "component" or "item", for the status bar."""
+    if isinstance(item_id, list):
+        return "a differential pair" if len(item_id) > 2 else "a pair's component or track"
     collection = board.collection
     if collection is not None:
         for obj in tuple(collection.all_objects):
@@ -106,7 +110,8 @@ def describe(item_id):
 
 
 def item_at(scene, depsgraph, origin, direction, max_hits=32):
-    """The KiCad id under a view ray, or None."""
+    """The KiCad id under a view ray, or None; a list of ids for a dynamic-phase ribbon
+    (the pair's copper) or marker (its pads, or the track where it runs out of phase)."""
     collection = board.collection
     if collection is None:
         return None

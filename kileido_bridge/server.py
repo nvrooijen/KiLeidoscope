@@ -44,6 +44,7 @@ class BridgeServer:
         self.candidate_deadline = 0.0
         self.needs_snapshot = False
         self.select_requests = []
+        self.phase_settings = None  # the viewer's last `phase_settings` request, not yet taken
         self.outgoing = bytearray()
         self.snapshot_bytes = 0  # of `outgoing`: the latest snapshot, exempt from the backlog cap
 
@@ -114,6 +115,8 @@ class BridgeServer:
         elif header.get("type") == "select":  # a click in Blender
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
             self.select_requests.append((ids, bool(header.get("extend", False))))
+        elif header.get("type") == "phase_settings":  # the panel's dynamic-phase settings; the latest wins
+            self.phase_settings = header
 
     def pump(self, timeout: float = 0.0) -> None:
         if self.candidate is not None and time.monotonic() > self.candidate_deadline:
@@ -169,6 +172,10 @@ class BridgeServer:
     def take_select_requests(self) -> list[tuple[list[str], bool]]:
         requests, self.select_requests = self.select_requests, []
         return requests
+
+    def take_phase_settings(self) -> dict | None:
+        settings, self.phase_settings = self.phase_settings, None
+        return settings
 
     def take_resync(self) -> bool:
         if not self.authenticated or not self.needs_snapshot:

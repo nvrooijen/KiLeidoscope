@@ -136,6 +136,23 @@ def selected_ids(board) -> frozenset[str]:
     return frozenset(ids)
 
 
+def net_classes(board, names) -> dict[str, tuple[str, str]]:
+    """Net name -> (its effective netclass, that netclass's tuning profile or ""), read
+    only. KiCad resolves the netclass (patterns, schematic directives, composites);
+    kipy 0.7 has no accessor for the tuning profile, so it is read from the proto."""
+    wanted = set(names)
+    with _busy_aware():
+        nets = [net for net in board.get_nets() if net.name in wanted]
+        classes = board.get_netclass_for_nets(nets) if nets else {}
+    found = {}
+    for name, netclass in classes.items():
+        proto = getattr(netclass, "proto", None)
+        settings = proto.board if proto is not None and proto.HasField("board") else None
+        profile = settings.tuning_profile if settings is not None and settings.HasField("tuning_profile") else ""
+        found[name] = (netclass.name, profile)
+    return found
+
+
 def select_in_kicad(board, ids, extend: bool = False) -> None:
     """The one KiCad-changing call (tests/test_boundaries.py allows only this one):
     replace (or extend) KiCad's selection with these item ids after a click in

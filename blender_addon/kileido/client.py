@@ -115,6 +115,11 @@ class SocketClient:
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend)}))
 
+    def request_phase_settings(self, settings: dict):
+        """The dynamic-phase settings (kileido_bridge/phase.py Settings.from_request)."""
+        if self.state == "connected":
+            self.outgoing.extend(encode_frame({"type": "phase_settings", **settings}))
+
     def poll_io(self) -> list[tuple[dict, dict[str, np.ndarray]]]:
         sock = self.socket
         if sock is None:

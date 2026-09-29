@@ -215,3 +215,9 @@ def request_select(ids, extend=False):
     """A click in Blender: select these items in KiCad."""
     if link.client is not None:
         link.client.request_select(ids, extend)
+
+
+def request_phase_settings(settings):
+    """Tolerance, distance, series parts and flipped pairs for the bridge's dynamic phase."""
+    if link.client is not None:
+        link.client.request_phase_settings(settings)
