@@ -20,8 +20,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, high_speed_panel, layers, lighting, live, models,
-               packages, phase, pick, render_depth, watcher)
+from . import (apply, collisions, columns, cosmetics, dump, focus, high_speed_panel, layers, lighting, live,
+               models, packages, phase, pick, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -196,16 +196,12 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         if icon is not None:
             self.layout.label(text="", icon_value=icon.icon_id)
 
-    def draw_header_preset(self, context):
-        self.layout.operator(high_speed_panel.KILEIDO_OT_high_speed.bl_idname, text="High speed",
-                             depress=context.scene.kileido_high_speed)
-
     def draw(self, context):
-        """With High speed open, two columns: High speed left, the rest right."""
+        """With a column open (its bookmark tab, columns.py), two: that column left, the rest right."""
         global _share
         layout = self.layout
         _share = 1.0
-        if context.scene.kileido_high_speed:
+        if context.scene.kileido_column == "HIGH_SPEED":
             split = layout.split(factor=0.5)
             left, layout = split.column(), split.column()
             _share = 0.5
@@ -606,7 +602,8 @@ def _swatch(kind, color):
 
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, *high_speed_panel.CLASSES, KILEIDO_PT_panel)
+           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, *high_speed_panel.CLASSES, *columns.CLASSES,
+           KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -717,9 +714,9 @@ def _scene_properties():
             description="How much the silkscreen ink hides what lies under it. Printed on the mask, the "
                         "ink follows the copper, so traces under it show by their relief at any opacity",
             update=lambda self, context: cosmetics.apply_silk_settings()),
-        "kileido_high_speed": BoolProperty(
-            name="High speed", default=False, options={"HIDDEN"},
-            description="The High speed column left of the KiLeidoscope panel"),
+        "kileido_column": EnumProperty(
+            name="Column", items=columns.column_items(), default=columns.NONE, options={"HIDDEN"},
+            description="The column open left of the KiLeidoscope panel (its bookmark tab)"),
         "kileido_phase_show": BoolProperty(
             name="Dynamic phase", default=True,
             description="Colour both traces of each differential pair where one runs ahead of the other, "
@@ -819,6 +816,9 @@ def register():
     keyconfig = bpy.context.window_manager.keyconfigs.addon
     if keyconfig is not None:  # None in background mode
         keymap = keyconfig.keymaps.new(name="3D View", space_type="VIEW_3D")
+        # First: a click on a bookmark tab opens its column; elsewhere it passes through.
+        _KEYMAPS.append((keymap, keymap.keymap_items.new(columns.KILEIDO_OT_column_tab.bl_idname,
+                                                         "LEFTMOUSE", "CLICK")))
         # A click (press and release without moving) selects in KiCad while connected;
         # dragging still box-selects or navigates. Not connected, the operator's poll
         # fails and the click falls through to Blender's own selection.
@@ -827,6 +827,7 @@ def register():
             entry.properties.extend = shift
             _KEYMAPS.append((keymap, entry))
     collisions.install()
+    columns.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.frame_change_pre.append(phase.on_frame)
 
@@ -847,6 +848,7 @@ def unregister():
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
+    columns.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):

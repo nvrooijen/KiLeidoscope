@@ -1,16 +1,6 @@
-"""The High speed column: signal-integrity views left of the KiLeidoscope panel.
+"""The High speed column: signal-integrity views left of the KiLeidoscope panel,
+opened by its bookmark tab (columns.py). Sections: Dynamic phase."""
 
-The KiLeidoscope panel draws it as its left column (`draw`); the High speed button in
-the panel's header opens and closes it and widens the sidebar to make room
-(`KILEIDO_OT_high_speed`). Sections: Dynamic phase.
-
-Blender has no API for a region's width. The sidebar's stored width (ARegion.sizex,
-unscaled pixels) is written directly, at the offset measured for each Blender version
-(SIZEX_OFFSET), and only when the value there is the sidebar's current width. Anything
-else, and the column still opens; the sidebar is then widened by hand.
-"""
-
-import ctypes
 import textwrap
 
 import bpy
@@ -18,50 +8,6 @@ from bpy.props import FloatProperty, IntProperty, StringProperty
 
 from . import live, phase
 from .state import board
-
-SIZEX_OFFSET = {(5, 1): 198}  # bytes into ARegion; measured by scanning at two UI scales
-MIN_SIDEBAR_PX = 200  # unscaled: the narrowest a closing column leaves the sidebar
-MAX_AREA_SHARE = 0.7  # the widened sidebar takes at most this much of the 3D view
-
-
-def _width_cell(region):
-    """The sidebar's stored width as a ctypes cell, or None when this Blender's layout
-    is unknown or the value there is not the width Blender draws the sidebar at."""
-    offset = SIZEX_OFFSET.get(tuple(bpy.app.version[:2]))
-    if offset is None or region is None or region.type != "UI":
-        return None
-    cell = ctypes.c_short.from_address(region.as_pointer() + offset)
-    scale = bpy.context.preferences.system.ui_scale or 1.0
-    if cell.value <= 0 or abs(cell.value * scale - region.width) > 2 * scale + 1:
-        return None
-    return cell
-
-
-def _relayout(area):
-    """Blender lays every region out again, at its stored width, when the UI scale is
-    set; setting it to its own value does that without changing anything else."""
-    view = bpy.context.preferences.view
-    view.ui_scale = view.ui_scale
-
-
-class KILEIDO_OT_high_speed(bpy.types.Operator):
-    bl_idname = "kileido.high_speed"
-    bl_label = "High speed"
-    bl_description = "Open or close the High speed column left of this panel; the sidebar widens to make room"
-
-    def execute(self, context):
-        scene = context.scene
-        opening = not scene.kileido_high_speed
-        scene.kileido_high_speed = opening
-        cell = _width_cell(context.region)
-        if cell is not None:
-            scale = context.preferences.system.ui_scale or 1.0
-            widest = int(context.area.width * MAX_AREA_SHARE / scale)
-            cell.value = min(cell.value * 2, widest) if opening else max(cell.value // 2, MIN_SIDEBAR_PX)
-            _relayout(context.area)
-        elif opening:
-            self.report({"INFO"}, "Drag the sidebar's edge to make room for the High speed column")
-        return {"FINISHED"}
 
 
 # --- Dynamic phase -------------------------------------------------------------------------
@@ -254,5 +200,5 @@ def _draw_pair(context, box, data, wrap):
         box.label(text=warning, icon="INFO")
 
 
-CLASSES = (KILEIDO_OT_high_speed, KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip,
+CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip,
            KILEIDO_OT_phase_select, KILEIDO_OT_phase_help)
