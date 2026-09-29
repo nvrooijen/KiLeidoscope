@@ -8,9 +8,11 @@ impedance or εeff module can replace `StackupDelays`. Sources, in order:
    names its profile in "net_settings"). Its unit delays are attoseconds per mm
    (KiCad's `IU_PER_PS_PER_MM` = 1e6); a via takes an override for its layers,
    else the profile's via delay per mm of stackup height it crosses.
-2. εeff estimated from the stackup: microstrip (Hammerstad) on the outer layers,
-   stripline inside, with epsilon_r from the board file (KiCad 10.0.3's IPC
-   stackup has none, see kicad_reader._stackup).
+2. εeff estimated from the stackup, with epsilon_r from the board file (KiCad
+   10.0.3's IPC stackup has none, see kicad_reader._stackup): stripline inside;
+   microstrip on the outer layers, alone (Hammerstad and Jensen) or, given the gap
+   to its partner, the pair's differential (odd) mode (Kirschning and Jansen), which
+   runs faster where the pair is coupled.
 3. FR-4, εr 4.2, when the stackup gives no dielectric constant: clearly a guess,
    and named as the source.
 """
@@ -40,7 +42,8 @@ class UnitDelay:
 class DelayModel:
     """Delay of track and via copper; override both methods."""
 
-    def track(self, net: str, layer: str, width_nm: int) -> UnitDelay:
+    def track(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None) -> UnitDelay:
+        """`gap_nm`: to the pair's other trace there (edge to edge); None: alone."""
         raise NotImplementedError
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
@@ -95,11 +98,28 @@ def read_project(path: str) -> dict:
         return {}
 
 
-def microstrip_epsilon(epsilon_r: float, width_nm: float, height_nm: float) -> float:
-    """Hammerstad's εeff of a microstrip (no solder mask, zero thickness)."""
+def _single_microstrip(epsilon_r: float, u: float) -> float:
+    """Static εeff of a lone microstrip of width/height `u` (Hammerstad and Jensen 1980)."""
+    a = 1 + math.log((u ** 4 + (u / 52) ** 2) / (u ** 4 + 0.432)) / 49 + math.log(1 + (u / 18.1) ** 3) / 18.7
+    b = 0.564 * ((epsilon_r - 0.9) / (epsilon_r + 3)) ** 0.053
+    return (epsilon_r + 1) / 2 + (epsilon_r - 1) / 2 * (1 + 10 / u) ** (-a * b)
+
+
+def microstrip_epsilon(epsilon_r: float, width_nm: float, height_nm: float, gap_nm: float | None = None) -> float:
+    """εeff of a microstrip: alone, or `gap_nm` from its partner for the pair's odd
+    (differential) mode, which has more of its field in the air between the two and so
+    runs faster (Kirschning and Jansen 1984); it tends to the lone line as the gap
+    widens. Static (no dispersion), zero thickness, no solder mask."""
     u = max(width_nm, 1.0) / max(height_nm, 1.0)
-    shape = (1 + 12 / u) ** -0.5 + (0.04 * (1 - u) ** 2 if u < 1 else 0.0)
-    return (epsilon_r + 1) / 2 + (epsilon_r - 1) / 2 * shape
+    single = _single_microstrip(epsilon_r, u)
+    if gap_nm is None:
+        return single
+    g = max(gap_nm, 1.0) / max(height_nm, 1.0)
+    a = 0.7287 * (single - (epsilon_r + 1) / 2) * (1 - math.exp(-0.179 * u))
+    b = 0.747 * epsilon_r / (0.15 + epsilon_r)
+    c = b - (b - 0.207) * math.exp(-0.414 * u)
+    d = 0.593 + 0.694 * math.exp(-0.562 * u)
+    return ((epsilon_r + 1) / 2 + a - single) * math.exp(-c * g ** d) + single
 
 
 class StackupDelays(DelayModel):
@@ -139,7 +159,7 @@ class StackupDelays(DelayModel):
             return FR4_EPSILON_R, DEFAULT
         return sum(e * t for e, t in known) / sum(t for _, t in known), STACKUP
 
-    def track(self, net: str, layer: str, width_nm: int) -> UnitDelay:
+    def track(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None) -> UnitDelay:
         profile = self._profile(net)
         if profile is not None and layer in profile.layers:
             return UnitDelay(profile.layers[layer], f"{PROFILE} '{profile.name}'")
@@ -147,7 +167,7 @@ class StackupDelays(DelayModel):
         epsilon_r, source = self._epsilon(beside)
         if len(beside) == 1 or layer in ("F.Cu", "B.Cu"):  # an outer layer: microstrip over one dielectric
             height = (beside[0].thickness_nm if beside else None) or width_nm or 1
-            effective = microstrip_epsilon(epsilon_r, width_nm or height, height)
+            effective = microstrip_epsilon(epsilon_r, width_nm or height, height, gap_nm)
         else:
             effective = epsilon_r  # stripline: the field is all in the dielectric
         return UnitDelay(PS_PER_MM_VACUUM * math.sqrt(effective), source)

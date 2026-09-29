@@ -144,7 +144,7 @@ def main():
         # The pair list in the panel.
         rows = scene.kileido_phase_pairs
         assert [row.key for row in rows] == ["D_P", "E_P"] and rows[0].excursions == 1
-        assert rows[0].route == "J1.1/2 → U1.1/2" and abs(rows[0].skew_ps) < 1e-6
+        assert rows[0].route == "J1.1/2 → U1.1/2" and abs(rows[0].skew_ps) < 1e-3  # coupling sampled every 50 um
 
         # A click on a trace copy from above picks the pair's copper; on a terminal marker, its pads.
         bpy.context.view_layer.update()

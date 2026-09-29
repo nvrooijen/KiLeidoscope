@@ -19,9 +19,10 @@ def only_pair(snapshot, **settings):
     return results[0]
 
 
-def unit_delay(snapshot, layer="F.Cu"):
+def unit_delay(snapshot, layer="F.Cu", gap=MM - boards.WIDTH):
+    """The pair's unit delay: coupled at the boards' 1 mm pitch (None: a lone trace)."""
     heights = protocol.layer_heights_nm(snapshot)[0]
-    return delays.StackupDelays(snapshot.stackup.layers, heights).track("D_P", layer, boards.WIDTH).ps_per_mm
+    return delays.StackupDelays(snapshot.stackup.layers, heights).track("D_P", layer, boards.WIDTH, gap).ps_per_mm
 
 
 def test_matched_pair_stays_in_phase():
@@ -48,10 +49,11 @@ def test_compensation_far_from_the_mismatch_is_an_excursion_despite_zero_skew():
     out of phase over the 45 mm between."""
     snapshot = boards.compensated_far()
     result = only_pair(snapshot)
-    assert abs(result.skew_ps) < 1e-9
+    assert abs(result.skew_ps) < 1e-3  # the gap, and so the coupling, is sampled every 50 um
     plateau = 0.5 * unit_delay(snapshot)  # ps: the detour's extra length
     middle = np.abs(result.centre_nm[:, 0] - 25 * MM) < 5 * MM
-    assert np.allclose(result.dt_ps[middle], -plateau, atol=0.01)  # walking from J1: N longer so far
+    # The detours run away from the partner, less coupled and so a little slower (0.4 %).
+    assert np.allclose(result.dt_ps[middle], -plateau, atol=0.02)  # walking from J1: N longer so far
     assert len(result.excursions) == 1
     excursion = result.excursions[0]
     assert 46.5 * MM <= excursion.pos[0] <= 47.3 * MM  # where it starts, at N's detour
@@ -74,15 +76,15 @@ def test_each_side_carries_its_delay_and_how_far_it_is_ahead():
         assert set(trace.width_nm) == {boards.WIDTH}
     plateau = 0.5 * unit_delay(snapshot)
     middle = [np.abs(trace.xyz_nm[:, 0] - 25 * MM) < 5 * MM for trace in (p, n)]
-    assert np.allclose(p.lead_ps[middle[0]], plateau, atol=0.01)  # N took the detour: P ahead...
-    assert np.allclose(n.lead_ps[middle[1]], -plateau, atol=0.01)  # ...and N lagging by as much
-    assert abs(p.lead_ps[0]) < 1e-9 and abs(p.lead_ps[-1]) < 1e-6  # in phase at both ends
+    assert np.allclose(p.lead_ps[middle[0]], plateau, atol=0.02)  # N took the detour: P ahead...
+    assert np.allclose(n.lead_ps[middle[1]], -plateau, atol=0.02)  # ...and N lagging by as much
+    assert abs(p.lead_ps[0]) < 1e-9 and abs(p.lead_ps[-1]) < 1e-3  # in phase at both ends
 
 
 def test_compensation_close_to_the_mismatch_is_not_an_excursion():
     snapshot = boards.compensated_locally()
     result = only_pair(snapshot)
-    assert abs(result.skew_ps) < 1e-9
+    assert abs(result.skew_ps) < 1e-3  # the gap, and so the coupling, is sampled every 50 um
     assert result.max_abs_ps > 1.0  # out of phase between the detours...
     assert result.excursions == ()  # ...but for only ~2 mm, under the 5 mm default
     assert len(only_pair(snapshot, min_length_nm=1 * MM).excursions) == 1  # the user's distance decides
@@ -160,7 +162,7 @@ def test_flipping_walks_from_the_other_end():
     flipped = only_pair(snapshot, flipped=frozenset({forward.channel.key}))
     assert flipped.flipped and flipped.p.start.label == "U1.1"
     middle = [np.abs(result.centre_nm[:, 0] - 25 * MM) < 5 * MM for result in (forward, flipped)]
-    assert np.allclose(flipped.dt_ps[middle[1]], forward.skew_ps - forward.dt_ps[middle[0]][0], atol=1e-6)
+    assert np.allclose(flipped.dt_ps[middle[1]], forward.skew_ps - forward.dt_ps[middle[0]][0], atol=1e-3)
     [excursion] = flipped.excursions
     assert 2.0 * MM <= excursion.pos[0] <= 2.3 * MM and excursion.peak_ps > 0  # P's detour comes first now
 
@@ -219,6 +221,24 @@ def test_without_dielectric_constants_fr4_is_named_as_the_source():
     assert result.sources == (delays.DEFAULT,)
     inner = delays.StackupDelays(bare.layers, protocol.layer_heights_nm(snapshot)[0])
     assert inner.track("D_P", "In1.Cu", 0).ps_per_mm == pytest.approx(delays.PS_PER_MM_VACUUM * math.sqrt(4.2))
+
+
+def test_a_coupled_pair_runs_faster_on_the_outside_and_the_same_inside():
+    heights = protocol.layer_heights_nm(boards.matched())[0]
+    model_ = delays.StackupDelays(boards.STACKUP.layers, heights)
+    alone = model_.track("D_P", "F.Cu", boards.WIDTH).ps_per_mm
+    close, apart = (model_.track("D_P", "F.Cu", boards.WIDTH, gap).ps_per_mm for gap in (100_000, 5 * MM))
+    assert close < apart < alone and apart == pytest.approx(alone, rel=1e-3)  # the odd mode tends to the lone line
+    inner = [model_.track("D_P", "In1.Cu", boards.WIDTH, gap).ps_per_mm for gap in (100_000, None)]
+    assert inner[0] == inner[1]  # stripline: all its field in the dielectric, coupled or not
+
+
+def test_kirschning_jansen_odd_mode_is_near_kicads_coupled_microstrip():
+    # This board's MIPI pair: 117 um wide, 102 um apart, 121 um of er 4.5 to the plane.
+    # KiCad 10's tuning profile calculator gives 5.794 ps/mm for it (er_eff 3.02).
+    odd = delays.microstrip_epsilon(4.5, 117_350, 121_120, 102_000)
+    alone = delays.microstrip_epsilon(4.5, 117_350, 121_120)
+    assert odd < alone and delays.PS_PER_MM_VACUUM * math.sqrt(odd) == pytest.approx(5.794, rel=0.03)
 
 
 def test_microstrip_is_faster_than_stripline():

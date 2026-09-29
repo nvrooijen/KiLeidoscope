@@ -33,6 +33,7 @@ import numpy as np
 from . import board_text, channels, delays, model, protocol
 
 SAMPLES = 400  # per side at most; longer routes get a longer step
+COUPLE_STEP_NM = 50_000  # the gap to the partner, and so the coupled unit delay, every 50 um
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
 
@@ -136,23 +137,25 @@ class _Walk:
     xyz: np.ndarray  # (v, 3) nm
     along: np.ndarray  # (v,) nm of copper
     delay: np.ndarray  # (v,) ps
-    items: list  # (v,) item id of the piece each vertex ends
+    items: list  # (v,) item id of the piece each vertex ends ("" for a hop across a pad)
     widths: np.ndarray  # (v,) track width there (a barrel or hop keeps the last one)
+    nets: list  # (v,) net of the piece each vertex ends
     crossings: list
     sources: set
 
 
 def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: dict[str, int]) -> _Walk:
-    xyz, along, delay, items, widths = [], [], [], [], []
+    xyz, along, delay, items, widths, nets = [], [], [], [], [], []
     crossings, sources = [], set()
     s = t = 0.0
 
-    def add(point, layer_z, item_id, width=0):
+    def add(point, layer_z, item_id, width=0, net=""):
         xyz.append((point[0], point[1], layer_z))
         along.append(s)
         delay.append(t)
         items.append(item_id)
         widths.append(width or (widths[-1] if widths else 0))
+        nets.append(net)
 
     for piece in route.pieces:
         z = heights.get(piece.layer, 0)
@@ -174,17 +177,55 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
         chords = [math.dist(a, b) for a, b in zip(points, points[1:])]
         scale = piece.length_nm / sum(chords) if sum(chords) else 0.0
         if not xyz or (xyz[-1][0], xyz[-1][1]) != tuple(points[0]):
-            add(points[0], z, piece.item_id, piece.width)  # also where a barrel ended at the via centre
+            add(points[0], z, piece.item_id, piece.width, piece.net)  # also where a barrel ended at the via centre
         for point, chord in zip(points[1:], chords):
             s += chord * scale
             t += chord * scale * unit.ps_per_mm / 1e6
-            add(point, z, piece.item_id, piece.width)
+            add(point, z, piece.item_id, piece.width, piece.net)
     if not xyz:
         add(route.start.pos, heights.get(route.start.layer, 0), "")
     first = next((width for width in widths if width), 0)
     widths = [width or first for width in widths]  # a route that starts through a via
     return _Walk(np.asarray(xyz, np.float64), np.asarray(along), np.asarray(delay), items,
-                 np.asarray(widths, np.float64), crossings, sources)
+                 np.asarray(widths, np.float64), nets, crossings, sources)
+
+
+def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.ndarray, model_: delays.DelayModel,
+            heights: dict[str, int]) -> _Walk:
+    """The walk's delays again with the pair's coupling: along each track stretch, the
+    unit delay at the gap to the partner there (the odd mode where they run close, the
+    lone line where one meanders or breaks out). A tuning profile or an inner layer
+    gives the same delay either way; a barrel, or a hop across a pad, keeps its own.
+
+    `samples` (along, xyz) are this side's alignment samples: the gap is measured at
+    each (to the partner's nearest sample, centre to centre) and interpolated between."""
+    total = walk.along[-1]
+    if total <= 0 or len(partner) < 2:
+        return walk
+    at, points = samples
+    nearest = np.sqrt(((points[:, None, :] - partner[None, :, :]) ** 2).sum(axis=2)).min(axis=1)
+    cuts = np.union1d(walk.along, np.linspace(0.0, total, max(2, int(total / COUPLE_STEP_NM) + 1)))
+    delay = np.interp(cuts, walk.along, walk.delay)
+    middle = (cuts[:-1] + cuts[1:]) / 2
+    vertex = np.clip(np.searchsorted(walk.along, middle), 1, len(walk.along) - 1)
+    track = (walk.xyz[vertex, 2] == walk.xyz[vertex - 1, 2]) & np.array([bool(walk.items[v]) for v in vertex])
+    ratio = np.ones(len(middle))
+    if track.any():
+        gaps = np.interp(middle[track], at, nearest)
+        layer_at = {height: layer for layer, height in heights.items()}
+        cache = {}
+        for index, gap in zip(np.flatnonzero(track), gaps):
+            v = vertex[index]
+            width, layer = int(walk.widths[v]), layer_at.get(int(round(walk.xyz[v, 2])))
+            key = (walk.nets[v], layer, width, round(max(gap - width, 0.0), -3))  # to the micrometre
+            if layer is not None and key not in cache:
+                alone = model_.track(walk.nets[v], layer, width).ps_per_mm
+                cache[key] = model_.track(walk.nets[v], layer, width, key[3]).ps_per_mm / alone if alone else 1.0
+            ratio[index] = cache.get(key, 1.0)
+    coupled = np.concatenate(([delay[0]], delay[0] + np.cumsum(np.diff(delay) * ratio)))
+    crossings = [replace(crossing, reached_ps=float(np.interp(crossing.at_nm, cuts, coupled)))
+                 for crossing in walk.crossings]
+    return replace(walk, delay=np.interp(walk.along, cuts, coupled), crossings=crossings)
 
 
 def _resample(walk: _Walk, step: float) -> tuple[np.ndarray, np.ndarray, list, np.ndarray]:
@@ -343,6 +384,8 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     step = max(MIN_STEP_NM, max(walk.along[-1] for walk in walks) / SAMPLES)
     (a, t_p, items_p, s_a), (b, t_n, _, s_b) = (_resample(walk, step) for walk in walks)
     i, j = _align(a, b)
+    walks = (_couple(walks[0], (s_a, a), b, model_, heights), _couple(walks[1], (s_b, b), a, model_, heights))
+    t_p, t_n = np.interp(s_a, walks[0].along, walks[0].delay), np.interp(s_b, walks[1].along, walks[1].delay)
     # Matched samples are up to half a step apart along the pair; the side that moved
     # keeps its sample and the other is projected onto its own nearby copper, so a
     # plateau of Δt is exact, not quantized to the step (~0.3 ps at 0.12 mm).

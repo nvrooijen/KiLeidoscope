@@ -72,15 +72,16 @@ The unit delay τ (ps/mm) of each piece comes from [`delays.py`](../../kileido_b
 | Source | Unit delay | Used when |
 |---|---|---|
 | KiCad tuning profile | the profile's ps/mm for that layer; vias by override, or ps/mm × height | the net's netclass has a tuning profile (Board Setup › Tuning Profiles) |
-| Microstrip estimate | $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$ with Hammerstad's $\varepsilon_\text{eff}$ | outer layers, with εr from the board's stackup |
+| Microstrip estimate | $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$, with $\varepsilon_\text{eff}$ of the coupled pair at the gap there | outer layers, with εr from the board's stackup |
 | Stripline estimate | $\tau = \sqrt{\varepsilon_r}\,/\,c$ | inner layers, with εr from the board's stackup |
 | FR-4 default | εr = 4.2 in the formulas above | the stackup gives no dielectric constant |
 
-Here $1/c$ = 3.3356 ps/mm. For microstrip, with $u = w/h$ (track width over the dielectric thickness to the next copper layer):
+Here $1/c$ = 3.3356 ps/mm. For microstrip, with $u = w/h$ (track width over the dielectric thickness to the next copper layer) and $g = s/h$ (the gap to the partner, edge to edge, measured every 50 µm along the route):
 
-$$\varepsilon_\text{eff} = \frac{\varepsilon_r + 1}{2} + \frac{\varepsilon_r - 1}{2}\left[\left(1 + \frac{12}{u}\right)^{-1/2} + 0.04\,(1 - u)^2\right]$$
+- a lone trace has Hammerstad and Jensen's static $\varepsilon_\text{eff}(u)$;
+- in a coupled pair the differential signal runs in the odd mode, with more of its field in the air between the two traces: Kirschning and Jansen's odd-mode $\varepsilon_\text{eff}(u, g)$, which is lower and tends to the lone trace's as $g$ grows. So a stretch where one side meanders away or breaks out runs at the lone trace's speed.
 
-where the $0.04\,(1-u)^2$ term only applies for $u < 1$. For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
+On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) that gives 5.70 ps/mm, against 5.79 from KiCad's calculator (a lone trace: 5.99). For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
 
 ### Why Δt holds up when the estimate is off
 
@@ -92,7 +93,7 @@ where the $0.04\,(1-u)^2$ term only applies for $u < 1$. For stripline the field
 
 - **No frequency dependence.** One εr per dielectric, as the stackup gives it. No change of Dk with frequency, no microstrip dispersion, no loss, no skin effect. These affect P and N alike where they run together.
 - **Microstrip:** no solder mask (delay a few % too low), zero copper thickness, and the next copper layer is assumed to be the reference plane.
-- **Coupling:** τ is that of a single trace. On outer layers, a coupled pair's differential signal travels somewhat faster than an uncoupled trace, so the uncoupled part of a meander has a slightly different real delay. KiCad's own tuning makes the same simplification. On inner layers (stripline) the effect disappears.
+- **Coupling** is modelled on outer layers without a tuning profile (see above). A tuning profile gives one value per layer, coupled or not, as KiCad's own tuning does. On inner layers (stripline) coupling doesn't change the speed.
 - **Meander self-coupling,** which shortens a tight meander's real delay, is not modelled.
 - **Grounded coplanar waveguide and pours** are not seen: zones aren't read. A pour on both sides of the pair cancels out; a pour hugging only one side makes that side really a bit faster.
 - **Vias** are treated as a piece of line. Pad and antipad capacitance and the via stub are ignored.
