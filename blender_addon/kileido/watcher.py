@@ -122,7 +122,7 @@ class BoardWatcher:
         self.on_change = on_change
         self.on_result = on_result
         self.starting = starting  # callable(export) -> status while the first export runs
-        self.unavailable = unavailable  # status when the snapshot has no board file
+        self.unavailable = unavailable  # status when the snapshot has neither a live copy nor a saved board
         self.failed = failed  # status prefix for worker errors
         self.import_failed = import_failed  # status prefix for errors while applying a result
         self.first_interval = first_interval
@@ -139,14 +139,14 @@ class BoardWatcher:
         export = dict(export or {})
         source = export.get("path") or board_path
         if board_path == self._board_path and source == self._source:
-            if not board_path and board.board_name:
+            if not source and board.board_name:
                 self.status = self.unavailable
             return
         if self._stop is not None:
             self._stop.set()
         self._generation += 1
         self._board_path, self._source = board_path, source
-        if not board_path or not source:
+        if not source:  # an unsaved board still has the bridge's live copy
             self._stop = None
             self.status = self.unavailable
             return
