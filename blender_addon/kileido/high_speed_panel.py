@@ -188,16 +188,12 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
 
 
 def _draw_legend(column, context, wrap, swatch):
-    """What the colours and markers mean: white to P red and N blue over the colour
-    scale (white only on the selected pair; elsewhere a faint tint), the markers, the pulses."""
-    scale = context.scene.kileido_phase_scale_ps
+    """What the colours and markers mean. The colour bar itself (white to P red and N blue
+    over the colour scale) is drawn in the 3D view (phase._draw_bar): a panel has no
+    continuous gradient."""
     column.label(text="Legend")
-    for side, name in (("p", "P"), ("n", "N")):
-        row = column.row(align=True)
-        for share in (0.0, 1 / 3, 2 / 3, 1.0):
-            color = tuple(1.0 + (channel - 1.0) * share for channel in phase.COLORS[side])
-            row.label(text="", icon_value=swatch("tile", color))
-        row.label(text=f"{name}: in phase → {scale:.2f} ps apart")
+    for line in wrap(context, "Colour bar: bottom left of the 3D view (P red, in phase white, N blue)."):
+        column.label(text=line)
     for role, text in (("start", "Start of the pair"), ("end", "End of the pair"),
                        ("excursion", "Out of phase beyond the markers' limits")):
         column.label(text=text, icon_value=swatch("tile", phase.COLORS[role]))

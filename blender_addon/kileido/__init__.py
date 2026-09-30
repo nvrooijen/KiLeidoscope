@@ -835,6 +835,7 @@ def register():
             _KEYMAPS.append((keymap, entry))
     collisions.install()
     columns.install()
+    phase.install_bar()
     bpy.app.handlers.load_post.append(_file_loaded)
 
 
@@ -853,6 +854,7 @@ def unregister():
     render_depth.uninstall()
     collisions.uninstall()
     columns.uninstall()
+    phase.uninstall_bar()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):
