@@ -22,8 +22,6 @@ FALLBACK_MASK = (0.29, 0.49, 0.71)
 FALLBACK_CORE = (0.43, 0.45, 0.29)
 
 HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0)}  # red-orange / blue (sRGB)
-HIGHLIGHT_WHITE = (1.0, 1.0, 1.0)  # a selected pair under dynamic phase: its red and blue show on it
-_pair_white = False
 PLACEHOLDER_COLOR = (0.36, 0.43, 0.52)  # a component whose model file is missing: a grey-blue box
 OUTLINE_PROBLEM_COLOR = (1.0, 0.0, 0.0)  # a malformed board outline: bright red
 OUTLINE_PROBLEM_GLOW = 0.8  # higher reads orange in AgX
@@ -622,19 +620,8 @@ def _paint_board_faces(viewer):
     paint(board.materials["board_core"], core)
 
 
-def set_pair_white(white):
-    """The selected pair's highlight white instead of red-orange and blue (dynamic phase
-    then tints it by lead and lag), or back."""
-    global _pair_white
-    if bool(white) != _pair_white:
-        _pair_white = bool(white)
-        if "highlight_selected" in board.materials:
-            _paint_highlights()
-
-
 def _paint_highlights():
-    painted = [(f"highlight_{kind}{part}", HIGHLIGHT_WHITE if _pair_white else color)
-               for kind, color in HIGHLIGHT_COLORS.items()
+    painted = [(f"highlight_{kind}{part}", color) for kind, color in HIGHLIGHT_COLORS.items()
                for part in ("", "_barrel")] + [("highlight_outline", OUTLINE_PROBLEM_COLOR)]
     for key, color in painted:
         # Metallic and glowing in every mode: lit metal alone washed out to pink

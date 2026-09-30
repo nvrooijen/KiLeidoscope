@@ -311,8 +311,13 @@ def decoded(frames):
     return protocol.FrameDecoder().feed(b"".join(frames))
 
 
+def unhurried():
+    """A tracker whose clock stands still: every pair in one poll, however slow the machine."""
+    return phase.PhaseTracker(clock=lambda: 0.0)
+
+
 def test_the_tracker_recomputes_only_pairs_whose_copper_changed():
-    tracker = phase.PhaseTracker()
+    tracker = unhurried()
     first = decoded(tracker.update(two_pairs(), revision=1))
     assert [header["type"] for header, _ in first] == ["phase_list", "phase_pair", "phase_pair"]
     listing = first[0][0]
@@ -334,7 +339,7 @@ def test_the_tracker_recomputes_only_pairs_whose_copper_changed():
 
 
 def test_settings_from_blender_recompute_and_flip():
-    tracker = phase.PhaseTracker()
+    tracker = unhurried()
     tracker.update(two_pairs(detour=True), revision=1)
     tracker.configure({"type": "phase_settings", "tolerance_ps": 0.5, "min_length_mm": 2,
                        "follow_series": True, "flipped": ["E_P"]})

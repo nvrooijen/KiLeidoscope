@@ -34,7 +34,7 @@ def main():
         scene.kileido_column = "HIGH_SPEED"  # dynamic phase shows only with its column open
         snapshot = phase_boards.two_channels()
         apply.load_frames(b"".join(snapshot_frames(snapshot)))
-        tracker = PhaseTracker()
+        tracker = PhaseTracker(clock=lambda: 0.0)  # no time budget: every pair in one poll
         apply.load_frames(b"".join(tracker.update(snapshot, revision=1)))
         slots = {key: phase._slot(key) for key in ("D_P", "E_P")}
         assert set(state.board.phase) == {"D_P", "E_P"}
@@ -66,13 +66,17 @@ def main():
         assert np.all(first[:, 2] > top)  # over the copper's outer face
         material = p_trace.data.materials[0]
         names = {node.attribute_name for node in material.node_tree.nodes if node.type == "ATTRIBUTE"}
-        assert names == {phase.LEAD, phase.DELAY} and material.surface_render_method == "BLENDED"
+        assert names == {phase.LEAD, phase.DELAY, phase.SELECTED} and material.surface_render_method == "BLENDED"
         # P red and N blue, each flashing in its own colour; open over drilled holes like the copper.
         assert (material.name, n_trace.data.materials[0].name) == (f"{phase.TRACE} P", f"{phase.TRACE} N")
         for trace, side in ((p_trace, "p"), (n_trace, "n")):
             nodes = trace.data.materials[0].node_tree.nodes
-            mix = next(node for node in nodes if node.type == "MIX" and node.data_type == "RGBA")
-            assert np.allclose(tuple(mix.inputs["A"].default_value)[:3], phase.COLORS[side])
+            mixes = [node for node in nodes if node.type == "MIX" and node.data_type == "RGBA"]
+            # White (for the selected pair, in phase) to the side's colour by the lead; then the pulse's flash.
+            assert len(mixes) == 2 and all(np.allclose(tuple(mix.inputs["B"].default_value)[:3], phase.COLORS[side])
+                                           for mix in mixes)
+            assert any(np.allclose(tuple(mix.inputs["A"].default_value)[:3], (1, 1, 1)) and not mix.inputs["A"].is_linked
+                       for mix in mixes)
             assert nodes.get("KLS holes plot") is not None
         scene.kileido_phase_scale_ps = 2.0
         assert material.node_tree.nodes[phase.SCALE_NODE].outputs[0].default_value == 2.0
@@ -173,30 +177,27 @@ def main():
         assert phase.short_name({"p_nets": ["/MIPI SENSOR/CSI_D3_P"]}) == "CSI_D3_P/N"
         assert phase.short_name({"p_nets": ["/USB/TX_P", "/USB/TX_C_P"]}) == "TX_P/N → TX_C_P/N"
         assert phase.short_name({"p_nets": ["/USB/USB_D+"]}) == "USB_D±"
-        # A selected pair highlights white under dynamic phase (its red and blue are then the
-        # lead and lag); a single net, or dynamic phase off, keeps the selection's colours.
-        def highlight_colors():
-            return [tuple(round(v, 2) for v in next(
-                        node for node in state.board.materials[key].node_tree.nodes if node.type == "BSDF_PRINCIPLED"
-                    ).inputs["Base Color"].default_value[:3]) for key in ("highlight_selected", "highlight_pair")]
-        usual = highlight_colors()
-        assert usual[0] != (1.0, 1.0, 1.0)
-        highlight.apply_selection({"selected": ["E_P"], "pair": ["E_N"]})
-        assert highlight_colors() == [(1.0, 1.0, 1.0)] * 2
-        scene.kileido_phase_enabled = False
-        assert highlight_colors() == usual
-        scene.kileido_phase_enabled = True
-        highlight.apply_selection({"selected": ["E_P"], "pair": []})  # a single net
-        assert highlight_colors() == usual
-        highlight.apply_selection({"selected": [], "pair": []})
-        # Reverse selected: a pair with a net selected in KiCad walks from its other end.
-        state.board.highlight = {"selected": {"E_P"}, "pair": {"E_N"}}
+        # The selected pair is its own highlight: its trace copies turn solid (white in phase,
+        # red and blue with the lead) and the selection's highlight copies leave its copper alone.
+        scene.kileido_phase_show = True
+        e_ids = list(state.board.phase["E_P"]["ids"])
+        e_traces = [state.board.collection.all_objects[f"KLS phase trace {side} {slots['E_P']}"] for side in "pn"]
+        highlight.apply_selection({"selected": e_ids[:1], "pair": e_ids[1:]})
         assert phase.selected_pairs() == ["E_P"]
+        assert all(trace[phase.SELECTED] == 1.0 for trace in e_traces) and p_trace[phase.SELECTED] == 0.0
+        assert set(e_ids) <= phase.hidden_ids()
+        scene.kileido_phase_enabled = False  # dynamic phase off: the selection's own highlight again
+        assert phase.hidden_ids() == set() and all(trace[phase.SELECTED] == 0.0 for trace in e_traces)
+        scene.kileido_phase_enabled = True
+        assert all(trace[phase.SELECTED] == 1.0 for trace in e_traces)
+        # Reverse selected: the selected pair walks from its other end.
         phase.flip_selected()
         assert phase.flipped() == {"E_P"}
         phase.flip_selected()
         assert phase.flipped() == set()
-        state.board.highlight = {"selected": set(), "pair": set()}
+        highlight.apply_selection({"selected": [], "pair": []})
+        assert phase.selected_pairs() == [] and all(trace[phase.SELECTED] == 0.0 for trace in e_traces)
+        scene.kileido_phase_show = False
         # Colours off, pulses on: the trace copies stay for the flash, their tint faded out.
         scene.kileido_phase_pulses = True
         assert not p_trace.hide_get() and start.hide_get()

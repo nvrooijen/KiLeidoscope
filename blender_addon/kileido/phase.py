@@ -64,8 +64,10 @@ SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase
 COLOUR_NODE = "KLS phase colours"  # 1: the tint shows; 0 (Colours off): only the pulses light the trace
 PULSES = 2  # per trace, evenly spaced over the loop
 CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
-NODES_VERSION = 4  # materials built by an older add-on (a saved .blend) are rebuilt
+NODES_VERSION = 5  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
+SELECTED = "kls_selected"  # per trace copy (an object property the material reads): 1 for the selected pair
+_hidden = set()  # the item ids the selection highlight last left to the trace copies
 TICK_S = 1 / 30
 DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
 _syncing = False  # the pair list is being rebuilt: its index changes are not clicks
@@ -113,6 +115,7 @@ def _apply_pair(header, arrays):
     if board.collection is None:
         return  # no board yet: drawn with the next pair frame or setting change
     draw(key)
+    refresh_highlight()  # a selected pair just measured takes over its highlight
     sync_list()
     set_pulses()
 
@@ -206,7 +209,10 @@ def _fresh(name):
 def _trace_material(side):
     """P red or N blue, more opaque the further the pair is out of phase there (|lead|
     over the colour scale), plus a flash in the same colour where the pulse is now:
-    exp(-((t - clock) / width)^2). Open over drilled holes, like the copper."""
+    exp(-((t - clock) / width)^2). Open over drilled holes, like the copper.
+
+    The selected pair (the object's SELECTED property) is solid instead, white where it
+    is in phase and turning red or blue with the lead: it is its own selection highlight."""
     name = f"{TRACE} {side.upper()}"
     material = _fresh(name)
     if material is not None:
@@ -217,14 +223,23 @@ def _trace_material(side):
         delay = _node(tree, "ShaderNodeAttribute")
         delay.attribute_type, delay.attribute_name = "GEOMETRY", DELAY
         share = _math(tree, "DIVIDE", lead.outputs["Fac"], _value(tree, SCALE_NODE, _scale()))
-        tint = _math(tree, "ADD", _math(tree, "MULTIPLY", _math(tree, "ABSOLUTE", share, clamp=True),
-                                        1.0 - IN_PHASE_ALPHA), IN_PHASE_ALPHA)
+        selected = _node(tree, "ShaderNodeAttribute")
+        selected.attribute_type, selected.attribute_name = "OBJECT", SELECTED
+        apart = _math(tree, "ABSOLUTE", share, clamp=True)
+        tint = _math(tree, "ADD", _math(tree, "MULTIPLY", apart, 1.0 - IN_PHASE_ALPHA), IN_PHASE_ALPHA)
+        tint = _math(tree, "MAXIMUM", tint, selected.outputs["Fac"])  # the selected pair: solid
         tint = _math(tree, "MULTIPLY", tint, _value(tree, COLOUR_NODE, 1.0 if _shown() else 0.0))
         glow = _pulse(tree, delay.outputs["Fac"])
-        color = _node(tree, "ShaderNodeMix")
+        base = _node(tree, "ShaderNodeMix")  # selected: white in phase, its colour with the lead
+        base.data_type = "RGBA"
+        tree.links.new(_math(tree, "MAXIMUM", apart, _math(tree, "SUBTRACT", 1.0, selected.outputs["Fac"])),
+                       base.inputs["Factor"])
+        base.inputs["A"].default_value = (1.0, 1.0, 1.0, 1.0)
+        base.inputs["B"].default_value = (*COLORS[side], 1.0)
+        color = _node(tree, "ShaderNodeMix")  # a pulse flashes in the side's colour
         color.data_type = "RGBA"
         tree.links.new(glow, color.inputs["Factor"])
-        color.inputs["A"].default_value = (*COLORS[side], 1.0)
+        tree.links.new(base.outputs["Result"], color.inputs["A"])
         color.inputs["B"].default_value = (*COLORS[side], 1.0)
         emission = _node(tree, "ShaderNodeEmission")
         tree.links.new(color.outputs["Result"], emission.inputs["Color"])
@@ -663,6 +678,7 @@ def draw(key):
         write_attribute(trace.data, DELAY, "FLOAT", delay.astype(np.float32))
         trace.data.update()
         trace["kls_phase_trace"] = 1
+        trace[SELECTED] = 1.0 if shown and key in selected_pairs() else 0.0
         set_visible(trace, _trace_shown(bpy.context.scene))
         active.add(trace.name)
         glow = _owned(f"{PREFIX}glow {side} {slot}", key, _glow_material(side), None)
@@ -716,12 +732,35 @@ def draw(key):
             _clear(obj)
 
 
-def refresh_highlight():
-    """A pair selected while dynamic phase shows: its highlight turns white, so the red
-    and blue on it are the lead and lag, not the selection's own colours. A single net,
-    or no dynamic phase: the selection's red-orange and blue."""
-    from . import materials
-    materials.set_pair_white(_enabled() and bool(board.highlight.get("pair")))
+def hidden_ids():
+    """The copper the selection highlight leaves alone: the route and pads of each
+    selected pair dynamic phase shows (its trace copies are the highlight there)."""
+    hidden = set()
+    if _shown():
+        for key in selected_pairs():
+            data = board.phase[key]
+            hidden.update(data.get("ids", ()))
+            hidden.update(pad.get("id", "") for pad in data.get("pads", ()))
+    return hidden
+
+
+def refresh_highlight(redraw=True):
+    """The selection or what dynamic phase shows changed: the selected pair's trace
+    copies turn solid (white in phase, red and blue with the lead), and the selection's
+    own highlight copies give way to them; `redraw` rebuilds those when that changed."""
+    global _hidden
+    chosen = set(selected_pairs()) if _shown() else set()
+    for obj in _objects():
+        if obj.get("kls_phase_trace"):
+            value = 1.0 if obj["kls_phase_key"] in chosen else 0.0
+            if obj.get(SELECTED) != value:
+                obj[SELECTED] = value
+                obj.update_tag()
+    hidden = hidden_ids()
+    changed, _hidden = hidden != _hidden, hidden
+    if redraw and changed:
+        from . import highlight
+        highlight.refresh()
 
 
 def refresh_visibility():
@@ -824,10 +863,10 @@ def select_row(scene):
 
 
 def selected_pairs():
-    """Pairs with a net selected in KiCad (or clicked in Blender, which selects there)."""
-    nets = set(board.highlight.get("selected", ())) | set(board.highlight.get("pair", ()))
-    return [key for key, data in board.phase.items()
-            if nets & set(data.get("p_nets", ())) | nets & set(data.get("n_nets", ()))]
+    """Pairs with copper selected in KiCad (or clicked in Blender, which selects there):
+    the selection names item ids, P's as "selected" and N's as "pair"."""
+    ids = set(board.highlight.get("selected", ())) | set(board.highlight.get("pair", ()))
+    return [key for key, data in board.phase.items() if ids and not ids.isdisjoint(data.get("ids", ()))]
 
 
 def flip_selected():

@@ -26,7 +26,7 @@ def apply_selection(header):
     board.highlight_components = {"footprints": set(header.get("footprints", ())),
                                   "pads": set(header.get("pads", ()))}
     from . import phase
-    phase.refresh_highlight()  # a pair under dynamic phase highlights white
+    phase.refresh_highlight(redraw=False)  # a selected pair under dynamic phase shows white there
     refresh()
     focus.refresh()
 
@@ -40,7 +40,9 @@ def refresh(layer=None, kind=None):
     """
     if board.collection is None or board.in_snapshot:
         return
-    wanted = board.highlight
+    from . import phase
+    hidden = phase.hidden_ids()  # a selected pair dynamic phase shows itself: no highlight copy over it
+    wanted = {name: chosen - hidden for name, chosen in board.highlight.items()} if hidden else board.highlight
     if kind in (None, "tracks"):
         _refresh_tracks(wanted, layer)
     if kind in (None, "vias"):
