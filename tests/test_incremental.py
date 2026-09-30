@@ -203,3 +203,36 @@ def test_parallel_connections_give_the_same_snapshot_and_report_busy():
             parallel.poll()
     finally:
         parallel.close()
+
+
+def test_restarted_kicad_is_only_followed_when_the_user_asks(monkeypatch):
+    import os
+    import kileido_bridge.kicad_reader as reader_module
+    calls = []
+
+    class FakeKiCad:
+        def __init__(self, timeout_ms=3000, kicad_token=None):
+            self.token = os.environ.get("KICAD_API_TOKEN", "") if kicad_token is None else kicad_token
+            self._client = NS(_kicad_token="new-instance")
+            calls.append(self.token)
+
+        def get_board(self):
+            if self.token == "old-instance":  # the KiCad that launched this bridge is gone
+                raise ApiError("token mismatch", code=ApiStatusCode.AS_TOKEN_MISMATCH)
+            return "board"
+
+    monkeypatch.setattr(reader_module, "KiCad", FakeKiCad)
+    monkeypatch.setenv("KICAD_API_TOKEN", "old-instance")
+    monkeypatch.setattr(reader_module, "_follow_new_kicad", False)
+    monkeypatch.setattr(reader_module, "_reached_kicad", False)
+    with pytest.raises(ApiError):  # never let in: a second KiCad's plugin stays refused
+        reader_module.connect_board()
+    monkeypatch.setattr(reader_module, "_reached_kicad", True)
+    with pytest.raises(reader_module.NewKiCad):  # let in before: a new KiCad waits for the user
+        reader_module.connect_board()
+    assert os.environ["KICAD_API_TOKEN"] == "old-instance"
+    reader_module.follow_new_kicad()
+    assert reader_module.connect_board() == "board"
+    assert os.environ["KICAD_API_TOKEN"] == "new-instance"
+    calls.clear()
+    assert reader_module.connect_board() == "board" and calls == ["new-instance"]

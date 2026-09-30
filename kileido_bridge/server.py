@@ -47,6 +47,7 @@ class BridgeServer:
         self.needs_snapshot = False
         self.select_requests = []
         self.phase_settings = None  # the viewer's last `phase_settings` request, not yet taken
+        self.adopt_requested = False  # the user pressed Resync in Blender
         self.outgoing = bytearray()
         self.snapshot_bytes = 0  # of `outgoing`: the latest snapshot, exempt from the backlog cap
 
@@ -114,6 +115,7 @@ class BridgeServer:
     def _handle(self, header: dict):
         if header.get("type") == "resync":
             self.needs_snapshot = True
+            self.adopt_requested = self.adopt_requested or bool(header.get("adopt", False))
         elif header.get("type") == "select":  # a click in Blender
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
             extend, center = bool(header.get("extend", False)), bool(header.get("center", False))
@@ -179,6 +181,11 @@ class BridgeServer:
     def take_phase_settings(self) -> dict | None:
         settings, self.phase_settings = self.phase_settings, None
         return settings
+
+    def take_adopt(self) -> bool:
+        """The user asked to follow a new KiCad (once per press)."""
+        requested, self.adopt_requested = self.adopt_requested, False
+        return requested
 
     def take_resync(self) -> bool:
         if not self.authenticated or not self.needs_snapshot:

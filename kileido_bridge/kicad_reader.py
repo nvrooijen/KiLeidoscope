@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import queue
 import sys
 import threading
@@ -87,9 +88,45 @@ def explain_connection_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+_reached_kicad = False  # this bridge has been let in by the KiCad that launched it
+_follow_new_kicad = False  # the user asked to follow the KiCad now on the socket
+
+
+class NewKiCad(Exception):
+    """Another KiCad instance now serves the socket this bridge was let into. It is only
+    followed after `follow_new_kicad`, which the user asks for: it may be an unrelated KiCad."""
+
+
+def follow_new_kicad() -> None:
+    """The next connect takes the token of the KiCad that now serves the socket."""
+    global _follow_new_kicad
+    _follow_new_kicad = True
+
+
 def connect_board(timeout_ms: int = 3000):
-    """Connect to the PCB editor without changing its document or selection."""
-    return KiCad(timeout_ms=timeout_ms).get_board()
+    """Connect to the PCB editor without changing its document or selection.
+
+    KiCad hands a plugin its own instance's token, and a restarted KiCad refuses it for good.
+    A bridge that got in before raises NewKiCad, and only takes the new instance's token
+    once `follow_new_kicad` was called.
+    """
+    global _reached_kicad, _follow_new_kicad
+    try:
+        kicad = KiCad(timeout_ms=timeout_ms)
+        board = kicad.get_board()
+    except Exception as exc:
+        if not (_reached_kicad and getattr(exc, "code", None) == ApiStatusCode.AS_TOKEN_MISMATCH):
+            raise
+        if not _follow_new_kicad:
+            raise NewKiCad("KiCad was restarted, or another KiCad is now serving the plugin "
+                           "connection. Press Resync to follow it; ignore this if it is an "
+                           "unrelated KiCad.") from exc
+        kicad = KiCad(timeout_ms=timeout_ms, kicad_token="")
+        board = kicad.get_board()
+        os.environ["KICAD_API_TOKEN"] = getattr(kicad._client, "_kicad_token", "")  # learned from its reply
+        _follow_new_kicad = False
+    _reached_kicad = True
+    return board
 
 
 def saved_board_path(board) -> str:

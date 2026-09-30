@@ -81,6 +81,20 @@ def test_path_variables_without_settings(tmp_path, monkeypatch):
     assert kicad_cli.path_variables(["${KIPRJMOD}/p.step", "C:/p.step"], str(tmp_path)) == ""
 
 
+def test_model_problems_from_kicad_cli_messages():
+    """kicad-cli 10's GLB export messages (measured) for a model path not found and a
+    VRML file its reader rejects; the rest of its output is not a problem."""
+    output = ("Could not add 3D model for R1.\n"
+              "File not found: ${MY_3D}/part.step\n"
+              "Error in VrmlAPI_CafReader: NumericInputErroroccurred at line 4\n"
+              "while reading VRML file 'C:\\models\\bad part.wrl'\n"
+              "readVRML() failed on filename 'C:\\models\\bad part.wrl'.\n"
+              "No model for filename 'C:\\models\\bad part.wrl'.\n"
+              "Binary GLTF file 'C:\\out\\models.glb' created.\n")
+    assert kicad_cli.model_problems(output) == ["${MY_3D}/part.step", "C:\\models\\bad part.wrl"]
+    assert kicad_cli.model_problems("Binary GLTF file 'x.glb' created.\n") == []
+
+
 def test_store_and_lookup(tmp_path, monkeypatch):
     monkeypatch.setattr(kicad_cli, "cache_root", lambda: tmp_path / "cache")
     output = tmp_path / "result.txt"

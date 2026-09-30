@@ -108,9 +108,11 @@ class SocketClient:
         self.state = "connected"
         self.outgoing.extend(encode_frame({"type": "hello", "token": self.token}))
 
-    def request_resync(self):
+    def request_resync(self, adopt=False):
+        """Ask for the whole board again; `adopt` (the user's Resync button) also lets the
+        bridge follow a KiCad other than the one it was let into."""
         if self.state == "connected":
-            self.outgoing.extend(encode_frame({"type": "resync"}))
+            self.outgoing.extend(encode_frame({"type": "resync", "adopt": True} if adopt else {"type": "resync"}))
 
     def request_select(self, ids, extend=False, center=False):
         """Ask the bridge to select these KiCad items (a click in Blender), and with

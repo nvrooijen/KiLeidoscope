@@ -12,6 +12,8 @@ from pathlib import Path
 
 CACHE_VERSION = "1"  # bump when an exporter's options or output layout change
 _VARIABLE = re.compile(r"\$\{([^}]+)\}|\$\(([^)]+)\)")  # KiCad's ${NAME} and $(NAME)
+# kicad-cli's messages for a model it left out: not found, or found but unreadable
+_MODEL_PROBLEM = re.compile(r"File not found: (.+)|No model for filename '(.+)'")
 
 
 def executable(export=None):
@@ -70,6 +72,13 @@ def path_variables(paths, settings=""):
                    - {"KIPRJMOD"})
     saved = _saved_variables(settings) if names else {}
     return "\n".join(f"{name}={os.environ.get(name)!r}|{saved.get(name)!r}" for name in names)
+
+
+def model_problems(output):
+    """The model files a GLB export left out, one per message, from kicad-cli's output:
+    paths it did not find, and files it found but could not read (a VRML file its
+    OpenCascade reader rejects even when KiCad's 3D viewer shows it)."""
+    return [(match[1] or match[2]).strip() for match in _MODEL_PROBLEM.finditer(output)]
 
 
 def _saved_variables(settings):
