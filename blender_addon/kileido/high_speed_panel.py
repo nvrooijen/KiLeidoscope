@@ -156,13 +156,8 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
     pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
     pulses.prop(scene, "kileido_phase_pulse_glow", text="Pulse brightness")
-    legend = layout.row(align=True)
-    for color, text in ((phase.COLORS["p"], "P"), (phase.COLORS["n"], "N")):
-        legend.label(text=text, icon_value=swatch("tile", color))
+    _draw_legend(layout.box().column(align=True), context, wrap, swatch)
     info = layout.column(align=True)
-    for line in wrap(context, "The stronger the colour, the further P and N are out of phase there. "
-                              "Pulses start together: the one in front is ahead."):
-        info.label(text=line)
     guess = phase.sources_warning()
     if guess:
         for index, line in enumerate(wrap(context, f"Delay: {guess}, no tuning profile or "
@@ -183,11 +178,32 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     for title in ("Delay", "Skew", "Max |Δt|"):
         numbers.label(text=title)
     header.label(text="", icon="BLANK1")  # over the rows' flip buttons
+    header.separator(factor=0.8)  # the list's own margin, so each title sits over its column
+    # Every pair on show (up to a dozen): without a scrollbar the rows' columns line up with the titles.
     layout.template_list("KILEIDO_UL_phase_pairs", "", scene, "kileido_phase_pairs", scene,
-                         "kileido_phase_index", rows=4)
+                         "kileido_phase_index", rows=min(len(scene.kileido_phase_pairs), 12))
     data = phase.active_pair()
     if data is not None:
         _draw_pair(context, layout.box(), data, wrap)
+
+
+def _draw_legend(column, context, wrap, swatch):
+    """What the colours and markers mean: white to P red and N blue over the colour
+    scale (white only on the selected pair; elsewhere a faint tint), the markers, the pulses."""
+    scale = context.scene.kileido_phase_scale_ps
+    column.label(text="Legend")
+    for side, name in (("p", "P"), ("n", "N")):
+        row = column.row(align=True)
+        for share in (0.0, 1 / 3, 2 / 3, 1.0):
+            color = tuple(1.0 + (channel - 1.0) * share for channel in phase.COLORS[side])
+            row.label(text="", icon_value=swatch("tile", color))
+        row.label(text=f"{name}: in phase → {scale:.2f} ps apart")
+    for role, text in (("start", "Start of the pair"), ("end", "End of the pair"),
+                       ("excursion", "Out of phase beyond the markers' limits")):
+        column.label(text=text, icon_value=swatch("tile", phase.COLORS[role]))
+    for line in wrap(context, "White: the selected pair where it is in phase. Pulses start together: "
+                              "the one in front is ahead."):
+        column.label(text=line)
 
 
 def _draw_pair(context, box, data, wrap):
