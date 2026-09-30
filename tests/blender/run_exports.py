@@ -107,6 +107,27 @@ def check_missing_models_not_cached(scratch):
         kicad_cli.lookup, kicad_cli.store = real_lookup, real_store
 
 
+def check_unsaved_board_follows_live_copy(scratch):
+    """A board with no saved file (empty board path) still loads models from the bridge's
+    live copy; only with neither copy nor saved board is the status the save-it hint."""
+    live = scratch / "live" / BOARD_FILE.name
+    live.parent.mkdir()
+    live.write_bytes(BOARD_FILE.read_bytes())
+    watcher_ = models._watcher
+    real_change = watcher_.on_change
+    watcher_.on_change = lambda job, memory: None  # only the start-up is checked, no export
+    try:
+        models.follow_board("", {"path": str(live), "live": True})
+        assert watcher_._stop is not None, "an unsaved board with a live copy was not followed"
+        assert watcher_.status == watcher_.starting({"live": True}), watcher_.status
+        models.follow_board("", {})
+        assert watcher_._stop is None and watcher_.status == watcher_.unavailable, watcher_.status
+        assert "save the board" in watcher_.status
+    finally:
+        models.stop_following()
+        watcher_.on_change = real_change
+
+
 def export_glb(path, name, size):
     """A two-mesh GLB, each with a textured material, as a stand-in for KiCad's export."""
     made = []
@@ -263,6 +284,7 @@ def main():
     try:
         check_model_retry(scratch)
         check_missing_models_not_cached(scratch)
+        check_unsaved_board_follows_live_copy(scratch)
         snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))
         apply.load_frames(b"".join(snapshot_frames(snapshot, board_path=str(BOARD_FILE))))
         check_overlay_images()

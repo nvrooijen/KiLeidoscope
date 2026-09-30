@@ -154,7 +154,7 @@ def _on_result(result):
 _watcher = BoardWatcher(
     "model export", _on_board_change, _on_result,
     starting=lambda export: "Finding 3D models from the KiCad board…",
-    unavailable="3D models unavailable: board file path missing from snapshot",
+    unavailable="3D models unavailable: save the board in KiCad, then press Resync",
     failed="Model export failed", import_failed="Model import failed", first_interval=0.1)
 
 
