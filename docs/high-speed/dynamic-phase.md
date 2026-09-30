@@ -97,6 +97,7 @@ For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff
 
 - **No frequency dependence.** One εr per dielectric, as the stackup gives it. No change of Dk with frequency, no microstrip dispersion, no loss, no skin effect. These affect P and N alike where they run together.
 - **Microstrip:** no solder mask (delay a few % too low), zero copper thickness, and the next copper layer is assumed to be the reference plane.
+- **No plane underneath** (a plain coplanar waveguide, a 2-layer board without a pour on the other side, a plane several layers down) is not detected: a whole plane on the next copper layer is always assumed. Finding out what really lies under each trace is a field solver's job; a tuning profile with your own numbers covers such a board.
 - **Coupling** is modelled on outer layers without a tuning profile (see above). A tuning profile gives one value per layer, coupled or not, as KiCad's own tuning does. On inner layers (stripline) coupling doesn't change the speed.
 - **Meander self-coupling,** which shortens a tight meander's real delay, is not modelled.
 - **Grounded coplanar waveguide** is modelled on outer layers without a tuning profile: at each point, the distance to the nearest pour of another net on the same layer speeds that stretch up (a pour past 10 dielectric heights changes nothing). The pour is taken as one straight edge at that distance; stitching vias and the pour's own width are not considered.
@@ -106,7 +107,7 @@ For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff
 
 ## When not to trust it
 
-- P and N with a plane edge (a split) under them: the plane below is assumed whole.
+- P and N with a plane edge (a split) under them, or no plane under them at all: a whole plane on the next copper layer is assumed.
 - Long stretches where P and N run far apart; Δt there is defined only by which points are nearest.
 - Unfinished routes: the pair list warns when a side isn't fully routed.
 - Pairs whose sides still end on different parts: the pair list warns.
