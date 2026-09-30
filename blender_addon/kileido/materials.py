@@ -21,7 +21,8 @@ FALLBACK_COPPER = (0.7, 0.6, 0.1)
 FALLBACK_MASK = (0.29, 0.49, 0.71)
 FALLBACK_CORE = (0.43, 0.45, 0.29)
 
-HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0)}  # red-orange / blue (sRGB)
+# red-orange / blue (sRGB); white: what dynamic phase leaves to the highlight of a selected pair
+HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0), "phase": (1.0, 1.0, 1.0)}
 PLACEHOLDER_COLOR = (0.36, 0.43, 0.52)  # a component whose model file is missing: a grey-blue box
 OUTLINE_PROBLEM_COLOR = (1.0, 0.0, 0.0)  # a malformed board outline: bright red
 OUTLINE_PROBLEM_GLOW = 0.8  # higher reads orange in AgX
@@ -63,10 +64,12 @@ def create_all():
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair": make("KLS Highlight pair", HIGHLIGHT_COLORS["pair"]),
+        "highlight_phase": make("KLS Highlight phase", HIGHLIGHT_COLORS["phase"]),
         # Via barrels sit inside the drill, where the hole mask makes the land
         # materials see-through; they need their own solid copy.
         "highlight_selected_barrel": make("KLS Highlight selected barrel", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair_barrel": make("KLS Highlight pair barrel", HIGHLIGHT_COLORS["pair"]),
+        "highlight_phase_barrel": make("KLS Highlight phase barrel", HIGHLIGHT_COLORS["phase"]),
         # A glow shell, not a surface: flat translucent red-orange in every mode.
         "highlight_box": make("KLS Highlight component", HIGHLIGHT_COLORS["selected"], HIGHLIGHT_BOX_ALPHA),
         "highlight_outline": make("KLS Highlight outline", OUTLINE_PROBLEM_COLOR),

@@ -67,7 +67,7 @@ CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
 NODES_VERSION = 5  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
 SELECTED = "kls_selected"  # per trace copy (an object property the material reads): 1 for the selected pair
-_hidden = set()  # the item ids the selection highlight last left to the trace copies
+_hidden = (set(), set())  # the last selection_split
 TICK_S = 1 / 30
 DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
 _syncing = False  # the pair list is being rebuilt: its index changes are not clicks
@@ -732,16 +732,20 @@ def draw(key):
             _clear(obj)
 
 
-def hidden_ids():
-    """The copper the selection highlight leaves alone: the route and pads of each
-    selected pair dynamic phase shows (its trace copies are the highlight there)."""
-    hidden = set()
+def selection_split():
+    """(taken, white) item ids of each selected pair dynamic phase shows: all of its
+    copper leaves the selection's red and blue; what its trace copies do not draw
+    themselves (vias with their barrels, stubs, pieces left over along the route,
+    other pads) is highlighted white."""
+    taken, covered = set(), set()
     if _shown():
         for key in selected_pairs():
             data = board.phase[key]
-            hidden.update(data.get("ids", ()))
-            hidden.update(pad.get("id", "") for pad in data.get("pads", ()))
-    return hidden
+            route = set(data.get("ids", ()))
+            pads = {pad.get("id", "") for pad in data.get("pads", ())}
+            taken |= set(data.get("net_ids", ())) | route | pads
+            covered |= route - {via.get("id", "") for via in data.get("vias", ())} | pads
+    return taken, taken - covered
 
 
 def refresh_highlight(redraw=True):
@@ -756,7 +760,7 @@ def refresh_highlight(redraw=True):
             if obj.get(SELECTED) != value:
                 obj[SELECTED] = value
                 obj.update_tag()
-    hidden = hidden_ids()
+    hidden = selection_split()
     changed, _hidden = hidden != _hidden, hidden
     if redraw and changed:
         from . import highlight

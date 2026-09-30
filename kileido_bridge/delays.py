@@ -56,6 +56,11 @@ class DelayModel:
         """(ps, source) of a via or plated hole carrying the signal between two layers."""
         raise NotImplementedError
 
+    def structure(self, layer: str) -> tuple[str, float]:
+        """("microstrip" or "stripline", dielectric height in nm) of a trace on `layer`;
+        ("", 0) when unknown."""
+        return "", 0.0
+
 
 @dataclass(frozen=True)
 class TuningProfile:
@@ -233,6 +238,13 @@ class StackupDelays(DelayModel):
         else:
             effective = epsilon_r  # stripline: the field is all in the dielectric
         return UnitDelay(PS_PER_MM_VACUUM * math.sqrt(effective), source)
+
+    def structure(self, layer: str) -> tuple[str, float]:
+        beside = self._dielectric.get(layer, [])
+        heights = [entry.thickness_nm for entry in beside if entry.thickness_nm]
+        if len(beside) == 1 or layer in ("F.Cu", "B.Cu"):
+            return "microstrip", float(heights[0]) if heights else 0.0
+        return "stripline", float(min(heights)) if heights else 0.0
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
                length_nm: float) -> tuple[float, str]:

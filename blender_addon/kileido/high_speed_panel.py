@@ -203,6 +203,11 @@ def _draw_pair(context, box, data, wrap):
     lines = [f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"]
     if data.get("parts"):
         lines.append("Through " + ", ".join(data["parts"]))
+    kinds = data.get("lines") or ()
+    total = sum(float(line.get("mm", 0.0)) for line in kinds) or 1.0
+    if kinds:
+        lines.append("Line: " + ", ".join(f"{line['kind']} {line['layer']} {100 * float(line['mm']) / total:.0f} %"
+                                          for line in kinds if float(line["mm"]) / total >= 0.005))
     lines.append("Delay: " + "; ".join(data.get("sources", ())))
     for text in lines:
         for line in wrap(context, text):

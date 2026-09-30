@@ -41,8 +41,11 @@ def refresh(layer=None, kind=None):
     if board.collection is None or board.in_snapshot:
         return
     from . import phase
-    hidden = phase.hidden_ids()  # a selected pair dynamic phase shows itself: no highlight copy over it
-    wanted = {name: chosen - hidden for name, chosen in board.highlight.items()} if hidden else board.highlight
+    # A selected pair under dynamic phase: its trace copies are the highlight of its route;
+    # the rest of its copper (vias with their barrels, stubs, leftover pieces) turns white.
+    taken, white = phase.selection_split()
+    wanted = {name: chosen - taken for name, chosen in board.highlight.items()}
+    wanted["phase"] = white
     if kind in (None, "tracks"):
         _refresh_tracks(wanted, layer)
     if kind in (None, "vias"):
@@ -148,7 +151,8 @@ def _refresh_pads(wanted, component_pads, only_layer=None):
     """Pads on a highlighted net (red-orange; blue on the diff-pair partner net) and
     pads of selected components (red-orange): a sheet just above each pad's outer
     copper surface (no side walls, so nothing is coplanar with the copper's)."""
-    chosen_by_kind = {"selected": wanted["selected"] | component_pads, "pair": wanted["pair"]}
+    chosen_by_kind = {"selected": wanted["selected"] | component_pads, "pair": wanted["pair"],
+                      "phase": wanted.get("phase", set())}
     for source in _copper_sources("pads"):
         layer = source["kls_copper"][0]
         if only_layer is not None and layer != only_layer:

@@ -34,6 +34,8 @@ from . import board_text, channels, delays, model, protocol
 
 SAMPLES = 400  # per side at most; longer routes get a longer step
 COUPLE_STEP_NM = 50_000  # the gap to the partner, and so the coupled unit delay, every 50 um
+COUPLED_WITHIN_H = 3.0  # the partner this close (edge to edge, in dielectric heights): a coupled line
+GROUNDED_WITHIN_H = 2.0  # a pour this close: a grounded coplanar line
 GROUND_REACH_NM = 2_000_000  # pour edges farther than this are not looked at (past 10 dielectric heights)
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
@@ -121,6 +123,8 @@ class PairPhase:
     warnings: tuple[str, ...] = ()
     traces: tuple = ()  # (P Trace, N Trace)
     pads: tuple = ()  # dicts for the frame: see _pads
+    lines: tuple = ()  # ({"layer", "kind", "mm"}, ...): what kind of line the route is, longest first
+    net_ids: tuple = ()  # every item on the pair's nets (stubs and leftovers too), for Blender's highlight
 
     @property
     def skew_ps(self) -> float:
@@ -143,6 +147,7 @@ class _Walk:
     nets: list  # (v,) net of the piece each vertex ends
     crossings: list
     sources: set
+    lines: dict = field(default_factory=dict)  # (layer, kind) -> nm of track (from _couple)
 
 
 def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: dict[str, int]) -> _Walk:
@@ -278,10 +283,25 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
                     alone = lone[key[:3]] = model_.track(walk.nets[v], layer, width).ps_per_mm
                 cache[key] = model_.track(walk.nets[v], layer, width, key[3], side).ps_per_mm / alone if alone else 1.0
             ratio[index] = cache[key]
+    lines = {}
+    if track.any():
+        spans = np.diff(cuts)[track]
+        for index, span, gap, pour in zip(np.flatnonzero(track), spans, gaps, pours):
+            v = vertex[index]
+            layer = layer_at.get(int(round(walk.xyz[v, 2])))
+            kind, h = model_.structure(layer) if layer is not None else ("", 0.0)
+            if not kind:
+                continue
+            h = h or 1.0
+            if kind == "microstrip" and pour - walk.widths[v] / 2 < GROUNDED_WITHIN_H * h:
+                kind = "grounded coplanar"
+            if gap - walk.widths[v] < COUPLED_WITHIN_H * h:
+                kind = "coupled " + kind
+            lines[(layer, kind)] = lines.get((layer, kind), 0.0) + float(span)
     coupled = np.concatenate(([delay[0]], delay[0] + np.cumsum(np.diff(delay) * ratio)))
     crossings = [replace(crossing, reached_ps=float(np.interp(crossing.at_nm, cuts, coupled)))
                  for crossing in walk.crossings]
-    return replace(walk, delay=np.interp(walk.along, cuts, coupled), crossings=crossings)
+    return replace(walk, delay=np.interp(walk.along, cuts, coupled), crossings=crossings, lines=lines)
 
 
 def _resample(walk: _Walk, step: float) -> tuple[np.ndarray, np.ndarray, list, np.ndarray]:
@@ -474,9 +494,15 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     crossings = tuple(replace(crossing, lead_ps=float(np.interp(crossing.at_nm, s, lead)))
                       for walk, s, lead in zip(walks, (s_a, s_b), leads) for crossing in walk.crossings)
     pads = tuple(_pads(p, traces[0], "p", heights) + _pads(n, traces[1], "n", heights))
+    lengths = {}
+    for walk in walks:
+        for key, length in walk.lines.items():
+            lengths[key] = lengths.get(key, 0.0) + length / 2  # both sides: their mean
+    lines = tuple({"layer": layer, "kind": kind, "mm": length / 1e6}
+                  for (layer, kind), length in sorted(lengths.items(), key=lambda entry: -entry[1]))
     return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
                      width, excursions, crossings,
-                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads)
+                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads, lines)
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
@@ -502,7 +528,10 @@ def _analyze_channel(channel, by_net, heights, references, model_, settings, gro
                                   heights, references, channel.p_links, channel.n_links)
     if routes[0] is None or routes[1] is None:
         return None, f"{channel.name}: no routed path between two pads yet"
-    return analyze(channel, *routes, model_, heights, settings, grounds), ""
+    result = analyze(channel, *routes, model_, heights, settings, grounds)
+    items = channels.combined(by_net, channel.nets)
+    net_ids = tuple(item.id for kind in (items.tracks, items.arcs, items.vias, items.pads) for item in kind)
+    return replace(result, net_ids=net_ids), ""
 
 
 # --- Live: recompute only pairs whose copper changed ---------------------------------------
@@ -699,7 +728,9 @@ def pair_frame(result: PairPhase, revision: int) -> bytes:
         "sources": list(result.sources), "warnings": list(result.warnings),
         "ids": list(dict.fromkeys(p.item_ids + n.item_ids)),
         "pads": list(result.pads),
-        "vias": [{"side": crossing.side.lower(), "x": crossing.pos[0], "y": crossing.pos[1],
+        "lines": list(result.lines),
+        "net_ids": list(result.net_ids),
+        "vias": [{"side": crossing.side.lower(), "id": crossing.item_id, "x": crossing.pos[0], "y": crossing.pos[1],
                   "diameter": crossing.diameter_nm, "drill": crossing.drill_nm,
                   "layers": [crossing.from_layer, crossing.to_layer],
                   "t": [crossing.reached_ps, crossing.reached_ps + crossing.delay_ps], "lead": crossing.lead_ps}

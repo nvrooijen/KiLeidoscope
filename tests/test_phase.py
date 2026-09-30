@@ -156,6 +156,18 @@ def test_pads_that_connect_twice_still_end_or_carry_the_route():
     assert [branch.terminal.label for branch in result.n.branches] == ["D1.3"]
 
 
+def test_the_pair_says_what_kind_of_line_it_is():
+    lines = {(line["layer"], line["kind"]): line["mm"] for line in only_pair(boards.layer_change()).lines}
+    # 1 mm pitch over 0.2 mm of dielectric: 0.85 mm apart edge to edge, beyond 3 dielectric
+    # heights, so each side counts as a lone microstrip; F.Cu to x = 20, B.Cu on.
+    assert set(lines) == {("F.Cu", "microstrip"), ("B.Cu", "microstrip")}
+    assert lines[("F.Cu", "microstrip")] == pytest.approx(20, abs=0.5)
+    grounded = {line["kind"] for line in only_pair(boards.grounded(0.1)).lines}
+    assert grounded == {"grounded coplanar", "microstrip"}  # 40 of 50 mm beside the pour
+    ids = set(only_pair(boards.esd_stub()).net_ids)
+    assert {"D1.1", "D1.2"} <= ids  # the stubs' pads too: Blender highlights them white
+
+
 def test_flipping_walks_from_the_other_end():
     snapshot = boards.compensated_far()
     forward = only_pair(snapshot)

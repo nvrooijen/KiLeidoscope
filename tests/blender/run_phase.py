@@ -185,9 +185,15 @@ def main():
         highlight.apply_selection({"selected": e_ids[:1], "pair": e_ids[1:]})
         assert phase.selected_pairs() == ["E_P"]
         assert all(trace[phase.SELECTED] == 1.0 for trace in e_traces) and p_trace[phase.SELECTED] == 0.0
-        assert set(e_ids) <= phase.hidden_ids()
+        taken, white = phase.selection_split()
+        via_ids = {via["id"] for via in state.board.phase["E_P"]["vias"]}
+        assert set(e_ids) <= taken and via_ids and via_ids <= white  # the vias' barrels: white highlight
+        assert not (set(e_ids) - via_ids) & white  # the route itself: its trace copies
+        vias_white = state.board.collection.all_objects.get("KLS vias highlight phase")
+        assert vias_white is not None and not vias_white.hide_get()
         scene.kileido_phase_enabled = False  # dynamic phase off: the selection's own highlight again
-        assert phase.hidden_ids() == set() and all(trace[phase.SELECTED] == 0.0 for trace in e_traces)
+        assert phase.selection_split() == (set(), set()) and all(trace[phase.SELECTED] == 0.0 for trace in e_traces)
+        assert vias_white.hide_get()
         scene.kileido_phase_enabled = True
         assert all(trace[phase.SELECTED] == 1.0 for trace in e_traces)
         # Reverse selected: the selected pair walks from its other end.
