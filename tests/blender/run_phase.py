@@ -102,12 +102,22 @@ def main():
         # A comet tail behind each pulse, its length the panel's.
         scene.kileido_phase_pulse_tail_ps = 5.0
         assert glow.data.materials[0].node_tree.nodes[phase.TAIL_NODE].outputs[0].default_value == 5.0
+        # On the timeline, the frame sets the clock, so renders have the pulses in place.
+        scene.kileido_phase_pulse_clock = "TIMELINE"
+        fps = scene.render.fps / scene.render.fps_base
+        scene.frame_set(scene.frame_start + 12)
+        expected = (12 / fps * scene.kileido_phase_pulse_rate) - 3 * phase._pulse_width()
+        assert abs(nodes[phase.CLOCK_NODES[0]].outputs[0].default_value - expected) < 1e-3
+        assert not bpy.app.timers.is_registered(phase._pulse_tick)
+        scene.frame_set(scene.frame_start + 13)  # the next frame moves them on
+        assert nodes[phase.CLOCK_NODES[0]].outputs[0].default_value > expected
         # The second pulse runs half a loop behind the first.
         width = phase._pulse_width()
         longest = max(max(data['delay_p_ps'], data['delay_n_ps']) for data in state.board.phase.values())
         period = longest + 6 * width + 4 * phase._pulse_tail()  # the slowest pair sets the loop
         leading, trailing = (nodes[name].outputs[0].default_value for name in phase.CLOCK_NODES)
         assert abs((trailing - leading) % period - period / 2) < 1e-3
+        scene.kileido_phase_pulse_clock = "LIVE"
         scene.kileido_phase_pulses = False
         assert phase._pulse_tick() is None and nodes[phase.PULSE_NODE].outputs[0].default_value == 0.0
         assert glow.hide_get()

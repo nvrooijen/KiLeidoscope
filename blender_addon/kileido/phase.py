@@ -11,8 +11,9 @@ together at the start terminal, with an energy field around it: a glowing tube
 standing out of the board, lit only where the pulse is. It reaches each point of
 a trace at that point's delay (the same delays as the panel's numbers), slowed
 down to picoseconds per second, so the lagging side visibly falls behind the one
-ahead. Only the pulse clocks move, on a timer (held while a view renders with
-Cycles, so that view converges).
+ahead. Only the pulse clocks move. Live, a timer runs them (held while a view
+renders with Cycles, so that view converges); on the timeline, the frame sets them,
+so playback animates the pulses and Cycles renders them, in stills and animations.
 
 Markers stand on both terminals (green start, violet end) with their pads as
 labels, and at the start of every stretch the bridge found out of phase (amber);
@@ -31,6 +32,7 @@ import time
 
 import bpy
 import numpy as np
+from bpy.app.handlers import persistent
 
 from . import holes, live, transform
 from .objects import link_owned, owned_object, set_visible, write_attribute
@@ -370,11 +372,15 @@ def _cycles_viewport(scene):
     return scene.render.engine == "CYCLES" and any(space.shading.type == "RENDERED" for space in view3d_spaces())
 
 
+def _timeline(scene):
+    return getattr(scene, "kileido_phase_pulse_clock", "LIVE") == "TIMELINE"
+
+
 def _pulse_tick():
-    """The pulse clock (wall time). It holds still while a view renders with Cycles, so
-    that view converges, and stops itself when the pulses go off."""
+    """The live clock (wall time). It holds still while a view renders with Cycles, so
+    that view converges, and stops itself when the pulses go off or follow the timeline."""
     scene = bpy.context.scene
-    if not _pulsing(scene):
+    if not _pulsing(scene) or _timeline(scene):
         _show_pulses(scene)
         return None
     if not _cycles_viewport(scene):
@@ -382,8 +388,18 @@ def _pulse_tick():
     return TICK_S
 
 
+@persistent
+def on_frame(scene, _depsgraph=None):
+    """The timeline clock: the frame sets where the pulses are, so playback animates
+    them and a render (still or animation) has them in place on every frame."""
+    if _timeline(scene) and _pulsing(scene):
+        fps = scene.render.fps / (scene.render.fps_base or 1.0)
+        _set_clock(scene, (scene.frame_current + scene.frame_subframe - scene.frame_start) / fps)
+
+
 def _show_pulses(scene):
-    """The glows shown only while pulsing (and the trace copies that carry the flash)."""
+    """The glows shown only while pulsing (and the trace copies that carry the flash);
+    on the timeline, placed for the current frame."""
     for obj in _objects():
         if obj.get("kls_phase_glow"):
             set_visible(obj, _pulsing(scene) and len(obj.data.vertices) > 0)
@@ -391,15 +407,18 @@ def _show_pulses(scene):
             set_visible(obj, _trace_shown(scene) and len(obj.data.vertices) > 0 and obj["kls_phase_key"] in board.phase)
     if not _pulsing(scene):
         _set(PULSE_NODE, 0.0)
+    elif _timeline(scene):
+        on_frame(scene)
 
 
 def set_pulses():
-    """Pulses on or off: start the clock, or put them out."""
+    """Pulses on, off or switched clock: start the live clock, place them for the
+    current frame, or put them out."""
     global _clock_start
     scene = bpy.context.scene
     _drop_old_bloom(scene)
     _show_pulses(scene)
-    if not _pulsing(scene):
+    if not _pulsing(scene) or _timeline(scene):
         stop_pulses()
     elif not bpy.app.timers.is_registered(_pulse_tick):
         _clock_start = time.monotonic()

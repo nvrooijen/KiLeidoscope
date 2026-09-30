@@ -747,6 +747,14 @@ def _scene_properties():
             description="A glow launched on both traces together at the start terminal, travelling at each "
                         "trace's own delay (slowed down), so the lagging trace falls behind",
             update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_clock": EnumProperty(
+            name="Pulse clock",
+            items=(("LIVE", "Live", "The pulses run by themselves in the 3D view (they hold still while a "
+                                    "view renders with Cycles, so it can finish)"),
+                   ("TIMELINE", "Timeline (renders)", "The frame sets where the pulses are: Play animates "
+                                                      "them, and a render has them in place on every frame "
+                                                      "(stills and animations)")),
+            default="LIVE", update=lambda self, context: phase.set_pulses()),
         "kileido_phase_pulse_rate": FloatProperty(
             name="Pulse speed", default=30.0, min=0.1, soft_min=5.0, soft_max=500.0, precision=0,
             description="Picoseconds of signal travel shown per second"),
@@ -840,11 +848,14 @@ def register():
     collisions.install()
     columns.install()
     bpy.app.handlers.load_post.append(_file_loaded)
+    bpy.app.handlers.frame_change_pre.append(phase.on_frame)
 
 
 def unregister():
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
+    if phase.on_frame in bpy.app.handlers.frame_change_pre:
+        bpy.app.handlers.frame_change_pre.remove(phase.on_frame)
     if bpy.app.timers.is_registered(dump.drain):
         bpy.app.timers.unregister(dump.drain)
     for keymap, entry in _KEYMAPS:

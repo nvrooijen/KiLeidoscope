@@ -152,6 +152,10 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
     pulses = layout.column(align=True)
     pulses.active = scene.kileido_phase_pulses
+    pulses.row().prop(scene, "kileido_phase_pulse_clock", expand=True)
+    if scene.kileido_phase_pulse_clock == "TIMELINE":
+        for line in wrap(context, "The frame sets the pulses: Play animates them, and renders show them."):
+            pulses.label(text=line, icon="INFO")
     pulses.prop(scene, "kileido_phase_pulse_rate", text="Pulse speed (ps/s)")
     pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
     pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
