@@ -187,13 +187,30 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
         _draw_pair(context, layout.box(), data, wrap)
 
 
+BAR_TILES = 48
+
+
 def _draw_legend(column, context, wrap, swatch):
-    """What the colours and markers mean. The colour bar itself (white to P red and N blue
-    over the colour scale) is drawn in the 3D view (phase._draw_bar): a panel has no
-    continuous gradient."""
-    column.label(text="Legend")
-    for line in wrap(context, "Colour bar: bottom left of the 3D view (P red, in phase white, N blue)."):
-        column.label(text=line)
+    """What the colours and markers mean: a colour bar from P red through white (in phase)
+    to N blue over the colour scale, then the markers and how to read the pulses. A panel
+    has no gradient widget: the bar is BAR_TILES full-bleed icons side by side, which an
+    aligned row packs edge to edge."""
+    scale = context.scene.kileido_phase_scale_ps
+    column.label(text="Dynamic phase: how far P and N are apart")
+    bar = column.row(align=True)
+    for index in range(BAR_TILES):
+        share = index / (BAR_TILES - 1) * 2 - 1  # -1: P at the scale's end; 0: in phase; 1: N at its end
+        side = phase.COLORS["p" if share < 0 else "n"]
+        bar.label(text="", icon_value=swatch("fill", tuple(1.0 + (c - 1.0) * abs(share) for c in side)))
+    ends = column.row(align=True)
+    ends.label(text=f"P  {scale:.2f} ps")
+    middle = ends.row()
+    middle.alignment = "CENTER"
+    middle.label(text="in phase")
+    right = ends.row()
+    right.alignment = "RIGHT"
+    right.label(text=f"{scale:.2f} ps  N")
+    column.separator()
     for role, text in (("start", "Start of the pair"), ("end", "End of the pair"),
                        ("excursion", "Out of phase beyond the markers' limits")):
         column.label(text=text, icon_value=swatch("tile", phase.COLORS[role]))

@@ -569,7 +569,8 @@ SWATCH_BAND = {"silk": 8, "mask": 10, "copper": 12, "dielectric": 26}
 
 def _swatch(kind, color):
     """A preview icon in `color`: a band for stackup layers (thickness by kind), a ring
-    for vias, a tile for anything else. Cached by kind and colour."""
+    for vias, the whole icon for "fill" (side by side they make a colour bar), a tile
+    for anything else. Cached by kind and colour."""
     if _icons is None:
         return 0
     rgb = tuple(round(float(channel), 3) for channel in color[:3])
@@ -588,6 +589,9 @@ def _swatch(kind, color):
         radius = np.hypot(x - centre, y - centre)
         inside = radius <= 9
         edge = inside & (radius > 8)
+    elif kind == "fill":
+        inside = np.ones((size, size), bool)
+        edge = np.zeros((size, size), bool)
     elif kind == "vias":
         radius = np.hypot(x - centre, y - centre)
         inside = (radius <= 12) & (radius >= 5)
@@ -835,7 +839,6 @@ def register():
             _KEYMAPS.append((keymap, entry))
     collisions.install()
     columns.install()
-    phase.install_bar()
     bpy.app.handlers.load_post.append(_file_loaded)
 
 
@@ -854,7 +857,6 @@ def unregister():
     render_depth.uninstall()
     collisions.uninstall()
     columns.uninstall()
-    phase.uninstall_bar()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):

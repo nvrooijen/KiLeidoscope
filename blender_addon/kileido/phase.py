@@ -780,62 +780,6 @@ def refresh_visibility():
     set_pulses()  # the glows show only while pulsing
 
 
-# --- The colour bar: a legend in the 3D view -----------------------------------------------
-
-# Panels cannot draw a continuous gradient (icons are square), so the bar is drawn in the
-# 3D view's bottom-left corner while dynamic phase shows. Unscaled pixels; screen colours
-# near what the tints look like on the board.
-BAR_LEFT, BAR_BOTTOM, BAR_WIDTH, BAR_HEIGHT, BAR_PAD, BAR_TEXT = 70, 28, 240, 10, 8, 11
-BAR_RED, BAR_WHITE, BAR_BLUE = (0.95, 0.22, 0.22, 1.0), (1.0, 1.0, 1.0, 1.0), (0.22, 0.36, 0.95, 1.0)
-_bar_handle = None
-
-
-def _draw_bar():
-    if not _shown() or not board.phase:
-        return
-    import blf
-    import gpu
-    from gpu_extras.batch import batch_for_shader
-    scale = bpy.context.preferences.system.ui_scale or 1.0
-    x0, y0 = BAR_LEFT * scale, BAR_BOTTOM * scale + (BAR_TEXT + BAR_PAD) * scale
-    x1, x2, y1 = x0 + BAR_WIDTH * scale / 2, x0 + BAR_WIDTH * scale, y0 + BAR_HEIGHT * scale
-    pad, size = BAR_PAD * scale, BAR_TEXT * scale
-    gpu.state.blend_set("ALPHA")
-    back = gpu.shader.from_builtin("UNIFORM_COLOR")
-    box = ((x0 - pad, y0 - size - 2 * pad), (x2 + pad, y0 - size - 2 * pad), (x2 + pad, y1 + size + 2 * pad),
-           (x0 - pad, y1 + size + 2 * pad))
-    back.uniform_float("color", (0.0, 0.0, 0.0, 0.45))
-    batch_for_shader(back, "TRIS", {"pos": box}, indices=((0, 1, 2), (0, 2, 3))).draw(back)
-    smooth = gpu.shader.from_builtin("SMOOTH_COLOR")
-    corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x2, y0), (x2, y1))
-    colors = (BAR_RED, BAR_WHITE, BAR_WHITE, BAR_RED, BAR_BLUE, BAR_BLUE)
-    batch_for_shader(smooth, "TRIS", {"pos": corners, "color": colors},
-                     indices=((0, 1, 2), (0, 2, 3), (1, 4, 5), (1, 5, 2))).draw(smooth)
-    font, ps = 0, _scale()
-    blf.size(font, size)
-    blf.color(font, 1.0, 1.0, 1.0, 0.9)
-    blf.position(font, x0, y1 + pad * 0.6, 0)
-    blf.draw(font, "Dynamic phase: how far P and N are apart")
-    for text, x, align in ((f"P  {ps:.2f} ps", x0, 0.0), ("in phase", x1, 0.5), (f"{ps:.2f} ps  N", x2, 1.0)):
-        width = blf.dimensions(font, text)[0]
-        blf.position(font, x - width * align, y0 - size - pad * 0.4, 0)
-        blf.draw(font, text)
-    gpu.state.blend_set("NONE")
-
-
-def install_bar():
-    global _bar_handle
-    if _bar_handle is None:
-        _bar_handle = bpy.types.SpaceView3D.draw_handler_add(_draw_bar, (), "WINDOW", "POST_PIXEL")
-
-
-def uninstall_bar():
-    global _bar_handle
-    if _bar_handle is not None:
-        bpy.types.SpaceView3D.draw_handler_remove(_bar_handle, "WINDOW")
-        _bar_handle = None
-
-
 # --- Settings and the pair list -----------------------------------------------------------
 
 def settings():
