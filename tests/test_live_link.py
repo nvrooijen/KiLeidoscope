@@ -250,6 +250,42 @@ def test_second_kicad_on_windows_is_explained_not_shown_raw():
     assert leftover in refused and leftover in error
 
 
+def test_new_kicad_is_followed_only_after_the_user_presses_resync():
+    from kileido_bridge.kicad_reader import NewKiCad
+    snapshot = fixture()
+    state = {"followed": False}
+    follows = []
+
+    def connect():
+        if not state["followed"]:
+            raise NewKiCad("KiCad was restarted. Press Resync to follow it.")
+        return FakeReader(snapshot)
+
+    def follow():
+        follows.append(True)
+        state["followed"] = True
+    server = BridgeServer(port=0, token="secret")
+    runtime = BridgeRuntime(server, connector=connect, poll_interval_s=0.0, reconnect_interval_s=0.0,
+                            follower=follow)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "secret")
+    try:
+        client.connect()
+        frames = exchange(runtime, client, lambda frames: any(h.get("new_kicad") for h, _ in frames))
+        assert any("Press Resync" in h.get("error", "") for h, _ in frames)
+        client.request_resync()  # a plain resync (Blender reconnecting) does not follow
+        for _ in range(20):
+            client.poll_io()
+            runtime.step()
+        assert not follows
+        client.request_resync(adopt=True)
+        frames = exchange(runtime, client, lambda frames: any(h["type"] == "snapshot_end" for h, _ in frames))
+        assert follows == [True] and runtime.new_kicad is False
+        assert any(h.get("type") == "status" and not h.get("new_kicad") for h, _ in frames)
+    finally:
+        client.close()
+        runtime.close()
+
+
 def test_saved_color_change_sends_appearance_without_geometry(tmp_path, monkeypatch):
     """KiCad IPC has no colours (measured), so a save must push new colours by itself."""
     import os

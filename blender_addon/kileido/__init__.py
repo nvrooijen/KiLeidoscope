@@ -113,11 +113,11 @@ class KILEIDO_OT_view_only_board(bpy.types.Operator):
 class KILEIDO_OT_resync(bpy.types.Operator):
     bl_idname = "kileido.resync"
     bl_label = "KiLeidoscope: Resync with KiCad"
-    bl_description = ("Ask KiCad for the whole board again and rebuild it (F3 search only; "
-                      "reconnecting already does this)")
+    bl_description = ("Ask KiCad for the whole board again and rebuild it. When a new KiCad was "
+                      "detected (after a crash or restart), follow it")
 
     def execute(self, context):
-        live.request_resync()
+        live.request_resync(adopt=True)
         return {"FINISHED"}
 
 
@@ -539,6 +539,8 @@ class KILEIDO_PT_status(bpy.types.Panel):
         for line in lines:
             if line:
                 column.label(text=line[:80])
+        if live.new_kicad():  # never followed on its own: it may be an unrelated KiCad
+            self.layout.operator("kileido.resync", text="Resync with new KiCad", icon="FILE_REFRESH")
 
 
 LED_COLORS = {"ok": (0.2, 0.85, 0.3), "busy": (1.0, 0.68, 0.1), "down": (0.92, 0.2, 0.18),
