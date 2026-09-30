@@ -53,7 +53,7 @@ class FakeReader:
 def exchange(runtime, client, until, limit=100):
     received = []
     for _ in range(limit):
-        client.poll_io()  # send hello/resync if queued
+        received.extend(client.poll_io())  # sends hello/resync if queued; frames read here count too
         runtime.step()
         received.extend(client.poll_io())
         if until(received):
