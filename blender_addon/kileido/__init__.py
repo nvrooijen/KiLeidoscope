@@ -539,8 +539,9 @@ class KILEIDO_PT_status(bpy.types.Panel):
         for line in lines:
             if line:
                 column.label(text=line[:80])
-        if live.new_kicad():  # never followed on its own: it may be an unrelated KiCad
-            self.layout.operator("kileido.resync", text="Resync with new KiCad", icon="FILE_REFRESH")
+        if live.connected():  # a new KiCad is never followed on its own: it may be an unrelated one
+            self.layout.operator("kileido.resync", icon="FILE_REFRESH",
+                                 text="Resync with new KiCad" if live.new_kicad() else "Resync")
 
 
 LED_COLORS = {"ok": (0.2, 0.85, 0.3), "busy": (1.0, 0.68, 0.1), "down": (0.92, 0.2, 0.18),
