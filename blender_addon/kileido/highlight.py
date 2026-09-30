@@ -25,6 +25,8 @@ def apply_selection(header):
     board.highlight = {"selected": set(header.get("selected", ())), "pair": set(header.get("pair", ()))}
     board.highlight_components = {"footprints": set(header.get("footprints", ())),
                                   "pads": set(header.get("pads", ()))}
+    from . import phase
+    phase.refresh_highlight()  # a pair under dynamic phase highlights white
     refresh()
     focus.refresh()
 

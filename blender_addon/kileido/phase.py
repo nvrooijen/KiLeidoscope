@@ -716,11 +716,20 @@ def draw(key):
             _clear(obj)
 
 
+def refresh_highlight():
+    """A pair selected while dynamic phase shows: its highlight turns white, so the red
+    and blue on it are the lead and lag, not the selection's own colours. A single net,
+    or no dynamic phase: the selection's red-orange and blue."""
+    from . import materials
+    materials.set_pair_white(_enabled() and bool(board.highlight.get("pair")))
+
+
 def refresh_visibility():
     """Colours, labels or pulses switched: markers and labels follow Colours; the trace
     copies stay while pulsing, with their tint faded out (COLOUR_NODE)."""
     shown, labels = _shown(), getattr(bpy.context.scene, "kileido_phase_labels", True)
     _set(COLOUR_NODE, 1.0 if shown else 0.0)
+    refresh_highlight()
     for obj in _objects():
         drawn = obj.type != "MESH" or len(obj.data.vertices) > 0
         set_visible(obj, drawn and shown and (labels or obj.type != "FONT") and

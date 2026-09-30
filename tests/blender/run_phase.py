@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import kileido  # noqa: E402
 import phase_boards  # noqa: E402
-from kileido import apply, packages, phase, pick, state  # noqa: E402
+from kileido import apply, highlight, packages, phase, pick, state  # noqa: E402
 from kileido.objects import read_attribute, read_coordinates  # noqa: E402
 from kileido_bridge.phase import PhaseTracker  # noqa: E402
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -173,6 +173,22 @@ def main():
         assert phase.short_name({"p_nets": ["/MIPI SENSOR/CSI_D3_P"]}) == "CSI_D3_P/N"
         assert phase.short_name({"p_nets": ["/USB/TX_P", "/USB/TX_C_P"]}) == "TX_P/N → TX_C_P/N"
         assert phase.short_name({"p_nets": ["/USB/USB_D+"]}) == "USB_D±"
+        # A selected pair highlights white under dynamic phase (its red and blue are then the
+        # lead and lag); a single net, or dynamic phase off, keeps the selection's colours.
+        def highlight_colors():
+            return [tuple(round(v, 2) for v in next(
+                        node for node in state.board.materials[key].node_tree.nodes if node.type == "BSDF_PRINCIPLED"
+                    ).inputs["Base Color"].default_value[:3]) for key in ("highlight_selected", "highlight_pair")]
+        usual = highlight_colors()
+        assert usual[0] != (1.0, 1.0, 1.0)
+        highlight.apply_selection({"selected": ["E_P"], "pair": ["E_N"]})
+        assert highlight_colors() == [(1.0, 1.0, 1.0)] * 2
+        scene.kileido_phase_enabled = False
+        assert highlight_colors() == usual
+        scene.kileido_phase_enabled = True
+        highlight.apply_selection({"selected": ["E_P"], "pair": []})  # a single net
+        assert highlight_colors() == usual
+        highlight.apply_selection({"selected": [], "pair": []})
         # Reverse selected: a pair with a net selected in KiCad walks from its other end.
         state.board.highlight = {"selected": {"E_P"}, "pair": {"E_N"}}
         assert phase.selected_pairs() == ["E_P"]
