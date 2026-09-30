@@ -10,8 +10,8 @@ from dataclasses import replace
 from . import protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items
-from .kicad_reader import (KiCadBusy, PollResult, board_text, connect_reader, explain_connection_error,
-                           kicad_tools, saved_board_path, select_in_kicad, selected_ids)
+from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
+                           follow_new_kicad, kicad_tools, saved_board_path, select_in_kicad, selected_ids)
 from .live_copy import LiveBoardCopy
 from .selection import components, highlight_nets, selected_nets, unconnected
 
@@ -40,8 +40,9 @@ class BridgeRuntime:
 
     def __init__(self, server, connector=None, poll_interval_s: float = 0.2,
                  reconnect_interval_s: float = 2.0, clock=time.monotonic,
-                 live_copy: LiveBoardCopy | None = None):
+                 live_copy: LiveBoardCopy | None = None, follower=follow_new_kicad):
         self.server = server
+        self.follower = follower
         self.connector = connector or (lambda: connect_reader(connections=4))
         self.poll_interval_s = poll_interval_s
         self.reconnect_interval_s = reconnect_interval_s
@@ -50,6 +51,7 @@ class BridgeRuntime:
         self.reader = None
         self.status = "disconnected"
         self.error = ""
+        self.new_kicad = False  # another KiCad serves the socket; waits for the user's Resync
         self.next_connect_at = 0.0
         self.next_poll_at = 0.0
         self.next_text_poll_at = 0.0
@@ -83,7 +85,7 @@ class BridgeRuntime:
 
     def _status_frame(self, **extra) -> bytes:
         return protocol.encode_frame({"type": "status", "kicad": self.status, "revision": self.revision,
-                                      **extra, "error": self.error})
+                                      **extra, "error": self.error, "new_kicad": self.new_kicad})
 
     def _status(self, value, last_read_ms=None, error=""):
         if value == self.status and error == self.error:
@@ -118,10 +120,12 @@ class BridgeRuntime:
             self.reader = self.connector()
             self.next_poll_at = self.clock()
             self.timeout_count = 0
+            self.new_kicad = False
         except Exception as exc:
             self.reader = None
             self.next_connect_at = self.clock() + self.reconnect_interval_s
-            self._status("disconnected", error=explain_connection_error(exc))
+            self.new_kicad = isinstance(exc, NewKiCad)
+            self._status("disconnected", error=str(exc) if self.new_kicad else explain_connection_error(exc))
 
     # --- Polling ------------------------------------------------------------------------
 
@@ -365,6 +369,9 @@ class BridgeRuntime:
         with self.lock:
             self.server.pump()
             self._take_select_requests()
+            if self.server.take_adopt() and self.new_kicad:
+                self.follower()
+                self.next_connect_at = 0.0  # connect now, not at the next retry
             if self.server.take_resync():
                 self._send_resync()
         if self.worker is None:

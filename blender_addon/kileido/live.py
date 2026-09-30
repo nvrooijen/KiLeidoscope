@@ -34,6 +34,7 @@ class LiveLink:
         self.receiving_snapshot = False
         self.bridge_status = "disconnected"  # KiCad side: "connected", "editing" or "disconnected"
         self.bridge_error = ""
+        self.new_kicad = False  # the bridge waits for the user to follow another KiCad
         self.last_update_at = None
         self.last_apply_ms = None
 
@@ -54,6 +55,7 @@ class LiveLink:
         self._drop_pending()
         self.bridge_status = "disconnected"
         self.bridge_error = ""
+        self.new_kicad = False
         if bpy.app.timers.is_registered(tick):
             bpy.app.timers.unregister(tick)
         if board.in_snapshot:
@@ -153,6 +155,7 @@ class LiveLink:
         if kind == "status":
             self.bridge_status = header.get("kicad", "disconnected")
             self.bridge_error = header.get("error", "")
+            self.new_kicad = bool(header.get("new_kicad", False))
         elif kind in UPDATE_FRAMES:
             self.last_update_at = time.monotonic()
         return True
@@ -206,9 +209,14 @@ def last_apply_text() -> str:
     return "" if link.last_apply_ms is None else f"Last apply: {link.last_apply_ms:.2f} ms"
 
 
-def request_resync():
+def new_kicad() -> bool:
+    """Another KiCad now serves the plugin connection; a Resync follows it."""
+    return link.enabled and link.new_kicad
+
+
+def request_resync(adopt=False):
     if link.client is not None:
-        link.client.request_resync()
+        link.client.request_resync(adopt)
 
 
 def request_select(ids, extend=False, center=False):
