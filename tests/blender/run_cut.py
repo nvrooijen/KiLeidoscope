@@ -125,6 +125,8 @@ def main():
         last = output.inputs["Surface"].links[0].from_node
         assert last.name == cut.NODE and last.inputs[0].links[0].from_node.name == focus.NODE
         assert cut.upright(scene)
+        section_nodes = bpy.data.materials[cut.FACE].node_tree.nodes  # fades in X-ray mode, never clipped itself
+        assert focus.NODE in section_nodes and cut.NODE not in section_nodes
 
         scene.view_settings.view_transform = "Standard"  # rendered colours are the section's own sRGB
         scene.render.engine = "CYCLES"

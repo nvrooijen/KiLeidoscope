@@ -27,11 +27,11 @@ from .state import board
 GROUP = "KLS_Clip_v1"
 NODE = focus.CUT_NODE
 PLANE = "KLS cut plane"
-FACE = "KLS cut face"
+FACE = focus.CUT_FACE  # the section's object and material
 FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
-FACE_MATERIAL_VERSION = 3
+FACE_MATERIAL_VERSION = 4
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
@@ -93,8 +93,9 @@ def _group():
 
 
 def materials():
-    """Every material the cut applies to: all the board's (highlights too) and model parts."""
-    found = set(focus.shown_materials())
+    """Every material the cut applies to: all the board's (highlights too) and model parts,
+    not the section itself (it sits just on the removed side)."""
+    found = {material for material in focus.shown_materials() if material.name != FACE}
     found |= {material for key, material in board.materials.items() if key.startswith("highlight")}
     return found
 
@@ -330,6 +331,7 @@ def _face_material():
     emission = tree.nodes.new("ShaderNodeEmission")
     tree.links.new(weave.outputs["Color"], emission.inputs["Color"])
     tree.links.new(emission.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
+    focus.add_to(material)  # X-ray mode fades the section with the board
     material["kls_version"] = FACE_MATERIAL_VERSION
     return material
 

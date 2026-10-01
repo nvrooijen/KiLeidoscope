@@ -23,6 +23,7 @@ from .state import board
 GROUP = "KLS_Focus_v2"
 NODE = "KLS focus"
 CUT_NODE = "KLS cut"  # the cut plane's stage (cut.py) follows this one, last before the output
+CUT_FACE = "KLS cut face"  # the cut plane's section (cut.py): it fades with the board
 GREY = (0.5, 0.5, 0.5, 1.0)  # unlit colour of everything that is not highlighted
 VISIBLE = 0.05  # opacity of everything that is not highlighted (0.15 looked too hazy)
 _active = False
@@ -102,7 +103,8 @@ def set_render_method(material):
 def shown_materials():
     """Every material KiLeidoscope shows except the highlights, including model parts."""
     found = {material for key, material in board.materials.items() if not key.startswith("highlight")}
-    found |= {material for material in bpy.data.materials if material.name.startswith("KLS overlay")}
+    found |= {material for material in bpy.data.materials
+              if material.name.startswith("KLS overlay") or material.name == CUT_FACE}
     if board.collection is not None:
         for obj in tuple(board.collection.all_objects):
             if obj.get("kls_model_fp_id") is not None:
