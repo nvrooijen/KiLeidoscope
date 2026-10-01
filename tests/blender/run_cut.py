@@ -117,6 +117,7 @@ def main():
         scene.kileido_cut = True
         plane, face = bpy.data.objects[cut.PLANE], bpy.data.objects[cut.FACE]
         assert plane.hide_render and not plane.hide_get() and face.data.materials[0].name == cut.FACE
+        assert not plane.visible_camera and not plane.visible_shadow  # a Cycles viewport drew its sheet otherwise
         assert not face.hide_get() and len(face.data.polygons) > 10
         materials = [m for m in cut.materials() if m.node_tree]
         assert materials and all(cut.NODE in m.node_tree.nodes for m in materials)
@@ -162,6 +163,18 @@ def main():
             woven = patch(scene, via, (-0.010 + 200 * UM, 0, 1320 * UM), (-0.010 + 290 * UM, 0, 1490 * UM))
             flat = patch(scene, via, (-0.010 - 290 * UM, 0, 1275 * UM), (-0.010 - 200 * UM, 0, 1300 * UM))
             assert woven.std() > 0.01 and flat.std() < 0.005, (engine, woven.std(), flat.std())  # glass in laminate only
+        scene.render.engine = "CYCLES"
+        # Via fill (capped) needs a plug, and an open via cannot be capped: the two settings follow each other.
+        scene.render.engine = "BLENDER_EEVEE"
+        scene.kileido_via_fill = True
+        capped = render(scene, "blind_via_capped")
+        expect(scene, capped, (-0.010, 0, 1522 * UM), section.COPPER, "cap over the plug, in F.Cu")
+        expect(scene, capped, (-0.010, 0, 1400 * UM), section.RESIN, "plug under the cap")
+        scene.kileido_via_plug = "NONE"
+        assert not scene.kileido_via_fill
+        scene.kileido_via_fill = True
+        assert scene.kileido_via_plug == "RESIN"
+        scene.kileido_via_fill = False
         scene.render.engine = "CYCLES"
         scene.kileido_via_plug = "NONE"
         open_bore = render(scene, "blind_via_open")

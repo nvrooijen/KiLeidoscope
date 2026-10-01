@@ -168,12 +168,16 @@ def ensure_plane():
     plane = bpy.data.objects.get(PLANE)
     if plane is None:
         plane = bpy.data.objects.new(PLANE, _plane_mesh())
-        plane.display_type = "WIRE"
-        plane.hide_render = True  # a guide, never in a render
         bpy.context.scene.collection.objects.link(plane)
         place("Y", centered=True)
     elif board.board_name and plane.get("kls_board") != board.board_name:
         place("Y", centered=True)  # another board: back to its middle
+    # A guide, only ever its wireframe: hide_render keeps it out of final renders, but a
+    # rendered viewport (Cycles) still drew its sheet in grey unless no ray sees it.
+    plane.display_type = "WIRE"
+    plane.hide_render = True
+    for ray in ("camera", "diffuse", "glossy", "transmission", "volume_scatter", "shadow"):
+        setattr(plane, f"visible_{ray}", False)
     return plane
 
 
@@ -370,7 +374,8 @@ def rectangles(scene=None):
     rects = section.cross_section(line, _data["outline"], layers, copper, bands, vias=_data["vias"],
                                   pad_drills=_data["drills"],
                                   plating=float(getattr(scene, "kileido_via_plating_um", 25.0)) * 1e-6,
-                                  plug=None if plug == "NONE" else plug)
+                                  plug=None if plug == "NONE" else plug,
+                                  capped=bool(getattr(scene, "kileido_via_fill", False)))
     return rects, (line, normal)
 
 
