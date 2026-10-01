@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import focus, highlight, kicad_cli
+from . import cut, focus, highlight, kicad_cli
 from .objects import link_owned, set_visible
 from .state import board
 from .watcher import BoardWatcher
@@ -393,6 +393,7 @@ def bind_root(root, asset_hash, saved_positions=None):
     board.model_bound = set(board.model_objects_by_fp)
     highlight.refresh()  # component boxes size themselves to the loaded models
     focus.refresh()  # model materials fade in focus mode too
+    cut.add_materials()  # and are cut open with the board
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_footprint_placeholder") == 1:
             footprint_id = obj.get("kls_footprint_id")

@@ -16,7 +16,7 @@ from pathlib import Path
 import bpy
 import numpy as np
 
-from . import focus, gerber, holes, kicad_cli, materials, nodes, shading
+from . import cut, focus, gerber, holes, kicad_cli, materials, nodes, shading
 from .objects import (OUTLINE, find, link_owned, outline_bounds, owned_object, set_modifier, set_node_input,
                       set_visible)
 from .placement import laminate_faces, mask_thickness, outward
@@ -693,5 +693,6 @@ def _apply(plots, board_path):
             set_visible(obj, False)
     recolor()
     focus.refresh()  # new overlay materials fade in focus mode too
+    cut.add_materials()  # and are cut open with the board
     _remove_unused(superseded)
     return len(loaded)

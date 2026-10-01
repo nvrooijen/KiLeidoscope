@@ -20,7 +20,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
+from . import (apply, collisions, cosmetics, cut, dump, focus, layers, lighting, live, models, packages, pick,
                render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
@@ -168,6 +168,23 @@ class KILEIDO_OT_viewport(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_cut_plane(bpy.types.Operator):
+    bl_idname = "kileido.cut_plane"
+    bl_label = "Cut plane"
+    bl_description = "Turn the cut plane across the board (keeping its position), or put it back in the middle"
+
+    axis: EnumProperty(items=(("X", "X", "Across X: the right half removed, seen from the right view"),
+                              ("Y", "Y", "Across Y: the front half removed, seen from the front view"),
+                              ("RESET", "Reset", "Across the middle of the board, front half removed")))
+
+    def execute(self, context):
+        if self.axis == "RESET":
+            cut.place("Y", centered=True)
+        else:
+            cut.place(self.axis)
+        return {"FINISHED"}
+
+
 def _viewport_mode(context):
     space = context.space_data
     return getattr(getattr(space, "shading", None), "type", "")
@@ -227,6 +244,24 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             row.prop(context.scene, prop, text=label)
             if _icons is not None and icon in _icons:
                 row.label(text="", icon_value=_icons[icon].icon_id)
+        self._draw_cut(context)
+
+    def _draw_cut(self, context):
+        scene = context.scene
+        box = self.layout.box()
+        box.prop(scene, "kileido_cut", text="Cut plane")
+        if not scene.kileido_cut:
+            return
+        row = box.row(align=True)
+        for axis in ("X", "Y"):
+            row.operator(KILEIDO_OT_cut_plane.bl_idname, text=axis).axis = axis
+        row.operator(KILEIDO_OT_cut_plane.bl_idname, text="Reset").axis = "RESET"
+        row.prop(scene, "kileido_cut_flip", text="Flip", toggle=True)
+        row = box.row(align=True)
+        row.prop(scene, "kileido_via_plug", text="Via plug")
+        row.prop(scene, "kileido_via_plating_um", text="Wall")
+        if not cut.upright(scene):
+            box.label(text="Turn the plane upright for a cross section", icon="INFO")
 
     def _draw_outline_warnings(self, context):
         """KiCad's own words when a board has no usable Edge.Cuts outline, then where."""
@@ -589,7 +624,7 @@ def _swatch(kind, color):
     return preview.icon_id
 
 
-CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
+CLASSES = (KILEIDO_OT_cut_plane, KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
            KILEIDO_PT_status)
@@ -617,6 +652,12 @@ def _thickness_update(refresh_live):
         refresh_live()
         packages.refresh_thickness()
     return update
+
+
+def _via_plug_update():
+    """A plugged via is closed from above, and the cross section shows its plug."""
+    apply.refresh_via_fill()
+    cut.rebuild()
 
 
 def _mask_opacity_update():
@@ -667,6 +708,26 @@ def _scene_properties():
             name="X-ray mode", default=False,
             description="While something is selected in KiCad, everything else turns see-through and grey",
             update=lambda self, context: focus.refresh()),
+        "kileido_cut": BoolProperty(
+            name="Cut plane", default=False,
+            description="Cut the board open along an upright plane (the \"KLS cut plane\" object; move it, or "
+                        "turn it about Z) and show the cross section: laminate, copper layers, vias",
+            update=lambda self, context: cut.refresh()),
+        "kileido_cut_flip": BoolProperty(
+            name="Flip", default=False, description="Remove the other side of the cut plane",
+            update=lambda self, context: cut.push()),
+        "kileido_via_plug": EnumProperty(
+            name="Via plug", items=(("NONE", "Open", "Empty barrels; through vias stay see-through"),
+                                    ("RESIN", "Resin", "Epoxy-filled barrels"),
+                                    ("COPPER", "Copper", "Copper-filled barrels")),
+            default="NONE",
+            description="What fills every via's plated barrel, in the cross section. A plugged via is "
+                        "closed from above as well",
+            update=lambda self, context: _via_plug_update()),
+        "kileido_via_plating_um": FloatProperty(
+            name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
+            description="Plating thickness of a via's barrel in the cross section (KiCad stores none)",
+            update=lambda self, context: cut.rebuild()),
         "kileido_center_in_kicad": BoolProperty(
             name="Center KiCad on click", default=True,
             description="Clicking an item here also pans KiCad's PCB editor to centre it, keeping its zoom"),
@@ -753,6 +814,7 @@ def register():
             entry.properties.extend = shift
             _KEYMAPS.append((keymap, entry))
     collisions.install()
+    cut.install()
     bpy.app.handlers.load_post.append(_file_loaded)
 
 
@@ -769,6 +831,7 @@ def unregister():
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
+    cut.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):

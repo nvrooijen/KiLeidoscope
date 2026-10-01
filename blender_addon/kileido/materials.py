@@ -7,7 +7,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 
 import bpy
 
-from . import focus, holes, shading
+from . import cut, focus, holes, shading
 from .placement import copper_thickness
 from .state import board
 
@@ -194,6 +194,8 @@ def layer_material(layer):
     if key not in board.materials:
         board.materials[key] = make(f"KLS {layer} copper", FALLBACK_COPPER)
         holes.add_to(board.materials[key])
+        if cut.enabled():  # a layer's first copper while the board is cut open
+            cut.add_to(board.materials[key])
     material = board.materials[key]
     paint(material, _copper_color(layer))
     set_surface(material, board.color_mode == "REALISTIC", COPPER_METALLIC, COPPER_ROUGHNESS)

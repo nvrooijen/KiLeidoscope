@@ -15,7 +15,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import apply, cosmetics, highlight, layers, lighting, materials, nodes, render_depth, transform
+from . import apply, cosmetics, cut, highlight, layers, lighting, materials, nodes, render_depth, transform
 from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
@@ -159,7 +159,12 @@ def export_board(filepath):
         obj["kls_hidden"] = obj.hide_get()
         obj["kls_row"] = "Board" if obj.name == OUTLINE else layers.row_of(obj) or ""
     swapped = []
+    # No cut-plane stage in the package: its shared values would cut the importing session's boards.
+    clipped = [material for material in cut.materials()
+               if material.node_tree is not None and material.node_tree.nodes.get(cut.NODE) is not None]
     try:
+        for material in clipped:
+            cut.remove_from(material)
         for image in _owned_data(collection)[1]:
             if image.packed_file is None:
                 copy = _packed_copy(image)
@@ -167,6 +172,8 @@ def export_board(filepath):
                 swapped.append((image, copy))
         bpy.data.libraries.write(filepath, {collection}, path_remap="ABSOLUTE", compress=True)
     finally:
+        for material in clipped:
+            cut.add_to(material)
         for image, copy in swapped:
             copy.user_remap(image)
             bpy.data.images.remove(copy)

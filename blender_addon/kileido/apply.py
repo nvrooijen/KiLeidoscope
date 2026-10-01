@@ -11,7 +11,7 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
+from . import (cosmetics, cut, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
                render_depth, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
@@ -21,6 +21,7 @@ from .placement import (BOARD_FACE_CLEARANCE_M, SOLDER_TOP_SCALE, copper_placeme
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
+SECTION_INPUTS = ("board", "layer_data", "appearance", "stackup")  # frames the cut plane's section reads
 
 
 def load_frames(data: bytes) -> float:
@@ -59,6 +60,8 @@ def apply_frame(header, arrays):
         pass  # KiCad's link state: live.LiveLink reads it
     else:
         raise ValueError(f"unknown message type: {message_type}")
+    if message_type in SECTION_INPUTS:
+        cut.invalidate()
 
 
 def apply_layer_data(header, arrays):
@@ -121,6 +124,7 @@ def _end_snapshot():
             layers.refresh(row)
     lighting.ensure_studio_lights()
     focus.refresh()
+    cut.refresh()
     frame_board()
     models.follow_board(board.board_path, board.export)
     cosmetics.follow_board(board.board_path, board.export)
@@ -516,9 +520,11 @@ def set_board_visible(visible):
 def refresh_via_fill():
     """Via fill on: vias are capped (filled and plated over), so they stay out of
     the hole mask; the land reads as a copper or finish cap and the mask and
-    silkscreen run over it. Off: through vias are open, in copper, board and mask."""
+    silkscreen run over it. A plugged barrel (resin or copper) is closed too. Off and
+    unplugged: through vias are open, in copper, board and mask."""
     xy, drill = board.via_holes
-    if getattr(bpy.context.scene, "kileido_via_fill", False):
+    scene = bpy.context.scene
+    if getattr(scene, "kileido_via_fill", False) or getattr(scene, "kileido_via_plug", "NONE") != "NONE":
         xy, drill = xy[:0], drill[:0]
     holes.set_vias(xy, drill)
 
