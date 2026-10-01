@@ -22,6 +22,7 @@ from .state import board
 
 GROUP = "KLS_Focus_v2"
 NODE = "KLS focus"
+CUT_NODE = "KLS cut"  # the cut plane's stage (cut.py) follows this one, last before the output
 GREY = (0.5, 0.5, 0.5, 1.0)  # unlit colour of everything that is not highlighted
 VISIBLE = 0.05  # opacity of everything that is not highlighted (0.15 looked too hazy)
 _active = False
@@ -55,12 +56,14 @@ def _group():
 
 
 def surface_input(material):
-    """Where a material's final surface shader goes: the focus node if present,
-    else the output. `materials.set_surface` and `holes.add_to` link here."""
+    """Where a material's final surface shader goes: the first stage after it (focus,
+    then the cut plane) if present, else the output. `materials.set_surface` and
+    `holes.add_to` link here."""
     nodes = material.node_tree.nodes
-    focus = nodes.get(NODE)
-    if focus is not None:
-        return focus.inputs[0]
+    for name in (NODE, CUT_NODE):
+        stage = nodes.get(name)
+        if stage is not None:
+            return stage.inputs[0]
     output = next(node for node in nodes if node.type == "OUTPUT_MATERIAL")
     return output.inputs["Surface"]
 
@@ -74,13 +77,15 @@ def add_to(material):
     output = next((node for node in nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None)
     if output is None:
         return
-    source = output.inputs["Surface"].links[0].from_socket if output.inputs["Surface"].is_linked else None
+    cut = nodes.get(CUT_NODE)
+    into = cut.inputs[0] if cut is not None else output.inputs["Surface"]  # the cut plane stays last
+    source = into.links[0].from_socket if into.is_linked else None
     focus = nodes.new("ShaderNodeGroup")
     focus.name = NODE
     focus.node_tree = _group()
     if source is not None:
         links.new(source, focus.inputs[0])
-    links.new(focus.outputs[0], output.inputs["Surface"])
+    links.new(focus.outputs[0], into)
     set_render_method(material)
 
 
@@ -94,7 +99,7 @@ def set_render_method(material):
         material.use_transparency_overlap = True  # off, faded parts hid the layers behind them
 
 
-def _materials():
+def shown_materials():
     """Every material KiLeidoscope shows except the highlights, including model parts."""
     found = {material for key, material in board.materials.items() if not key.startswith("highlight")}
     found |= {material for material in bpy.data.materials if material.name.startswith("KLS overlay")}
@@ -111,7 +116,7 @@ def refresh():
     highlighted = (any(board.highlight.get(kind) for kind in ("selected", "pair")) or
                    bool(board.highlight_components.get("footprints")) or board.outline_problem)
     _active = bool(getattr(bpy.context.scene, "kileido_focus", False) and highlighted)
-    for material in _materials():
+    for material in shown_materials():
         add_to(material)
         set_render_method(material)
     amount = _group().nodes["Amount"].outputs[0]
