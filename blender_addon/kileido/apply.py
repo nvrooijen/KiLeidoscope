@@ -11,8 +11,8 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, cut, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
-               render_depth, transform)
+from . import (cosmetics, cut, focus, footprints, highlight, holes, laminate, layers, lighting, materials, models,
+               nodes, render_depth, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
                       single_point, view3d_spaces, write_attribute, outline_bounds)
@@ -62,6 +62,7 @@ def apply_frame(header, arrays):
         raise ValueError(f"unknown message type: {message_type}")
     if message_type in SECTION_INPUTS:
         cut.invalidate()
+        laminate.update_bands()
 
 
 def apply_layer_data(header, arrays):

@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import focus, nodes, section, shading, transform
+from . import focus, laminate, nodes, section, shading, transform
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -29,6 +29,9 @@ NODE = focus.CUT_NODE
 PLANE = "KLS cut plane"
 FACE = "KLS cut face"
 FACE_COLOR = "kls_color"
+FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
+FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
+FACE_MATERIAL_VERSION = 2
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
@@ -301,19 +304,33 @@ def _gather():
     return {"copper": copper, "outline": outline, "vias": vias, "drills": np.array(drills).reshape(-1, 6)}
 
 
+def _attribute(tree, name):
+    node = tree.nodes.new("ShaderNodeAttribute")
+    node.attribute_type = "GEOMETRY"
+    node.attribute_name = name
+    return node
+
+
 def _face_material():
-    material = bpy.data.materials.get(FACE)
-    if material is None:
-        material = bpy.data.materials.new(FACE)
-        material.use_nodes = True
-        tree = material.node_tree
-        tree.nodes.clear()
-        color = tree.nodes.new("ShaderNodeAttribute")
-        color.attribute_type = "GEOMETRY"
-        color.attribute_name = FACE_COLOR
-        emission = tree.nodes.new("ShaderNodeEmission")  # flat, as a micrograph reads
-        tree.links.new(color.outputs["Color"], emission.inputs["Color"])
-        tree.links.new(emission.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
+    """Flat, as a micrograph reads: the section's colours, with the glass weave in laminate."""
+    material = bpy.data.materials.get(FACE) or bpy.data.materials.new(FACE)
+    if material.get("kls_version") == FACE_MATERIAL_VERSION:
+        return material
+    material.use_nodes = True
+    tree = material.node_tree
+    tree.nodes.clear()
+    weave = tree.nodes.new("ShaderNodeGroup")
+    weave.node_tree = laminate.group()
+    tree.links.new(_attribute(tree, FACE_COLOR).outputs["Color"], weave.inputs["Base"])
+    tree.links.new(_attribute(tree, FACE_ALONG).outputs["Fac"], weave.inputs["Along"])
+    height = tree.nodes.new("ShaderNodeSeparateXYZ")
+    tree.links.new(tree.nodes.new("ShaderNodeNewGeometry").outputs["Position"], height.inputs[0])
+    tree.links.new(height.outputs["Z"], weave.inputs["Height"])
+    tree.links.new(_attribute(tree, FACE_WEAVE).outputs["Fac"], weave.inputs["Weave"])
+    emission = tree.nodes.new("ShaderNodeEmission")
+    tree.links.new(weave.outputs["Color"], emission.inputs["Color"])
+    tree.links.new(emission.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
+    material["kls_version"] = FACE_MATERIAL_VERSION
     return material
 
 
@@ -321,7 +338,7 @@ def _face_object(create):
     face = bpy.data.objects.get(FACE)
     if face is None and create:
         face = bpy.data.objects.new(FACE, bpy.data.meshes.new(FACE))
-        face.data.materials.append(_face_material())
+        face.data.materials.append(None)
         face.hide_select = True
         camera_rays_only(face)  # a drawing of the cut, not something that casts light or shadow
         bpy.context.scene.collection.objects.link(face)
@@ -368,6 +385,7 @@ def rebuild(scene=None):
         face.hide_render = True
         return
     rects, (line, normal) = result
+    face.data.materials[0] = _face_material()  # (re)built when its version changed
     count = len(rects)
     s = np.array([(r[0], r[1], r[1], r[0]) for r in rects], np.float64).reshape(-1)
     z = np.array([(r[2], r[2], r[3], r[3]) for r in rects], np.float64).reshape(-1)
@@ -381,6 +399,11 @@ def rebuild(scene=None):
         colors[:, :3] = np.repeat([shading.srgb_to_linear(rect[4]) for rect in rects], 4, axis=0)
     attribute = mesh.color_attributes.get(FACE_COLOR) or mesh.color_attributes.new(FACE_COLOR, "FLOAT_COLOR", "POINT")
     attribute.data.foreach_set("color", colors.ravel())
+    metal = (section.COPPER, section.RESIN)
+    weave = np.repeat([0.0 if rect[4] in metal else 1.0 for rect in rects], 4).astype(np.float32)
+    for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave)):
+        found = mesh.attributes.get(name) or mesh.attributes.new(name, "FLOAT", "POINT")
+        found.data.foreach_set("value", values)
     mesh.update()
     hide(face, False)
     face.hide_render = False

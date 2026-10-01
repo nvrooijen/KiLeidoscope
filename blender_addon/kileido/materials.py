@@ -7,7 +7,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 
 import bpy
 
-from . import cut, focus, holes, shading
+from . import cut, focus, holes, laminate, shading
 from .placement import copper_thickness
 from .state import board
 
@@ -604,6 +604,7 @@ def set_color_mode(mode):
                         COPPER_ROUGHNESS if metal else 0.42)
             if metal:
                 finish_mask(material, key)
+    laminate.set_edges(board.materials["board_core"], realistic)  # routed edges and bare drills show the layers
 
 
 def _paint_board_faces(viewer):

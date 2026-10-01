@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, focus, holes, packages, section, state  # noqa: E402
+from kileido import apply, cut, focus, holes, laminate, packages, section, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -81,8 +81,21 @@ def expect(scene, pixels, world, wanted, label):
     if wanted is None:  # nothing drawn here: no section colour
         for color in (section.COPPER, section.CORE, section.PREPREG, section.RESIN):
             assert np.abs(got - np.array(color)).max() > 0.15, (label, got, color)
-    else:
+    elif wanted in (section.COPPER, section.RESIN):
         assert np.abs(got - np.array(wanted)).max() < TOLERANCE, (label, got, wanted)
+    else:  # laminate: its colour, up to the weave's lift where a glass bundle is
+        ratio = got / np.array(wanted)
+        assert ratio.min() > 1 - TOLERANCE and ratio.max() < 1 + laminate.WEAVE_CONTRAST + TOLERANCE, (label, got, wanted)
+        assert np.ptp(ratio) < TOLERANCE, (label, got, wanted)  # lighter, not another colour
+
+
+def patch(scene, pixels, low, high):
+    """Brightness of the pixels between two world points (opposite corners on the plane)."""
+    (u0, v0, _), (u1, v1, _) = (world_to_camera_view(scene, scene.camera, Vector(p)) for p in (low, high))
+    height, width = pixels.shape[:2]
+    rows = slice(int(min(v0, v1) * height), int(max(v0, v1) * height))
+    columns = slice(int(min(u0, u1) * width), int(max(u0, u1) * width))
+    return pixels[rows, columns].mean(axis=2)
 
 
 def main():
@@ -127,14 +140,22 @@ def main():
                 (-15, 1400, section.PREPREG, "top prepreg"), (21, 800, None, "beyond the board edge")):
             expect(scene, front, (x_mm * MM, 0, z_um * UM), wanted, label)
 
-        # Zoomed on the blind via: its walls, plug, lands and the In1 pour at their thickness.
+        # Zoomed on the blind via: its walls, plug, lands and the In1 pour at their thickness,
+        # in both engines (EEVEE is the panel's Preview).
         camera(scene, ortho_scale=0.0006, location=(-0.010, -0.2, 1400 * UM), size=(1400, 700))
-        via = render(scene, "blind_via")
-        for dx_um, z_um, wanted, label in (
-                (0, 1400, section.RESIN, "plug"), (162, 1400, section.COPPER, "barrel wall"),
-                (250, 1400, section.PREPREG, "laminate beside the barrel"),
-                (-250, 1290, section.COPPER, "In1 copper"), (250, 1522, section.COPPER, "F.Cu land")):
-            expect(scene, via, (-0.010 + dx_um * UM, 0, z_um * UM), wanted, label)
+        scene.eevee.taa_render_samples = 8
+        for engine in ("CYCLES", "BLENDER_EEVEE"):
+            scene.render.engine = engine
+            via = render(scene, f"blind_via_{engine.lower()}")
+            for dx_um, z_um, wanted, label in (
+                    (0, 1400, section.RESIN, "plug"), (162, 1400, section.COPPER, "barrel wall"),
+                    (250, 1400, section.PREPREG, "laminate beside the barrel"),
+                    (-250, 1290, section.COPPER, "In1 copper"), (250, 1522, section.COPPER, "F.Cu land")):
+                expect(scene, via, (-0.010 + dx_um * UM, 0, z_um * UM), wanted, f"{engine}: {label}")
+            woven = patch(scene, via, (-0.010 + 200 * UM, 0, 1320 * UM), (-0.010 + 290 * UM, 0, 1490 * UM))
+            flat = patch(scene, via, (-0.010 - 290 * UM, 0, 1275 * UM), (-0.010 - 200 * UM, 0, 1300 * UM))
+            assert woven.std() > 0.01 and flat.std() < 0.005, (engine, woven.std(), flat.std())  # glass in laminate only
+        scene.render.engine = "CYCLES"
         scene.kileido_via_plug = "NONE"
         open_bore = render(scene, "blind_via_open")
         assert np.abs(color_at(scene, open_bore, (-0.010, 0, 1400 * UM)) - section.RESIN).max() > 0.1
@@ -166,6 +187,24 @@ def main():
         with bpy.data.libraries.load(str(package)) as (data_from, _):
             assert cut.GROUP not in data_from.node_groups, data_from.node_groups
         assert all(cut.NODE in m.node_tree.nodes for m in materials)
+
+        # Realistic mode: the board's edges show the stackup and the weave; other modes keep KiCad's colour.
+        core = board.materials["board_core"]
+        principled = next(n for n in core.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+        scene.kileido_color_mode = "REALISTIC"
+        assert principled.inputs["Base Color"].links[0].from_node.name == laminate.EDGE_NODE
+        scene.kileido_cut = False
+        camera(scene, ortho_scale=0.002, location=(-0.012, -0.05, 800 * UM), size=(1000, 500))
+        scene.cycles.samples = 64  # lit, so noisier than the flat section
+        render(scene, "edge_realistic")
+        scene.cycles.samples = 8
+        scene.render.engine = "BLENDER_EEVEE"
+        edge = render(scene, "edge_realistic_eevee")
+        scene.render.engine = "CYCLES"
+        assert edge.std() > 0.005  # bands and weave, not one flat colour
+        scene.kileido_cut = True
+        scene.kileido_color_mode = "FAB"
+        assert not principled.inputs["Base Color"].is_linked
 
         # Off: stages gone, plane and face hidden, nothing drawn.
         scene.kileido_cut = False
