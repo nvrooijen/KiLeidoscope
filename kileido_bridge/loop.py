@@ -52,6 +52,7 @@ class BridgeRuntime:
         self.status = "disconnected"
         self.error = ""
         self.new_kicad = False  # another KiCad serves the socket; waits for the user's Resync
+        self.outdated_pads = 0  # pads KiCad only answers for with an outdated copy (after an undo)
         self.next_connect_at = 0.0
         self.next_poll_at = 0.0
         self.next_text_poll_at = 0.0
@@ -85,7 +86,8 @@ class BridgeRuntime:
 
     def _status_frame(self, **extra) -> bytes:
         return protocol.encode_frame({"type": "status", "kicad": self.status, "revision": self.revision,
-                                      **extra, "error": self.error, "new_kicad": self.new_kicad})
+                                      **extra, "error": self.error, "new_kicad": self.new_kicad,
+                                      "outdated_pads": self.outdated_pads})
 
     def _status(self, value, last_read_ms=None, error=""):
         if value == self.status and error == self.error:
@@ -113,6 +115,7 @@ class BridgeRuntime:
             self.timeout_count = 0
             self.next_connect_at = self.clock() + self.reconnect_interval_s
             self.sent_from_text = False
+            self.outdated_pads = 0
             self._status("disconnected", error=error)
 
     def _connect(self):
@@ -169,6 +172,9 @@ class BridgeRuntime:
             self._refresh_copy()
             frames += self._appearance_frames()
         frames += self._selection_frames(snapshot, force=full_snapshot)
+        if result.outdated_pads != self.outdated_pads:
+            self.outdated_pads = result.outdated_pads
+            frames.append(self._status_frame())
         self._send(frames, snapshot=full_snapshot)
         self._status("connected", snapshot.read_timings_ms.get("total"))
 
