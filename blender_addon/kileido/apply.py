@@ -47,6 +47,7 @@ def apply_frame(header, arrays):
         set_color_mode(board.color_mode)
     elif message_type == "footprints":
         footprints.apply(header)
+        highlight.refresh_components()
     elif message_type == "stackup":
         board.warnings = list(dict.fromkeys([*board.warnings, *header.get("warnings", [])]))
         board.layer_names = dict(header.get("display_names", {}))  # the Layers list uses KiCad's names

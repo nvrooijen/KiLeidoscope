@@ -6,6 +6,7 @@ wider and higher than the copper they cover. Zones switch material instead: a co
 would double the heaviest geometry on the board.
 """
 
+import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
@@ -49,6 +50,15 @@ def refresh(layer=None, kind=None):
         _refresh_pads(wanted, board.highlight_components["pads"], layer)
     if kind is None:
         _refresh_component_boxes(board.highlight_components["footprints"])
+
+
+def refresh_components():
+    """Footprints moved (an edit or an undo keeps KiCad's selection): the boxes follow."""
+    chosen = board.highlight_components["footprints"]
+    if board.collection is None or board.in_snapshot or not chosen:
+        return
+    bpy.context.view_layer.update()  # the boxes read the moved footprints' world matrices
+    _refresh_component_boxes(chosen)
 
 
 def _hide(obj):
