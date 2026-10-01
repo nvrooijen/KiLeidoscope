@@ -654,8 +654,21 @@ def _thickness_update(refresh_live):
     return update
 
 
-def _via_plug_update():
-    """A plugged via is closed from above, and the cross section shows its plug."""
+def _via_plug_update(scene):
+    """A plugged via is closed from above, and the cross section shows its plug. An open
+    barrel cannot be capped: Via fill goes off with it."""
+    if scene.kileido_via_plug == "NONE" and scene.kileido_via_fill:
+        scene.kileido_via_fill = False  # its own update refreshes the vias
+        return
+    apply.refresh_via_fill()
+    cut.rebuild()
+
+
+def _via_fill_update(scene):
+    """Capped vias are filled first: an open plug becomes resin."""
+    if scene.kileido_via_fill and scene.kileido_via_plug == "NONE":
+        scene.kileido_via_plug = "RESIN"  # its own update refreshes the vias
+        return
     apply.refresh_via_fill()
     cut.rebuild()
 
@@ -723,7 +736,7 @@ def _scene_properties():
             default="NONE",
             description="What fills every via's plated barrel, in the cross section. A plugged via is "
                         "closed from above as well",
-            update=lambda self, context: _via_plug_update()),
+            update=lambda self, context: _via_plug_update(self)),
         "kileido_via_plating_um": FloatProperty(
             name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
             description="Plating thickness of a via's barrel in the cross section (KiCad stores none)",
@@ -734,8 +747,9 @@ def _scene_properties():
         "kileido_via_fill": BoolProperty(
             name="Via fill", default=False,
             description="Filled and capped vias: copper (or finish) caps under the mask and silkscreen. "
-                        "Off: through vias are open, also through the solder mask",
-            update=lambda self, context: apply.refresh_via_fill()),
+                        "Off: through vias are open, also through the solder mask. Capping needs a plug: "
+                        "an open via plug becomes resin",
+            update=lambda self, context: _via_fill_update(self)),
         "kileido_copper_3d": BoolProperty(
             name="Copper thickness", default=True,
             description="Give outer copper its stackup thickness; the mask sits on the laminate between it",

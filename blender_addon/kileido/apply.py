@@ -21,6 +21,7 @@ from .placement import (BOARD_FACE_CLEARANCE_M, SOLDER_TOP_SCALE, copper_placeme
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
+VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
 SECTION_INPUTS = ("board", "layer_data", "appearance", "stackup")  # frames the cut plane's section reads
 
 
@@ -214,6 +215,7 @@ def frame_board(force=False):
         view = space.region_3d
         view.view_location = ((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2)
         view.view_distance = extent * 1.5  # the whole board fits a 50 mm lens view
+        space.clip_start = VIEW_CLIP_START_M
     board.framed_board = board.board_name
 
 
