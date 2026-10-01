@@ -83,9 +83,10 @@ def expect(scene, pixels, world, wanted, label):
             assert np.abs(got - np.array(color)).max() > 0.15, (label, got, color)
     elif wanted in (section.COPPER, section.RESIN):
         assert np.abs(got - np.array(wanted)).max() < TOLERANCE, (label, got, wanted)
-    else:  # laminate: its colour, up to the weave's lift where a glass bundle is
+    else:  # laminate: its colour, lighter on glass and darker on its filaments
         ratio = got / np.array(wanted)
-        assert ratio.min() > 1 - TOLERANCE and ratio.max() < 1 + laminate.WEAVE_CONTRAST + TOLERANCE, (label, got, wanted)
+        low, high = 1 - laminate.FIBRE_DARK - TOLERANCE, 1 + laminate.GLASS_LIFT + TOLERANCE
+        assert low < ratio.min() and ratio.max() < high, (label, got, wanted)
         assert np.ptp(ratio) < TOLERANCE, (label, got, wanted)  # lighter, not another colour
 
 
@@ -139,6 +140,10 @@ def main():
                 (-15, 500, section.PREPREG, "bottom prepreg"), (-15, 1000, section.CORE, "core"),
                 (-15, 1400, section.PREPREG, "top prepreg"), (21, 800, None, "beyond the board edge")):
             expect(scene, front, (x_mm * MM, 0, z_um * UM), wanted, label)
+
+        # The laminate's weave, away from vias: a picture to look at (both engines below check it).
+        camera(scene, ortho_scale=0.0015, location=(-0.015, -0.2, 1000 * UM), size=(1000, 700))
+        render(scene, "weave")
 
         # Zoomed on the blind via: its walls, plug, lands and the In1 pour at their thickness,
         # in both engines (EEVEE is the panel's Preview).

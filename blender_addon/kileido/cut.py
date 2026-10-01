@@ -31,7 +31,7 @@ FACE = "KLS cut face"
 FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
-FACE_MATERIAL_VERSION = 2
+FACE_MATERIAL_VERSION = 3
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
