@@ -264,6 +264,31 @@ def check_offset_models():
         bpy.data.objects.remove(obj)
 
 
+def check_single_part_models():
+    """A single-part model's mesh sits on its reference node itself (kicad-cli writes
+    R1 [mesh], no children; an assembly's parts are children of an empty D1). It binds,
+    and its placeholder box goes, as for an assembly."""
+    from kileido.state import board
+    target = next(obj for obj in board.collection.all_objects if obj.get("kls_footprint") == 1)
+    target["kls_model_paths"] = ["R_0402_1005Metric.step"]
+    root = bpy.data.objects.new("Single-part models root", None)
+    bpy.context.scene.collection.objects.link(root)
+    mesh = bpy.data.meshes.new("Single-part model")
+    mesh.vertices.add(1)
+    ref = bpy.data.objects.new(target["kls_reference"], mesh)
+    bpy.context.scene.collection.objects.link(ref)
+    ref.parent = root
+    ref.location = target.matrix_world.translation
+    bpy.context.view_layer.update()
+    assert models._source_meshes(ref) == [ref], "a mesh on the reference node was not collected"
+    assert models._matches(root, []) == [(ref, target)], "a single-part model was not bound"
+    result = models.bind_root(root, "single-part", [])
+    assert result["matched"] >= 1 and target["kls_id"] in board.model_bound, result
+    for obj in (ref, root):
+        bpy.data.objects.remove(obj)
+    bpy.data.meshes.remove(mesh)
+
+
 def check_scratch_cleanup():
     """Result folders nobody handled (here: every check's) go when Python exits, and a
     crashed Blender's old ones on the next start; a fresh one is another Blender's."""
@@ -299,6 +324,7 @@ def main():
         apply.load_frames(b"".join(snapshot_frames(snapshot, board_path=str(BOARD_FILE))))
         check_overlay_images()
         check_offset_models()
+        check_single_part_models()
         check_superseded_glb(scratch)
         check_reflections()
         check_scratch_cleanup()
