@@ -83,3 +83,17 @@ def test_viewer_colors_follow_theme_without_stackup_colors(tmp_path, monkeypatch
     viewer = _viewer_setup(tmp_path, monkeypatch, stackup_colors=False)
     assert viewer["silkscreen_top"] == pytest.approx([45/255, 94/255, 182/255, 0.702])
     assert viewer["copper"] == [179/255, 156/255, 0, 1.0]
+
+
+def test_saved_dielectrics_give_core_or_prepreg_and_material_top_first(tmp_path):
+    board = tmp_path / "stack.kicad_pcb"
+    board.write_text('''(kicad_pcb (setup (stackup
+      (layer "F.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 1" (type "prepreg") (thickness 0.1) (material "FR4"))
+      (layer "In1.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 2" (type "core") (thickness 1.2) (material "Polyimide"))
+      (layer "B.Mask" (type "Bottom Solder Mask") (thickness 0.01))
+      (layer "B.Cu" (type "copper") (thickness 0.035)))))''')
+    assert read_appearance(str(board))["dielectrics"] == [{"type": "prepreg", "material": "FR4"},
+                                                          {"type": "core", "material": "Polyimide"}]
+    assert read_appearance("")["dielectrics"] == []

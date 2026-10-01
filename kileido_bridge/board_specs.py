@@ -16,6 +16,8 @@ from pathlib import Path
 _RGB = re.compile(r"rgba?\(([^)]+)\)")
 _LAYER = re.compile(r'\(layer\s+"([^"]+)"')
 _COLOR = re.compile(r'\(color\s+"([^"]+)"\)')
+_TYPE = re.compile(r'\(type\s+"([^"]*)"\)')
+_MATERIAL = re.compile(r'\(material\s+"([^"]*)"\)')
 _STACKUP = re.compile(r"\(stackup\b")
 _COPPER_FINISH = re.compile(r'\(copper_finish\s+"([^"]*)"\)')
 
@@ -137,6 +139,27 @@ def _saved_stackup_colors(text: str) -> dict:
     except ValueError:  # a truncated file (read while KiCad saves it): no colours this time
         pass
     return colors
+
+
+def _saved_dielectrics(text: str) -> list[dict]:
+    """The saved stackup's dielectric layers, top first: {"type": "core" or "prepreg",
+    "material": its material name or ""}. The IPC stackup leaves both out."""
+    marker = _STACKUP.search(text)
+    if marker is None:
+        return []
+    found = []
+    try:
+        stackup = _block(text, marker.start())
+        for layer in _LAYER.finditer(stackup):
+            block = _block(stackup, layer.start())
+            kind = _TYPE.search(block)
+            if kind is None or kind.group(1).casefold() not in ("core", "prepreg"):
+                continue
+            material = _MATERIAL.search(block)
+            found.append({"type": kind.group(1).casefold(), "material": material.group(1) if material else ""})
+    except ValueError:  # a truncated file (read while KiCad saves it): nothing this time
+        return []
+    return found
 
 
 def _named(value: str | None, table: dict):
@@ -278,6 +301,7 @@ def read_appearance(board_path: str = "") -> dict:
                      if (color := _rgba(copper.get(key))) is not None}
     return {
         "copper_finish": finish,
+        "dielectrics": _saved_dielectrics(text),
         "saved_colors": {name: color for name, value in saved.items()
                          if (color := _rgba(value)) is not None},
         # Final 3D-viewer colours, stackup names ("White", "FR4 natural") resolved.
