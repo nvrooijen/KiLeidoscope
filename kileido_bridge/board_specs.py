@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+from .board_text import via_protection
+
 _RGB = re.compile(r"rgba?\(([^)]+)\)")
 _LAYER = re.compile(r'\(layer\s+"([^"]+)"')
 _COLOR = re.compile(r'\(color\s+"([^"]+)"\)')
@@ -21,6 +23,9 @@ _MATERIAL = re.compile(r'\(material\s+"([^"]*)"\)')
 _STACKUP = re.compile(r"\(stackup\b")
 _COPPER_FINISH = re.compile(r'\(copper_finish\s+"([^"]*)"\)')
 _EDGE_PLATING = re.compile(r"\(edge_plating\s+yes\)")  # Board Setup > Board Finish: Plated board edge
+_SETUP = re.compile(r"\(setup\b")
+# KiCad's own via protection defaults (BOARD_DESIGN_SETTINGS), per model.PROTECTION: tented both sides.
+DEFAULT_VIA_RULES = (1, 1, 0, 0, 0, 0, 0, 0)
 
 # KiCad 10 3d-viewer/3d_canvas/board_adapter.cpp: named stackup colours and their
 # 3D-viewer values (sRGB bytes, alpha).  Stackup names outside these lists render
@@ -163,6 +168,20 @@ def _saved_dielectrics(text: str) -> list[dict]:
     return found
 
 
+def via_rules(text: str) -> list[int]:
+    """The board's via protection defaults, per `model.PROTECTION` (1 or 0): what a via
+    set to "From design rules" gets. Only the board file has them (its setup section);
+    KiCad's IPC API has no getter for them."""
+    marker = _SETUP.search(text)
+    if marker is None:
+        return list(DEFAULT_VIA_RULES)
+    try:
+        setup = _block(text, marker.start())
+    except ValueError:  # a truncated file (read while KiCad saves it)
+        return list(DEFAULT_VIA_RULES)
+    return list(via_protection(setup, DEFAULT_VIA_RULES))
+
+
 def _named(value: str | None, table: dict):
     if not value:
         return None
@@ -303,6 +322,7 @@ def read_appearance(board_path: str = "") -> dict:
     return {
         "copper_finish": finish,
         "edge_plating": bool(_EDGE_PLATING.search(text)),
+        "via_rules": via_rules(text),
         "dielectrics": _saved_dielectrics(text),
         "saved_colors": {name: color for name, value in saved.items()
                          if (color := _rgba(value)) is not None},

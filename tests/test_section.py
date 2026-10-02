@@ -77,16 +77,19 @@ def test_stack_layout_places_copper_and_colours_each_dielectric():
     assert {color for _, _, color in unknown} == {section.CORE}
 
 
-def _board(plug, capped=False, cap_plating=0.0):
+def _board(plug, capped=False, cap_plating=0.0, halves=(True, True)):
     """40 x 30 mm board; In1 poured over all of it; a 0.5 mm F.Cu track from x = -5 to 5;
-    a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill)."""
+    a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill). plug: None (open),
+    "RESIN" or "COPPER", in the barrel's (upper, lower) `halves`."""
     copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
     layers = {"In1.Cu": section.rings(ALONG_X, *square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)),
               "F.Cu": section.capsules(ALONG_X, [(-5 * MM, 0)], [(5 * MM, 0)], 0.25 * MM)}
     vias = {"xy": np.array([(10 * MM, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
-            "top": ["F.Cu"], "bottom": ["In1.Cu"]}
+            "top": ["F.Cu"], "bottom": ["In1.Cu"],
+            "core_top": [bool(plug) and halves[0]], "core_bottom": [bool(plug) and halves[1]],
+            "fill_copper": [plug == "COPPER"], "capped": [capped]}
     return section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), layers, copper, bands,
-                                 vias=vias, plating=25 * UM, plug=plug, capped=capped, cap_plating=cap_plating)
+                                 vias=vias, plating=25 * UM, cap_plating=cap_plating)
 
 
 def color_at(rects, s, z):
@@ -128,6 +131,21 @@ def test_capped_via_is_plated_over_at_the_outer_copper_only():
     assert color_at(rects, 10 * MM, 1400 * UM) == section.RESIN  # the plug under it
     assert color_at(rects, 10 * MM, 1290 * UM) == section.RESIN  # the In1 end is inner copper: no cap
     assert color_at(_board(None, capped=True), 10 * MM, 1520 * UM) is None  # nothing to cap without a plug
+
+
+def test_a_plug_from_one_side_fills_half_the_barrel():
+    upper = _board("RESIN", halves=(True, False))  # the blind via's bore, In1 up to F.Cu, halves at ~1.4 mm
+    assert color_at(upper, 10 * MM, 1480 * UM) == section.RESIN
+    assert color_at(upper, 10 * MM, 1320 * UM) is None  # the lower half stays empty
+    lower = _board("RESIN", halves=(False, True))
+    assert color_at(lower, 10 * MM, 1480 * UM) is None
+    assert color_at(lower, 10 * MM, 1320 * UM) == section.RESIN
+
+
+def test_a_copper_fill_is_copper_across_the_bore():
+    rects = _board("COPPER")
+    assert color_at(rects, 10 * MM, 1400 * UM) == section.COPPER
+    assert color_at(rects, (10 + 0.15 - 0.0125) * MM, 1400 * UM) == section.COPPER  # wall and fill, one metal
 
 
 def test_open_via_leaves_its_bore_empty_and_nothing_overlaps():

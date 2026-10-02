@@ -19,6 +19,33 @@ _LAYER = re.compile(r'\(layer "([^"]+)"\)')
 _LAYERS = re.compile(r'\(layers "([^"]+)" "([^"]+)"')
 _NET = re.compile(r'\(net "((?:[^"\\]|\\.)*)"\)')
 _UUID = re.compile(r'\(uuid "([^"]+)"\)')
+_SIDED = re.compile(r"\((tenting|covering|plugging)\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
+_SIDE = re.compile(r"\((front|back)\s+(yes|no|none)\)")
+_SINGLE = re.compile(r"\((capping|filling)\s+(yes|no|none)\)")
+
+
+def via_protection(text: str, fallback: tuple[int, ...] = model.FROM_RULES) -> tuple[int, ...]:
+    """A via's (or the board setup's) protection features, per `model.PROTECTION`.
+
+    KiCad 10 writes a via's own settings as `(tenting (front yes) (back no))`,
+    `(covering ...)`, `(plugging ...)`, `(capping no)`, `(filling yes)`; a via without
+    them follows the board's (the same fields in its setup). KiCad 9 wrote the sides
+    as bare words, `(tenting front back)`. What is not written takes `fallback`.
+    """
+    found = list(fallback)
+    base = {"tenting": 0, "covering": 2, "plugging": 4}
+    for name, body in _SIDED.findall(text):
+        sides = dict(_SIDE.findall(body))
+        if not sides:  # KiCad 9: the sides named are the ones on
+            words = body.split()
+            sides = {side: "yes" if side in words else "no" for side in ("front", "back")}
+        for offset, side in enumerate(("front", "back")):
+            if side in sides and sides[side] != "none":
+                found[base[name] + offset] = 1 if sides[side] == "yes" else 0
+    for name, value in _SINGLE.findall(text):
+        if value != "none":
+            found[6 if name == "capping" else 7] = 1 if value == "yes" else 0
+    return tuple(found)
 
 
 def _nm(value: str) -> int:
@@ -41,7 +68,7 @@ def copper_items(text: str) -> tuple[tuple[model.Track, ...], tuple[model.Arc, .
             if "at" not in points or layers is None:
                 continue
             vias.append(model.Via(uuid.group(1), net, points["at"], numbers.get("size", 0),
-                                  numbers.get("drill", 0), layers.group(1), layers.group(2)))
+                                  numbers.get("drill", 0), layers.group(1), layers.group(2), via_protection(body)))
             continue
         layer = _LAYER.search(body)
         if layer is None or "start" not in points or "end" not in points:

@@ -264,30 +264,33 @@ def stack_layout(heights, thickness, stack, saved):
 # --- The section ------------------------------------------------------------------------------
 
 def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=None,
-                  plating=25e-6, plug=None, capped=False, cap_plating=0.0, plated_edges=(), edge_plating=25e-6):
+                  plating=25e-6, cap_plating=0.0, plated_edges=(), edge_plating=25e-6):
     """Rectangles (s0, s1, z0, z1, sRGB colour), bottom up.
 
     outline: (a, b, item) edges of the board outline (even-odd: cutouts are holes).
     layers: {layer name: interval array of its copper along the cut}, already crossed.
     copper, bands: from `stack_layout`.
     vias: dict of arrays xy, diameter, drill, and per via the names `top` and `bottom`
-    of the layers it joins (lands on those two, a barrel between).
+    of the layers it joins (lands on those two, a barrel between). Optional per via
+    (protection.resolve): `core_top`/`core_bottom`, a plug or fill in the barrel's upper /
+    lower half; `fill_copper`, that core is copper (else resin); `capped`, plated over
+    where it reaches the outer copper: copper across the whole drill there (the core ends
+    under it), and `cap_plating` more over the land, outside the board.
     pad_drills: rows (x, y, width, height, angle, plated), through the whole board.
-    plating: barrel wall thickness. plug: None (open), "RESIN" or "COPPER".
-    capped: plugged vias are plated over where they reach the outer copper: copper
-    across the whole drill there (the plug ends under it), and `cap_plating` more over
-    the land, outside the board.
+    plating: barrel wall thickness.
     plated_edges: stretches of a plated board edge (`plated_edges`): where the cut crosses
     one, an `edge_plating` thick copper strip outside the edge, the board's whole height.
     """
     inside = rings(line, *outline) if outline is not None else EMPTY
     laminate_z = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (0.0, 0.0)
-    holes = []  # (z0, z1, full interval, bore interval, plug, capped z ranges)
+    holes = []  # (z0, z1, full interval, bore interval, core (z0, z1, colour) or None, capped z ranges)
     plated = []  # (z0, z1, intervals): caps over capped vias' lands, outside the outer copper
     lands = {}  # layer -> land intervals
     if vias is not None and len(vias["xy"]):
         xy = np.asarray(vias["xy"], np.float64).reshape(-1, 2)
         near = np.abs(line.d(xy)) < np.maximum(vias["diameter"], vias["drill"]) / 2
+        flag = {name: np.asarray(vias.get(name, np.zeros(len(xy))), bool).reshape(-1)
+                for name in ("core_top", "core_bottom", "fill_copper", "capped")}
         for index in np.flatnonzero(near):
             top, bottom = vias["top"][index], vias["bottom"][index]
             if top not in copper or bottom not in copper:
@@ -297,14 +300,17 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
             full = discs(line, centre, outer)
             bore = discs(line, centre, max(outer - plating, 0.0))
             z0, z1 = min(copper[bottom][0], copper[top][0]), max(copper[bottom][1], copper[top][1])
-            caps = [copper[name] for name in {top, bottom} if capped and plug and name in ("F.Cu", "B.Cu")]
+            upper, lower = flag["core_top"][index], flag["core_bottom"][index]
+            core = ((z0 if lower else (z0 + z1) / 2, z1 if upper else (z0 + z1) / 2,
+                     COPPER if flag["fill_copper"][index] else RESIN) if upper or lower else None)
+            caps = [copper[name] for name in {top, bottom} if flag["capped"][index] and core and name in ("F.Cu", "B.Cu")]
             if caps and cap_plating > 0:
                 land = discs(line, centre, vias["diameter"][index] / 2)
                 if "F.Cu" in (top, bottom):
                     plated.append((copper["F.Cu"][1], copper["F.Cu"][1] + cap_plating, land))
                 if "B.Cu" in (top, bottom):
                     plated.append((copper["B.Cu"][0] - cap_plating, copper["B.Cu"][0], land))
-            holes.append((z0, z1, full, bore, plug, caps))
+            holes.append((z0, z1, full, bore, core, caps))
             for name in {top, bottom}:
                 lands.setdefault(name, []).append(discs(line, centre, vias["diameter"][index] / 2))
     if pad_drills is not None and len(pad_drills):
@@ -322,6 +328,7 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
 
     cuts = {z for band in bands for z in band[:2]} | {z for zr in copper.values() for z in zr}
     cuts |= {z for hole in holes for z in hole[:2]} | {z for cap in plated for z in cap[:2]}
+    cuts |= {z for hole in holes if hole[4] for z in hole[4][:2]}
     cuts = sorted(cuts)
     growing, done = {}, []  # a stretch drawn in the slab below grows up instead of stacking
     for z0, z1 in zip(cuts, cuts[1:]):
@@ -339,15 +346,16 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
             here = [hole for hole in here if not any(c0 <= middle < c1 for c0, c1 in hole[5])]
         drilled = merge(np.vstack([hole[2] for hole in here])) if here else EMPTY
         bores = merge(np.vstack([hole[3] for hole in here])) if here else EMPTY
-        plugged = merge(np.vstack([hole[3] for hole in here if hole[4]])) if any(h[4] for h in here) else EMPTY
-        plug_color = COPPER if any(h[4] == "COPPER" for h in here) else RESIN
+        cores = [hole for hole in here if hole[4] and hole[4][0] <= middle < hole[4][1]]
+        resin = merge(np.vstack([EMPTY, *(hole[3] for hole in cores if hole[4][2] == RESIN)]))
+        filled = merge(np.vstack([EMPTY, *(hole[3] for hole in cores if hole[4][2] == COPPER)]))
         walls = subtract(drilled, bores)
         laminate = inside if laminate_z[0] <= middle < laminate_z[1] else EMPTY
         band = next((color for b0, b1, color in bands if b0 <= middle < b1), CORE)
         for intervals, color in ((subtract(subtract(laminate, metal), drilled), band),
                                  (subtract(metal, drilled), COPPER),
-                                 (walls, COPPER),
-                                 (plugged, plug_color)):
+                                 (merge(np.vstack([walls, filled])), COPPER),
+                                 (subtract(resin, filled), RESIN)):
             for s0, s1 in intervals:
                 key = (round(s0, 12), round(s1, 12), color)
                 rect = growing.get(key)

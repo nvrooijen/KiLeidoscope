@@ -21,7 +21,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, layers, lighting, live, models, packages,
-               pick, render_depth, watcher)
+               pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -236,8 +236,8 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         layout.prop(context.scene, "kileido_reflections", text="Reflections")
         layout.prop(context.scene, "kileido_mask_opacity", text="Solder mask opacity", slider=True)
         layout.prop(context.scene, "kileido_silk_opacity", text="Silkscreen opacity", slider=True)
-        for prop, label, icon in (("kileido_via_fill", "Via fill (capped vias)", "bucket"),
-                                  ("kileido_focus", "X-ray mode", "xray"),
+        self._draw_vias(context)
+        for prop, label, icon in (("kileido_focus", "X-ray mode", "xray"),
                                   ("kileido_center_in_kicad", "Center KiCad on click", None),
                                   ("kileido_clip_silkscreen", "Clip silkscreen to board outline", "scissors")):
             row = layout.row(align=True)
@@ -245,6 +245,19 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             if _icons is not None and icon in _icons:
                 row.label(text="", icon_value=_icons[icon].icon_id)
         self._draw_cut(context)
+
+    def _draw_vias(self, context):
+        """Via protection comes from KiCad; only what KiCad does not store is set here."""
+        scene = context.scene
+        row = self.layout.row(align=True)
+        row.prop(scene, "kileido_via_fill_material", text="Via fill")
+        row.prop(scene, "kileido_max_tent_mm", text="Max tent")
+        if _icons is not None and "bucket" in _icons:
+            row.label(text="", icon_value=_icons["bucket"].icon_id)
+        if board.via_too_big:
+            count = board.via_too_big
+            self.layout.label(text=f"{count} tented via{'s' if count > 1 else ''} too large to tent: shown open",
+                              icon="ERROR")
 
     def _draw_cut(self, context):
         scene = context.scene
@@ -257,9 +270,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             row.operator(KILEIDO_OT_cut_plane.bl_idname, text=axis).axis = axis
         row.operator(KILEIDO_OT_cut_plane.bl_idname, text="Reset").axis = "RESET"
         row.prop(scene, "kileido_cut_flip", text="Flip", toggle=True)
-        row = box.row(align=True)
-        row.prop(scene, "kileido_via_plug", text="Via plug")
-        row.prop(scene, "kileido_via_plating_um", text="Wall")
+        box.prop(scene, "kileido_via_plating_um", text="Via wall")
         if not cut.upright(scene):
             box.label(text="Turn the plane upright for a cross section", icon="INFO")
 
@@ -654,36 +665,6 @@ def _thickness_update(refresh_live):
     return update
 
 
-PLUG_FOR_FILL = "kls_plug_for_fill"  # on the scene while Via fill chose the resin plug
-
-
-def _via_plug_update(scene):
-    """A plugged via is closed from above, and the cross section shows its plug. An open
-    barrel cannot be capped: Via fill goes off with it."""
-    if PLUG_FOR_FILL in scene and scene.kileido_via_plug != "RESIN":
-        del scene[PLUG_FOR_FILL]  # a plug chosen by hand stays when Via fill goes off
-    if scene.kileido_via_plug == "NONE" and scene.kileido_via_fill:
-        scene.kileido_via_fill = False  # its own update refreshes the vias
-        return
-    apply.refresh_plugs()
-    cut.rebuild()
-
-
-def _via_fill_update(scene):
-    """Capped vias are filled first: an open plug becomes resin, and opens again when
-    Via fill goes off."""
-    if scene.kileido_via_fill and scene.kileido_via_plug == "NONE":
-        scene[PLUG_FOR_FILL] = True
-        scene.kileido_via_plug = "RESIN"  # its own update refreshes the vias
-        return
-    if not scene.kileido_via_fill and PLUG_FOR_FILL in scene:
-        del scene[PLUG_FOR_FILL]
-        scene.kileido_via_plug = "NONE"
-        return
-    apply.refresh_plugs()  # the caps come and go with Via fill
-    cut.rebuild()
-
-
 def _mask_opacity_update():
     """The solder mask opacity changed: recolour the live board, then the view-only ones."""
     if board.materials:
@@ -740,14 +721,19 @@ def _scene_properties():
         "kileido_cut_flip": BoolProperty(
             name="Flip", default=False, description="Remove the other side of the cut plane",
             update=lambda self, context: cut.push()),
-        "kileido_via_plug": EnumProperty(
-            name="Via plug", items=(("NONE", "Open", "Empty barrels; through vias stay see-through"),
-                                    ("RESIN", "Resin", "Epoxy-filled barrels"),
+        "kileido_via_fill_material": EnumProperty(
+            name="Via fill", items=(("RESIN", "Resin", "Epoxy-filled barrels (milky)"),
                                     ("COPPER", "Copper", "Copper-filled barrels")),
-            default="NONE",
-            description="What fills every via's plated barrel, in the cross section. A plugged via is "
-                        "closed from above as well",
-            update=lambda self, context: _via_plug_update(self)),
+            default="RESIN",
+            description="What fills the vias KiCad marks filled (or capped). KiCad sets each via's protection "
+                        "(select it, E, Protection features); it does not store the fill material",
+            update=lambda self, context: apply.refresh_protection()),
+        "kileido_max_tent_mm": FloatProperty(
+            name="Max tent drill", default=protection.MAX_TENT_M * 1e3, min=0.05, soft_max=1.0, max=5.0,
+            step=1, precision=2,
+            description="Largest drill (mm) a solder mask tent can span. A via KiCad tents or covers over a larger "
+                        "empty drill is shown open, and listed here",
+            update=lambda self, context: apply.refresh_protection()),
         "kileido_via_plating_um": FloatProperty(
             name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
             description="Plating thickness of a via's barrel in the cross section (KiCad stores none)",
@@ -755,12 +741,6 @@ def _scene_properties():
         "kileido_center_in_kicad": BoolProperty(
             name="Center KiCad on click", default=True,
             description="Clicking an item here also pans KiCad's PCB editor to centre it, keeping its zoom"),
-        "kileido_via_fill": BoolProperty(
-            name="Via fill", default=False,
-            description="Filled and capped vias: copper (or finish) caps under the mask and silkscreen. "
-                        "Off: through vias are open, also through the solder mask. Capping needs a plug: "
-                        "an open via plug becomes resin",
-            update=lambda self, context: _via_fill_update(self)),
         "kileido_copper_3d": BoolProperty(
             name="Copper thickness", default=True,
             description="Give outer copper its stackup thickness; the mask sits on the laminate between it",

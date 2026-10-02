@@ -451,13 +451,15 @@ def _xyz(nodes, links, xy, z):
 
 
 def vias():
-    group, source, sink = _group("KLS_Vias_v5", (("Material", "NodeSocketMaterial"),
+    """Lands, barrels and, per via (protection.py, as point attributes), its plug or fill
+    (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill)
+    and its cap plating (`cap`, metres, on its outer lands)."""
+    group, source, sink = _group("KLS_Vias_v6", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
                                                    ("Bottom Thickness", "NodeSocketFloat"),
-                                                   ("Filled", "NodeSocketBool", False),
                                                    ("Fill Material", "NodeSocketMaterial"),
-                                                   ("Cap", "NodeSocketFloat", 0.0)))
+                                                   ("Copper Fill Material", "NodeSocketMaterial")))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -516,11 +518,11 @@ def vias():
 
     def capped_end(z, thickness, flag, sign):
         """A land's surface and thickness with the cap plating on it: a capped via's lands at
-        the outer copper (flag attribute 1) stand `Cap` proud of it."""
+        the outer copper (flag attribute 1) stand its `cap` proud of it."""
         cap = nodes.new("ShaderNodeMath")
         cap.operation = "MULTIPLY"
         links.new(_named(nodes, flag), cap.inputs[0])
-        links.new(source.outputs["Cap"], cap.inputs[1])
+        links.new(_named(nodes, "cap"), cap.inputs[1])
         surface = nodes.new("ShaderNodeMath")
         surface.operation = "MULTIPLY_ADD"
         links.new(cap.outputs[0], surface.inputs[0])
@@ -558,8 +560,9 @@ def vias():
     links.new(middle_points, barrel.inputs["Points"])
     links.new(wall_mesh.outputs["Mesh"], barrel.inputs["Instance"])
     links.new(_xyz(nodes, links, drill, height.outputs[0]), barrel.inputs["Scale"])
-    # A plugged barrel's core (resin or copper): a closed cylinder a hair inside the wall and
-    # short of both lands, so it never shares a face with either.
+    # A plug or fill: a closed cylinder a hair inside the wall and short of both lands, so it
+    # never shares a face with either, over the halves of the barrel it fills (from the
+    # middle up for `core_top`, down for `core_bottom`).
     core = nodes.new("GeometryNodeMeshCylinder")
     core.fill_type = "NGON"
     core.inputs["Vertices"].default_value = 24
@@ -572,21 +575,58 @@ def vias():
     core_width.operation = "MULTIPLY"
     links.new(drill, core_width.inputs[0])
     core_width.inputs[1].default_value = PLUG_SCALE
+    reach = nodes.new("ShaderNodeMath")  # middle to either end of the core
+    reach.operation = "SUBTRACT"
+    links.new(half_height.outputs[0], reach.inputs[0])
+    reach.inputs[1].default_value = PLUG_INSET_M
+    upper, lower = _named(nodes, "core_top"), _named(nodes, "core_bottom")
+    halves = nodes.new("ShaderNodeMath")
+    halves.operation = "ADD"
+    links.new(upper, halves.inputs[0])
+    links.new(lower, halves.inputs[1])
     core_height = nodes.new("ShaderNodeMath")
-    core_height.operation = "SUBTRACT"
-    links.new(height.outputs[0], core_height.inputs[0])
-    core_height.inputs[1].default_value = 2 * PLUG_INSET_M
-    plug = nodes.new("GeometryNodeInstanceOnPoints")
-    links.new(middle_points, plug.inputs["Points"])
-    links.new(core_flat.outputs["Mesh"], plug.inputs["Instance"])
-    links.new(_xyz(nodes, links, core_width.outputs[0], core_height.outputs[0]), plug.inputs["Scale"])
-    painted_plug = nodes.new("GeometryNodeSetMaterial")
-    links.new(plug.outputs["Instances"], painted_plug.inputs["Geometry"])
-    links.new(source.outputs["Fill Material"], painted_plug.inputs["Material"])
-    plug_if_filled = nodes.new("GeometryNodeSwitch")
-    plug_if_filled.input_type = "GEOMETRY"
-    links.new(source.outputs["Filled"], plug_if_filled.inputs["Switch"])
-    links.new(painted_plug.outputs["Geometry"], plug_if_filled.inputs["True"])
+    core_height.operation = "MULTIPLY"
+    links.new(halves.outputs[0], core_height.inputs[0])
+    links.new(reach.outputs[0], core_height.inputs[1])
+    lean = nodes.new("ShaderNodeMath")  # +1 upper half only, -1 lower half only
+    lean.operation = "SUBTRACT"
+    links.new(upper, lean.inputs[0])
+    links.new(lower, lean.inputs[1])
+    shift = nodes.new("ShaderNodeMath")
+    shift.operation = "MULTIPLY"
+    links.new(lean.outputs[0], shift.inputs[0])
+    links.new(reach.outputs[0], shift.inputs[1])
+    centre = nodes.new("ShaderNodeMath")
+    centre.operation = "MULTIPLY_ADD"
+    links.new(shift.outputs[0], centre.inputs[0])
+    centre.inputs[1].default_value = 0.5
+    links.new(middle.outputs[0], centre.inputs[2])
+    core_points = shifted_points(centre.outputs[0])
+    has_core = nodes.new("FunctionNodeCompare")
+    has_core.data_type = "FLOAT"
+    has_core.operation = "GREATER_THAN"
+    links.new(halves.outputs[0], has_core.inputs[0])
+    has_core.inputs[1].default_value = 0.5
+    copper_fill = nodes.new("FunctionNodeCompare")
+    copper_fill.data_type = "FLOAT"
+    copper_fill.operation = "GREATER_THAN"
+    links.new(_named(nodes, "fill_copper"), copper_fill.inputs[0])
+    copper_fill.inputs[1].default_value = 0.5
+    cores = nodes.new("GeometryNodeJoinGeometry")
+    for material, copper_only in (("Fill Material", False), ("Copper Fill Material", True)):
+        painted_core = nodes.new("GeometryNodeSetMaterial")
+        links.new(core_flat.outputs["Mesh"], painted_core.inputs["Geometry"])
+        links.new(source.outputs[material], painted_core.inputs["Material"])
+        which = nodes.new("FunctionNodeBooleanMath")
+        which.operation = "AND" if copper_only else "NIMPLY"  # NIMPLY: core and not copper
+        links.new(has_core.outputs["Result"], which.inputs[0])
+        links.new(copper_fill.outputs["Result"], which.inputs[1])
+        placed = nodes.new("GeometryNodeInstanceOnPoints")
+        links.new(core_points, placed.inputs["Points"])
+        links.new(which.outputs[0], placed.inputs["Selection"])
+        links.new(painted_core.outputs["Geometry"], placed.inputs["Instance"])
+        links.new(_xyz(nodes, links, core_width.outputs[0], core_height.outputs[0]), placed.inputs["Scale"])
+        links.new(placed.outputs["Instances"], cores.inputs["Geometry"])
 
     copper = nodes.new("GeometryNodeJoinGeometry")
     links.new(outer.outputs["Instances"], copper.inputs["Geometry"])
@@ -600,7 +640,7 @@ def vias():
     together = nodes.new("GeometryNodeJoinGeometry")
     links.new(painted_copper.outputs["Geometry"], together.inputs["Geometry"])
     links.new(painted_hole.outputs["Geometry"], together.inputs["Geometry"])
-    links.new(plug_if_filled.outputs[0], together.inputs["Geometry"])
+    links.new(cores.outputs["Geometry"], together.inputs["Geometry"])
     links.new(together.outputs["Geometry"], sink.inputs["Geometry"])
     return group
 

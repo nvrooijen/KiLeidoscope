@@ -210,7 +210,8 @@ def _refresh_vias(wanted):
         target.vertices.add(len(chosen_vertices))
         target.vertices.foreach_set("co", read_coordinates(mesh)[chosen_vertices].ravel())
         for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M),
-                                  ("z_top", LIFT_M), ("z_bottom", -LIFT_M), ("outer_top", 0.0), ("outer_bottom", 0.0)):
+                                  ("z_top", LIFT_M), ("z_bottom", -LIFT_M), ("outer_top", 0.0), ("outer_bottom", 0.0),
+                                  ("core_top", 0.0), ("core_bottom", 0.0), ("fill_copper", 0.0), ("cap", 0.0)):
             values = read_attribute(mesh, attribute, np.float32)[chosen_vertices]
             write_attribute(target, attribute, "FLOAT", values + change)
         target.update()
@@ -220,7 +221,7 @@ def _refresh_vias(wanted):
                      {"Drill Material": barrel,
                       "Top Thickness": copper_thickness("F.Cu"),
                       "Bottom Thickness": copper_thickness("B.Cu"),
-                      **materials.plug_inputs(barrel)})
+                      **materials.fill_inputs(barrel)})
         _show(obj)
 
 

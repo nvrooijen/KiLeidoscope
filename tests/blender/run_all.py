@@ -78,7 +78,7 @@ def main():
     studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
     assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
     assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v3", "KLS_Fill_v3", "KLS_FillSingle_v3",
-                                                      "KLS_Drills_v2", "KLS_Vias_v5", "KLS_Board_v3",
+                                                      "KLS_Drills_v2", "KLS_Vias_v6", "KLS_Board_v3",
                                                       "KLS_Solder"))
 
     top = collection.all_objects["KLS F.Cu tracks"]
@@ -403,7 +403,8 @@ def main():
         assert math.isclose(world_z_range(collection.all_objects["KLS F.Cu tracks"])[0], 0.001541, abs_tol=1e-8)
         bpy.context.scene.kileido_copper_3d = True
 
-        # Via fill: capped vias leave the hole mask; open vias are see-through.
+        # Via protection from KiCad: only an unprotected through via is see-through. The
+        # fixture's vias follow its rules; a 0.35 mm drill is too large to tent at 0.30 mm.
         via_obj = collection.all_objects["KLS vias"]
         via_xy = np.array(via_obj.data.vertices[0].co[:2])
 
@@ -416,11 +417,20 @@ def main():
             pixel = max(holes._bounds[2] - xmin, holes._bounds[3] - ymin) / holes.RESOLUTION
             return pixels[int((via_xy[1] - ymin) / pixel), int((via_xy[0] - xmin) / pixel)]
 
-        assert via_alpha() > 0.99  # default: open
-        bpy.context.scene.kileido_via_fill = True
+        scene = bpy.context.scene
+        assert "via_rules" not in state.board.appearance  # KiCad's defaults: tented both sides
+        assert via_alpha() > 0.99 and state.board.via_too_big == len(via_obj.data.vertices)
+        scene.kileido_max_tent_mm = 0.4
+        assert via_alpha() == 0.0 and state.board.via_too_big == 0
+        state.board.appearance["via_rules"] = [0] * 8  # a board whose vias are unprotected
+        apply.refresh_protection()
+        assert via_alpha() > 0.99 and state.board.via_too_big == 0
+        state.board.appearance["via_rules"] = [0, 0, 0, 0, 0, 0, 1, 1]  # filled and capped (type VII)
+        apply.refresh_protection()
         assert via_alpha() == 0.0
-        bpy.context.scene.kileido_via_fill = False
-        assert via_alpha() > 0.99
+        del state.board.appearance["via_rules"]
+        scene.kileido_max_tent_mm = 0.3
+        apply.refresh_protection()
 
         # KiCad selection: selected track red, diff-pair partner blue, over the copper.
         f_tracks = collection.all_objects["KLS F.Cu tracks"]

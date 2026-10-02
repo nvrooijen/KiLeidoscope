@@ -460,11 +460,28 @@ def _convert_track(item) -> model.Track | model.Arc:
     return model.Track(*common, _point(item.end), int(item.width))
 
 
+def _mode(value) -> int:
+    """KiCad's via protection modes all number 1 = yes, 2 = no, 0 or 3 = from the design
+    rules (measured on KiCad 10.0.3: a via without its own setting reports 0)."""
+    return {1: 1, 2: 0}.get(int(value), -1)
+
+
+def _via_protection(padstack) -> tuple[int, ...]:
+    """Per `model.PROTECTION`. kicad-python 0.7 wraps only the solder mask mode."""
+    proto = getattr(padstack, "_proto", None)
+    if proto is None:  # a stand-in padstack (tests)
+        return model.FROM_RULES
+    front, back, drill = proto.front_outer_layers, proto.back_outer_layers, proto.drill
+    return tuple(_mode(value) for value in (
+        front.solder_mask_mode, back.solder_mask_mode, front.covering_mode, back.covering_mode,
+        front.plugging_mode, back.plugging_mode, drill.capped, drill.filled))
+
+
 def _convert_via(item) -> model.Via:
     return model.Via(
         item.id.value, item.net.name, _point(item.position), int(item.diameter),
         int(item.drill_diameter), canonical_layer(item.padstack.drill.start_layer),
-        canonical_layer(item.padstack.drill.end_layer),
+        canonical_layer(item.padstack.drill.end_layer), _via_protection(item.padstack),
     )
 
 

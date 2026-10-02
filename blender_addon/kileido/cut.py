@@ -307,6 +307,10 @@ def _gather():
                     "drill": read_attribute(mesh, "drill", np.float32).astype(np.float64),
                     "top": _layers_at(read_attribute(mesh, "z_top", np.float32) - land),
                     "bottom": _layers_at(read_attribute(mesh, "z_bottom", np.float32) + land)}
+            if "core_top" in mesh.attributes:  # plug, fill and cap, as apply.refresh_protection resolved them
+                vias.update({name: read_attribute(mesh, name, np.float32) > 0.5
+                             for name in ("core_top", "core_bottom", "fill_copper")})
+                vias["capped"] = read_attribute(mesh, "cap", np.float32) > 0
         elif obj.get("kls_drill"):
             width, height = _modifier_input(obj, "Width"), _modifier_input(obj, "Height")
             plated = _modifier_input(obj, "Material") == board.materials.get("plating")
@@ -459,12 +463,10 @@ def rectangles(scene=None):
     layers = {layer: section.copper_along(line, found) for layer, found in data["copper"].items()}
     copper, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,
                                          board.appearance.get("dielectrics"))
-    plug = getattr(scene, "kileido_via_plug", "NONE")
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=float(getattr(scene, "kileido_via_plating_um", 25.0)) * 1e-6,
-                                  plug=None if plug == "NONE" else plug,
-                                  capped=bool(getattr(scene, "kileido_via_fill", False)), cap_plating=CAP_PLATING_M)
+                                  cap_plating=CAP_PLATING_M)
     return rects, (line, normal)
 
 

@@ -1,7 +1,7 @@
 """Copper from the board text, used while KiCad answers busy (route tool active)."""
 
 from kileido_bridge import model
-from kileido_bridge.board_text import copper_items
+from kileido_bridge.board_text import copper_items, via_protection
 
 TEXT = """(kicad_pcb
 \t(segment
@@ -29,6 +29,28 @@ TEXT = """(kicad_pcb
 \t\t(net "")
 \t\t(uuid "via-1")
 \t)
+\t(via
+\t\t(at 4 0)
+\t\t(size 0.6)
+\t\t(drill 0.3)
+\t\t(layers "F.Cu" "B.Cu")
+\t\t(tenting
+\t\t\t(front no)
+\t\t\t(back no)
+\t\t)
+\t\t(capping yes)
+\t\t(covering
+\t\t\t(front no)
+\t\t\t(back none)
+\t\t)
+\t\t(plugging
+\t\t\t(front yes)
+\t\t\t(back no)
+\t\t)
+\t\t(filling yes)
+\t\t(net "")
+\t\t(uuid "via-2")
+\t)
 \t(footprint "R_0402"
 \t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))
 \t)
@@ -42,4 +64,11 @@ def test_copper_items_match_the_ipc_records():
                                   (-12_348_500, 11_241_400), 160_000),)
     assert arcs == (model.Arc("arc-1", "B.Cu", "/MIPI SENSOR/CSI_D0_P", (-8_194_590, 451_400),
                               (-8_057_181, 508_316), (-8_000_265, 645_725), 117_350),)
-    assert vias == (model.Via("via-1", "", (-11_348_500, 9_441_400), 450_000, 300_000, "F.Cu", "In2.Cu"),)
+    assert vias == (model.Via("via-1", "", (-11_348_500, 9_441_400), 450_000, 300_000, "F.Cu", "In2.Cu"),
+                    model.Via("via-2", "", (4_000_000, 0), 600_000, 300_000, "F.Cu", "B.Cu",
+                              (0, 0, 0, -1, 1, 0, 1, 1)))  # as KiCad 10 writes a Type VII via; "none": the rules
+
+
+def test_kicad_9_names_the_tented_sides():
+    assert via_protection("(tenting front)") == (1, 0, -1, -1, -1, -1, -1, -1)
+    assert via_protection("(tenting none)", (1,) * 8) == (0, 0, 1, 1, 1, 1, 1, 1)

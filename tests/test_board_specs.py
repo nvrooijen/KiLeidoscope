@@ -8,6 +8,16 @@ from kileido_bridge.kicad_reader import saved_board_path
 import pytest
 
 
+def test_via_rules_from_the_setup_else_kicads_defaults(tmp_path):
+    board = tmp_path / "rules.kicad_pcb"
+    board.write_text('(kicad_pcb (setup (tenting (front yes) (back no)) (covering (front no) (back no)) '
+                     '(plugging (front no) (back yes)) (capping no) (filling yes)) '
+                     '(via (at 0 0) (tenting (front no) (back no)) (capping yes)))')
+    assert read_appearance(str(board))["via_rules"] == [1, 0, 0, 0, 0, 1, 0, 1]  # not the via's own
+    board.write_text("(kicad_pcb (setup (pad_to_mask_clearance 0)))")
+    assert read_appearance(str(board))["via_rules"] == [1, 1, 0, 0, 0, 0, 0, 0]  # KiCad's: tented
+
+
 @pytest.mark.parametrize("finish", ["None", "ENIG", "HASL lead-free", "Custom finish", None])
 def test_saved_finish_preserves_explicit_none(tmp_path, finish):
     board = tmp_path / "finish.kicad_pcb"

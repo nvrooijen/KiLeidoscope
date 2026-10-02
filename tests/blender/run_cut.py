@@ -21,7 +21,7 @@ import kileido  # noqa: E402
 from kileido import apply, cut, focus, highlight, holes, laminate, metal, nodes, packages, section, state  # noqa: E402
 from kileido.placement import CAP_PLATING_M  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
-from kileido_bridge.protocol import snapshot_frames  # noqa: E402
+from kileido_bridge.protocol import snapshot_frames, vias_message  # noqa: E402
 
 MM, UM = 1e-3, 1e-6
 OUT = Path(os.environ.get("KLS_CUT_DIR") or tempfile.gettempdir())  # renders, to look at
@@ -41,6 +41,21 @@ def layered_snapshot():
         for index, (x_mm, top, bottom) in enumerate((
             (10, "F.Cu", "In1.Cu"), (14, "In1.Cu", "In2.Cu"), (30, "F.Cu", "B.Cu")), start=1)]
     return snapshot
+
+
+OPEN = (0,) * 8
+PLUGGED = (0, 0, 0, 0, 1, 1, 0, 0)  # IPC-4761 type III-b
+PLUGGED_TOP = (0, 0, 0, 0, 1, 0, 0, 0)  # III-a
+FILLED_CAPPED = (0, 0, 0, 0, 0, 0, 1, 1)  # VII
+
+
+def protect(snapshot, codes, revision=[100]):
+    """KiCad sends the vias again with each via's protection (blind, buried, through)."""
+    for via, code in zip(snapshot["vias"], codes):
+        via["protection"] = list(code)
+    revision[0] += 1
+    apply.load_frames(vias_message(snapshot_from_jsonable(snapshot), revision[0]))
+    cut.rebuild()  # what cut.invalidate's timer does, soon after (timers do not run headless)
 
 
 def camera(scene, ortho_scale=None, location=(0, -0.2, 0.0008), rotation=(math.pi / 2, 0, 0), size=(1400, 300)):
@@ -115,7 +130,8 @@ def main():
     kileido.register()
     scene = bpy.context.scene
     try:
-        apply.load_frames(b"".join(snapshot_frames(snapshot_from_jsonable(layered_snapshot()))))
+        layered = layered_snapshot()
+        apply.load_frames(b"".join(snapshot_frames(snapshot_from_jsonable(layered))))
         board = state.board
         # Two prepregs around a core (what the bridge reads from a saved board's stackup).
         board.appearance["dielectrics"] = [{"type": "prepreg", "material": "FR4"},
@@ -144,8 +160,10 @@ def main():
         scene.render.engine = "CYCLES"
         scene.cycles.samples = 8
         scene.cycles.use_denoising = False
-        scene.kileido_via_plug = "RESIN"
-        assert len(holes._sources["vias"]) == 0  # a plugged through via is closed from above
+        protect(layered, [OPEN] * 3)
+        assert len(holes._sources["vias"]) == 1  # the through via is see-through; blind and buried never
+        protect(layered, [PLUGGED] * 3)
+        assert len(holes._sources["vias"]) == 0  # a plugged through via is closed
         # In 3D too the barrels are plugged: a core in the plug's material, and a highlighted
         # via's core in the highlight's (solid in X-ray mode, where everything else fades).
         vias = board.collection.all_objects["KLS vias"]
@@ -161,17 +179,28 @@ def main():
                     names |= {material.name for material in instance.object.data.materials if material}
             return count, names
 
+        def attribute(name, obj=vias):
+            return [round(value.value, 9) for value in obj.data.attributes[name].data]
+
         plugged_faces, plugged_materials = via_faces()
         assert board.materials["via_resin"].name in plugged_materials, (plugged_faces, plugged_materials)
+        assert attribute("core_top") == [1, 0, 1] and attribute("core_bottom") == [1, 0, 1]  # buried: no outer end
         highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
         marked = board.collection.all_objects["KLS vias highlight selected"]
-        assert modifier_value_named(marked, "Filled") and \
-            modifier_value_named(marked, "Fill Material") == board.materials["highlight_selected_barrel"]
+        assert attribute("core_top", marked) == [1] and             modifier_value_named(marked, "Fill Material") == board.materials["highlight_selected_barrel"]
         highlight.apply_selection({"selected": [], "pair": []})
-        scene.kileido_via_plug = "NONE"
+        protect(layered, [PLUGGED_TOP] * 3)  # the blind via's one open end: still full; the through via: half
+        assert attribute("core_top") == [1, 0, 1] and attribute("core_bottom") == [1, 0, 0]
+        protect(layered, [OPEN] * 3)
         open_faces, open_materials = via_faces()
         assert open_faces < plugged_faces and board.materials["via_resin"].name not in open_materials
-        scene.kileido_via_plug = "RESIN"
+        protect(layered, [FILLED_CAPPED] * 3)
+        assert attribute("cap") == [round(CAP_PLATING_M, 9), 0, round(CAP_PLATING_M, 9)]  # buried: nothing to cap
+        scene.kileido_via_fill_material = "COPPER"
+        assert attribute("fill_copper") == [1, 1, 1]
+        assert board.materials["via_resin"].name not in via_faces()[1]
+        scene.kileido_via_fill_material = "RESIN"
+        protect(layered, [PLUGGED] * 3)
 
         # Head-on: the stackup across the board.
         camera(scene, ortho_scale=0.044)
@@ -202,28 +231,16 @@ def main():
             assert woven.std() > 0.01 and polished.std() > 0.004, (
                 engine, woven.std(), polished.std())  # weave in laminate, polish in copper
         scene.render.engine = "CYCLES"
-        # Via fill (capped) needs a plug, and an open via cannot be capped: the two settings follow each other.
+        # Filled and capped (type VII): plated over at the outer copper, in the section and in 3D.
         scene.render.engine = "BLENDER_EEVEE"
-        scene.kileido_via_fill = True
+        protect(layered, [FILLED_CAPPED] * 3)
         camera(scene, ortho_scale=0.0006, location=(-0.010, -0.2, 1450 * UM), size=(1400, 700))  # up to the cap
         capped = render(scene, "blind_via_capped")
-        expect(scene, capped, (-0.010, 0, 1522 * UM), section.COPPER, "cap over the plug, in F.Cu")
+        expect(scene, capped, (-0.010, 0, 1522 * UM), section.COPPER, "cap over the fill, in F.Cu")
         expect(scene, capped, (-0.010, 0, 1550 * UM), section.COPPER, "cap plating above F.Cu")
-        expect(scene, capped, (-0.010, 0, 1400 * UM), section.RESIN, "plug under the cap")
-        vias = board.collection.all_objects["KLS vias"]
-        assert math.isclose(modifier_value_named(vias, "Cap"), CAP_PLATING_M, rel_tol=1e-5)  # the 3D land too
-        scene.kileido_via_plug = "NONE"
-        assert not scene.kileido_via_fill
-        scene.kileido_via_fill = True
-        assert scene.kileido_via_plug == "RESIN"
-        scene.kileido_via_fill = False
-        assert scene.kileido_via_plug == "NONE"  # the resin was Via fill's: open again
-        scene.kileido_via_plug = "COPPER"
-        scene.kileido_via_fill = True
-        scene.kileido_via_fill = False
-        assert scene.kileido_via_plug == "COPPER"  # chosen by hand: stays
+        expect(scene, capped, (-0.010, 0, 1400 * UM), section.RESIN, "fill under the cap")
         scene.render.engine = "CYCLES"
-        scene.kileido_via_plug = "NONE"
+        protect(layered, [OPEN] * 3)
         open_bore = render(scene, "blind_via_open")
         assert np.abs(color_at(scene, open_bore, (-0.010, 0, 1400 * UM)) - section.RESIN).max() > 0.1
 

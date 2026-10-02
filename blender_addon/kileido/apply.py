@@ -12,11 +12,11 @@ import bpy
 import numpy as np
 
 from . import (cosmetics, cut, edge_plating, focus, footprints, highlight, holes, laminate, layers, lighting,
-               materials, models, nodes, render_depth, transform)
+               materials, models, nodes, protection, render_depth, transform)
 from .client import FrameDecoder
-from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
-                      single_point, view3d_spaces, write_attribute, outline_bounds)
-from .placement import (BOARD_FACE_CLEARANCE_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
+from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, set_modifier,
+                      set_node_input, set_visible, single_point, view3d_spaces, write_attribute, outline_bounds)
+from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness)
 from .state import board
 
@@ -47,6 +47,7 @@ def apply_frame(header, arrays):
         # Saved-board or theme colours changed (after a KiCad save): recolour in place.
         board.appearance = header.get("appearance", {})
         set_color_mode(board.color_mode)
+        refresh_protection()  # the board's via rules come with it
     elif message_type == "footprints":
         footprints.apply(header)
     elif message_type == "stackup":
@@ -427,21 +428,21 @@ def _apply_vias(header, arrays):
     write_attribute(mesh, "z_top", "FLOAT", spans.max(axis=1) + land if count else np.empty(0, np.float32))
     write_attribute(mesh, "z_bottom", "FLOAT", spans.min(axis=1) - land if count else np.empty(0, np.float32))
     write_attribute(mesh, "item", "INT", np.arange(count, dtype=np.int32))
-    for flag, layer in (("outer_top", "F.Cu"), ("outer_bottom", "B.Cu")):  # where a capped via's cap goes
+    for flag, layer in (("outer_top", "F.Cu"), ("outer_bottom", "B.Cu")):  # its outer ends: tents, plugs, caps
         write_attribute(mesh, flag, "FLOAT", np.array([layer in (names[a], names[b]) for a, b in arrays["span"]],
                                                       dtype=np.float32) if count else np.empty(0, np.float32))
+    protect = arrays.get("protect")  # KiCad's protection features (a bridge from before them: the board's rules)
+    if protect is None or len(protect) != count:
+        protect = np.full((count, len(protection.FIELDS)), protection.FROM_RULES, np.uint8)
+    write_attribute(mesh, "protection", "INT", protection.pack(protect))
     mesh.update()
     obj.location.z = 0
     obj["kls_ids"] = header["ids"]
-    through = (np.array([{names[a], names[b]} == {"F.Cu", "B.Cu"} for a, b in arrays["span"]], dtype=bool)
-               if count else np.zeros(0, dtype=bool))
-    # Blind and buried vias stay closed.
-    board.via_holes = (coords[through, :2].copy(), via[through, 3].astype(np.float64) * 1e-9)
-    refresh_via_fill()
     set_modifier(obj, board.groups["vias"], "vias", {"Drill Material": board.materials["plating"],
                                                      "Top Thickness": copper_thickness("F.Cu"),
                                                      "Bottom Thickness": copper_thickness("B.Cu"),
-                                                     **materials.plug_inputs()})
+                                                     **materials.fill_inputs()})
+    refresh_protection(highlights=False)
     board.touched.add(obj.name)
     highlight.refresh(kind="vias")
 
@@ -527,28 +528,33 @@ def set_board_visible(visible):
     edge_plating.refresh()  # the plated edge goes with the board solid
 
 
-def refresh_via_fill():
-    """Via fill on: vias are capped (filled and plated over), so they stay out of
-    the hole mask; the land reads as a copper or finish cap and the mask and
-    silkscreen run over it. A plugged barrel (resin or copper) is closed too. Off and
-    unplugged: through vias are open, in copper, board and mask."""
-    xy, drill = board.via_holes
-    scene = bpy.context.scene
-    if getattr(scene, "kileido_via_fill", False) or getattr(scene, "kileido_via_plug", "NONE") != "NONE":
-        xy, drill = xy[:0], drill[:0]
-    holes.set_vias(xy, drill)
-
-
-def refresh_plugs():
-    """The via plug changed: the vias' cores (and highlighted vias') follow, with the holes."""
+def refresh_protection(highlights=True):
+    """Resolve each via's protection (KiCad's, with the board's rules and the panel's
+    Max tent drill): the 3D plugs, fills and caps, and which vias stay see-through."""
     if board.collection is None:
         return
     vias = board.collection.all_objects.get("KLS vias")
-    if vias is not None and vias.modifiers:
-        for name, value in materials.plug_inputs().items():
-            set_node_input(vias, name, value)
-    highlight.refresh(kind="vias")
-    refresh_via_fill()
+    if vias is None or "protection" not in vias.data.attributes:
+        return
+    mesh = vias.data
+    scene = bpy.context.scene
+    drill = read_attribute(mesh, "drill", np.float32).astype(np.float64)
+    found = protection.resolve(read_attribute(mesh, "protection", np.int32), board.appearance.get("via_rules"),
+                               drill, read_attribute(mesh, "outer_top", np.float32) > 0.5,
+                               read_attribute(mesh, "outer_bottom", np.float32) > 0.5,
+                               float(getattr(scene, "kileido_max_tent_mm", 0.3)) * 1e-3)
+    copper_fill = getattr(scene, "kileido_via_fill_material", "RESIN") == "COPPER"
+    for name, values in (("core_top", found["core_top"]), ("core_bottom", found["core_bottom"]),
+                         ("fill_copper", found["filled"] & copper_fill),
+                         ("cap", found["capped"] * CAP_PLATING_M)):
+        write_attribute(mesh, name, "FLOAT", np.asarray(values, np.float32))
+    mesh.update()
+    board.via_too_big = int(found["too_big"].sum())
+    xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
+    holes.set_vias(xy[found["open"]], drill[found["open"]])
+    if highlights:
+        highlight.refresh(kind="vias")
+    cut.invalidate()
 
 
 def refresh_solder():
