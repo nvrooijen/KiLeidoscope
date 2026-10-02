@@ -30,6 +30,7 @@ HIGHLIGHT_ROUGHNESS = 0.25
 HIGHLIGHT_GLOW = 0.5  # emission strength: vivid under any lighting (glow 1.0 washed to salmon)
 HIGHLIGHT_BOX_ALPHA = 0.3
 TENT_ALPHA = 0.999  # below 1: `make` builds the mix that hides a tent with its mask (`paint_tents`)
+TENT_OPENING = "KLS tent opening"  # a tent's mask opening for the silkscreen print: none
 
 COPPER_METALLIC, COPPER_ROUGHNESS = 1.0, 0.25
 # KiCad's finish colours are display swatches (ENIG: 0.70, 0.61, 0.0): as a metal's
@@ -158,7 +159,28 @@ def paint_tents():
         set_surface(material, realistic, 0.0, 0.35)
         mix = next(node for node in material.node_tree.nodes if node.type == "MIX_SHADER")
         mix.inputs[0].default_value = 1.0 if mask else 0.0
+        _print_on_tent(material, side)
     cut.invalidate()  # the section draws the tents in the mask colour too
+
+
+def _print_on_tent(material, side):
+    """A tent is mask, so the silkscreen is printed across it as on the mask around it: the
+    tent carries that side's ink (and the mask's glossy coat), with no opening anywhere."""
+    nodes = material.node_tree.nodes
+    base = nodes.get(BASE_COLOR)
+    if base is None:
+        base = nodes.new("ShaderNodeRGB")
+        base.name = BASE_COLOR
+        emission = next(node for node in nodes if node.type == "EMISSION")
+        base.outputs[0].default_value = emission.inputs["Color"].default_value[:]
+        nodes.new("ShaderNodeValue").name = TENT_OPENING  # 0: the mask is closed over the hole
+    print_silk(material, (side,), base.outputs[0], nodes[TENT_OPENING].outputs[0])
+    silk = board.silk.get(side) or {}
+    plotted = len(silk.get("bounds", ())) == 4
+    set_silk_state(material, side, plotted and silk.get("active", False), silk.get("shown", True))
+    if plotted:
+        set_silk_plot(material, side, silk["image"], silk["bounds"], silk["color"])
+    nodes[COAT_AMOUNT].inputs[1].default_value = covered_state(side)["coat"]
 
 
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):
