@@ -456,7 +456,41 @@ def _apply_vias(header, arrays):
                                                      **materials.via_inputs()})
     refresh_protection(highlights=False)
     board.touched.add(obj.name)
+    _apply_via_rings(coords, via[:, 2].astype(np.float64) * 1e-9, [(names[a], names[b]) for a, b in arrays["span"]],
+                     copper, ringed)
     highlight.refresh(kind="vias")
+
+
+VIA_RINGS = "KLS vias rings"
+
+
+def _apply_via_rings(xy, diameter, ends, copper, ringed):
+    """A via's annular rings on the inner layers between its ends (the outer ones are its
+    lands, nodes.vias): one point per ring, at that copper, drawn as flat disks
+    (nodes.via_rings) that show in X-ray mode and inside a see-through board."""
+    order = {name: i for i, name in enumerate(copper)}
+    points, sizes, owners = [], [], []
+    for index, (top, bottom) in enumerate(ends):
+        if top not in order or bottom not in order:
+            continue
+        first, last = sorted((order[top], order[bottom]))
+        for i in range(first + 1, last):
+            if ringed[index] >> i & 1 and copper[i] in board.heights:
+                points.append((*xy[index, :2], transform.copper_z(copper[i], "drills", board.heights)))
+                sizes.append(diameter[index])
+                owners.append(index)
+    obj = owned_object(VIA_RINGS)
+    mesh = obj.data
+    mesh.clear_geometry()
+    mesh.vertices.add(len(points))
+    if points:
+        mesh.vertices.foreach_set("co", np.asarray(points, np.float32).ravel())
+    write_attribute(mesh, "diameter", "FLOAT", np.asarray(sizes, np.float32))
+    write_attribute(mesh, "via", "INT", np.asarray(owners, np.int32))
+    mesh.update()
+    obj.location.z = 0
+    set_modifier(obj, board.groups["via_rings"], "vias", {})
+    board.touched.add(obj.name)
 
 
 def _apply_outline(arrays):

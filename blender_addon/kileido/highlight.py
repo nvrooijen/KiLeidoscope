@@ -226,6 +226,34 @@ def _refresh_vias(wanted):
                       "Land Lift": transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0}) + LIFT_M,
                       **materials.via_inputs(barrel)})
         _show(obj)
+    _refresh_via_rings(wanted, ids, count)
+
+
+def _refresh_via_rings(wanted, ids, count):
+    """A highlighted via's inner annular rings, in its highlight colour (X-ray mode shows them)."""
+    source = board.collection.all_objects.get("KLS vias rings")
+    mesh = source.data if source is not None else None
+    owners = read_attribute(mesh, "via", np.int32) if mesh is not None and "via" in mesh.attributes else []
+    for kind, chosen in wanted.items():
+        name = f"KLS vias rings highlight {kind}"
+        picked = (np.fromiter((item_id in chosen for item_id in ids), bool, len(ids))
+                  if chosen and len(ids) == count else np.zeros(count, bool))
+        keep = picked[owners] if len(owners) and len(picked) else np.zeros(len(owners), bool)
+        if not keep.any():
+            if (obj := board.collection.all_objects.get(name)) is not None:
+                _hide(obj)
+            continue
+        chosen_points = np.flatnonzero(keep)
+        obj = owned_object(name)
+        target = obj.data
+        target.clear_geometry()
+        target.vertices.add(len(chosen_points))
+        target.vertices.foreach_set("co", (read_coordinates(mesh)[chosen_points] + (0.0, 0.0, LIFT_M)).ravel())
+        write_attribute(target, "diameter", "FLOAT", read_attribute(mesh, "diameter", np.float32)[chosen_points] + GROW_M)
+        target.update()
+        obj.location.z = 0
+        set_modifier(obj, board.groups["via_rings"], board.materials[f"highlight_{kind}"], {})
+        _show(obj)
 
 
 def _component_extent(footprint_id, footprint):

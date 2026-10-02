@@ -267,10 +267,24 @@ def main():
         layered["vias"][2]["rings"] = 2  # model.RINGS_CONNECTED, with no copper touching it on F.Cu or B.Cu
         protect(layered, [FILLED_CAPPED] * 3)
         assert attribute("ring_top")[2] == 0 and attribute("ring_bottom")[2] == 0
-        assert "KLS Vias" not in z_ranges(vias.data.vertices[2].co.x)  # no outer lands drawn
+        assert len(z_ranges(vias.data.vertices[2].co.x)["KLS Vias"]) == 2  # no lands: its caps over the drill
+        protect(layered, [OPEN] * 3)
+        assert "KLS Vias" not in z_ranges(vias.data.vertices[2].co.x)  # uncapped and ringless: nothing outside
+        # Its inner rings (In1, In2) are flat disks of their own, here none: none connect either.
+        rings = board.collection.all_objects["KLS vias rings"]
+        assert 2 not in [value.value for value in rings.data.attributes["via"].data]
+        protect(layered, [FILLED_CAPPED] * 3)
         layered["vias"][2]["rings"] = 1  # model.RINGS_ALL again
         protect(layered, [FILLED_CAPPED] * 3)
         assert len(z_ranges(vias.data.vertices[2].co.x)["KLS Vias"]) == 2
+        inner = [z for z, via in zip((v.co.z for v in rings.data.vertices),
+                                     (value.value for value in rings.data.attributes["via"].data)) if via == 2]
+        assert sorted(round(z * 1e6) for z in inner) == sorted(round((board.heights[name] + 3e-6) * 1e6)
+                                                               for name in ("In1.Cu", "In2.Cu"))
+        highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
+        marked = board.collection.all_objects["KLS vias rings highlight selected"]
+        assert len(marked.data.vertices) == 2 and not marked.hide_get()  # X-ray mode shows them in its colour
+        highlight.apply_selection({"selected": [], "pair": []})
         scene.kileido_via_fill_material = "COPPER"
         assert attribute("fill_copper") == [1, 1, 1]
         assert board.materials["via_resin"].name not in via_faces()[1]

@@ -467,7 +467,7 @@ def vias():
     on. A `drilled` via is see-through in its bore (holes.py), so its lands read as rings
     and its core reaches the surface. `Plating`: the barrel's wall, inside the drill (the
     bore is the drill less twice that)."""
-    group, source, sink = _group("KLS_Vias_v13", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v14", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Bare Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
@@ -555,18 +555,25 @@ def vias():
     circle.inputs["Vertices"].default_value = VIA_VERTICES
     circle.inputs["Radius"].default_value = 0.5
 
-    def outer_land(z, copper, name, sign):
-        """A land on outer copper (sign -1 on top, +1 at the bottom), on the vias with a ring
-        there (`name`): a disk at the copper surface, or, for thick `copper`, a cylinder from its
-        inner face out through it and a capped via's `cap` plating, which stands proud."""
+    def outer_land(z, copper, selection, sign, width):
+        """A land on outer copper (sign -1 on top, +1 at the bottom), `width` across, on the
+        `selection` vias: a disk at the copper surface, or, for thick `copper`, a cylinder from
+        its inner face out through it and a capped via's `cap` plating, which stands proud."""
         shape, scale_z = _disk_or_cylinder(nodes, links, math("ADD", copper, _named(nodes, "cap")), VIA_VERTICES,
                                            1.0, copper)
-        return on_points(shifted_points(math("MULTIPLY_ADD", copper, sign, z)), flag(name), shape,
-                         _xyz(nodes, links, diameter, math("MULTIPLY", scale_z, -sign)))  # grown back outward
+        return on_points(shifted_points(math("MULTIPLY_ADD", copper, sign, z)), selection, shape,
+                         _xyz(nodes, links, width, math("MULTIPLY", scale_z, -sign)))  # grown back outward
 
-    # Top and bottom, so vias read correctly from either side.
-    lands = painted("Material", outer_land(top, source.outputs["Top Thickness"], "ring_top", -1.0),
-                    outer_land(bottom, source.outputs["Bottom Thickness"], "ring_bottom", 1.0))
+    # Top and bottom, so vias read correctly from either side: a land where the via has a
+    # ring, else (a capped via) its cap over the drill alone.
+    capped = is_set(math("MULTIPLY", _named(nodes, "cap"), 1e6))  # cap > 0.5 um
+    ends = []
+    for z, thickness, end, sign in ((top, "Top Thickness", "top", -1.0), (bottom, "Bottom Thickness", "bottom", 1.0)):
+        copper = source.outputs[thickness]
+        ringless = logic("NIMPLY", flag(f"outer_{end}"), flag(f"ring_{end}"))
+        ends += [outer_land(z, copper, flag(f"ring_{end}"), sign, diameter),
+                 outer_land(z, copper, logic("AND", ringless, capped), sign, drill)]
+    lands = painted("Material", *ends)
 
     # Finished like the pads, or bare copper where a tent, plug or fill kept the finish out.
     bare = flag("bare_barrel")
@@ -791,8 +798,30 @@ def plot_walls():
     return group
 
 
+def via_rings():
+    """A via's annular rings on inner copper: a flat disk `diameter` across on each point
+    (apply._apply_via_rings: one per via and ringed inner layer, at that copper)."""
+    group, source, sink = _group("KLS_ViaRings_v1", (("Material", "NodeSocketMaterial"),))
+    if source is None:
+        return group
+    nodes, links = group.nodes, group.links
+    circle = nodes.new("GeometryNodeMeshCircle")
+    circle.fill_type = "NGON"
+    circle.inputs["Vertices"].default_value = VIA_VERTICES
+    circle.inputs["Radius"].default_value = 0.5
+    rings = nodes.new("GeometryNodeInstanceOnPoints")
+    links.new(source.outputs["Geometry"], rings.inputs["Points"])
+    links.new(circle.outputs["Mesh"], rings.inputs["Instance"])
+    links.new(_xyz(nodes, links, _named(nodes, "diameter"), 1.0), rings.inputs["Scale"])
+    painted = nodes.new("GeometryNodeSetMaterial")
+    links.new(rings.outputs["Instances"], painted.inputs["Geometry"])
+    links.new(source.outputs["Material"], painted.inputs["Material"])
+    links.new(painted.outputs["Geometry"], sink.inputs["Geometry"])
+    return group
+
+
 def ensure_all():
     return {"tracks": tracks(), "fill": fill(), "solder": fill("KLS_Solder", solder=True),
             "fill_single": fill_single(),
-            "drills": drills(), "vias": vias(), "board": board(),
+            "drills": drills(), "vias": vias(), "via_rings": via_rings(), "board": board(),
             "footprint_placeholder": footprint_placeholder(), "highlight_box": highlight_box()}
