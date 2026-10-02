@@ -85,6 +85,10 @@ def main():
         # Board stackup colours, mask shown: the ink is on the mask and copper, the sheet clear.
         assert state.board.silk["F"]["active"] and sheet["kls_silk_on_surface"]
         assert printed(copper) and printed(mask) and printed(state.board.materials["vias"], "B")
+        # A tented via: its tent is mask, so the ink runs across it like the mask around it.
+        tents = {side: state.board.materials[f"tent_{side}"] for side in "FB"}
+        assert printed(tents["F"]) and printed(tents["B"], "B")
+        assert node_value(tents["F"], materials.COAT_AMOUNT) == 1  # and it has the mask's gloss
         assert sheet_opacity() == 0 and not walls_active(), "the flat sheet still shows over the printed ink"
 
         # Realistic: lit, and the ink thickness is a bump along its edges.
@@ -112,9 +116,9 @@ def main():
 
         # The silkscreen's eye switches the printed ink too.
         scene.kileido_show_F_SilkS = False
-        assert not printed(copper) and not printed(mask)
+        assert not printed(copper) and not printed(mask) and not printed(tents["F"])
         scene.kileido_show_F_SilkS = True
-        assert printed(copper) and printed(mask)
+        assert printed(copper) and printed(mask) and printed(tents["F"])
 
         # Mask over copper is lighter than mask over the laminate, in every channel.
         covered_full, mask_full = covered_color(copper), mask_color(mask)
@@ -138,8 +142,9 @@ def main():
         scene.kileido_color_mode = "EDITOR"
         assert not state.board.silk["F"]["active"] and abs(sheet_opacity() - 0.4) < 1e-6
         assert not any(output.links for output in copper.node_tree.nodes["KLS silk mix"].outputs)
+        assert not printed(tents["F"])
         scene.kileido_color_mode = "REALISTIC"
-        assert printed(copper)
+        assert printed(copper) and printed(tents["F"])
 
         # From inside the board (cut open, hidden or see-through), outer copper is closed on its
         # laminate side: copper shows where there is copper, the mask sheet only beside it, with
