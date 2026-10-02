@@ -12,7 +12,7 @@ cured core, a darker prepreg, and a few named laminates.
 
 import numpy as np
 
-COPPER = (184 / 255, 115 / 255, 50 / 255)  # KiCad's bare copper
+COPPER = (0.82, 0.50, 0.34)  # polished copper in a micrograph: lighter and pinker than a copper swatch
 CORE = (0.89, 0.83, 0.62)
 PREPREG = (0.80, 0.72, 0.46)
 RESIN = (0.60, 0.64, 0.50)  # epoxy plugging a via

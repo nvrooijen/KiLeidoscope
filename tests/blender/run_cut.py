@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, focus, holes, laminate, packages, section, state  # noqa: E402
+from kileido import apply, cut, focus, holes, laminate, metal, packages, section, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -81,11 +81,12 @@ def expect(scene, pixels, world, wanted, label):
     if wanted is None:  # nothing drawn here: no section colour
         for color in (section.COPPER, section.CORE, section.PREPREG, section.RESIN):
             assert np.abs(got - np.array(color)).max() > 0.15, (label, got, color)
-    elif wanted in (section.COPPER, section.RESIN):
+    elif wanted == section.RESIN:
         assert np.abs(got - np.array(wanted)).max() < TOLERANCE, (label, got, wanted)
-    else:  # laminate: its colour, lighter on glass and darker on its filaments
+    else:  # laminate or copper: its colour, lighter or darker where the weave or the polish is
         ratio = got / np.array(wanted)
-        low, high = laminate.DARKEST - TOLERANCE, laminate.LIGHTEST + TOLERANCE
+        look = metal if wanted == section.COPPER else laminate
+        low, high = look.DARKEST - TOLERANCE, look.LIGHTEST + TOLERANCE
         assert low < ratio.min() and ratio.max() < high, (label, got, wanted)
         assert np.ptp(ratio) < TOLERANCE, (label, got, wanted)  # lighter, not another colour
 
@@ -161,8 +162,10 @@ def main():
                     (-250, 1290, section.COPPER, "In1 copper"), (250, 1522, section.COPPER, "F.Cu land")):
                 expect(scene, via, (-0.010 + dx_um * UM, 0, z_um * UM), wanted, f"{engine}: {label}")
             woven = patch(scene, via, (-0.010 + 200 * UM, 0, 1320 * UM), (-0.010 + 290 * UM, 0, 1490 * UM))
-            flat = patch(scene, via, (-0.010 - 290 * UM, 0, 1275 * UM), (-0.010 - 200 * UM, 0, 1300 * UM))
-            assert woven.std() > 0.01 and flat.std() < 0.005, (engine, woven.std(), flat.std())  # glass in laminate only
+            polished = patch(scene, via, (-0.010 - 290 * UM, 0, 1275 * UM), (-0.010 - 200 * UM, 0, 1300 * UM))
+            flat = patch(scene, via, (-0.010 - 100 * UM, 0, 1350 * UM), (-0.010 + 100 * UM, 0, 1450 * UM))
+            assert woven.std() > 0.01 and polished.std() > 0.004 and flat.std() < 0.005, (
+                engine, woven.std(), polished.std(), flat.std())  # weave in laminate, polish in copper, plug flat
         scene.render.engine = "CYCLES"
         # Via fill (capped) needs a plug, and an open via cannot be capped: the two settings follow each other.
         scene.render.engine = "BLENDER_EEVEE"

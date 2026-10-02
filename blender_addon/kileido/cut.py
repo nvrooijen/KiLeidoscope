@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import focus, laminate, nodes, section, shading, transform
+from . import focus, laminate, metal, nodes, section, shading, transform
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -31,7 +31,8 @@ FACE = focus.CUT_FACE  # the section's object and material
 FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
-FACE_MATERIAL_VERSION = 5
+FACE_METAL = "kls_metal"  # 1 on copper: polished metal
+FACE_MATERIAL_VERSION = 6
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
@@ -317,7 +318,8 @@ def _attribute(tree, name):
 
 
 def _face_material():
-    """Flat, as a micrograph reads: the section's colours, with the glass weave in laminate."""
+    """Flat, as a micrograph reads: the section's colours, with the glass weave in laminate
+    and polished metal in copper."""
     material = bpy.data.materials.get(FACE) or bpy.data.materials.new(FACE)
     if material.get("kls_version") == FACE_MATERIAL_VERSION:
         return material
@@ -332,8 +334,14 @@ def _face_material():
     tree.links.new(tree.nodes.new("ShaderNodeNewGeometry").outputs["Position"], height.inputs[0])
     tree.links.new(height.outputs["Z"], weave.inputs["Height"])
     tree.links.new(_attribute(tree, FACE_WEAVE).outputs["Fac"], weave.inputs["Weave"])
+    polish = tree.nodes.new("ShaderNodeGroup")
+    polish.node_tree = metal.group()
+    tree.links.new(weave.outputs["Color"], polish.inputs["Base"])
+    tree.links.new(_attribute(tree, FACE_ALONG).outputs["Fac"], polish.inputs["Along"])
+    tree.links.new(height.outputs["Z"], polish.inputs["Height"])
+    tree.links.new(_attribute(tree, FACE_METAL).outputs["Fac"], polish.inputs["Metal"])
     emission = tree.nodes.new("ShaderNodeEmission")
-    tree.links.new(weave.outputs["Color"], emission.inputs["Color"])
+    tree.links.new(polish.outputs["Color"], emission.inputs["Color"])
     tree.links.new(emission.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
     focus.add_to(material)  # X-ray mode fades the section with the board
     material["kls_version"] = FACE_MATERIAL_VERSION
@@ -406,9 +414,9 @@ def rebuild(scene=None):
         colors[:, :3] = np.repeat([shading.srgb_to_linear(rect[4]) for rect in rects], 4, axis=0)
     attribute = mesh.color_attributes.get(FACE_COLOR) or mesh.color_attributes.new(FACE_COLOR, "FLOAT_COLOR", "POINT")
     attribute.data.foreach_set("color", colors.ravel())
-    metal = (section.COPPER, section.RESIN)
-    weave = np.repeat([0.0 if rect[4] in metal else 1.0 for rect in rects], 4).astype(np.float32)
-    for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave)):
+    copper = np.repeat([rect[4] == section.COPPER for rect in rects], 4).astype(np.float32)
+    weave = np.repeat([rect[4] not in (section.COPPER, section.RESIN) for rect in rects], 4).astype(np.float32)
+    for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave), (FACE_METAL, copper)):
         found = mesh.attributes.get(name) or mesh.attributes.new(name, "FLOAT", "POINT")
         found.data.foreach_set("value", values)
     mesh.update()
