@@ -141,7 +141,9 @@ def saved_board_path(board) -> str:
         project_path = Path(getattr(project, "path", "") or "")
         if not str(project_path) or str(project_path) == ".":
             return ""
-        path = (project_path.parent if project_path.suffix else project_path) / path
+        # KiCad gives the project as its folder or as its .kicad_pro file. Ask the disk which:
+        # a folder may have a dot in its name ("ecc83v1.2"), so a suffix does not mean a file.
+        path = (project_path if project_path.is_dir() else project_path.parent) / path
     return str(path.resolve()) if path.is_file() else ""
 
 

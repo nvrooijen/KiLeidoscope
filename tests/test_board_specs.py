@@ -51,6 +51,22 @@ def test_saved_board_path_from_document_specifier(tmp_path):
     assert saved_board_path(source) == ""
 
 
+@pytest.mark.parametrize("folder", ["ecc83v1.2", "rev.b", "plain"])
+def test_saved_board_path_in_a_project_folder_with_a_dot_in_its_name(tmp_path, folder):
+    """KiCad gives the project as its folder or as its .kicad_pro file. A folder named
+    "ecc83v1.2" is still a folder: its ".2" is not a file extension."""
+    project = tmp_path / folder
+    project.mkdir()
+    board = project / "amp.kicad_pcb"
+    board.write_text("(kicad_pcb)")
+    for given in (project, project / "amp.kicad_pro"):  # the folder; the project file (saved or not)
+        source = SimpleNamespace(_doc=SimpleNamespace(
+            board_filename=board.name, project=SimpleNamespace(path=str(given))))
+        assert saved_board_path(source) == str(board.resolve()), given
+    (project / "amp.kicad_pro").write_text("{}")
+    assert saved_board_path(source) == str(board.resolve())
+
+
 def _viewer_setup(tmp_path, monkeypatch, stackup_colors=None):
     board = tmp_path / "viewer.kicad_pcb"
     board.write_text('''(kicad_pcb (setup (stackup
