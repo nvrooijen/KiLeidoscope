@@ -85,7 +85,7 @@ def expect(scene, pixels, world, wanted, label):
         assert np.abs(got - np.array(wanted)).max() < TOLERANCE, (label, got, wanted)
     else:  # laminate: its colour, lighter on glass and darker on its filaments
         ratio = got / np.array(wanted)
-        low, high = 1 - laminate.FIBRE_DARK - TOLERANCE, 1 + laminate.GLASS_LIFT + TOLERANCE
+        low, high = laminate.DARKEST - TOLERANCE, laminate.LIGHTEST + TOLERANCE
         assert low < ratio.min() and ratio.max() < high, (label, got, wanted)
         assert np.ptp(ratio) < TOLERANCE, (label, got, wanted)  # lighter, not another colour
 
@@ -145,7 +145,7 @@ def main():
             expect(scene, front, (x_mm * MM, 0, z_um * UM), wanted, label)
 
         # The laminate's weave, away from vias: a picture to look at (both engines below check it).
-        camera(scene, ortho_scale=0.0015, location=(-0.015, -0.2, 1000 * UM), size=(1000, 700))
+        camera(scene, ortho_scale=0.003, location=(-0.015, -0.2, 770 * UM), size=(1200, 760))
         render(scene, "weave")
 
         # Zoomed on the blind via: its walls, plug, lands and the In1 pour at their thickness,
@@ -175,6 +175,11 @@ def main():
         scene.kileido_via_fill = True
         assert scene.kileido_via_plug == "RESIN"
         scene.kileido_via_fill = False
+        assert scene.kileido_via_plug == "NONE"  # the resin was Via fill's: open again
+        scene.kileido_via_plug = "COPPER"
+        scene.kileido_via_fill = True
+        scene.kileido_via_fill = False
+        assert scene.kileido_via_plug == "COPPER"  # chosen by hand: stays
         scene.render.engine = "CYCLES"
         scene.kileido_via_plug = "NONE"
         open_bore = render(scene, "blind_via_open")

@@ -1,13 +1,15 @@
 """What laminate looks like up close: woven glass in epoxy, layered as the stackup.
 
-One shared shader group ("KLS_Laminate_v2") of plain math nodes, no textures or noise:
+One shared shader group ("KLS_Laminate_v3") of plain math nodes, no textures or noise:
 the cut plane's section (cut.py) and, in Realistic mode, the board's edges and bare drill
 walls use it. A cross section of glass cloth shows, per ply, a row of yarns cut across
 (lens-shaped bundles of filament ends) and a yarn running along the cut that weaves over
 one bundle and under the next (a sinusoid of filaments lying along it); every other ply
-is staggered. Glass reads a little lighter than resin, its filaments as fine darker dots
-or lines. The edges also take the stackup's bands by height (section.stack_layout), as a
-routed edge shows its layers.
+is staggered, and the cloth is a core's heavy weave or a prepreg's lighter one, at real
+size. Glass reads a little lighter than resin, its filaments as fine darker dots or lines,
+with a little depth (lit from above: lighter tops, darker lower rims, a soft shadow in the
+resin under each bundle and yarn). The edges also take the stackup's bands by height
+(section.stack_layout), as a routed edge shows its layers.
 """
 
 import math
@@ -17,9 +19,11 @@ import bpy
 from . import section, shading
 from .state import board
 
-GROUP = "KLS_Laminate_v2"
-BUNDLE_PITCH_M = 200e-6  # yarn spacing in the cloth (1080/2116-style weaves: 150-250 um)
-PLY_PITCH_M = 65e-6  # one glass ply per this much laminate height
+GROUP = "KLS_Laminate_v3"
+# Glass cloth (yarn pitch, ply thickness) in mm: a core's heavy 7628 and a prepreg's 2116
+# (44 and 60 yarns per inch; about 0.17 and 0.10 mm a ply).
+CORE_CLOTH = (0.58, 0.175)
+PREPREG_CLOTH = (0.42, 0.10)
 # In ply and pitch units: a bundle's half-height and half-width, the crossing yarn's swing
 # above and below the bundles' middle, and its half-thickness (yarn and bundles never overlap).
 LENS_HALF_HEIGHT = 0.16
@@ -31,6 +35,14 @@ FIBRE_JITTER = 0.35  # filament ends sit up to this far (in pitches) off a regul
 LINE_PITCH_M = 3e-6  # filament edges along a crossing yarn
 GLASS_LIFT = 0.15  # glass this much lighter than the resin
 FIBRE_DARK = 0.30  # a filament's end or edge this much darker than the glass around it
+# Depth, as if lit from above: glass a little lighter at its top than its bottom, darker
+# along its lower rim, and a soft shadow in the resin just under it (reaching this far, in plies).
+EMBOSS = 0.06
+EDGE_SHADOW = 0.15
+DROP_SHADOW = 0.12
+DROP_REACH = 0.08
+LIGHTEST = 1 + GLASS_LIFT + EMBOSS  # the shade's range, for checks
+DARKEST = 1 - FIBRE_DARK - EDGE_SHADOW - DROP_SHADOW - EMBOSS
 RAMP_STOPS = 32  # a colour ramp holds at most this many
 EDGE_NODE = "KLS laminate"
 
@@ -99,22 +111,43 @@ def group():
     tree.links.new(source.outputs["Base"], _socket(banded.inputs, "A"))
     tree.links.new(ramp.outputs["Color"], _socket(banded.inputs, "B"))
 
+    # The cloth at this height: core or prepreg (the stackup's bands, red = pitch, green = ply, in mm).
+    cloth_ramp = tree.nodes.new("ShaderNodeValToRGB")
+    cloth_ramp.name = "Cloth"
+    cloth_ramp.color_ramp.interpolation = "CONSTANT"
+    cloth_ramp.color_ramp.elements[0].color = (*PREPREG_CLOTH, 0.0, 1.0)
+    tree.links.new(_math(tree, "DIVIDE", height, span.outputs[0]), cloth_ramp.inputs["Fac"])
+    cloth = tree.nodes.new("ShaderNodeSeparateColor")
+    tree.links.new(cloth_ramp.outputs["Color"], cloth.inputs[0])
+    pitch = _math(tree, "MULTIPLY", cloth.outputs["Red"], 1e-3)
+    ply = _math(tree, "MULTIPLY", cloth.outputs["Green"], 1e-3)
+
     # Cells: one ply high, one yarn pitch wide; every other ply shifted half a pitch.
-    v = _math(tree, "DIVIDE", height, PLY_PITCH_M)
+    v = _math(tree, "DIVIDE", height, ply)
     across_ply = _centred_fract(tree, v)
-    u = _math(tree, "ADD", _math(tree, "DIVIDE", along, BUNDLE_PITCH_M),
-              _math(tree, "MULTIPLY", _math(tree, "FLOOR", v), 0.5))
+    u = _math(tree, "ADD", _math(tree, "DIVIDE", along, pitch), _math(tree, "MULTIPLY", _math(tree, "FLOOR", v), 0.5))
     along_pitch = _centred_fract(tree, u)  # 0 in a bundle's middle
-    # A bundle cut across: a lens, |v| / h + (u / w)^2 < 1, pointed at both ends.
-    lens = _math(tree, "ADD", _math(tree, "DIVIDE", _math(tree, "ABSOLUTE", across_ply), LENS_HALF_HEIGHT),
-                 _math(tree, "POWER", _math(tree, "DIVIDE", along_pitch, LENS_HALF_WIDTH), 2.0))
-    bundle = _ease(tree, lens, 0.8, 1.0)
+    widthwise = _math(tree, "POWER", _math(tree, "DIVIDE", along_pitch, LENS_HALF_WIDTH), 2.0)
+
+    def lens(raise_by=0.0):
+        """A bundle cut across: a lens, |v| / h + (u / w)^2 < 1, pointed at both ends (or the
+        one just above, `raise_by` plies up: what shades the resin under it)."""
+        across = _math(tree, "ADD", across_ply, raise_by) if raise_by else across_ply
+        return _ease(tree, _math(tree, "ADD", _math(tree, "DIVIDE", _math(tree, "ABSOLUTE", across),
+                                                   LENS_HALF_HEIGHT), widthwise), 0.8, 1.0)
+
+    bundle = lens()
     # The yarn along the cut, over one bundle and under the next: cos(pi (u - 1/2)) is
     # +1, -1, +1, ... at the bundles' middles.
     phase = _math(tree, "MULTIPLY", _math(tree, "SUBTRACT", u, 0.5), math.pi)
     swing = _math(tree, "MULTIPLY", _math(tree, "COSINE", phase), YARN_SWING)
     off_yarn = _math(tree, "SUBTRACT", across_ply, swing)  # 0 on the yarn's middle line
-    yarn = _ease(tree, _math(tree, "DIVIDE", _math(tree, "ABSOLUTE", off_yarn), YARN_HALF), 0.75, 1.0)
+
+    def strand(raise_by=0.0):
+        across = _math(tree, "ADD", off_yarn, raise_by) if raise_by else off_yarn
+        return _ease(tree, _math(tree, "DIVIDE", _math(tree, "ABSOLUTE", across), YARN_HALF), 0.75, 1.0)
+
+    yarn = strand()
     # Filaments: ends in a bundle (dots, each nudged off a staggered grid by a sine hash of its
     # cell, so they pack irregularly), lengths in a yarn (lines along it).
     w = _math(tree, "DIVIDE", height, FIBRE_PITCH_M)
@@ -128,13 +161,30 @@ def group():
     dot_v = _math(tree, "SUBTRACT", _centred_fract(tree, w), nudge_v)
     dot = _ease(tree, _math(tree, "ADD", _math(tree, "MULTIPLY", dot_u, dot_u), _math(tree, "MULTIPLY", dot_v, dot_v)),
                 0.04, 0.10)
-    across_line = _centred_fract(tree, _math(tree, "MULTIPLY", off_yarn, PLY_PITCH_M / LINE_PITCH_M))
+    across_line = _centred_fract(tree, _math(tree, "DIVIDE", _math(tree, "MULTIPLY", off_yarn, ply), LINE_PITCH_M))
     line = _ease(tree, _math(tree, "ABSOLUTE", across_line), 0.10, 0.22)
-    # Shade = 1 + Weave * (glass lift - filament darkening).
+
+    # Depth: top-lit relief, a darker lower rim, a soft shadow under each bundle and yarn.
+    def relief(mask, position):
+        """(emboss, lower rim) of a shape: `position` runs -1 at its bottom to +1 at its top."""
+        rim = _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", mask, _math(tree, "SUBTRACT", 1.0, mask)), 4.0)
+        return (_math(tree, "MULTIPLY", mask, position),
+                _math(tree, "MULTIPLY", rim, _math(tree, "LESS_THAN", position, 0.0)))
+
+    bundle_relief, bundle_rim = relief(bundle, _math(tree, "DIVIDE", across_ply, LENS_HALF_HEIGHT))
+    yarn_relief, yarn_rim = relief(yarn, _math(tree, "DIVIDE", off_yarn, YARN_HALF))
     glass = _math(tree, "MINIMUM", _math(tree, "ADD", bundle, yarn), 1.0)
+    shadowed = _math(tree, "MULTIPLY", _math(tree, "MINIMUM", _math(tree, "ADD", lens(DROP_REACH), strand(DROP_REACH)),
+                                             1.0), _math(tree, "SUBTRACT", 1.0, glass))  # only in resin
+
+    # Shade = 1 + Weave * (glass lift + relief - filaments - rims - shadows).
     fibres = _math(tree, "ADD", _math(tree, "MULTIPLY", dot, bundle), _math(tree, "MULTIPLY", line, yarn))
     change = _math(tree, "SUBTRACT", _math(tree, "MULTIPLY", glass, GLASS_LIFT),
                    _math(tree, "MULTIPLY", fibres, FIBRE_DARK))
+    change = _math(tree, "MULTIPLY_ADD", _math(tree, "ADD", bundle_relief, yarn_relief), EMBOSS, change)
+    change = _math(tree, "SUBTRACT", change, _math(tree, "MULTIPLY", _math(tree, "ADD", bundle_rim, yarn_rim),
+                                                   EDGE_SHADOW))
+    change = _math(tree, "SUBTRACT", change, _math(tree, "MULTIPLY", shadowed, DROP_SHADOW))
     shade = _math(tree, "MULTIPLY_ADD", change, source.outputs["Weave"], 1.0)
     shaded = tree.nodes.new("ShaderNodeMix")
     shaded.data_type = "RGBA"
@@ -164,14 +214,18 @@ def update_bands(tree=None):
     _bands_set = signature
     total = board.thickness_m or 0.0016
     tree.nodes["Thickness"].outputs[0].default_value = total
-    elements = tree.nodes["Bands"].color_ramp.elements
-    while len(elements) > 1:
-        elements.remove(elements[-1])
     stops = [(z0, color) for z0, _, color in bands][:RAMP_STOPS] or [(0.0, section.CORE)]
-    for index, (z0, color) in enumerate(stops):
-        element = elements[0] if index == 0 else elements.new(min(max(z0 / total, 0.0), 0.999))
-        element.position = 0.0 if index == 0 else min(max(z0 / total, 0.0), 0.999)
-        element.color = (*shading.srgb_to_linear(color), 1.0)
+    # The bands' colours, and their cloth: prepreg's light glass, else a core's heavy glass.
+    for ramp, value in (("Bands", lambda color: (*shading.srgb_to_linear(color), 1.0)),
+                        ("Cloth", lambda color: (*(PREPREG_CLOTH if color == section.PREPREG else CORE_CLOTH),
+                                                 0.0, 1.0))):
+        elements = tree.nodes[ramp].color_ramp.elements
+        while len(elements) > 1:
+            elements.remove(elements[-1])
+        for index, (z0, color) in enumerate(stops):
+            element = elements[0] if index == 0 else elements.new(min(max(z0 / total, 0.0), 0.999))
+            element.position = 0.0 if index == 0 else min(max(z0 / total, 0.0), 0.999)
+            element.color = value(color)
 
 
 # --- The board's edges (and bare drill walls) -----------------------------------------------
