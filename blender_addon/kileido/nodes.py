@@ -98,11 +98,13 @@ def _face_along(nodes, links, mesh, thickness):
     return flip.outputs["Mesh"]
 
 
-def _disk_or_cylinder(nodes, links, thickness, vertices, outward):
+def _disk_or_cylinder(nodes, links, thickness, vertices, outward, shape_thickness=None):
     """A unit disk, or a unit cylinder spanning z = 0..1 (scaled by the thickness).
 
     The returned height scales the disk by `outward` (±1), so a flat disk faces
     away from the board like the faces around it (a negative scale flips normals).
+    A geometry switch takes one value, never a per-point field: with a per-point
+    `thickness`, `shape_thickness` (one value) picks the disk or the cylinder.
     """
     circle = nodes.new("GeometryNodeMeshCircle")
     circle.fill_type = "NGON"
@@ -119,7 +121,7 @@ def _disk_or_cylinder(nodes, links, thickness, vertices, outward):
     lift = nodes.new("GeometryNodeTransform")
     lift.inputs["Translation"].default_value = (0, 0, 0.5)
     links.new(flat.outputs["Mesh"], lift.inputs["Geometry"])
-    thick = _is_thick(nodes, links, thickness)
+    thick = _is_thick(nodes, links, thickness if shape_thickness is None else shape_thickness)
     shape = _switch(nodes, links, "GEOMETRY", thick, circle.outputs["Mesh"], lift.outputs["Geometry"])
     height = _switch(nodes, links, "FLOAT", thick, outward, thickness)
     return shape, height
@@ -454,7 +456,7 @@ def vias():
     """Lands, barrels and, per via (protection.py, as point attributes), its plug or fill
     (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill)
     and its cap plating (`cap`, metres, on its outer lands)."""
-    group, source, sink = _group("KLS_Vias_v6", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v7", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
                                                    ("Bottom Thickness", "NodeSocketFloat"),
@@ -494,9 +496,10 @@ def vias():
     circle.inputs["Vertices"].default_value = 24
     circle.inputs["Radius"].default_value = 0.5
 
-    def annulus(z, thickness, sign):
-        """Via land: a disk at the copper surface, or a copper-thick cylinder
-        reaching `thickness` inward from it (sign -1 on top, +1 at the bottom)."""
+    def annulus(z, thickness, sign, copper):
+        """Via land: a disk at the copper surface, or a cylinder reaching `thickness`
+        (per via: copper and its cap) inward from it (sign -1 on top, +1 at the bottom).
+        `copper`, the layer's thickness, picks which."""
         inward = nodes.new("ShaderNodeMath")
         inward.operation = "MULTIPLY"
         links.new(thickness, inward.inputs[0])
@@ -505,7 +508,7 @@ def vias():
         start.operation = "ADD"
         links.new(z, start.inputs[0])
         links.new(inward.outputs[0], start.inputs[1])
-        shape, height = _disk_or_cylinder(nodes, links, thickness, 24, 1.0)
+        shape, height = _disk_or_cylinder(nodes, links, thickness, 24, 1.0, copper)
         flip = nodes.new("ShaderNodeMath")  # the cylinder grows back out to the surface
         flip.operation = "MULTIPLY"
         links.new(height, flip.inputs[0])
@@ -534,9 +537,11 @@ def vias():
         links.new(cap.outputs[0], thicker.inputs[1])
         return surface.outputs[0], thicker.outputs[0]
 
-    outer = annulus(*capped_end(top, source.outputs["Top Thickness"], "outer_top", -1.0), -1.0)
+    outer = annulus(*capped_end(top, source.outputs["Top Thickness"], "outer_top", -1.0), -1.0,
+                    source.outputs["Top Thickness"])
     # The same annulus on the bottom face, so vias read correctly from below.
-    outer_bottom = annulus(*capped_end(bottom, source.outputs["Bottom Thickness"], "outer_bottom", 1.0), 1.0)
+    outer_bottom = annulus(*capped_end(bottom, source.outputs["Bottom Thickness"], "outer_bottom", 1.0), 1.0,
+                           source.outputs["Bottom Thickness"])
 
     # The barrel: a plated wall at the drill diameter, top land to bottom land.
     # The lands and board are see-through inside the drill (holes.py); no boolean.
@@ -560,9 +565,9 @@ def vias():
     links.new(middle_points, barrel.inputs["Points"])
     links.new(wall_mesh.outputs["Mesh"], barrel.inputs["Instance"])
     links.new(_xyz(nodes, links, drill, height.outputs[0]), barrel.inputs["Scale"])
-    # A plug or fill: a closed cylinder a hair inside the wall and short of both lands, so it
-    # never shares a face with either, over the halves of the barrel it fills (from the
-    # middle up for `core_top`, down for `core_bottom`).
+    # A plug or fill: a closed cylinder a hair inside the wall, between the lands' undersides
+    # (it never shows through a land, or shares a face with one), over the halves of the
+    # barrel it fills (from the middle up for `core_top`, down for `core_bottom`).
     core = nodes.new("GeometryNodeMeshCylinder")
     core.fill_type = "NGON"
     core.inputs["Vertices"].default_value = 24
@@ -575,32 +580,33 @@ def vias():
     core_width.operation = "MULTIPLY"
     links.new(drill, core_width.inputs[0])
     core_width.inputs[1].default_value = PLUG_SCALE
-    reach = nodes.new("ShaderNodeMath")  # middle to either end of the core
-    reach.operation = "SUBTRACT"
-    links.new(half_height.outputs[0], reach.inputs[0])
-    reach.inputs[1].default_value = PLUG_INSET_M
+
+    def math(operation, a, b):
+        node = nodes.new("ShaderNodeMath")
+        node.operation = operation
+        for socket, value in zip(node.inputs, (a, b)):
+            if isinstance(value, float):
+                socket.default_value = value
+            else:
+                links.new(value, socket)
+        return node.outputs[0]
+
+    under_top = math("SUBTRACT", top, math("ADD", source.outputs["Top Thickness"], PLUG_INSET_M))
+    over_bottom = math("ADD", bottom, math("ADD", source.outputs["Bottom Thickness"], PLUG_INSET_M))
+    core_middle = math("MULTIPLY", math("ADD", under_top, over_bottom), 0.5)
+    reach = math("MAXIMUM", math("MULTIPLY", math("SUBTRACT", under_top, over_bottom), 0.5), 0.0)
     upper, lower = _named(nodes, "core_top"), _named(nodes, "core_bottom")
     halves = nodes.new("ShaderNodeMath")
     halves.operation = "ADD"
     links.new(upper, halves.inputs[0])
     links.new(lower, halves.inputs[1])
-    core_height = nodes.new("ShaderNodeMath")
-    core_height.operation = "MULTIPLY"
-    links.new(halves.outputs[0], core_height.inputs[0])
-    links.new(reach.outputs[0], core_height.inputs[1])
-    lean = nodes.new("ShaderNodeMath")  # +1 upper half only, -1 lower half only
-    lean.operation = "SUBTRACT"
-    links.new(upper, lean.inputs[0])
-    links.new(lower, lean.inputs[1])
-    shift = nodes.new("ShaderNodeMath")
-    shift.operation = "MULTIPLY"
-    links.new(lean.outputs[0], shift.inputs[0])
-    links.new(reach.outputs[0], shift.inputs[1])
+    core_height = math("MULTIPLY", halves.outputs[0], reach)
+    shift = math("MULTIPLY", math("SUBTRACT", upper, lower), reach)  # +reach upper half only, -reach lower
     centre = nodes.new("ShaderNodeMath")
     centre.operation = "MULTIPLY_ADD"
-    links.new(shift.outputs[0], centre.inputs[0])
+    links.new(shift, centre.inputs[0])
     centre.inputs[1].default_value = 0.5
-    links.new(middle.outputs[0], centre.inputs[2])
+    links.new(core_middle, centre.inputs[2])
     core_points = shifted_points(centre.outputs[0])
     has_core = nodes.new("FunctionNodeCompare")
     has_core.data_type = "FLOAT"
@@ -625,7 +631,7 @@ def vias():
         links.new(core_points, placed.inputs["Points"])
         links.new(which.outputs[0], placed.inputs["Selection"])
         links.new(painted_core.outputs["Geometry"], placed.inputs["Instance"])
-        links.new(_xyz(nodes, links, core_width.outputs[0], core_height.outputs[0]), placed.inputs["Scale"])
+        links.new(_xyz(nodes, links, core_width.outputs[0], core_height), placed.inputs["Scale"])
         links.new(placed.outputs["Instances"], cores.inputs["Geometry"])
 
     copper = nodes.new("GeometryNodeJoinGeometry")

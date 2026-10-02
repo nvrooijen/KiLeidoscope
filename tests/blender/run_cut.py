@@ -196,6 +196,25 @@ def main():
         assert open_faces < plugged_faces and board.materials["via_resin"].name not in open_materials
         protect(layered, [FILLED_CAPPED] * 3)
         assert attribute("cap") == [round(CAP_PLATING_M, 9), 0, round(CAP_PLATING_M, 9)]  # buried: nothing to cap
+
+        def z_ranges(x):
+            """(low, high) z of the via group's instances at x, by material name."""
+            bpy.context.view_layer.update()
+            found = {}
+            for instance in bpy.context.evaluated_depsgraph_get().object_instances:
+                if instance.is_instance and instance.parent and instance.parent.original == vias:
+                    corners = [instance.matrix_world @ Vector(corner) for corner in instance.object.bound_box]
+                    if abs(sum(c.x for c in corners) / 8 - x) < 1e-4:
+                        name = next((m.name for m in instance.object.data.materials if m), "")
+                        low, high = min(c.z for c in corners), max(c.z for c in corners)
+                        found.setdefault(name, []).append((low, high))
+            return found
+
+        through = z_ranges(vias.data.vertices[2].co.x)
+        (bottom_land, top_land), (core,) = sorted(through["KLS Vias"]), through["KLS Via resin"]
+        surface = board.heights["F.Cu"]
+        assert top_land[1] > surface + CAP_PLATING_M and top_land[1] - top_land[0] > CAP_PLATING_M  # a solid land
+        assert core[1] < top_land[0] and core[0] > bottom_land[1]  # the fill stays under both lands
         scene.kileido_via_fill_material = "COPPER"
         assert attribute("fill_copper") == [1, 1, 1]
         assert board.materials["via_resin"].name not in via_faces()[1]
