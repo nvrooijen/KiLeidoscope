@@ -425,6 +425,9 @@ def _apply_vias(header, arrays):
     write_attribute(mesh, "z_top", "FLOAT", spans.max(axis=1) + land if count else np.empty(0, np.float32))
     write_attribute(mesh, "z_bottom", "FLOAT", spans.min(axis=1) - land if count else np.empty(0, np.float32))
     write_attribute(mesh, "item", "INT", np.arange(count, dtype=np.int32))
+    for flag, layer in (("outer_top", "F.Cu"), ("outer_bottom", "B.Cu")):  # where a capped via's cap goes
+        write_attribute(mesh, flag, "FLOAT", np.array([layer in (names[a], names[b]) for a, b in arrays["span"]],
+                                                      dtype=np.float32) if count else np.empty(0, np.float32))
     mesh.update()
     obj.location.z = 0
     obj["kls_ids"] = header["ids"]

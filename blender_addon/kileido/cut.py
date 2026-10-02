@@ -21,6 +21,7 @@ import numpy as np
 from mathutils import Vector
 
 from . import focus, laminate, metal, nodes, section, shading, transform
+from .placement import CAP_PLATING_M
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -447,7 +448,7 @@ def rectangles(scene=None):
                                   pad_drills=_data["drills"],
                                   plating=float(getattr(scene, "kileido_via_plating_um", 25.0)) * 1e-6,
                                   plug=None if plug == "NONE" else plug,
-                                  capped=bool(getattr(scene, "kileido_via_fill", False)))
+                                  capped=bool(getattr(scene, "kileido_via_fill", False)), cap_plating=CAP_PLATING_M)
     return rects, (line, normal)
 
 

@@ -451,12 +451,13 @@ def _xyz(nodes, links, xy, z):
 
 
 def vias():
-    group, source, sink = _group("KLS_Vias_v4", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v5", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
                                                    ("Bottom Thickness", "NodeSocketFloat"),
                                                    ("Filled", "NodeSocketBool", False),
-                                                   ("Fill Material", "NodeSocketMaterial")))
+                                                   ("Fill Material", "NodeSocketMaterial"),
+                                                   ("Cap", "NodeSocketFloat", 0.0)))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -513,9 +514,27 @@ def vias():
         links.new(_xyz(nodes, links, diameter, flip.outputs[0]), land.inputs["Scale"])
         return land
 
-    outer = annulus(top, source.outputs["Top Thickness"], -1.0)
+    def capped_end(z, thickness, flag, sign):
+        """A land's surface and thickness with the cap plating on it: a capped via's lands at
+        the outer copper (flag attribute 1) stand `Cap` proud of it."""
+        cap = nodes.new("ShaderNodeMath")
+        cap.operation = "MULTIPLY"
+        links.new(_named(nodes, flag), cap.inputs[0])
+        links.new(source.outputs["Cap"], cap.inputs[1])
+        surface = nodes.new("ShaderNodeMath")
+        surface.operation = "MULTIPLY_ADD"
+        links.new(cap.outputs[0], surface.inputs[0])
+        surface.inputs[1].default_value = -sign
+        links.new(z, surface.inputs[2])
+        thicker = nodes.new("ShaderNodeMath")
+        thicker.operation = "ADD"
+        links.new(thickness, thicker.inputs[0])
+        links.new(cap.outputs[0], thicker.inputs[1])
+        return surface.outputs[0], thicker.outputs[0]
+
+    outer = annulus(*capped_end(top, source.outputs["Top Thickness"], "outer_top", -1.0), -1.0)
     # The same annulus on the bottom face, so vias read correctly from below.
-    outer_bottom = annulus(bottom, source.outputs["Bottom Thickness"], 1.0)
+    outer_bottom = annulus(*capped_end(bottom, source.outputs["Bottom Thickness"], "outer_bottom", 1.0), 1.0)
 
     # The barrel: a plated wall at the drill diameter, top land to bottom land.
     # The lands and board are see-through inside the drill (holes.py); no boolean.

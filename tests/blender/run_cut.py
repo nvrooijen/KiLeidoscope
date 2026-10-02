@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
 from kileido import apply, cut, focus, highlight, holes, laminate, metal, nodes, packages, section, state  # noqa: E402
+from kileido.placement import CAP_PLATING_M  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -204,9 +205,13 @@ def main():
         # Via fill (capped) needs a plug, and an open via cannot be capped: the two settings follow each other.
         scene.render.engine = "BLENDER_EEVEE"
         scene.kileido_via_fill = True
+        camera(scene, ortho_scale=0.0006, location=(-0.010, -0.2, 1450 * UM), size=(1400, 700))  # up to the cap
         capped = render(scene, "blind_via_capped")
         expect(scene, capped, (-0.010, 0, 1522 * UM), section.COPPER, "cap over the plug, in F.Cu")
+        expect(scene, capped, (-0.010, 0, 1550 * UM), section.COPPER, "cap plating above F.Cu")
         expect(scene, capped, (-0.010, 0, 1400 * UM), section.RESIN, "plug under the cap")
+        vias = board.collection.all_objects["KLS vias"]
+        assert math.isclose(modifier_value_named(vias, "Cap"), CAP_PLATING_M, rel_tol=1e-5)  # the 3D land too
         scene.kileido_via_plug = "NONE"
         assert not scene.kileido_via_fill
         scene.kileido_via_fill = True

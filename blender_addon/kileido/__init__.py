@@ -680,7 +680,7 @@ def _via_fill_update(scene):
         del scene[PLUG_FOR_FILL]
         scene.kileido_via_plug = "NONE"
         return
-    apply.refresh_via_fill()
+    apply.refresh_plugs()  # the caps come and go with Via fill
     cut.rebuild()
 
 

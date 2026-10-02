@@ -209,7 +209,7 @@ def stack_layout(heights, thickness, stack, saved):
 # --- The section ------------------------------------------------------------------------------
 
 def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=None,
-                  plating=25e-6, plug=None, capped=False):
+                  plating=25e-6, plug=None, capped=False, cap_plating=0.0):
     """Rectangles (s0, s1, z0, z1, sRGB colour), bottom up.
 
     outline: (a, b, item) edges of the board outline (even-odd: cutouts are holes).
@@ -220,11 +220,13 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     pad_drills: rows (x, y, width, height, angle, plated), through the whole board.
     plating: barrel wall thickness. plug: None (open), "RESIN" or "COPPER".
     capped: plugged vias are plated over where they reach the outer copper: copper
-    across the whole drill there (the plug ends under it).
+    across the whole drill there (the plug ends under it), and `cap_plating` more over
+    the land, outside the board.
     """
     inside = rings(line, *outline) if outline is not None else EMPTY
     laminate_z = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (0.0, 0.0)
     holes = []  # (z0, z1, full interval, bore interval, plug, capped z ranges)
+    plated = []  # (z0, z1, intervals): caps over capped vias' lands, outside the outer copper
     lands = {}  # layer -> land intervals
     if vias is not None and len(vias["xy"]):
         xy = np.asarray(vias["xy"], np.float64).reshape(-1, 2)
@@ -239,6 +241,12 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
             bore = discs(line, centre, max(outer - plating, 0.0))
             z0, z1 = min(copper[bottom][0], copper[top][0]), max(copper[bottom][1], copper[top][1])
             caps = [copper[name] for name in {top, bottom} if capped and plug and name in ("F.Cu", "B.Cu")]
+            if caps and cap_plating > 0:
+                land = discs(line, centre, vias["diameter"][index] / 2)
+                if "F.Cu" in (top, bottom):
+                    plated.append((copper["F.Cu"][1], copper["F.Cu"][1] + cap_plating, land))
+                if "B.Cu" in (top, bottom):
+                    plated.append((copper["B.Cu"][0] - cap_plating, copper["B.Cu"][0], land))
             holes.append((z0, z1, full, bore, plug, caps))
             for name in {top, bottom}:
                 lands.setdefault(name, []).append(discs(line, centre, vias["diameter"][index] / 2))
@@ -256,7 +264,7 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     lands = {name: merge(np.vstack(found)) for name, found in lands.items()}
 
     cuts = {z for band in bands for z in band[:2]} | {z for zr in copper.values() for z in zr}
-    cuts |= {z for hole in holes for z in hole[:2]}
+    cuts |= {z for hole in holes for z in hole[:2]} | {z for cap in plated for z in cap[:2]}
     cuts = sorted(cuts)
     growing, done = {}, []  # a stretch drawn in the slab below grows up instead of stacking
     for z0, z1 in zip(cuts, cuts[1:]):
@@ -265,6 +273,7 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
         middle = (z0 + z1) / 2
         metal = [layers.get(name, EMPTY) for name, (c0, c1) in copper.items() if c0 <= middle < c1]
         metal += [lands[name] for name, (c0, c1) in copper.items() if c0 <= middle < c1 and name in lands]
+        metal += [land for c0, c1, land in plated if c0 <= middle < c1]
         metal = merge(np.vstack(metal)) if metal else EMPTY
         here = [hole for hole in holes if hole[0] <= middle < hole[1]]
         caps = [hole[2] for hole in here if any(c0 <= middle < c1 for c0, c1 in hole[5])]

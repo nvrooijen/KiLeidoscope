@@ -77,7 +77,7 @@ def test_stack_layout_places_copper_and_colours_each_dielectric():
     assert {color for _, _, color in unknown} == {section.CORE}
 
 
-def _board(plug, capped=False):
+def _board(plug, capped=False, cap_plating=0.0):
     """40 x 30 mm board; In1 poured over all of it; a 0.5 mm F.Cu track from x = -5 to 5;
     a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill)."""
     copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
@@ -86,7 +86,7 @@ def _board(plug, capped=False):
     vias = {"xy": np.array([(10 * MM, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
             "top": ["F.Cu"], "bottom": ["In1.Cu"]}
     return section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), layers, copper, bands,
-                                 vias=vias, plating=25 * UM, plug=plug, capped=capped)
+                                 vias=vias, plating=25 * UM, plug=plug, capped=capped, cap_plating=cap_plating)
 
 
 def color_at(rects, s, z):
@@ -111,6 +111,15 @@ def color_at(rects, s, z):
 ])
 def test_cross_section_at_known_points(s_mm, z_um, expected):
     assert color_at(_board("RESIN"), s_mm * MM, z_um * UM) == expected
+
+
+def test_cap_plating_stands_on_the_land_above_the_outer_copper():
+    rects = _board("RESIN", capped=True, cap_plating=20 * UM)
+    assert color_at(rects, 10 * MM, 1550 * UM) == section.COPPER  # over the drill, 10 um above F.Cu
+    assert color_at(rects, (10 + 0.25) * MM, 1550 * UM) == section.COPPER  # over the land (0.3 mm radius)
+    assert color_at(rects, (10 + 0.35) * MM, 1550 * UM) is None  # beyond the land
+    assert color_at(rects, 10 * MM, 1565 * UM) is None  # above the 20 um cap
+    assert color_at(_board("RESIN", capped=False, cap_plating=20 * UM), 10 * MM, 1550 * UM) is None  # not capped
 
 
 def test_capped_via_is_plated_over_at_the_outer_copper_only():

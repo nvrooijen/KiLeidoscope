@@ -8,7 +8,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 import bpy
 
 from . import cut, focus, holes, laminate, section, shading
-from .placement import copper_thickness
+from .placement import CAP_PLATING_M, copper_thickness
 from .state import board
 
 MODES = ("FAB", "EDITOR", "REALISTIC")
@@ -116,9 +116,11 @@ def paint(material, color):
 def plug_inputs(highlight_material=None):
     """The via group's plug: on for a resin or copper plug, in its own material (or a
     highlight's, so a selected plugged via stays solid in X-ray mode)."""
-    plug = getattr(bpy.context.scene, "kileido_via_plug", "NONE")
+    scene = bpy.context.scene
+    plug = getattr(scene, "kileido_via_plug", "NONE")
     material = highlight_material or board.materials["plating" if plug == "COPPER" else "via_resin"]
-    return {"Filled": plug != "NONE", "Fill Material": material}
+    capped = plug != "NONE" and getattr(scene, "kileido_via_fill", False)
+    return {"Filled": plug != "NONE", "Fill Material": material, "Cap": CAP_PLATING_M if capped else 0.0}
 
 
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):

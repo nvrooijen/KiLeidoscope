@@ -210,7 +210,7 @@ def _refresh_vias(wanted):
         target.vertices.add(len(chosen_vertices))
         target.vertices.foreach_set("co", read_coordinates(mesh)[chosen_vertices].ravel())
         for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M),
-                                  ("z_top", LIFT_M), ("z_bottom", -LIFT_M)):
+                                  ("z_top", LIFT_M), ("z_bottom", -LIFT_M), ("outer_top", 0.0), ("outer_bottom", 0.0)):
             values = read_attribute(mesh, attribute, np.float32)[chosen_vertices]
             write_attribute(target, attribute, "FLOAT", values + change)
         target.update()
