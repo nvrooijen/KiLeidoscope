@@ -40,6 +40,7 @@ class FakeBoard:
         self.shapes = []
         self.stackup = NS(layers=[])
         self.pad_polygons = {}
+        self.outdated = {}  # pad id -> the copy KiCad answers id lookups with (after an undo)
         self.layers = [BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu]
 
     def get_tracks(self):
@@ -75,6 +76,10 @@ class FakeBoard:
     def get_layer_name(self, layer):
         return {BoardLayer.BL_F_Cu: "F.Cu", BoardLayer.BL_B_Cu: "B.Cu",
                 BoardLayer.BL_Edge_Cuts: "Edge.Cuts"}[layer]
+
+    def get_items_by_id(self, ids):
+        by_id = {pad.id.value: pad for pad in self.pads} | self.outdated
+        return [by_id[item.value] for item in ids if item.value in by_id]
 
     def check_padstack_presence_on_layers(self, pads, layers):
         return {pad: {layer: (pad.id.value, layer) in self.pad_polygons for layer in layers}

@@ -531,7 +531,8 @@ class KILEIDO_PT_status(bpy.types.Panel):
 
     def draw(self, context):
         column = self.layout.column(align=True)
-        lines = [live.status_text(), models.export_status(), cosmetics.status(), live.last_apply_text()]
+        lines = [live.status_text(), live.outdated_pads_text(), models.export_status(), cosmetics.status(),
+                 live.last_apply_text()]
         # The dielectric warning concerns RF numbers only; the viewer never uses them.
         lines += [warning for warning in board.warnings
                   if "no dielectric properties from KiCad IPC" not in warning and

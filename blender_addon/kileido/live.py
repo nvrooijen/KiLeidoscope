@@ -35,6 +35,7 @@ class LiveLink:
         self.bridge_status = "disconnected"  # KiCad side: "connected", "editing" or "disconnected"
         self.bridge_error = ""
         self.new_kicad = False  # the bridge waits for the user to follow another KiCad
+        self.outdated_pads = 0  # pads KiCad only had an outdated shape for (after an undo)
         self.last_update_at = None
         self.last_apply_ms = None
 
@@ -56,6 +57,7 @@ class LiveLink:
         self.bridge_status = "disconnected"
         self.bridge_error = ""
         self.new_kicad = False
+        self.outdated_pads = 0
         if bpy.app.timers.is_registered(tick):
             bpy.app.timers.unregister(tick)
         if board.in_snapshot:
@@ -156,6 +158,7 @@ class LiveLink:
             self.bridge_status = header.get("kicad", "disconnected")
             self.bridge_error = header.get("error", "")
             self.new_kicad = bool(header.get("new_kicad", False))
+            self.outdated_pads = int(header.get("outdated_pads", 0))
         elif kind in UPDATE_FRAMES:
             self.last_update_at = time.monotonic()
         return True
@@ -207,6 +210,12 @@ def error_text() -> str:
 
 def last_apply_text() -> str:
     return "" if link.last_apply_ms is None else f"Last apply: {link.last_apply_ms:.2f} ms"
+
+
+def outdated_pads_text() -> str:
+    """KiCad answered for some pads with an outdated copy that only placement could not fix."""
+    count = link.outdated_pads if link.enabled else 0
+    return f"{count} pad shape(s) outdated in KiCad (undo): reopen the board" if count else ""
 
 
 def new_kicad() -> bool:
