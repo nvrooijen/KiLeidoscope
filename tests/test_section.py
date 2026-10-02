@@ -236,3 +236,12 @@ def test_a_plug_is_solder_mask_ink():
     rects = _board("RESIN", ink=True)
     assert color_at(rects, 10 * MM, 1400 * UM) == MASK
     assert color_at(rects, (10 + 0.15 - 0.0125) * MM, 1400 * UM) == section.COPPER  # inside the wall
+
+
+def test_copper_rounded_at_a_corner_still_plates_it():
+    outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
+    near = square(-20 * MM + 30 * UM, -15 * MM + 30 * UM, 0, 15 * MM - 30 * UM)  # stops 30 um short of the corners
+    stretches = section.plated_edges(outline, {"rings": [near]}, {"rings": [near]})
+    ends = {tuple(np.round(np.asarray(point) / UM)) for start, end, _ in stretches for point in (start, end)}
+    assert (-20_000, -15_000) in ends and (-20_000, 15_000) in ends  # run on to the board's corners
+    assert (0, 15_000) in ends or (0, -15_000) in ends  # but not past the copper's own end mid-edge

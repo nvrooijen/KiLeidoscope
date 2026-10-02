@@ -169,18 +169,42 @@ def copper_along(line, shapes):
 
 EDGE_INSET_M = 50e-6  # copper this close to the edge reaches it (edge plating is drawn there)
 EDGE_SHORTEST_M = 20e-6  # plated stretches shorter than this are noise
+EDGE_CORNER_SNAP_M = 0.2e-3  # copper stopping this close to a sharp corner of the outline reaches it
+EDGE_SMOOTH_TURN = np.cos(np.radians(30))  # as edge_plating.SMOOTH_TURN: a turn beyond this is a corner
 
 
-def plated_edges(outline, front, back, inset=EDGE_INSET_M):
+def _sharp_ends(a, b):
+    """Per outline segment, (start is a sharp corner, end is one): the outline turns
+    there by more than a smooth bend (EDGE_SMOOTH_TURN)."""
+    def key(point):
+        return tuple(np.round(np.asarray(point, np.float64) / 1e-9).astype(np.int64))
+
+    units = (b - a) / np.maximum(np.hypot(*(b - a).T), 1e-12)[:, None]
+    starting, ending = {}, {}
+    for index, (start, end) in enumerate(zip(a, b)):
+        starting.setdefault(key(start), []).append(index)
+        ending.setdefault(key(end), []).append(index)
+
+    def sharp(index, others):
+        return any(abs(float(np.dot(units[index], units[other]))) < EDGE_SMOOTH_TURN for other in others)
+
+    return [(sharp(index, ending.get(key(start), ())), sharp(index, starting.get(key(end), ())))
+            for index, (start, end) in enumerate(zip(a, b))]
+
+
+def plated_edges(outline, front, back, inset=EDGE_INSET_M, snap=EDGE_CORNER_SNAP_M):
     """Stretches of the board outline that a plated board edge covers: where copper on
     both outer layers reaches the edge. Each is (start xy, end xy, outward unit normal).
 
     Per outline segment, a line just inside the board runs along it; the front and back
     copper crossing that line within the segment, both at once, are the plated stretches.
+    KiCad rounds a zone fill's corners, so copper filling a corner stops just short of it:
+    a stretch ending within `snap` of a sharp corner of the outline runs on to the corner.
     """
     a, b, item = (np.asarray(part) for part in outline)
+    corners = _sharp_ends(a.astype(np.float64), b.astype(np.float64))
     stretches = []
-    for start, end in zip(a.astype(np.float64), b.astype(np.float64)):
+    for (start, end), (sharp_start, sharp_end) in zip(zip(a.astype(np.float64), b.astype(np.float64)), corners):
         edge = end - start
         length = float(np.hypot(*edge))
         if length < 1e-9:
@@ -201,6 +225,9 @@ def plated_edges(outline, front, back, inset=EDGE_INSET_M):
         span = np.sort(line.s(np.vstack((start + inward * inset, end + inward * inset))))
         reach = intersect(intersect(copper_along(line, front), copper_along(line, back)), np.array([span]))
         forward = 1.0 if float(np.dot(line.along, unit)) > 0 else -1.0  # stretches run as the outline does
+        at_low, at_high = (sharp_start, sharp_end) if forward > 0 else (sharp_end, sharp_start)
+        reach = np.array([(span[0] if at_low and s0 - span[0] <= snap else s0,
+                           span[1] if at_high and span[1] - s1 <= snap else s1) for s0, s1 in reach]).reshape(-1, 2)
         for s0, s1 in reach[::int(forward)]:
             if s1 - s0 >= EDGE_SHORTEST_M:
                 first, last = (s0, s1)[::int(forward)]
