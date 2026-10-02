@@ -43,7 +43,10 @@ ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
 UPRIGHT = 1e-4  # |normal z| below this: the plane is vertical and gets a section
 FACE_OFFSET_M = 1e-6  # the face sits this far on the removed side, clear of the board's own faces
 FALLBACK_EXTENT_M = 0.1
-SHEET_MARGIN = 1.2  # the drawn plane over the board's size
+SHEET_MARGIN = 1.2  # the drawn plane over the board diagonal: it reaches past the board however it is turned
+SHEET_HEIGHT = 0.4  # how far it stands, of the board diagonal (at least ten board thicknesses)
+WIRES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5))  # the plane as drawn: its sheet's border and its arrow (`_plane_mesh`)
+CLICK_REACH_PX = 8  # a click this close to one of those lines is a click on the plane
 REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
@@ -153,13 +156,13 @@ def add_materials():
 # --- The plane ------------------------------------------------------------------------------
 
 def _extents():
-    """(width, depth, thickness) of the board in Blender metres."""
+    """(width, depth, thickness, centre x, centre y) of the board in Blender metres."""
     bounds = outline_bounds()
     thickness = board.thickness_m or 0.0016
     if bounds is None:
-        return FALLBACK_EXTENT_M, FALLBACK_EXTENT_M, thickness
+        return FALLBACK_EXTENT_M, FALLBACK_EXTENT_M, thickness, 0.0, 0.0
     xmin, ymin, xmax, ymax = bounds
-    return xmax - xmin, ymax - ymin, thickness
+    return xmax - xmin, ymax - ymin, thickness, (xmin + xmax) / 2, (ymin + ymax) / 2
 
 
 def _plane_mesh():
@@ -193,17 +196,60 @@ def place(axis, centered=False):
     """Turn the plane across the board (`axis`: the one its arrow follows) and size it to
     the board; it keeps its position unless `centered` (or new): then the middle."""
     plane = bpy.data.objects.get(PLANE) or ensure_plane()
-    width, depth, thickness = _extents()
-    sheet_height = max(thickness * 10, 0.2 * max(width, depth))
     plane.rotation_euler = ORIENTATIONS[axis]
-    # Turned about X, the sheet's local y stands up; turned about Y, its local x does.
-    size = (sheet_height, depth) if axis == "X" else (width, sheet_height)
-    plane.scale = (size[0] * SHEET_MARGIN, size[1] * SHEET_MARGIN, 0.1 * max(width, depth))
     if centered:
-        plane.location = (0.0, 0.0, thickness / 2)
+        _, _, thickness, x, y = _extents()
+        plane.location = (x, y, thickness / 2)
     plane["kls_board"] = board.board_name
+    fit(plane)
     bpy.context.view_layer.update()
     push()
+
+
+def fit(plane):
+    """Size the drawn plane to the board as it is now: longer than the board diagonal, so
+    it reaches past the board whichever way it is turned about Z, and standing well clear
+    of it. Its position and rotation stay as they are."""
+    width, depth, thickness, _, _ = _extents()
+    diagonal = math.hypot(width, depth)
+    length, height = diagonal * SHEET_MARGIN, max(thickness * 10, diagonal * SHEET_HEIGHT)
+    # The sheet lies in its local x and y: the one that stands up gets the height.
+    turned = plane.matrix_basis.to_3x3()
+    x_stands = abs(turned.col[0].normalized().z) > abs(turned.col[1].normalized().z)
+    plane.scale = (height, length, 0.1 * diagonal) if x_stands else (length, height, 0.1 * diagonal)
+
+
+def clicked(project, coordinate):
+    """A click at `coordinate` (region pixels) is on the plane as drawn: within
+    `CLICK_REACH_PX` of its border or its arrow. `project` turns a world point into
+    region pixels, or None when it lies behind the view."""
+    plane = bpy.data.objects.get(PLANE)
+    if plane is None or not enabled() or plane.hide_get():
+        return False
+    corners = [project(plane.matrix_world @ vertex.co) for vertex in plane.data.vertices]
+    mouse = Vector(coordinate)
+    for first, second in WIRES:
+        a, b = corners[first], corners[second]
+        if a is None or b is None:
+            continue
+        a, b = Vector(a), Vector(b)
+        along = b - a
+        reach = max(0.0, min(1.0, (mouse - a).dot(along) / max(along.length_squared, 1e-12)))
+        if (a + along * reach - mouse).length <= CLICK_REACH_PX:
+            return True
+    return False
+
+
+def select(extend=False):
+    """Select the plane, ready to move (G) or turn (R, Z): it alone unless `extend`."""
+    plane = bpy.data.objects.get(PLANE)
+    if plane is None:
+        return
+    if not extend:
+        for obj in tuple(bpy.context.selected_objects):
+            obj.select_set(False)
+    plane.select_set(True)
+    bpy.context.view_layer.objects.active = plane
 
 
 def _state(scene):
@@ -224,6 +270,23 @@ def _state(scene):
 def upright(scene=None):
     on, _, normal = _state(scene or bpy.context.scene)
     return on and abs(normal[2]) < UPRIGHT
+
+
+def shown_span(scene, origin, direction):
+    """The stretch of a ray (from `origin` along unit `direction`) on the side the cut
+    leaves shown: (start, end) distances, `end` None when it runs on; None when the ray
+    never gets there. The removed side is only see-through, so its geometry is still hit."""
+    on, at, normal = _state(scene)
+    if not on:
+        return 0.0, None
+    height = (Vector(origin) - Vector(at)).dot(normal)  # above 0: on the removed side
+    rate = Vector(direction).dot(normal)
+    if abs(rate) < 1e-12:  # along the plane: on one side all the way
+        return None if height > 0 else (0.0, None)
+    crossing = -height / rate
+    if height > 0:
+        return (crossing, None) if rate < 0 else None
+    return (0.0, crossing) if rate > 0 else (0.0, None)
 
 
 def push(scene=None):
@@ -556,6 +619,7 @@ def refresh():
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:
         hide(plane, not on)
+        fit(plane)  # the board may have grown since the plane was placed
     for material in materials():
         (add_to if on else remove_from)(material)
     _pushed = None

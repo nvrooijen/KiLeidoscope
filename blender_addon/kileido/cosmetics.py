@@ -44,6 +44,11 @@ MASK_SEPARATION_M = 4e-6
 SILKSCREEN_SEPARATION_M = 8e-6
 DRAWING_SEPARATION_M = 12e-6
 SHEET_BELOW_COPPER_M = 0.5e-6
+# The mask sheet's inner face stands this far out of the laminate face: outer copper's own faces
+# there (staggered by up to 3 um, transform.copper_z) lie inside it, so from inside the board (cut
+# open, hidden or see-through) copper is seen where there is copper, and the mask only between it.
+SHEET_OFF_LAMINATE_M = 4e-6
+SHEET_THINNEST_M = 1e-6  # what a thin mask's sheet keeps
 WALLED = (".SilkS",)  # layers whose outlines can get walls (the panel's silkscreen thickness)
 RELIEF = ("F.Cu", "B.Cu")  # plotted for the mask's relief over the copper, not shown as overlays
 # The mask flows over copper edges rather than stepping: its surface rises over this width.
@@ -183,8 +188,9 @@ def recolor():
 def _place(obj):
     """Height (and thickness) of an overlay sheet.
 
-    Board-stackup/Realistic colours: the mask is a solid sheet of the stackup's mask
-    thickness on the laminate; outer copper (thicker) rises through it and is
+    Board-stackup/Realistic colours: the mask is a solid sheet with its outer surface the
+    stackup's mask thickness above the laminate (its inner face a little off the laminate,
+    `SHEET_OFF_LAMINATE_M`); outer copper (thicker) rises through it and is
     coloured as mask-covered where the mask plot is closed. Silkscreen and drawings
     sit just above the copper tops. PCB Editor colours keep a translucent mask
     sheet above everything, like the 2D editor.
@@ -202,14 +208,15 @@ def _place(obj):
         side = layer[0]
         top, bottom = laminate_faces()
         sheet = mask_thickness(side)
+        inset = max(0.0, min(SHEET_OFF_LAMINATE_M, sheet - SHEET_THINNEST_M))  # its inner face, off the laminate
         # The opaque sheet must stay below the copper's outer surface, or flat copper
         # (thickness toggle off) would be hidden under it.
         if side == "F":
             surface = min(top + sheet, board.thickness_m - SHEET_BELOW_COPPER_M)
-            z, thickness = surface - sheet, sheet
+            z, thickness = surface - sheet + inset, sheet - inset
         else:
             surface = max(bottom - sheet, SHEET_BELOW_COPPER_M)
-            z, thickness = surface + sheet, -sheet
+            z, thickness = surface + sheet - inset, inset - sheet
     else:
         separation = MASK_SEPARATION_M if layer.endswith(".Mask") else SILKSCREEN_SEPARATION_M
         if layer.startswith("F."):

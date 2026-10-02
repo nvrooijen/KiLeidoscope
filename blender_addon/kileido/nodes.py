@@ -54,8 +54,10 @@ def _thicken(nodes, links, mesh, thickness, outward):
     (unchanged when it is 0).
 
     The object sits on its inner surface (the laminate side) and extrudes
-    outward, so the moved faces become the visible outer surface and no hidden
-    inner cap is built. Face extrusion is Blender's own; no triangulation here.
+    outward, so the moved faces become the outer surface. The faces it started from stay
+    as its inner side, turned to face into the board: with the board cut open, hidden or
+    see-through, outer copper is looked at from inside, and an open shell showed what lies
+    beyond it (the mask) instead. Face extrusion is Blender's own; no triangulation here.
     """
     oriented = _face_along(nodes, links, mesh, outward)
     up = nodes.new("ShaderNodeCombineXYZ")
@@ -66,8 +68,13 @@ def _thicken(nodes, links, mesh, thickness, outward):
     links.new(oriented, extrude.inputs["Mesh"])
     links.new(up.outputs["Vector"], extrude.inputs["Offset"])
     links.new(thickness, extrude.inputs["Offset Scale"])
+    inner = nodes.new("GeometryNodeFlipFaces")
+    links.new(oriented, inner.inputs["Mesh"])
+    closed = nodes.new("GeometryNodeJoinGeometry")
+    links.new(extrude.outputs["Mesh"], closed.inputs["Geometry"])
+    links.new(inner.outputs["Mesh"], closed.inputs["Geometry"])
     solid = _switch(nodes, links, "GEOMETRY", _is_thick(nodes, links, thickness),
-                    oriented, extrude.outputs["Mesh"])
+                    oriented, closed.outputs["Geometry"])
     # Copper is flat-faced. Curve-to-mesh ribbons come out smooth-shaded, averaging
     # each vertex normal over top, side and flipped faces: black patches in Cycles.
     flat = nodes.new("GeometryNodeSetShadeSmooth")
@@ -158,7 +165,7 @@ def modifier_input(modifier, group, name, value):
 
 
 def tracks():
-    group, source, sink = _group("KLS_Tracks_v3", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Tracks_v4", (("Material", "NodeSocketMaterial"),
                                                    ("Thickness", "NodeSocketFloat"),
                                                    ("Up", "NodeSocketFloat", 1.0)))
     if source is None:
@@ -200,7 +207,7 @@ def tracks():
     return group
 
 
-def fill(name="KLS_Fill_v3", solder=False):
+def fill(name="KLS_Fill_v4", solder=False):
     """Pads (one ring group per item) as filled faces, thickened along Z.
 
     `solder`: the same shapes as stencil deposits: extruded, top faces shrunk
@@ -269,7 +276,7 @@ def fill(name="KLS_Fill_v3", solder=False):
 
 def fill_single():
     """Fill all rings of one copper item, preserving its own holes."""
-    group, source, sink = _group("KLS_FillSingle_v3", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_FillSingle_v4", (("Material", "NodeSocketMaterial"),
                                                        ("Thickness", "NodeSocketFloat"),
                                                        ("Up", "NodeSocketFloat", 1.0)))
     if source is None:

@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, focus, highlight, holes, laminate, metal, nodes, packages, section, state  # noqa: E402
+from kileido import (apply, cut, focus, highlight, holes, laminate, metal, nodes, packages, pick, section,  # noqa: E402
+                     shading, state)
+from kileido.objects import outline_bounds  # noqa: E402
 from kileido.placement import CAP_PLATING_M  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames, vias_message  # noqa: E402
@@ -281,6 +283,54 @@ def main():
                                      (value.value for value in rings.data.attributes["via"].data)) if via == 2]
         assert sorted(round(z * 1e6) for z in inner) == sorted(round((board.heights[name] + 3e-6) * 1e6)
                                                                for name in ("In1.Cu", "In2.Cu"))
+        # Inner copper is never exposed: the rings are bare copper in a material of their own,
+        # whatever the board's finish (the lands' material takes it where the mask is open).
+        ring_material = modifier_value_named(rings, "Material")
+        assert ring_material == board.materials["via_rings"] and ring_material != board.materials["vias"]
+        before = dict(board.appearance)
+        board.appearance.update(copper_finish="ENIG", viewer={**before.get("viewer", {}), "copper": (0.83, 0.68, 0.30)})
+        for mode in ("REALISTIC", "FAB"):
+            scene.kileido_color_mode = mode
+            assert "KLS finish mix" not in ring_material.node_tree.nodes
+            shown = np.array(ring_material.diffuse_color[:3])
+            assert np.allclose(shown, shading.srgb_to_linear(kileido.materials.BARE_COPPER), atol=1e-4), (mode, shown)
+            assert not np.allclose(shown, board.materials["vias"].diffuse_color[:3], atol=0.02)  # ENIG there
+        # Outer copper's face on the laminate has no mask on it and never got the finish: seen
+        # from inside the board (cut open, hidden or see-through) it is bare copper, while its
+        # outside keeps the mask's colour over it.
+        colors = kileido.materials
+        no_openings = bpy.data.images.new("KLS test mask", 4, 4, alpha=True)
+        no_openings.pixels.foreach_set(np.zeros(4 * 4 * 4, np.float32))  # alpha 0: the mask covers everything
+        for side in "FB":
+            colors.set_mask_image(side, no_openings, (-0.03, -0.02, 0.03, 0.02))
+        scene.kileido_color_mode = "FAB"  # flat: the rendered colours are the materials' own
+        rows = [f"kileido_show_{row}" for row in ("board", "vias", "F_Cu", "In1_Cu", "In2_Cu", "B_Cu")]
+        for row in rows:
+            setattr(scene, row, False)
+        for layer, inside in (("B.Cu", 1), ("F.Cu", -1)):  # the side its laminate face is seen from: above, below
+            shown = "kileido_show_" + layer.replace(".", "_")
+            setattr(scene, shown, True)
+            tracks = board.collection.all_objects[f"KLS {layer} tracks"]
+            ends = [tracks.matrix_world @ vertex.co for vertex in tracks.data.vertices]
+            point = next((ends[a] + ends[b]) / 2 for a, b in (edge.vertices for edge in tracks.data.edges)
+                         if min(ends[a].y, ends[b].y) > 1 * MM)  # on the side the cut leaves
+            covered = colors.seen_through(colors.mask_color(layer[0]), colors.COPPER_UNDER_MASK)
+            for side, wanted in ((inside, colors.BARE_COPPER), (-inside, covered)):
+                camera(scene, ortho_scale=0.002, location=(point.x, point.y, side * 0.05),
+                       rotation=(0 if side > 0 else math.pi, 0, 0), size=(200, 200))
+                got = color_at(scene, render(scene, f"{layer}_from_{'above' if side > 0 else 'below'}"), point)
+                assert np.abs(got - np.array(wanted[:3])).max() < TOLERANCE, (layer, side, got, wanted)
+            setattr(scene, shown, False)
+        for material in ("copper:F.Cu", "copper:B.Cu", "vias"):  # the lands too: top above mid-board, bottom below
+            assert colors.EXPOSED in board.materials[material].node_tree.nodes
+        for row in rows:
+            setattr(scene, row, True)
+        board.mask_images.clear()
+        colors.refresh_mask_colors()
+        bpy.data.images.remove(no_openings)
+        board.appearance.clear()
+        board.appearance.update(before)
+        scene.kileido_color_mode = "FAB"
         highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
         marked = board.collection.all_objects["KLS vias rings highlight selected"]
         assert len(marked.data.vertices) == 2 and not marked.hide_get()  # X-ray mode shows them in its colour
@@ -352,6 +402,123 @@ def main():
         assert not cut.upright(scene) and not len(face.data.polygons) and face.hide_get()
         cut.place("Y", centered=True)
         assert cut.upright(scene) and len(face.data.polygons)
+
+        # A layer's eye: the section draws what is shown, as soon as the eye changes (not only
+        # at the board's next edit), and gets it back with the eye.
+        def drawn(name):
+            flags = attribute(name, face)
+            return sum(polygon.area for polygon in face.data.polygons if flags[polygon.vertices[0]] > 0.5)
+
+        copper_shown, laminate_shown = drawn(cut.FACE_METAL), drawn(cut.FACE_WEAVE)
+        if bpy.app.timers.is_registered(cut._rebuild_soon):  # left from the frames above
+            bpy.app.timers.unregister(cut._rebuild_soon)
+        scene.kileido_show_In1_Cu = False
+        assert bpy.app.timers.is_registered(cut._rebuild_soon)  # redrawn soon, once per burst of eyes
+        cut.rebuild()  # what that timer does (timers do not run headless)
+        assert drawn(cut.FACE_METAL) < 0.9 * copper_shown  # In1's pour is gone from the section
+        scene.kileido_show_In1_Cu = True
+        cut.rebuild()
+        assert math.isclose(drawn(cut.FACE_METAL), copper_shown, rel_tol=1e-9)
+        scene.kileido_show_board = False
+        cut.rebuild()
+        assert drawn(cut.FACE_WEAVE) == 0 and drawn(cut.FACE_METAL) > 0  # no board solid: copper alone
+        scene.kileido_show_board = True
+        cut.rebuild()
+        assert math.isclose(drawn(cut.FACE_WEAVE), laminate_shown, rel_tol=1e-9)
+
+        # Clicks pick only on the side that is shown: the removed side is see-through, not gone.
+        _, at, removed = cut._state(scene)
+        at, removed = Vector(at), Vector(removed)
+        xmin, ymin, xmax, ymax = outline_bounds()
+
+        def picked(origin, direction):
+            return pick.item_at(scene, bpy.context.evaluated_depsgraph_get(), origin, direction)
+
+        def down(point):
+            return picked(Vector((point[0], point[1], 0.05)), Vector((0, 0, -1)))
+
+        def well_inside(side):
+            """(point, its item) on one side of the plane (+1: the removed side), the same item
+            0.1 mm around it, as picked from straight above with the board whole."""
+            for x in np.linspace(xmin, xmax, 80):
+                for y in np.linspace(ymin, ymax, 60):
+                    if side * (Vector((x, y, at.z)) - at).dot(removed) < 1 * MM:
+                        continue
+                    found = down((x, y))
+                    if found is not None and all(down((x + dx, y + dy)) == found for dx, dy in (
+                            (0.1 * MM, 0), (-0.1 * MM, 0), (0, 0.1 * MM), (0, -0.1 * MM))):
+                        return Vector((x, y, board.thickness_m)), found
+            raise AssertionError("no item to pick on this side")
+
+        scene.kileido_cut = False
+        (gone, gone_item), (kept, kept_item) = well_inside(1), well_inside(-1)
+        scene.kileido_cut = True
+        cut.place("Y", centered=True)
+        assert down(gone) is None and down(kept) == kept_item
+
+        def across(point):
+            """Picked by a slanted ray at `point` from over the plane's other side: it passes
+            the plane 5 mm above the board, half way there."""
+            origin = point - removed * (2 * (point - at).dot(removed)) + Vector((0, 0, 0.010))
+            return picked(origin, point - origin)
+
+        # A view ray counts only where it runs through the shown side.
+        assert across(kept) == kept_item  # from over the removed side, onto the shown side
+        assert across(gone) is None  # from over the shown side, into the removed side
+        scene.kileido_cut_flip = True  # the other side removed instead
+        assert down(gone) == gone_item and down(kept) is None
+        assert across(gone) == gone_item and across(kept) is None
+        scene.kileido_cut_flip = False
+        scene.kileido_cut = False
+        assert down(gone) == gone_item and down(kept) == kept_item  # whole again: both pick
+        scene.kileido_cut = True
+
+        # The drawn plane reaches past the board however it is turned about Z, stands well
+        # clear of it, and sits on the board's middle. Turned by hand it keeps doing so.
+        diagonal = math.hypot(xmax - xmin, ymax - ymin)
+
+        def sheet():
+            """(its length along the board, how far it stands) from its corners."""
+            corners = [plane.matrix_world @ plane.data.vertices[index].co for index in range(4)]
+            flat = [Vector((corner.x, corner.y)) for corner in corners]
+            return (max((a - b).length for a in flat for b in flat),
+                    max(corner.z for corner in corners) - min(corner.z for corner in corners))
+
+        for turn in ("Y", "X"):
+            cut.place(turn, centered=True)
+            length, height = sheet()
+            assert length > diagonal and height >= 10 * board.thickness_m and height > 0.3 * diagonal, (turn, length)
+            assert np.allclose(plane.location[:2], ((xmin + xmax) / 2, (ymin + ymax) / 2), atol=1e-9)
+        plane.rotation_euler.z += math.radians(35)  # by hand
+        plane.scale = (0.001, 0.001, 0.001)
+        scene.kileido_cut = False
+        scene.kileido_cut = True  # sized to the board again, the way it stands now
+        bpy.context.view_layer.update()
+        length, height = sheet()
+        assert length > diagonal and math.isclose(height, max(10 * board.thickness_m, cut.SHEET_HEIGHT * diagonal),
+                                                  rel_tol=1e-6), (length, height)
+        assert cut.upright(scene)
+
+        # A click on the plane as drawn (its border, its arrow) selects it, so it can be moved
+        # while KiCad is connected and every other click selects in KiCad.
+        cut.place("Y", centered=True)
+
+        def front(point):  # the front view, 10 pixels a millimetre
+            return Vector((point.x * 1e4, point.z * 1e4))
+
+        corner, middle = (front(plane.matrix_world @ Vector(local)) for local in ((-0.5, -0.5, 0), (0, 0, 0)))
+        assert cut.clicked(front, corner + Vector((3, 0))) and not cut.clicked(front, corner - Vector((30, 30)))
+        assert not cut.clicked(front, (corner + middle) / 2)  # inside its sheet: the board behind it
+        assert cut.clicked(lambda point: Vector((point.x * 1e4, point.y * 1e4)),  # from above: along its arrow
+                           Vector((middle.x, (plane.location.y - 0.4 * plane.scale.z) * 1e4)))
+        assert not cut.clicked(lambda point: None, corner)  # behind the view
+        cut.select()
+        assert plane.select_get() and bpy.context.view_layer.objects.active == plane
+        assert [obj.name for obj in bpy.context.selected_objects] == [cut.PLANE]
+        plane.select_set(False)
+        scene.kileido_cut = False
+        assert not cut.clicked(front, corner + Vector((3, 0)))  # hidden: nothing to click
+        scene.kileido_cut = True
 
         # An exported package never carries the clip stage; the live board keeps it.
         package = OUT / "kileido_cut_package.blend"

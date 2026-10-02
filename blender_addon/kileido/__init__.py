@@ -140,6 +140,13 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         coordinate = (event.mouse_region_x, event.mouse_region_y)
         origin = view3d_utils.region_2d_to_origin_3d(context.region, context.region_data, coordinate)
         direction = view3d_utils.region_2d_to_vector_3d(context.region, context.region_data, coordinate)
+        # The cut plane is an object to move, not a KiCad item: a click on its wireframe selects it
+        # (this operator takes the click before Blender can).
+        if cut.clicked(lambda point: view3d_utils.location_3d_to_region_2d(context.region, context.region_data,
+                                                                            point), coordinate):
+            cut.select(self.extend)
+            self.report({"INFO"}, "KiLeidoscope: cut plane selected (G moves it, R then Z turns it)")
+            return {"FINISHED"}
         item = pick.item_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.

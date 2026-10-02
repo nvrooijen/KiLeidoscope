@@ -98,6 +98,19 @@ def main():
         assert plating.hide_get()
         scene.kileido_show_board = True
 
+        # A copper layer's eye: the plating is worked out again from the copper shown, and is
+        # back as it was with the eye (not only at the board's next edit).
+        faces = len(plating.data.polygons)
+        if bpy.app.timers.is_registered(edge_plating._refresh_soon):  # left from the frames above
+            bpy.app.timers.unregister(edge_plating._refresh_soon)
+        scene.kileido_show_F_Cu = False
+        assert bpy.app.timers.is_registered(edge_plating._refresh_soon)
+        edge_plating.refresh()  # what that timer does (timers do not run headless)
+        assert not len(plating.data.polygons)  # no front copper shown: none reaches the edge on both sides
+        scene.kileido_show_F_Cu = True
+        edge_plating.refresh()
+        assert len(plating.data.polygons) == faces and not plating.hide_get()
+
         # The cut plane's section: a copper strip outside the plated left edge, none on the right.
         scene.kileido_cut = True
         rects, (line, _) = cut.rectangles(scene)

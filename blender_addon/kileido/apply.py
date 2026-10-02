@@ -489,7 +489,7 @@ def _apply_via_rings(xy, diameter, ends, copper, ringed):
     write_attribute(mesh, "via", "INT", np.asarray(owners, np.int32))
     mesh.update()
     obj.location.z = 0
-    set_modifier(obj, board.groups["via_rings"], "vias", {})
+    set_modifier(obj, board.groups["via_rings"], "via_rings", {})  # inner copper: bare, never the finish
     board.touched.add(obj.name)
 
 
@@ -571,6 +571,7 @@ def set_board_visible(visible):
     obj = board.collection.all_objects.get(OUTLINE)
     if obj is not None:
         set_visible(obj, visible)
+    cut.invalidate()  # the section has no laminate while the board solid is hidden
     edge_plating.refresh()  # the plated edge goes with the board solid
 
 

@@ -43,6 +43,8 @@ MASK_COAT_ROUGHNESS = 0.08
 COAT_WEIGHT = "KLS coat weight"
 COAT_AMOUNT = "KLS coat amount"  # 1 while the mask covers the copper (0: mask hidden)
 RELIEF_BUMP = "KLS relief bump"
+EXPOSED = "KLS exposed colour"  # copper without mask on it: the finish, or bare on a face turned into the board
+INNER_FACE_Z = 0.5  # a face whose normal points this much into the board lies on the laminate
 RELIEF_HEIGHT = 1.0  # the mask's rise over copper edges, times the copper thickness
 # Materials whose copper shows the board finish in mask openings, and the mask plots they sample.
 FINISHED = {"copper:F.Cu": ("F",), "copper:B.Cu": ("B",), "vias": ("F", "B")}
@@ -56,6 +58,8 @@ def create_all():
     Copper gets one material per layer on first use (`layer_material`)."""
     board.materials = {
         "vias": make("KLS Vias", (1.0, 0.6, 0.16)),
+        # A via's annular rings on inner copper: never exposed, so never the finish or the mask's colour.
+        "via_rings": make("KLS Via rings inner", BARE_COPPER),
         "board": make("KLS Board mask top", FALLBACK_MASK),
         "board_bottom": make("KLS Board mask bottom", FALLBACK_MASK),
         "board_core": make("KLS Board FR4 core", FALLBACK_CORE),
@@ -280,6 +284,7 @@ def finish_mask(material, key):
         _unlink_finish_mask(material)
         return
     mix = nodes.get("KLS finish mix") or _build_finish_mask(material, sides)
+    _bare_inner_faces(material, sides)
     for side in sides:
         image, (xmin, ymin, xmax, ymax) = board.mask_images[side]
         nodes[f"KLS mask plot {side}"].image = image
@@ -288,7 +293,8 @@ def finish_mask(material, key):
     if "KLS mask side" in nodes:
         nodes["KLS mask side"].inputs[1].default_value = board.thickness_m / 2
     exposed = _lit_metal(finish_color() or board.appearance.get("viewer", {}).get("copper") or BARE_COPPER)
-    mix.inputs["B"].default_value = (*shading.srgb_to_linear(exposed[:3]), 1.0)
+    for name, color in (("A", exposed), ("B", _lit_metal(BARE_COPPER))):  # the finish; bare on an inner face
+        shading.typed_socket(nodes[EXPOSED].inputs, name).default_value = (*shading.srgb_to_linear(color[:3]), 1.0)
     metal, rough = _metal_ramps(material, mix)
     metal.inputs["To Max"].default_value = COPPER_METALLIC
     rough.inputs["To Max"].default_value = COPPER_ROUGHNESS
@@ -398,6 +404,42 @@ def _build_finish_mask(material, sides):
         opening = alphas[sides[0]]
     links.new(opening, mix.inputs["Factor"])
     return mix
+
+
+def _bare_inner_faces(material, sides):
+    """Outer copper's face on the laminate (seen with the board cut open, hidden or see-through)
+    has no mask on it and never got the finish: bare copper. Such a face counts as a mask
+    opening for everything the opening drives (no mask colour, ink or coat; metal), and the
+    exposed colour there is bare copper instead of the finish. Built once per material, also
+    into one from before this (a saved file's)."""
+    tree = material.node_tree
+    nodes, links = tree.nodes, tree.links
+    if EXPOSED in nodes:
+        return
+    mix = nodes["KLS finish mix"]
+    opening = mix.inputs["Factor"].links[0].from_socket
+    driven = [link.to_socket for link in opening.links]
+    normal = nodes.new("ShaderNodeSeparateXYZ")  # the normal on the side seen: a flat sheet's back counts too
+    links.new(nodes.new("ShaderNodeNewGeometry").outputs["Normal"], normal.inputs[0])
+    facing_in = {"F": shading.math_node(tree, "LESS_THAN", normal.outputs["Z"], -INNER_FACE_Z),
+                 "B": shading.math_node(tree, "GREATER_THAN", normal.outputs["Z"], INNER_FACE_Z)}
+    if len(sides) == 2:  # vias: the top land above mid-board, the bottom land below
+        choose = nodes.new("ShaderNodeMix")
+        choose.data_type = "FLOAT"
+        links.new(nodes["KLS mask side"].outputs[0], choose.inputs["Factor"])
+        links.new(facing_in["B"], choose.inputs["A"])
+        links.new(facing_in["F"], choose.inputs["B"])
+        inner = choose.outputs["Result"]
+    else:
+        inner = facing_in[sides[0]]
+    uncovered = shading.math_node(tree, "MAXIMUM", opening, inner)
+    for socket in driven:
+        links.new(uncovered, socket)
+    exposed = nodes.new("ShaderNodeMix")
+    exposed.name = EXPOSED
+    exposed.data_type = "RGBA"
+    links.new(inner, exposed.inputs["Factor"])
+    links.new(shading.typed_socket(exposed.outputs, "Result"), shading.typed_socket(mix.inputs, "B"))
 
 
 def _metal_ramps(material, mix):
@@ -637,6 +679,9 @@ def set_color_mode(mode):
     paint(board.materials["vias"],
           (board.appearance.get("editor_via") if mode == "EDITOR" else
            (finish_color() or viewer.get("copper"))) or FALLBACK_COPPER)
+    # Its rings on inner copper: the via colour in the editor's theme, else as inner copper (no finish).
+    paint(board.materials["via_rings"],
+          (board.appearance.get("editor_via") if mode == "EDITOR" else _copper_color("inner")) or FALLBACK_COPPER)
     # Hole walls: copper plated, then finished like the pads.
     paint(board.materials["plating"], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
     set_surface(board.materials["plating"], realistic, COPPER_METALLIC, 0.3)
@@ -650,8 +695,8 @@ def set_color_mode(mode):
     for key, material in board.materials.items():
         if key == "solder":
             set_surface(material, realistic, 0.9, 0.3)  # tin-silver-copper alloy
-        if key in {"board", "board_bottom", "board_core", "vias"} or key.startswith("copper:"):
-            metal = key == "vias" or key.startswith("copper:")
+        if key in {"board", "board_bottom", "board_core", "vias", "via_rings"} or key.startswith("copper:"):
+            metal = key in ("vias", "via_rings") or key.startswith("copper:")
             set_surface(material, realistic, COPPER_METALLIC if metal else 0.0,
                         COPPER_ROUGHNESS if metal else 0.42)
             if metal:

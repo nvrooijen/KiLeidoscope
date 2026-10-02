@@ -41,10 +41,11 @@ def evaluated_mesh(obj):
 
 
 def surface_area(obj):
-    """Area facing along Z (copper outlines); extruded side walls are excluded."""
+    """Area facing one way along Z (copper outlines): thick copper is closed, its outer and
+    inner sides the same outline; extruded side walls are excluded."""
     evaluated, mesh = evaluated_mesh(obj)
     try:
-        return sum(face.area for face in mesh.polygons if abs(face.normal.z) > 0.5)
+        return max(sum(face.area for face in mesh.polygons if sign * face.normal.z > 0.5) for sign in (1, -1))
     finally:
         bpy.data.meshes.remove(mesh)
 
@@ -77,7 +78,7 @@ def main():
                for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")
     studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
     assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
-    assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v3", "KLS_Fill_v3", "KLS_FillSingle_v3",
+    assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v4", "KLS_Fill_v4", "KLS_FillSingle_v4",
                                                       "KLS_Drills_v2", "KLS_Vias_v14", "KLS_ViaRings_v1", "KLS_Board_v3",
                                                       "KLS_Solder"))
 

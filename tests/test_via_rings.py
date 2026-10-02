@@ -1,10 +1,15 @@
 """Which layers a via has an annular ring on (kileido_bridge.via_rings), on a 4-layer board."""
 
+import math
+import random
+import time
+
+import numpy as np
 import pytest
 
 from kileido_bridge import model
 from kileido_bridge.protocol import FrameDecoder, messages_for, vias_message
-from kileido_bridge.via_rings import copper_order, ringed_masks
+from kileido_bridge.via_rings import _Edges, copper_order, ringed_masks
 
 MM = 1_000_000
 ORDER = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
@@ -72,3 +77,63 @@ def test_the_vias_frame_carries_the_rings_and_resends_with_the_copper():
     kinds = [header["kind"] for header, _ in FrameDecoder().feed(b"".join(
         messages_for(plain, frozenset({("F.Cu", "tracks")}), 2)))]
     assert kinds == ["tracks"]
+
+
+def circle(cx, cy, radius, sides):
+    return tuple((int(cx + radius * math.cos(2 * math.pi * k / sides)), int(cy + radius * math.sin(2 * math.pi * k / sides)))
+                 for k in range(sides))
+
+
+def touches_testing_every_edge(polygons, x, y, radius):
+    """The plain way: per polygon, even-odd over all its rings, then every edge within the radius."""
+    for polygon in polygons:
+        crossings, nearest = 0, math.inf
+        for ring in polygon:
+            for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]):
+                if (y0 > y) != (y1 > y) and x < x0 + (y - y0) * (x1 - x0) / (y1 - y0):
+                    crossings += 1
+                dx, dy = x1 - x0, y1 - y0
+                along = max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / max(dx * dx + dy * dy, 1e-12)))
+                nearest = min(nearest, math.hypot(x0 + along * dx - x, y0 + along * dy - y))
+        if crossings % 2 == 1 or nearest <= radius:
+            return True
+    return False
+
+
+def test_listing_edges_by_rows_gives_the_same_answer_as_testing_every_edge():
+    rng = random.Random(7)
+    for _ in range(60):
+        polygons = []
+        for _ in range(rng.randrange(1, 5)):  # pours with holes, some overlapping each other
+            cx, cy, radius = rng.randrange(0, 30 * MM), rng.randrange(0, 30 * MM), rng.randrange(MM, 12 * MM)
+            holes = [circle(cx + rng.randrange(-radius, radius) // 3, cy + rng.randrange(-radius, radius) // 3,
+                            rng.randrange(50_000, max(60_000, radius // 4)), rng.randrange(3, 20))
+                     for _ in range(rng.randrange(0, 12))]
+            polygons.append((circle(cx, cy, radius, rng.randrange(8, 40)), *holes))
+        edges = _Edges(polygons)
+        for _ in range(60):  # on and around the polygons, and well outside them
+            x, y, radius = rng.randrange(-15 * MM, 45 * MM), rng.randrange(-15 * MM, 45 * MM), rng.randrange(1, MM)
+            assert edges.touch(x, y, radius) == touches_testing_every_edge(polygons, x, y, radius), (x, y, radius)
+    assert not _Edges([]).touch(0, 0, MM) and not _Edges([((),)]).touch(0, 0, MM)  # nothing to touch
+
+
+def test_a_pour_with_an_antipad_per_foreign_via_stays_fast():
+    """1500 vias, 450 of them in four pours that have an antipad for each of the others:
+    this took half a minute when every via was tested against every edge."""
+    side = 39
+    vias, holes = [], []
+    for k in range(1500):
+        x, y = (k % side) * 2 * MM + MM, (k // side) * 2 * MM + MM
+        net = "GND" if k < 450 else f"N{k}"
+        vias.append(model.Via(f"v{k}", net, (x, y), 600_000, 300_000, "F.Cu", "B.Cu", rings=model.RINGS_CONNECTED))
+        if net != "GND":
+            holes.append(circle(x, y, 500_000, 16))
+    size = side * 2 * MM + MM
+    outline = ((0, 0), (size, 0), (size, size), (0, size))
+    zones = tuple(model.ZoneFill(f"z{layer}", "GND", layer, ((outline, *holes),)) for layer in ORDER)
+    stack = model.Stackup(tuple(model.StackupLayer(name, "copper", 35_000, None, None, None) for name in ORDER))
+    snapshot = model.BoardSnapshot("test", {}, (), (), tuple(vias), (), (), zones, model.Outline(()), stack, (), {})
+    started = time.perf_counter()
+    masks = ringed_masks(snapshot, ORDER)
+    assert time.perf_counter() - started < 3.0  # about 0.1 s; generous for a slow machine
+    assert np.all(masks[:450] == 0b1111) and not masks[450:].any()  # in the pours; alone in an antipad

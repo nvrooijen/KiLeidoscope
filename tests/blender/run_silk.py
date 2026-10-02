@@ -12,12 +12,14 @@ import time
 from pathlib import Path
 
 import bpy
+from mathutils import Vector
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
 from kileido import apply, cosmetics, materials, packages, state  # noqa: E402
+from kileido.objects import outline_bounds  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -138,6 +140,36 @@ def main():
         assert not any(output.links for output in copper.node_tree.nodes["KLS silk mix"].outputs)
         scene.kileido_color_mode = "REALISTIC"
         assert printed(copper)
+
+        # From inside the board (cut open, hidden or see-through), outer copper is closed on its
+        # laminate side: copper shows where there is copper, the mask sheet only beside it, with
+        # its inner face farther out than the copper's. On both sides.
+        rows = ("kileido_show_board", "kileido_show_vias", "kileido_show_In1_Cu", "kileido_show_In2_Cu")
+        for row in rows:
+            setattr(scene, row, False)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        xmin, ymin, _xmax, _ymax = outline_bounds()
+
+        def from_inside(x, y, inward):
+            """(object, z, normal z) first met from mid-board on the way out through one side."""
+            hit, location, normal, _index, obj, _matrix = scene.ray_cast(
+                depsgraph, Vector((x, y, state.board.thickness_m / 2)), Vector((0, 0, -inward)))
+            assert hit, (x, y, inward)
+            return obj, location.z, normal.z
+
+        for layer, inward in (("F.Cu", -1.0), ("B.Cu", 1.0)):  # the way its laminate side faces
+            tracks = state.board.collection.all_objects[f"KLS {layer} tracks"]
+            ends = [tracks.matrix_world @ vertex.co for vertex in tracks.data.vertices]
+            first, second = tracks.data.edges[0].vertices
+            on_track = (ends[first] + ends[second]) / 2
+            met, copper_z, facing = from_inside(on_track.x, on_track.y, inward)
+            assert met.get("kls_copper") and met["kls_copper"][0] == layer, (layer, met.name)
+            assert facing * inward > 0.99, (layer, facing)  # its own inner face, facing into the board
+            met, mask_z, _ = from_inside(xmin + 0.001, ymin + 0.001, inward)  # a corner without copper
+            assert met.get("kls_cosmetic_layer") == f"{layer[0]}.Mask", (layer, met.name)
+            assert (mask_z - copper_z) * inward < -1e-6, (layer, mask_z, copper_z)
+        for row in rows:
+            setattr(scene, row, True)
 
         # A view-only board keeps its printed ink; its own mask eye brings its sheet back.
         packages.export_board(str(package))
