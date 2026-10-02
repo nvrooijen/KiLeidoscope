@@ -222,6 +222,7 @@ def _refresh_vias(wanted):
                      {"Top Thickness": copper_thickness("F.Cu"),
                       "Bottom Thickness": copper_thickness("B.Cu"),
                       "Plating": via_plating(),
+                      "Land Lift": transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0}) + LIFT_M,
                       **materials.via_inputs(barrel)})
         _show(obj)
 

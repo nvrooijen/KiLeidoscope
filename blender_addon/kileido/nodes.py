@@ -459,10 +459,12 @@ def vias():
     """Lands, barrels and, per via (protection.py, as point attributes): its plug or fill
     (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill),
     its cap plating (`cap`, metres, on its outer lands), its mask tents (`tent_top`,
-    `tent_bottom`) and a bare barrel (`bare_barrel`). A `drilled` via is see-through in its
+    `tent_bottom`) and a bare barrel (`bare_barrel`). An end on inner copper (a blind via's
+    floor, a buried via's ends) is a flat land on that copper, plated like the barrel;
+    `z_top`/`z_bottom` stand `Land Lift` outside the copper they end on. A `drilled` via is see-through in its
     bore (holes.py), so its lands read as rings and its core reaches the surface. `Plating`:
     the barrel's wall, inside the drill (the bore is the drill less twice that)."""
-    group, source, sink = _group("KLS_Vias_v9", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v10", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Bare Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
@@ -471,7 +473,8 @@ def vias():
                                                    ("Copper Fill Material", "NodeSocketMaterial"),
                                                    ("Tent Top Material", "NodeSocketMaterial"),
                                                    ("Tent Bottom Material", "NodeSocketMaterial"),
-                                                   ("Plating", "NodeSocketFloat", 25e-6)))
+                                                   ("Plating", "NodeSocketFloat", 25e-6),
+                                                   ("Land Lift", "NodeSocketFloat", 3e-6)))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -525,10 +528,10 @@ def vias():
     circle.inputs["Vertices"].default_value = VIA_VERTICES
     circle.inputs["Radius"].default_value = 0.5
 
-    def annulus(z, thickness, sign, copper):
+    def annulus(z, thickness, sign, copper, selection):
         """Via land: a disk at the copper surface, or a cylinder reaching `thickness`
         (per via: copper and its cap) inward from it (sign -1 on top, +1 at the bottom).
-        `copper`, the layer's thickness, picks which."""
+        `copper`, the layer's thickness, picks which. Only on the `selection` points."""
         inward = nodes.new("ShaderNodeMath")
         inward.operation = "MULTIPLY"
         links.new(thickness, inward.inputs[0])
@@ -544,6 +547,7 @@ def vias():
         flip.inputs[1].default_value = -sign
         land = nodes.new("GeometryNodeInstanceOnPoints")
         links.new(shifted_points(start.outputs[0]), land.inputs["Points"])
+        links.new(selection, land.inputs["Selection"])
         links.new(shape, land.inputs["Instance"])
         links.new(_xyz(nodes, links, diameter, flip.outputs[0]), land.inputs["Scale"])
         return land
@@ -567,10 +571,30 @@ def vias():
         return surface.outputs[0], thicker.outputs[0]
 
     outer = annulus(*capped_end(top, source.outputs["Top Thickness"], "outer_top", -1.0), -1.0,
-                    source.outputs["Top Thickness"])
+                    source.outputs["Top Thickness"], flag("outer_top"))
     # The same annulus on the bottom face, so vias read correctly from below.
     outer_bottom = annulus(*capped_end(bottom, source.outputs["Bottom Thickness"], "outer_bottom", 1.0), 1.0,
-                           source.outputs["Bottom Thickness"])
+                           source.outputs["Bottom Thickness"], flag("outer_bottom"))
+
+    # An end on inner copper: a flat land on that copper's face, facing into the hole.
+    inner_lands = {}
+    bare_land = flag("bare_barrel")
+    for name, z, sign in (("outer_top", top, -1.0), ("outer_bottom", bottom, 1.0)):
+        inner = nodes.new("FunctionNodeBooleanMath")
+        inner.operation = "NOT"
+        links.new(flag(name), inner.inputs[0])
+        for bare_only in (False, True):
+            which = nodes.new("FunctionNodeBooleanMath")
+            which.operation = "AND" if bare_only else "NIMPLY"
+            links.new(inner.outputs[0], which.inputs[0])
+            links.new(bare_land, which.inputs[1])
+            land = nodes.new("GeometryNodeInstanceOnPoints")
+            lift = math("MULTIPLY", source.outputs["Land Lift"], 2 * sign)  # from outside its copper to its face
+            links.new(shifted_points(math("ADD", z, lift)), land.inputs["Points"])
+            links.new(which.outputs[0], land.inputs["Selection"])
+            links.new(circle.outputs["Mesh"], land.inputs["Instance"])
+            links.new(_xyz(nodes, links, diameter, sign), land.inputs["Scale"])
+            inner_lands.setdefault(bare_only, []).append(land.outputs["Instances"])
 
     # The barrel: the plating's inner face (the bore), top land to bottom land.
     # The lands and board are see-through inside the drill (holes.py); no boolean.
@@ -688,6 +712,14 @@ def vias():
     links.new(source.outputs["Material"], painted_copper.inputs["Material"])
     together = nodes.new("GeometryNodeJoinGeometry")
     links.new(painted_copper.outputs["Geometry"], together.inputs["Geometry"])
+    for bare_only, found in inner_lands.items():
+        joined = nodes.new("GeometryNodeJoinGeometry")
+        for instances in found:
+            links.new(instances, joined.inputs["Geometry"])
+        painted = nodes.new("GeometryNodeSetMaterial")
+        links.new(joined.outputs["Geometry"], painted.inputs["Geometry"])
+        links.new(source.outputs["Bare Drill Material" if bare_only else "Drill Material"], painted.inputs["Material"])
+        links.new(painted.outputs["Geometry"], together.inputs["Geometry"])
     links.new(barrels.outputs["Geometry"], together.inputs["Geometry"])
     links.new(tents.outputs["Geometry"], together.inputs["Geometry"])
     links.new(cores.outputs["Geometry"], together.inputs["Geometry"])

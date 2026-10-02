@@ -246,6 +246,10 @@ def main():
         surface = board.heights["F.Cu"]
         assert top_land[1] > surface + CAP_PLATING_M and top_land[1] - top_land[0] > CAP_PLATING_M  # a solid land
         assert core[1] < top_land[0] and core[0] > bottom_land[1]  # the fill stays under both lands
+        blind = z_ranges(vias.data.vertices[0].co.x)  # F.Cu to In1: one outer land, a floor on In1
+        assert len(blind["KLS Vias"]) == 1
+        (floor,) = [z for z in blind[board.materials["plating_bare"].name] if z[0] == z[1]]  # plated like its
+        assert abs(floor[0] - board.heights["In1.Cu"]) < 5e-6, floor  # barrel, flat on In1, not mask-covered
         scene.kileido_via_fill_material = "COPPER"
         assert attribute("fill_copper") == [1, 1, 1]
         assert board.materials["via_resin"].name not in via_faces()[1]

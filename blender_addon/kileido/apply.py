@@ -443,7 +443,7 @@ def _apply_vias(header, arrays):
     obj["kls_ids"] = header["ids"]
     set_modifier(obj, board.groups["vias"], "vias", {"Top Thickness": copper_thickness("F.Cu"),
                                                      "Bottom Thickness": copper_thickness("B.Cu"),
-                                                     "Plating": via_plating(),
+                                                     "Plating": via_plating(), "Land Lift": land,
                                                      **materials.via_inputs()})
     refresh_protection(highlights=False)
     board.touched.add(obj.name)
