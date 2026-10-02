@@ -435,7 +435,8 @@ def _apply_vias(header, arrays):
     refresh_via_fill()
     set_modifier(obj, board.groups["vias"], "vias", {"Drill Material": board.materials["plating"],
                                                      "Top Thickness": copper_thickness("F.Cu"),
-                                                     "Bottom Thickness": copper_thickness("B.Cu")})
+                                                     "Bottom Thickness": copper_thickness("B.Cu"),
+                                                     **materials.plug_inputs()})
     board.touched.add(obj.name)
     highlight.refresh(kind="vias")
 
@@ -530,6 +531,18 @@ def refresh_via_fill():
     if getattr(scene, "kileido_via_fill", False) or getattr(scene, "kileido_via_plug", "NONE") != "NONE":
         xy, drill = xy[:0], drill[:0]
     holes.set_vias(xy, drill)
+
+
+def refresh_plugs():
+    """The via plug changed: the vias' cores (and highlighted vias') follow, with the holes."""
+    if board.collection is None:
+        return
+    vias = board.collection.all_objects.get("KLS vias")
+    if vias is not None and vias.modifiers:
+        for name, value in materials.plug_inputs().items():
+            set_node_input(vias, name, value)
+    highlight.refresh(kind="vias")
+    refresh_via_fill()
 
 
 def refresh_solder():

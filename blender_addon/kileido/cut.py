@@ -32,7 +32,8 @@ FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
 FACE_METAL = "kls_metal"  # 1 on copper: polished metal
-FACE_MATERIAL_VERSION = 7
+FACE_MATERIAL_VERSION = 8
+RESIN_OPACITY = 0.55  # a resin plug is milky: the barrel behind it shows through, faded
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
@@ -366,7 +367,26 @@ def _face_material():
     tree.links.new(use_lit.outputs[0], surface.inputs[0])
     tree.links.new(emission.outputs[0], surface.inputs[1])
     tree.links.new(lit.outputs[0], surface.inputs[2])
-    tree.links.new(surface.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
+    # Resin (neither laminate nor copper) is milky: partly see-through to the barrel behind it.
+    resin = tree.nodes.new("ShaderNodeMath")
+    resin.operation = "MULTIPLY"
+    for index, flag in enumerate((FACE_WEAVE, FACE_METAL)):
+        not_flag = tree.nodes.new("ShaderNodeMath")
+        not_flag.operation = "SUBTRACT"
+        not_flag.inputs[0].default_value = 1.0
+        tree.links.new(_attribute(tree, flag).outputs["Fac"], not_flag.inputs[1])
+        tree.links.new(not_flag.outputs[0], resin.inputs[index])
+    milky_colour = tree.nodes.new("ShaderNodeEmission")
+    tree.links.new(_attribute(tree, FACE_COLOR).outputs["Color"], milky_colour.inputs["Color"])
+    milky = tree.nodes.new("ShaderNodeMixShader")
+    milky.inputs[0].default_value = RESIN_OPACITY
+    tree.links.new(tree.nodes.new("ShaderNodeBsdfTransparent").outputs[0], milky.inputs[1])
+    tree.links.new(milky_colour.outputs[0], milky.inputs[2])
+    plugged = tree.nodes.new("ShaderNodeMixShader")
+    tree.links.new(resin.outputs[0], plugged.inputs[0])
+    tree.links.new(surface.outputs[0], plugged.inputs[1])
+    tree.links.new(milky.outputs[0], plugged.inputs[2])
+    tree.links.new(plugged.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
     focus.add_to(material)  # X-ray mode fades the section with the board
     material["kls_version"] = FACE_MATERIAL_VERSION
     _apply_look(material)

@@ -4,6 +4,9 @@ import bpy
 
 from .placement import PLACEHOLDER_HEIGHT_M
 
+PLUG_SCALE = 0.97  # a plug's core, of the drill: inside the barrel wall
+PLUG_INSET_M = 2e-6  # and this far short of each end, inside the lands
+
 
 def _group(name, extra=()):
     old = bpy.data.node_groups.get(name)
@@ -448,10 +451,12 @@ def _xyz(nodes, links, xy, z):
 
 
 def vias():
-    group, source, sink = _group("KLS_Vias_v3", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v4", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
-                                                   ("Bottom Thickness", "NodeSocketFloat")))
+                                                   ("Bottom Thickness", "NodeSocketFloat"),
+                                                   ("Filled", "NodeSocketBool", False),
+                                                   ("Fill Material", "NodeSocketMaterial")))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -534,6 +539,35 @@ def vias():
     links.new(middle_points, barrel.inputs["Points"])
     links.new(wall_mesh.outputs["Mesh"], barrel.inputs["Instance"])
     links.new(_xyz(nodes, links, drill, height.outputs[0]), barrel.inputs["Scale"])
+    # A plugged barrel's core (resin or copper): a closed cylinder a hair inside the wall and
+    # short of both lands, so it never shares a face with either.
+    core = nodes.new("GeometryNodeMeshCylinder")
+    core.fill_type = "NGON"
+    core.inputs["Vertices"].default_value = 24
+    core.inputs["Radius"].default_value = 0.5
+    core.inputs["Depth"].default_value = 1.0
+    core_flat = nodes.new("GeometryNodeSetShadeSmooth")  # smooth normals streak the flat ends
+    core_flat.inputs["Shade Smooth"].default_value = False
+    links.new(core.outputs["Mesh"], core_flat.inputs["Mesh"])
+    core_width = nodes.new("ShaderNodeMath")
+    core_width.operation = "MULTIPLY"
+    links.new(drill, core_width.inputs[0])
+    core_width.inputs[1].default_value = PLUG_SCALE
+    core_height = nodes.new("ShaderNodeMath")
+    core_height.operation = "SUBTRACT"
+    links.new(height.outputs[0], core_height.inputs[0])
+    core_height.inputs[1].default_value = 2 * PLUG_INSET_M
+    plug = nodes.new("GeometryNodeInstanceOnPoints")
+    links.new(middle_points, plug.inputs["Points"])
+    links.new(core_flat.outputs["Mesh"], plug.inputs["Instance"])
+    links.new(_xyz(nodes, links, core_width.outputs[0], core_height.outputs[0]), plug.inputs["Scale"])
+    painted_plug = nodes.new("GeometryNodeSetMaterial")
+    links.new(plug.outputs["Instances"], painted_plug.inputs["Geometry"])
+    links.new(source.outputs["Fill Material"], painted_plug.inputs["Material"])
+    plug_if_filled = nodes.new("GeometryNodeSwitch")
+    plug_if_filled.input_type = "GEOMETRY"
+    links.new(source.outputs["Filled"], plug_if_filled.inputs["Switch"])
+    links.new(painted_plug.outputs["Geometry"], plug_if_filled.inputs["True"])
 
     copper = nodes.new("GeometryNodeJoinGeometry")
     links.new(outer.outputs["Instances"], copper.inputs["Geometry"])
@@ -547,6 +581,7 @@ def vias():
     together = nodes.new("GeometryNodeJoinGeometry")
     links.new(painted_copper.outputs["Geometry"], together.inputs["Geometry"])
     links.new(painted_hole.outputs["Geometry"], together.inputs["Geometry"])
+    links.new(plug_if_filled.outputs[0], together.inputs["Geometry"])
     links.new(together.outputs["Geometry"], sink.inputs["Geometry"])
     return group
 

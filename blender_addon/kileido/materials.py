@@ -7,7 +7,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 
 import bpy
 
-from . import cut, focus, holes, laminate, shading
+from . import cut, focus, holes, laminate, section, shading
 from .placement import copper_thickness
 from .state import board
 
@@ -61,6 +61,8 @@ def create_all():
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
+        # A resin plug's core: milky, so the barrel around it shows through (as in the cut).
+        "via_resin": make("KLS Via resin", section.RESIN, cut.RESIN_OPACITY),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair": make("KLS Highlight pair", HIGHLIGHT_COLORS["pair"]),
         # Via barrels sit inside the drill, where the hole mask makes the land
@@ -109,6 +111,14 @@ def paint(material, color):
             node.inputs["Base Color"].default_value = (*linear, 1.0)
         elif node.name == BASE_COLOR:  # the colour under the silkscreen ink (`print_silk`)
             node.outputs[0].default_value = (*linear, 1.0)
+
+
+def plug_inputs(highlight_material=None):
+    """The via group's plug: on for a resin or copper plug, in its own material (or a
+    highlight's, so a selected plugged via stays solid in X-ray mode)."""
+    plug = getattr(bpy.context.scene, "kileido_via_plug", "NONE")
+    material = highlight_material or board.materials["plating" if plug == "COPPER" else "via_resin"]
+    return {"Filled": plug != "NONE", "Fill Material": material}
 
 
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):
@@ -593,6 +603,8 @@ def set_color_mode(mode):
     # Hole walls: copper plated, then finished like the pads.
     paint(board.materials["plating"], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
     set_surface(board.materials["plating"], realistic, COPPER_METALLIC, 0.3)
+    paint(board.materials["via_resin"], section.RESIN)
+    set_surface(board.materials["via_resin"], realistic, 0.0, 0.5)
     _paint_highlights()
     paint(board.materials["solder"], viewer.get("solderpaste") or (0.5, 0.5, 0.5))  # KiCad's 3D paste colour
     for key, material in board.materials.items():

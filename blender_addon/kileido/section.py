@@ -15,7 +15,7 @@ import numpy as np
 COPPER = (0.82, 0.50, 0.34)  # polished copper in a micrograph: lighter and pinker than a copper swatch
 CORE = (0.89, 0.83, 0.62)
 PREPREG = (0.80, 0.72, 0.46)
-RESIN = (0.60, 0.64, 0.50)  # epoxy plugging a via
+RESIN = (0.88, 0.87, 0.80)  # epoxy plugging a via: milky (cut.py lets the barrel show through it)
 LAMINATES = {"polyimide": (0.80, 0.50, 0.05), "ptfe": (0.94, 0.94, 0.90), "rogers": (0.92, 0.90, 0.84)}
 DEFAULT_COPPER_M = 35e-6  # KiCad's own default copper thickness, when the stackup has none
 

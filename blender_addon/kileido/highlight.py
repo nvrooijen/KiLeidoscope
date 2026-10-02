@@ -215,10 +215,12 @@ def _refresh_vias(wanted):
             write_attribute(target, attribute, "FLOAT", values + change)
         target.update()
         obj.location.z = 0
+        barrel = board.materials[f"highlight_{kind}_barrel"]
         set_modifier(obj, board.groups["vias"], board.materials[f"highlight_{kind}"],
-                     {"Drill Material": board.materials[f"highlight_{kind}_barrel"],
+                     {"Drill Material": barrel,
                       "Top Thickness": copper_thickness("F.Cu"),
-                      "Bottom Thickness": copper_thickness("B.Cu")})
+                      "Bottom Thickness": copper_thickness("B.Cu"),
+                      **materials.plug_inputs(barrel)})
         _show(obj)
 
 

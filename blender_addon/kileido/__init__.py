@@ -665,7 +665,7 @@ def _via_plug_update(scene):
     if scene.kileido_via_plug == "NONE" and scene.kileido_via_fill:
         scene.kileido_via_fill = False  # its own update refreshes the vias
         return
-    apply.refresh_via_fill()
+    apply.refresh_plugs()
     cut.rebuild()
 
 

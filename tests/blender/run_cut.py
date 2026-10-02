@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, focus, holes, laminate, metal, packages, section, state  # noqa: E402
+from kileido import apply, cut, focus, highlight, holes, laminate, metal, nodes, packages, section, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -81,14 +81,23 @@ def expect(scene, pixels, world, wanted, label):
     if wanted is None:  # nothing drawn here: no section colour
         for color in (section.COPPER, section.CORE, section.PREPREG, section.RESIN):
             assert np.abs(got - np.array(color)).max() > 0.15, (label, got, color)
-    elif wanted == section.RESIN:
-        assert np.abs(got - np.array(wanted)).max() < TOLERANCE, (label, got, wanted)
+    elif wanted == section.RESIN:  # milky: its colour over the barrel seen through it
+        assert np.abs(got - np.array(wanted)).max() < 1 - cut.RESIN_OPACITY + TOLERANCE, (label, got, wanted)
+        assert got.mean() > 0.4, (label, got)  # light, not the dark open bore
     else:  # laminate or copper: its colour, lighter or darker where the weave or the polish is
         ratio = got / np.array(wanted)
         look = metal if wanted == section.COPPER else laminate
         low, high = look.DARKEST - TOLERANCE, look.LIGHTEST + TOLERANCE
         assert low < ratio.min() and ratio.max() < high, (label, got, wanted)
         assert np.ptp(ratio) < TOLERANCE, (label, got, wanted)  # lighter, not another colour
+
+
+def modifier_value_named(obj, name):
+    """An input of the object's Geometry Nodes modifier, by its name."""
+    modifier = obj.modifiers[0]
+    item = next(item for item in modifier.node_group.interface.items_tree
+                if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name == name)
+    return nodes.modifier_value(modifier, item.identifier)
 
 
 def patch(scene, pixels, low, high):
@@ -136,6 +145,32 @@ def main():
         scene.cycles.use_denoising = False
         scene.kileido_via_plug = "RESIN"
         assert len(holes._sources["vias"]) == 0  # a plugged through via is closed from above
+        # In 3D too the barrels are plugged: a core in the plug's material, and a highlighted
+        # via's core in the highlight's (solid in X-ray mode, where everything else fades).
+        vias = board.collection.all_objects["KLS vias"]
+
+        def via_faces():
+            """(instances, their materials' names): the group's lands, barrels and cores are instances."""
+            bpy.context.view_layer.update()
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            count, names = 0, set()
+            for instance in depsgraph.object_instances:  # read each while iterating: Blender reuses them
+                if instance.is_instance and instance.parent and instance.parent.original == vias:
+                    count += 1
+                    names |= {material.name for material in instance.object.data.materials if material}
+            return count, names
+
+        plugged_faces, plugged_materials = via_faces()
+        assert board.materials["via_resin"].name in plugged_materials, (plugged_faces, plugged_materials)
+        highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
+        marked = board.collection.all_objects["KLS vias highlight selected"]
+        assert modifier_value_named(marked, "Filled") and \
+            modifier_value_named(marked, "Fill Material") == board.materials["highlight_selected_barrel"]
+        highlight.apply_selection({"selected": [], "pair": []})
+        scene.kileido_via_plug = "NONE"
+        open_faces, open_materials = via_faces()
+        assert open_faces < plugged_faces and board.materials["via_resin"].name not in open_materials
+        scene.kileido_via_plug = "RESIN"
 
         # Head-on: the stackup across the board.
         camera(scene, ortho_scale=0.044)
@@ -163,9 +198,8 @@ def main():
                 expect(scene, via, (-0.010 + dx_um * UM, 0, z_um * UM), wanted, f"{engine}: {label}")
             woven = patch(scene, via, (-0.010 + 200 * UM, 0, 1320 * UM), (-0.010 + 290 * UM, 0, 1490 * UM))
             polished = patch(scene, via, (-0.010 - 290 * UM, 0, 1275 * UM), (-0.010 - 200 * UM, 0, 1300 * UM))
-            flat = patch(scene, via, (-0.010 - 100 * UM, 0, 1350 * UM), (-0.010 + 100 * UM, 0, 1450 * UM))
-            assert woven.std() > 0.01 and polished.std() > 0.004 and flat.std() < 0.005, (
-                engine, woven.std(), polished.std(), flat.std())  # weave in laminate, polish in copper, plug flat
+            assert woven.std() > 0.01 and polished.std() > 0.004, (
+                engine, woven.std(), polished.std())  # weave in laminate, polish in copper
         scene.render.engine = "CYCLES"
         # Via fill (capped) needs a plug, and an open via cannot be capped: the two settings follow each other.
         scene.render.engine = "BLENDER_EEVEE"
