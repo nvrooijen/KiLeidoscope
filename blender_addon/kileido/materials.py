@@ -65,6 +65,8 @@ def create_all():
         # A via barrel the finish never reached (a tent, plug or fill closes it): bare copper.
         "plating_bare": make("KLS Hole plating bare", BARE_COPPER),
         # The solder mask spanning a tented via's drill, one per side; see-through while hidden.
+        # A plugged via's plug: solder mask ink, in the board's mask colour.
+        "via_plug": make("KLS Via plug ink", FALLBACK_MASK),
         "tent_F": make("KLS Via tent top", FALLBACK_MASK, TENT_ALPHA),
         "tent_B": make("KLS Via tent bottom", FALLBACK_MASK, TENT_ALPHA),
         # A resin plug's core: milky, so the barrel around it shows through (as in the cut).
@@ -125,17 +127,27 @@ def via_inputs(highlight_material=None):
     solid in X-ray mode)."""
     if highlight_material is not None:
         return {name: highlight_material for name in ("Drill Material", "Bare Drill Material", "Fill Material",
-                                                      "Copper Fill Material", "Tent Top Material",
+                                                      "Copper Fill Material", "Plug Material", "Tent Top Material",
                                                       "Tent Bottom Material")}
     return {"Drill Material": board.materials["plating"], "Bare Drill Material": board.materials["plating_bare"],
             "Fill Material": board.materials["via_resin"], "Copper Fill Material": board.materials["plating"],
+            "Plug Material": board.materials["via_plug"],
             "Tent Top Material": board.materials["tent_F"], "Tent Bottom Material": board.materials["tent_B"]}
+
+
+def plug_ink():
+    """A plug's solder mask ink (sRGB): the top mask's colour, else the bottom's, shown or not."""
+    mask = mask_color("F", shown=True) or mask_color("B", shown=True)
+    return tuple(mask[:3]) if mask else FALLBACK_MASK
 
 
 def paint_tents():
     """A tent is the mask over a hole: coloured like the mask over copper around it (the
-    land's covered colour), gone while that side's mask is hidden."""
+    land's covered colour), gone while that side's mask is hidden. Plugs are the ink itself."""
     realistic = board.color_mode == "REALISTIC"
+    if "via_plug" in board.materials:
+        paint(board.materials["via_plug"], plug_ink())
+        set_surface(board.materials["via_plug"], realistic, 0.0, 0.4)
     for side in "FB":
         material = board.materials.get(f"tent_{side}")
         if material is None:

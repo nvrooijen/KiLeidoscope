@@ -17,8 +17,8 @@ the barrels' plating).
   `max_tent` a side is closed only over a plug or fill.
 - Finished: only a via with nothing on either end gets the board finish in its barrel;
   a tent, plug or fill keeps the plating chemistry out.
-- Plugged: resin from that side, half the barrel (type III-a); plugged from every outer end
-  (both sides, or a blind via's one) it fills the barrel.
+- Plugged: solder mask ink from that side, half the barrel (type III-a); plugged from every
+  outer end (both sides, or a blind via's one) it fills the barrel.
 - Filled: the whole barrel, in the panel's fill material. Capped: filled, and plated over
   at each outer end (type VII).
 """
@@ -47,7 +47,8 @@ def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
     """Per via, what is drawn: a dict of bool arrays.
 
     core_top, core_bottom: plug or fill in the barrel's upper / lower half. filled: the
-    whole barrel is filled (in the fill material; a plug alone is resin). capped: plated
+    whole barrel is filled (in the fill material). plugged: its core is a plug alone, of
+    solder mask ink (a buried via's is the prepreg's resin). capped: plated
     over at its outer ends. drilled: a hole on its outer sides (rings, see-through where
     nothing closes it); side: holes.THROUGH, TOP or BOTTOM. tent_top, tent_bottom: a mask tent over the drill. open: nothing closes
     it, see-through. finished: the finish reaches its barrel. too_big: KiCad tents or
@@ -72,7 +73,7 @@ def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
     drilled = (top | bottom) & ~capped
     shut = closed_top | closed_bottom | core_top | core_bottom
     return {"core_top": core_top, "core_bottom": core_bottom, "filled": filled, "capped": capped,
-            "drilled": drilled, "tent_top": drilled & closed_top, "tent_bottom": drilled & closed_bottom,
+            "plugged": (core_top | core_bottom) & ~filled & ~buried, "drilled": drilled, "tent_top": drilled & closed_top, "tent_bottom": drilled & closed_bottom,
             "open": drilled & ~shut, "finished": (top | bottom) & ~shut & ~capped,
             "too_big": (asked_top & ~closed_top) | (asked_bottom & ~closed_bottom),
             "side": np.where(top & bottom, THROUGH, np.where(top, TOP, BOTTOM))}

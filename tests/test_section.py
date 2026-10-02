@@ -77,7 +77,7 @@ def test_stack_layout_places_copper_and_colours_each_dielectric():
     assert {color for _, _, color in unknown} == {section.CORE}
 
 
-def _board(plug, capped=False, cap_plating=0.0, halves=(True, True), tented=False):
+def _board(plug, capped=False, cap_plating=0.0, halves=(True, True), tented=False, ink=False):
     """40 x 30 mm board; In1 poured over all of it; a 0.5 mm F.Cu track from x = -5 to 5;
     a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill). plug: None (open),
     "RESIN" or "COPPER", in the barrel's (upper, lower) `halves`."""
@@ -87,10 +87,11 @@ def _board(plug, capped=False, cap_plating=0.0, halves=(True, True), tented=Fals
     vias = {"xy": np.array([(10 * MM, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
             "top": ["F.Cu"], "bottom": ["In1.Cu"],
             "core_top": [bool(plug) and halves[0]], "core_bottom": [bool(plug) and halves[1]],
-            "fill_copper": [plug == "COPPER"], "capped": [capped], "tent_top": [tented], "tent_bottom": [tented]}
+            "fill_copper": [plug == "COPPER"], "capped": [capped], "tent_top": [tented], "tent_bottom": [tented],
+            "plug_ink": [ink]}
     return section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), layers, copper, bands,
                                  vias=vias, plating=25 * UM, cap_plating=cap_plating,
-                                 tents={"F.Cu": (20 * UM, MASK), "B.Cu": (20 * UM, MASK)})
+                                 tents={"F.Cu": (20 * UM, MASK), "B.Cu": (20 * UM, MASK)}, plug_color=MASK)
 
 
 MASK = (0.1, 0.3, 0.6)
@@ -229,3 +230,9 @@ def test_lands_stand_as_far_out_as_in_3d():
     assert color_at(capped, 10 * MM, 1542 * UM) == section.COPPER  # across the drill under the cap
     assert color_at(capped, 10 * MM, 1560 * UM) == section.COPPER  # the cap plating, from 1543 um
     assert color_at(capped, 10 * MM, 1564 * UM) is None
+
+
+def test_a_plug_is_solder_mask_ink():
+    rects = _board("RESIN", ink=True)
+    assert color_at(rects, 10 * MM, 1400 * UM) == MASK
+    assert color_at(rects, (10 + 0.15 - 0.0125) * MM, 1400 * UM) == section.COPPER  # inside the wall

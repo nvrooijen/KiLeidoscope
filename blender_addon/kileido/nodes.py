@@ -457,20 +457,22 @@ def _xyz(nodes, links, xy, z):
 
 def vias():
     """Lands, barrels and, per via (protection.py, as point attributes): its plug or fill
-    (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill),
+    (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill;
+    `plug_ink`: a plug of solder mask ink, else resin),
     its cap plating (`cap`, metres, on its outer lands), its mask tents (`tent_top`,
     `tent_bottom`) and a bare barrel (`bare_barrel`). An end on inner copper (a blind via's
     floor, a buried via's ends) is a flat land on that copper, plated like the barrel;
     `z_top`/`z_bottom` stand `Land Lift` outside the copper they end on. A `drilled` via is see-through in its
     bore (holes.py), so its lands read as rings and its core reaches the surface. `Plating`:
     the barrel's wall, inside the drill (the bore is the drill less twice that)."""
-    group, source, sink = _group("KLS_Vias_v10", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v11", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Bare Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
                                                    ("Bottom Thickness", "NodeSocketFloat"),
                                                    ("Fill Material", "NodeSocketMaterial"),
                                                    ("Copper Fill Material", "NodeSocketMaterial"),
+                                                   ("Plug Material", "NodeSocketMaterial"),
                                                    ("Tent Top Material", "NodeSocketMaterial"),
                                                    ("Tent Bottom Material", "NodeSocketMaterial"),
                                                    ("Plating", "NodeSocketFloat", 25e-6),
@@ -688,15 +690,21 @@ def vias():
     copper_fill.operation = "GREATER_THAN"
     links.new(_named(nodes, "fill_copper"), copper_fill.inputs[0])
     copper_fill.inputs[1].default_value = 0.5
+    special = nodes.new("FunctionNodeBooleanMath")  # copper or ink: not the resin
+    special.operation = "OR"
+    links.new(copper_fill.outputs["Result"], special.inputs[0])
+    links.new(flag("plug_ink"), special.inputs[1])
     cores = nodes.new("GeometryNodeJoinGeometry")
-    for material, copper_only in (("Fill Material", False), ("Copper Fill Material", True)):
+    for material, kind, operation in (("Fill Material", special.outputs[0], "NIMPLY"),  # core, not that
+                                      ("Copper Fill Material", copper_fill.outputs["Result"], "AND"),
+                                      ("Plug Material", flag("plug_ink"), "AND")):
         painted_core = nodes.new("GeometryNodeSetMaterial")
         links.new(core_flat.outputs["Mesh"], painted_core.inputs["Geometry"])
         links.new(source.outputs[material], painted_core.inputs["Material"])
         which = nodes.new("FunctionNodeBooleanMath")
-        which.operation = "AND" if copper_only else "NIMPLY"  # NIMPLY: core and not copper
+        which.operation = operation
         links.new(has_core.outputs["Result"], which.inputs[0])
-        links.new(copper_fill.outputs["Result"], which.inputs[1])
+        links.new(kind, which.inputs[1])
         placed = nodes.new("GeometryNodeInstanceOnPoints")
         links.new(core_points, placed.inputs["Points"])
         links.new(which.outputs[0], placed.inputs["Selection"])

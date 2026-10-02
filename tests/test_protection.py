@@ -72,7 +72,7 @@ def test_type_vii_is_filled_and_capped():
 def test_a_plug_fills_half_from_its_side_and_all_from_both():
     found = resolve((0, 0, 0, 0, 1, 0, 0, 0), (0, 0, 0, 0, 1, 1, 0, 0))
     assert found["core_top"].tolist() == [True, True] and found["core_bottom"].tolist() == [False, True]
-    assert not found["filled"].any()  # plugged, not filled: resin whatever the fill material
+    assert not found["filled"].any() and found["plugged"].all()  # plugged, not filled: mask ink
     blind = resolve((0, 0, 0, 0, 1, 0, 0, 0), top=True, bottom=False)  # plugged from its only open end
     assert blind["core_top"][0] and blind["core_bottom"][0]
 

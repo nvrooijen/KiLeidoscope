@@ -46,6 +46,7 @@ def layered_snapshot():
 OPEN = (0,) * 8
 PLUGGED = (0, 0, 0, 0, 1, 1, 0, 0)  # IPC-4761 type III-b
 PLUGGED_TOP = (0, 0, 0, 0, 1, 0, 0, 0)  # III-a
+FILLED = (0, 0, 0, 0, 0, 0, 0, 1)  # V
 FILLED_CAPPED = (0, 0, 0, 0, 0, 0, 1, 1)  # VII
 
 
@@ -204,7 +205,10 @@ def main():
             return [round(value.value, 9) for value in obj.data.attributes[name].data]
 
         plugged_faces, plugged_materials = via_faces()
-        assert board.materials["via_resin"].name in plugged_materials, (plugged_faces, plugged_materials)
+        assert board.materials["via_plug"].name in plugged_materials, (plugged_faces, plugged_materials)
+        assert board.materials["via_resin"].name in plugged_materials  # the buried via: the prepreg's resin
+        ink = kileido.materials.plug_ink()
+        assert any(rect[4] == ink for rect in cut.rectangles(scene)[0])  # plugs are mask ink in the section too
         assert attribute("core_top") == [1, 1, 1] and attribute("core_bottom") == [1, 1, 1]  # buried: always resin
         highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
         marked = board.collection.all_objects["KLS vias highlight selected"]
@@ -255,7 +259,7 @@ def main():
         assert attribute("fill_copper") == [1, 1, 1]
         assert board.materials["via_resin"].name not in via_faces()[1]
         scene.kileido_via_fill_material = "RESIN"
-        protect(layered, [PLUGGED] * 3)
+        protect(layered, [FILLED] * 3)  # resin, for the renders below
 
         # Head-on: the stackup across the board.
         camera(scene, ortho_scale=0.044)
@@ -277,7 +281,7 @@ def main():
             scene.render.engine = engine
             via = render(scene, f"blind_via_{engine.lower()}")
             for dx_um, z_um, wanted, label in (
-                    (0, 1400, section.RESIN, "plug"), (162, 1400, section.COPPER, "barrel wall"),
+                    (0, 1400, section.RESIN, "fill"), (162, 1400, section.COPPER, "barrel wall"),
                     (250, 1400, section.PREPREG, "laminate beside the barrel"),
                     (-250, 1290, section.COPPER, "In1 copper"), (250, 1522, section.COPPER, "F.Cu land")):
                 expect(scene, via, (-0.010 + dx_um * UM, 0, z_um * UM), wanted, f"{engine}: {label}")

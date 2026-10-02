@@ -277,7 +277,7 @@ def _ringed(mode, copper_here, land):
 
 def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=None,
                   plating=25e-6, cap_plating=0.0, plated_edges=(), edge_plating=25e-6, tents=None,
-                  land_lift=0.0):
+                  land_lift=0.0, plug_color=RESIN):
     """Rectangles (s0, s1, z0, z1, sRGB colour), bottom up.
 
     outline: (a, b, item) edges of the board outline (even-odd: cutouts are holes).
@@ -286,7 +286,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     vias: dict of arrays xy, diameter, drill, and per via the names `top` and `bottom`
     of the layers it joins (lands on those two, a barrel between). Optional per via
     (protection.resolve): `core_top`/`core_bottom`, a plug or fill in the barrel's upper /
-    lower half; `fill_copper`, that core is copper (else resin); `capped`, plated over
+    lower half; `fill_copper`, that core is copper; `plug_ink`, it is a plug of solder mask
+    ink (`plug_color`); else resin; `capped`, plated over
     where it reaches the outer copper: copper across the whole drill there (the core ends
     under it), and `cap_plating` more over the land, outside the board.
     Also optional, `tent_top`/`tent_bottom`: the solder mask spans its drill there, drawn as
@@ -310,7 +311,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
         xy = np.asarray(vias["xy"], np.float64).reshape(-1, 2)
         near = np.abs(line.d(xy)) < np.maximum(vias["diameter"], vias["drill"]) / 2
         flag = {name: np.asarray(vias.get(name, np.zeros(len(xy))), bool).reshape(-1)
-                for name in ("core_top", "core_bottom", "fill_copper", "capped", "tent_top", "tent_bottom")}
+                for name in ("core_top", "core_bottom", "fill_copper", "capped", "tent_top", "tent_bottom",
+                             "plug_ink")}
         ring_modes = np.asarray(vias.get("rings", np.full(len(xy), RINGS_ALL)), np.int64).reshape(-1)
         for index in np.flatnonzero(near):
             top, bottom = vias["top"][index], vias["bottom"][index]
@@ -334,7 +336,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
                 plated.append((reach["B.Cu"][0], copper["B.Cu"][0], land))
             upper, lower = flag["core_top"][index], flag["core_bottom"][index]
             core = ((z0 if lower else (z0 + z1) / 2, z1 if upper else (z0 + z1) / 2,
-                     COPPER if flag["fill_copper"][index] else RESIN) if upper or lower else None)
+                     COPPER if flag["fill_copper"][index] else tuple(plug_color) if flag["plug_ink"][index]
+                     else RESIN) if upper or lower else None)
             caps = [reach[name] for name in ends if flag["capped"][index] and core and name in ("F.Cu", "B.Cu")]
             if caps and cap_plating > 0:
                 if "F.Cu" in ends:
@@ -385,15 +388,19 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
         drilled = merge(np.vstack([hole[2] for hole in here])) if here else EMPTY
         bores = merge(np.vstack([hole[3] for hole in here])) if here else EMPTY
         cores = [hole for hole in here if hole[4] and hole[4][0] <= middle < hole[4][1]]
-        resin = merge(np.vstack([EMPTY, *(hole[3] for hole in cores if hole[4][2] == RESIN)]))
         filled = merge(np.vstack([EMPTY, *(hole[3] for hole in cores if hole[4][2] == COPPER)]))
+        others = {}  # resin, plug ink: by colour
+        for hole in cores:
+            if hole[4][2] != COPPER:
+                others.setdefault(hole[4][2], []).append(hole[3])
         walls = subtract(drilled, bores)
         laminate = inside if laminate_z[0] <= middle < laminate_z[1] else EMPTY
         band = next((color for b0, b1, color in bands if b0 <= middle < b1), CORE)
         for intervals, color in ((subtract(subtract(laminate, metal), drilled), band),
                                  (subtract(metal, drilled), COPPER),
                                  (merge(np.vstack([walls, filled])), COPPER),
-                                 (subtract(resin, filled), RESIN)):
+                                 *((subtract(merge(np.vstack(found)), filled), color)
+                                   for color, found in others.items())):
             for s0, s1 in intervals:
                 key = (round(s0, 12), round(s1, 12), color)
                 rect = growing.get(key)

@@ -550,7 +550,7 @@ def refresh_protection(highlights=True):
                                float(getattr(scene, "kileido_max_tent_mm", 0.3)) * 1e-3)
     copper_fill = getattr(scene, "kileido_via_fill_material", "RESIN") == "COPPER"
     for name, values in (("core_top", found["core_top"]), ("core_bottom", found["core_bottom"]),
-                         ("fill_copper", found["filled"] & copper_fill),
+                         ("fill_copper", found["filled"] & copper_fill), ("plug_ink", found["plugged"]),
                          ("cap", found["capped"] * CAP_PLATING_M), ("drilled", found["drilled"]),
                          ("tent_top", found["tent_top"]), ("tent_bottom", found["tent_bottom"]),
                          ("bare_barrel", ~found["finished"])):

@@ -33,7 +33,8 @@ FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
 FACE_METAL = "kls_metal"  # 1 on copper: polished metal
-FACE_MATERIAL_VERSION = 8
+FACE_MILKY = "kls_resin"  # 1 on resin: milky, the barrel behind it shows through
+FACE_MATERIAL_VERSION = 9
 RESIN_OPACITY = 0.55  # a resin plug is milky: the barrel behind it shows through, faded
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
@@ -309,7 +310,8 @@ def _gather():
                     "bottom": _layers_at(read_attribute(mesh, "z_bottom", np.float32) + land)}
             if "core_top" in mesh.attributes:  # plug, fill, cap and tents, as apply.refresh_protection resolved them
                 vias.update({name: read_attribute(mesh, name, np.float32) > 0.5
-                             for name in ("core_top", "core_bottom", "fill_copper", "tent_top", "tent_bottom")
+                             for name in ("core_top", "core_bottom", "fill_copper", "tent_top", "tent_bottom",
+                                          "plug_ink")
                              if name in mesh.attributes})
             if "rings" in mesh.attributes:
                 vias["rings"] = read_attribute(mesh, "rings", np.int32)
@@ -376,15 +378,8 @@ def _face_material():
     tree.links.new(use_lit.outputs[0], surface.inputs[0])
     tree.links.new(emission.outputs[0], surface.inputs[1])
     tree.links.new(lit.outputs[0], surface.inputs[2])
-    # Resin (neither laminate nor copper) is milky: partly see-through to the barrel behind it.
-    resin = tree.nodes.new("ShaderNodeMath")
-    resin.operation = "MULTIPLY"
-    for index, flag in enumerate((FACE_WEAVE, FACE_METAL)):
-        not_flag = tree.nodes.new("ShaderNodeMath")
-        not_flag.operation = "SUBTRACT"
-        not_flag.inputs[0].default_value = 1.0
-        tree.links.new(_attribute(tree, flag).outputs["Fac"], not_flag.inputs[1])
-        tree.links.new(not_flag.outputs[0], resin.inputs[index])
+    # Resin is milky: partly see-through to the barrel behind it.
+    resin = _attribute(tree, FACE_MILKY)
     milky_colour = tree.nodes.new("ShaderNodeEmission")
     tree.links.new(_attribute(tree, FACE_COLOR).outputs["Color"], milky_colour.inputs["Color"])
     milky = tree.nodes.new("ShaderNodeMixShader")
@@ -392,7 +387,7 @@ def _face_material():
     tree.links.new(tree.nodes.new("ShaderNodeBsdfTransparent").outputs[0], milky.inputs[1])
     tree.links.new(milky_colour.outputs[0], milky.inputs[2])
     plugged = tree.nodes.new("ShaderNodeMixShader")
-    tree.links.new(resin.outputs[0], plugged.inputs[0])
+    tree.links.new(resin.outputs["Fac"], plugged.inputs[0])
     tree.links.new(surface.outputs[0], plugged.inputs[1])
     tree.links.new(milky.outputs[0], plugged.inputs[2])
     tree.links.new(plugged.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
@@ -469,8 +464,13 @@ def rectangles(scene=None):
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=via_plating(), land_lift=transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0}),
-                                  cap_plating=CAP_PLATING_M, tents=_tents())
+                                  cap_plating=CAP_PLATING_M, tents=_tents(), plug_color=_plug_ink())
     return rects, (line, normal)
+
+
+def _plug_ink():
+    from . import materials  # materials imports this module
+    return materials.plug_ink()
 
 
 def _tents():
@@ -513,7 +513,9 @@ def rebuild(scene=None):
     attribute.data.foreach_set("color", colors.ravel())
     copper = np.repeat([rect[4] == section.COPPER for rect in rects], 4).astype(np.float32)
     weave = np.repeat([rect[4] in section.WOVEN for rect in rects], 4).astype(np.float32)
-    for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave), (FACE_METAL, copper)):
+    milky = np.repeat([rect[4] == section.RESIN for rect in rects], 4).astype(np.float32)
+    for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave), (FACE_METAL, copper),
+                         (FACE_MILKY, milky)):
         found = mesh.attributes.get(name) or mesh.attributes.new(name, "FLOAT", "POINT")
         found.data.foreach_set("value", values)
     mesh.update()
