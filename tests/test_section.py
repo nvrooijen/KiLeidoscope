@@ -137,3 +137,27 @@ def test_open_via_leaves_its_bore_empty_and_nothing_overlaps():
     for first, second in itertools.combinations(rects, 2):
         apart = (first[1] <= second[0] or second[1] <= first[0] or first[3] <= second[2] or second[3] <= first[2])
         assert apart, (first, second)
+
+
+def test_plated_edges_where_both_outer_layers_reach_the_edge():
+    outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
+    front = {"rings": [square(-20 * MM, -15 * MM, 0, 15 * MM)]}  # the left half
+    back = {"rings": [square(-20 * MM, -15 * MM, 10 * MM, 15 * MM)]}  # three quarters
+    stretches = section.plated_edges(outline, front, back)
+    lengths = sorted(round(float(np.hypot(*(end - start))) / MM, 3) for start, end, _ in stretches)
+    assert lengths == [20.0, 20.0, 30.0]  # bottom and top up to x = 0, and the whole left edge
+    left = next(stretch for stretch in stretches if abs(stretch[0][0] + 20 * MM) < 1e-9 and abs(stretch[1][0] + 20 * MM) < 1e-9)
+    assert np.allclose(left[2], (-1, 0))  # facing out of the board
+    assert not section.plated_edges(outline, front, {"rings": []})  # the back has no copper at the edge
+
+
+def test_cross_section_shows_the_plated_edge_as_a_strip_outside_the_board():
+    outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
+    stretches = section.plated_edges(outline, {"rings": [square(-20 * MM, -15 * MM, 0, 15 * MM)]},
+                                     {"rings": [square(-20 * MM, -15 * MM, 10 * MM, 15 * MM)]})
+    copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
+    rects = section.cross_section(ALONG_X, outline, {}, copper, bands, plated_edges=stretches, edge_plating=25 * UM)
+    assert color_at(rects, -20 * MM - 10 * UM, 800 * UM) == section.COPPER  # the plating, outside the left edge
+    assert color_at(rects, -20 * MM - 10 * UM, 1530 * UM) == section.COPPER  # the board's whole height
+    assert color_at(rects, -20 * MM - 30 * UM, 800 * UM) is None  # 25 um thick
+    assert color_at(rects, 20 * MM + 10 * UM, 800 * UM) is None  # the right edge is not plated

@@ -153,6 +153,59 @@ def drills(line, rows):
     return capsules(line, centre - reach, centre + reach, np.minimum(width, height) / 2)
 
 
+def copper_along(line, shapes):
+    """One layer's copper along a line: `shapes` holds its closed rings ("rings": (a, b,
+    item) edges, even-odd per item) and its tracks ("tracks": (a, b, radius) segments)."""
+    found = []
+    if shapes.get("rings"):
+        found.append(rings(line, *(np.concatenate(parts) for parts in zip(*shapes["rings"]))))
+    if shapes.get("tracks"):
+        found.append(capsules(line, *(np.concatenate(parts) for parts in zip(*shapes["tracks"]))))
+    return merge(np.vstack(found)) if found else EMPTY
+
+
+# --- Plated board edge ------------------------------------------------------------------------
+
+EDGE_INSET_M = 50e-6  # copper this close to the edge reaches it (edge plating is drawn there)
+EDGE_SHORTEST_M = 20e-6  # plated stretches shorter than this are noise
+
+
+def plated_edges(outline, front, back, inset=EDGE_INSET_M):
+    """Stretches of the board outline that a plated board edge covers: where copper on
+    both outer layers reaches the edge. Each is (start xy, end xy, outward unit normal).
+
+    Per outline segment, a line just inside the board runs along it; the front and back
+    copper crossing that line within the segment, both at once, are the plated stretches.
+    """
+    a, b, item = (np.asarray(part) for part in outline)
+    stretches = []
+    for start, end in zip(a.astype(np.float64), b.astype(np.float64)):
+        edge = end - start
+        length = float(np.hypot(*edge))
+        if length < 1e-9:
+            continue
+        unit = edge / length
+        normal = np.array((-unit[1], unit[0]))
+        middle = (start + end) / 2
+        inside = rings(Line(middle, unit), a, b, item)  # along the normal through the middle: s is along it
+        if not len(inside):
+            continue
+        if ((inside[:, 0] <= inset) & (inset < inside[:, 1])).any():
+            inward = normal
+        elif ((inside[:, 0] <= -inset) & (-inset < inside[:, 1])).any():
+            inward = -normal
+        else:
+            continue
+        line = Line(start + inward * inset, inward)
+        span = np.sort(line.s(np.vstack((start + inward * inset, end + inward * inset))))
+        reach = intersect(intersect(copper_along(line, front), copper_along(line, back)), np.array([span]))
+        for s0, s1 in reach:
+            if s1 - s0 >= EDGE_SHORTEST_M:
+                stretches.append((line.origin + s0 * line.along - inward * inset,
+                                  line.origin + s1 * line.along - inward * inset, -inward))
+    return stretches
+
+
 # --- The stackup ------------------------------------------------------------------------------
 
 def _laminate_color(saved):
@@ -209,7 +262,7 @@ def stack_layout(heights, thickness, stack, saved):
 # --- The section ------------------------------------------------------------------------------
 
 def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=None,
-                  plating=25e-6, plug=None, capped=False, cap_plating=0.0):
+                  plating=25e-6, plug=None, capped=False, cap_plating=0.0, plated_edges=(), edge_plating=25e-6):
     """Rectangles (s0, s1, z0, z1, sRGB colour), bottom up.
 
     outline: (a, b, item) edges of the board outline (even-odd: cutouts are holes).
@@ -222,6 +275,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     capped: plugged vias are plated over where they reach the outer copper: copper
     across the whole drill there (the plug ends under it), and `cap_plating` more over
     the land, outside the board.
+    plated_edges: stretches of a plated board edge (`plated_edges`): where the cut crosses
+    one, an `edge_plating` thick copper strip outside the edge, the board's whole height.
     """
     inside = rings(line, *outline) if outline is not None else EMPTY
     laminate_z = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (0.0, 0.0)
@@ -300,4 +355,16 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
                 if rect is not None:
                     done.append(tuple(rect))
                 growing[key] = [s0, s1, z0, z1, color]
-    return done + [tuple(rect) for rect in growing.values()]
+    rects = done + [tuple(rect) for rect in growing.values()]
+    if plated_edges and copper:
+        bottom, top = min(z[0] for z in copper.values()), max(z[1] for z in copper.values())
+        for start, end, outward in plated_edges:
+            d0, d1 = line.d(start)[0], line.d(end)[0]
+            if (d0 > 0) == (d1 > 0):
+                continue
+            s = float(line.s(start + (end - start) * d0 / (d0 - d1))[0])
+            if float(np.dot(outward, line.along)) > 0:
+                rects.append((s, s + edge_plating, bottom, top, COPPER))
+            else:
+                rects.append((s - edge_plating, s, bottom, top, COPPER))
+    return rects

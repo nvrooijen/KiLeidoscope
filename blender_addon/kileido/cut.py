@@ -46,6 +46,7 @@ REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
 _data = None  # the board's geometry for the section (`_gather`), until it changes
+_edges = None  # the plated board edge's stretches (`plated_edges`), until the board changes
 # How the section's copper is lit (`set_look`): Realistic, its linear colour, metallic, roughness.
 _look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
@@ -424,28 +425,43 @@ def _face_object(create):
     return face
 
 
+def shapes():
+    """The board's geometry as the section reads it (read once per board change)."""
+    global _data
+    if _data is None:
+        _data = _gather()
+    return _data
+
+
+def plated_edges():
+    """Stretches of a plated board edge (KiCad's Board Setup: Plated board edge), where
+    copper on both outer layers reaches the edge; empty when the board has none."""
+    global _edges
+    if not board.appearance.get("edge_plating") or board.collection is None or board.in_snapshot:
+        return []
+    if _edges is None:
+        data = shapes()
+        copper = data["copper"]
+        _edges = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
+                  if data["outline"] is not None else [])
+    return _edges
+
+
 def rectangles(scene=None):
     """The section's (s0, s1, z0, z1, sRGB) rectangles and the plane's (origin, normal),
     or None when there is no section to draw."""
-    global _data
     scene = scene or bpy.context.scene
     on, origin, normal = _state(scene)
     if not on or abs(normal[2]) >= UPRIGHT or board.collection is None or board.in_snapshot or not board.heights:
         return None
-    if _data is None:
-        _data = _gather()
+    data = shapes()
     line = section.Line(origin[:2], normal[:2])
-    layers = {}
-    for layer, shapes in _data["copper"].items():
-        found = [section.rings(line, *(np.concatenate(parts) for parts in zip(*shapes["rings"])))] if shapes["rings"] else []
-        if shapes["tracks"]:
-            found.append(section.capsules(line, *(np.concatenate(parts) for parts in zip(*shapes["tracks"]))))
-        layers[layer] = section.merge(np.vstack(found)) if found else section.EMPTY
+    layers = {layer: section.copper_along(line, found) for layer, found in data["copper"].items()}
     copper, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,
                                          board.appearance.get("dielectrics"))
     plug = getattr(scene, "kileido_via_plug", "NONE")
-    rects = section.cross_section(line, _data["outline"], layers, copper, bands, vias=_data["vias"],
-                                  pad_drills=_data["drills"],
+    rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
+                                  pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=float(getattr(scene, "kileido_via_plating_um", 25.0)) * 1e-6,
                                   plug=None if plug == "NONE" else plug,
                                   capped=bool(getattr(scene, "kileido_via_fill", False)), cap_plating=CAP_PLATING_M)
@@ -491,8 +507,8 @@ def rebuild(scene=None):
 
 def invalidate():
     """The board changed: read it again for the next section (soon, once per burst of edits)."""
-    global _data
-    _data = None
+    global _data, _edges
+    _data = _edges = None
     if enabled() and not bpy.app.timers.is_registered(_rebuild_soon):
         bpy.app.timers.register(_rebuild_soon, first_interval=REBUILD_DELAY_S)
 
@@ -506,14 +522,14 @@ def _rebuild_soon():
 
 def refresh():
     """The tick box, or a whole new board: bring materials, plane and face in line."""
-    global _pushed, _data
+    global _pushed, _data, _edges
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:
         hide(plane, not on)
     for material in materials():
         (add_to if on else remove_from)(material)
-    _pushed, _data = None, None
+    _pushed, _data, _edges = None, None, None
     push()
 
 

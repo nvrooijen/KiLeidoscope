@@ -20,8 +20,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, cut, dump, focus, layers, lighting, live, models, packages, pick,
-               render_depth, watcher)
+from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, layers, lighting, live, models, packages,
+               pick, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -857,6 +857,7 @@ def unregister():
     render_depth.uninstall()
     collisions.uninstall()
     cut.uninstall()
+    edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):

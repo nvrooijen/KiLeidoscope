@@ -11,8 +11,8 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, cut, focus, footprints, highlight, holes, laminate, layers, lighting, materials, models,
-               nodes, render_depth, transform)
+from . import (cosmetics, cut, edge_plating, focus, footprints, highlight, holes, laminate, layers, lighting,
+               materials, models, nodes, render_depth, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
                       single_point, view3d_spaces, write_attribute, outline_bounds)
@@ -64,6 +64,7 @@ def apply_frame(header, arrays):
     if message_type in SECTION_INPUTS:
         cut.invalidate()
         laminate.update_bands()
+        edge_plating.invalidate()
 
 
 def apply_layer_data(header, arrays):
@@ -127,6 +128,7 @@ def _end_snapshot():
     lighting.ensure_studio_lights()
     focus.refresh()
     cut.refresh()
+    edge_plating.refresh()
     frame_board()
     models.follow_board(board.board_path, board.export)
     cosmetics.follow_board(board.board_path, board.export)
@@ -522,6 +524,7 @@ def set_board_visible(visible):
     obj = board.collection.all_objects.get(OUTLINE)
     if obj is not None:
         set_visible(obj, visible)
+    edge_plating.refresh()  # the plated edge goes with the board solid
 
 
 def refresh_via_fill():
