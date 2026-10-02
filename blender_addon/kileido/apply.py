@@ -533,7 +533,7 @@ def set_board_visible(visible):
 
 def refresh_protection(highlights=True):
     """Resolve each via's protection (KiCad's, with the board's rules and the panel's
-    Max tent drill): the 3D plugs, fills, caps and tents, bare or finished barrels, and
+    Max tent hole and Via wall): the 3D plugs, fills, caps and tents, bare or finished barrels, and
     which vias are drilled through the board (protection.py)."""
     if board.collection is None:
         return
@@ -543,8 +543,9 @@ def refresh_protection(highlights=True):
     mesh = vias.data
     scene = bpy.context.scene
     drill = read_attribute(mesh, "drill", np.float32).astype(np.float64)
+    bore = np.maximum(drill - 2 * via_plating(), 0.2 * drill)  # the finished hole, as nodes.vias draws it
     found = protection.resolve(read_attribute(mesh, "protection", np.int32), board.appearance.get("via_rules"),
-                               drill, read_attribute(mesh, "outer_top", np.float32) > 0.5,
+                               bore, read_attribute(mesh, "outer_top", np.float32) > 0.5,
                                read_attribute(mesh, "outer_bottom", np.float32) > 0.5,
                                float(getattr(scene, "kileido_max_tent_mm", 0.3)) * 1e-3)
     copper_fill = getattr(scene, "kileido_via_fill_material", "RESIN") == "COPPER"
@@ -557,7 +558,6 @@ def refresh_protection(highlights=True):
     mesh.update()
     board.via_too_big = int(found["too_big"].sum())
     xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
-    bore = np.maximum(drill - 2 * via_plating(), 0.2 * drill)  # inside the plating, as nodes.vias draws it
     drilled = found["drilled"]  # rings; tents and cores close them
     holes.set_vias(xy[drilled], bore[drilled], found["side"][drilled])
     if highlights:

@@ -17,9 +17,9 @@ NONE = (0, 0, 0, 0, 0, 0, 0, 0)
 UNTENTED_RULES = NONE
 
 
-def resolve(*codes, rules=UNTENTED_RULES, drill=0.3e-3, top=True, bottom=True, max_tent=0.3e-3):
+def resolve(*codes, rules=UNTENTED_RULES, hole=0.3e-3, top=True, bottom=True, max_tent=0.3e-3):
     count = len(codes)
-    return protection.resolve(protection.pack(codes), rules, np.full(count, drill),
+    return protection.resolve(protection.pack(codes), rules, np.full(count, hole),
                               np.full(count, top), np.full(count, bottom), max_tent)
 
 
@@ -78,10 +78,10 @@ def test_a_plug_fills_half_from_its_side_and_all_from_both():
 
 
 def test_a_tent_does_not_span_a_large_empty_drill():
-    found = resolve((1, 1, 0, 0, 0, 0, 0, 0), drill=0.5e-3)
+    found = resolve((1, 1, 0, 0, 0, 0, 0, 0), hole=0.5e-3)
     assert found["open"][0] and found["too_big"][0]
-    filled = resolve((1, 1, 0, 0, 0, 0, 0, 1), drill=0.5e-3)  # VI-b: the fill carries the mask
+    filled = resolve((1, 1, 0, 0, 0, 0, 0, 1), hole=0.5e-3)  # VI-b: the fill carries the mask
     assert not filled["open"][0] and not filled["too_big"][0]
-    half = resolve((1, 1, 0, 0, 1, 0, 0, 0), drill=0.5e-3)  # IV-a: the plug carries the top tent only
+    half = resolve((1, 1, 0, 0, 1, 0, 0, 0), hole=0.5e-3)  # IV-a: the plug carries the top tent only
     assert not half["open"][0] and half["too_big"][0]
-    assert not resolve((1, 1, 0, 0, 0, 0, 0, 0), drill=0.5e-3, max_tent=0.6e-3)["too_big"][0]
+    assert not resolve((1, 1, 0, 0, 0, 0, 0, 0), hole=0.5e-3, max_tent=0.6e-3)["too_big"][0]

@@ -254,7 +254,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         if _icons is not None and "bucket" in _icons:
             row.label(text="", icon_value=_icons["bucket"].icon_id)
         row = self.layout.row(align=True)
-        row.prop(scene, "kileido_max_tent_mm", text="Max tent")
+        row.prop(scene, "kileido_max_tent_mm", text="Max tent hole")
         row.prop(scene, "kileido_via_plating_um", text="Via wall")
         if board.via_too_big:
             count = board.via_too_big
@@ -730,10 +730,10 @@ def _scene_properties():
                         "(select it, E, Protection features); it does not store the fill material",
             update=lambda self, context: apply.refresh_protection()),
         "kileido_max_tent_mm": FloatProperty(
-            name="Max tent drill", default=protection.MAX_TENT_M * 1e3, min=0.05, soft_max=1.0, max=5.0,
+            name="Max tent hole", default=protection.MAX_TENT_M * 1e3, min=0.05, soft_max=1.0, max=5.0,
             step=1, precision=2,
-            description="Largest drill (mm) a solder mask tent can span. A via KiCad tents or covers over a larger "
-                        "empty drill is shown open, and listed here",
+            description="Largest finished hole (mm; the drill less twice the Via wall) a solder mask tent can span. "
+                        "A via KiCad tents or covers over a larger empty hole is shown open, and listed here",
             update=lambda self, context: apply.refresh_protection()),
         "kileido_via_plating_um": FloatProperty(
             name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,

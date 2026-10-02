@@ -419,11 +419,15 @@ def main():
 
         scene = bpy.context.scene
         assert "via_rules" not in state.board.appearance  # KiCad's defaults: tented both sides
-        assert via_alpha() > 0.99 and state.board.via_too_big == len(via_obj.data.vertices)
-        scene.kileido_max_tent_mm = 0.4
         tents = via_obj.data.attributes["tent_top"]
         assert via_alpha() > 0.99 and tents.data[0].value == 1.0  # a hole, the tent closing it
-        assert state.board.via_too_big == 0
+        assert state.board.via_too_big == 0  # 0.35 mm drill, 25 um wall: a 0.30 mm hole
+        scene.kileido_via_plating_um = 10.0  # a 0.33 mm hole: too large to tent
+        assert via_alpha() > 0.99 and tents.data[0].value == 0.0
+        assert state.board.via_too_big == len(via_obj.data.vertices)
+        scene.kileido_max_tent_mm = 0.4
+        assert tents.data[0].value == 1.0 and state.board.via_too_big == 0
+        scene.kileido_via_plating_um = 25.0
         state.board.appearance["via_rules"] = [0] * 8  # a board whose vias are unprotected
         apply.refresh_protection()
         assert via_alpha() > 0.99 and state.board.via_too_big == 0 and tents.data[0].value == 0.0

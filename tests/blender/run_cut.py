@@ -215,13 +215,14 @@ def main():
         protect(layered, [OPEN] * 3)
         assert attribute("bare_barrel") == [0, 1, 0]  # open: finished like the pads (buried: never reached)
         protect(layered, [(1, 1, 0, 0, 0, 0, 0, 0)] * 3)  # tented, type I-b
-        assert attribute("tent_top") == [0, 0, 0] and board.via_too_big == 2  # 0.35 mm: too large to tent
-        scene.kileido_max_tent_mm = 0.4
+        assert attribute("tent_top") == [1, 0, 1]  # 0.35 mm drill, 25 um wall: a 0.30 mm hole, tented
+        scene.kileido_via_plating_um = 10.0
+        assert attribute("tent_top") == [0, 0, 0] and board.via_too_big == 2  # a 0.33 mm hole: too large
+        scene.kileido_via_plating_um = 25.0
         assert len(holes._sources["vias"]) == 2 and attribute("tent_top") == [1, 0, 1]  # holes, closed by tents
         assert attribute("tent_bottom") == [0, 0, 1]  # the blind via has no bottom end to tent
         assert {board.materials["tent_F"].name, board.materials["tent_B"].name} <= via_faces()[1]
         assert board.materials["plating_bare"].name in via_faces()[1]
-        scene.kileido_max_tent_mm = 0.3
         protect(layered, [OPEN] * 3)
         open_faces, open_materials = via_faces()
         assert open_faces < plugged_faces and attribute("core_top") == [0, 1, 0]  # the buried via stays filled
