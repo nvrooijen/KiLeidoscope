@@ -199,10 +199,12 @@ def plated_edges(outline, front, back, inset=EDGE_INSET_M):
         line = Line(start + inward * inset, inward)
         span = np.sort(line.s(np.vstack((start + inward * inset, end + inward * inset))))
         reach = intersect(intersect(copper_along(line, front), copper_along(line, back)), np.array([span]))
-        for s0, s1 in reach:
+        forward = 1.0 if float(np.dot(line.along, unit)) > 0 else -1.0  # stretches run as the outline does
+        for s0, s1 in reach[::int(forward)]:
             if s1 - s0 >= EDGE_SHORTEST_M:
-                stretches.append((line.origin + s0 * line.along - inward * inset,
-                                  line.origin + s1 * line.along - inward * inset, -inward))
+                first, last = (s0, s1)[::int(forward)]
+                stretches.append((line.origin + first * line.along - inward * inset,
+                                  line.origin + last * line.along - inward * inset, -inward))
     return stretches
 
 

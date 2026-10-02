@@ -59,6 +59,21 @@ def main():
         normals = np.array([p.normal[:] for p in plating.data.polygons])
         assert normals[:, 0].min() < -0.99  # the outer face looks out of the board
 
+        # One strip per run of stretches, split at real corners: the rectangle's three plated
+        # stretches meet at 90 degree corners, so three strips; its walls are shaded smooth.
+        assert len(edge_plating.chains(stretches)) == 3
+        assert any(p.use_smooth for p in plating.data.polygons) and not all(p.use_smooth for p in plating.data.polygons)
+        # A rounded edge, 3 degrees a segment: one strip, smooth along it (no facets).
+        arc = [np.array((5 * MM * np.cos(a), 5 * MM * np.sin(a))) for a in np.radians(np.arange(0, 91, 3))]
+        bend = [(p, q, (p + q) / np.hypot(*(p + q))) for p, q in zip(arc, arc[1:])]
+        (points, normals, closed), = edge_plating.chains(bend)
+        assert len(points) == len(arc) and not closed
+        _, faces, smooth = edge_plating._shell(points, normals, closed, board.thickness_m)
+        assert sum(smooth) == 2 * len(bend) and len(faces) == 4 * len(bend) + 2  # walls smooth; top, bottom, ends flat
+        circle = [np.array((5 * MM * np.cos(a), 5 * MM * np.sin(a))) for a in np.radians(np.arange(0, 361, 3))]
+        (points, _, closed), = edge_plating.chains([(p, q, (p + q) / np.hypot(*(p + q))) for p, q in zip(circle, circle[1:])])
+        assert closed and len(points) == 120
+
         # With the board solid hidden, the plating goes too.
         scene.kileido_show_board = False
         assert plating.hide_get()
