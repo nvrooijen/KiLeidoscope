@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="492" viewBox="0 0 680 492" role="img">
+<title>KiLeidoscope vias, cut plane and edge plating</title>
+<desc>KiCad's live API gives each via's protection and annular rings; a copy of the board file gives the board's via defaults and the plated-edge flag. The bridge reads both and sends frames to the Blender add-on, which resolves each via with the panel's settings and draws the 3D vias, the hole mask, the cross section and the edge plating.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; dominant-baseline: central; }
+.th { font-size: 14px; font-weight: 500; }
+.ts { font-size: 12px; font-weight: 400; }
+.lbl { fill: #59636E; }
+.arr { stroke: #818B98; stroke-width: 1.5; fill: none; }
+.group { stroke: #818B98; stroke-width: 0.5; stroke-dasharray: 4 4; fill: none; }
+</style>
+</defs>
+<rect x="30" y="110" width="620" height="130" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="126">Bridge</text>
+<rect x="30" y="262" width="620" height="210" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="278">Blender add-on</text>
+<rect x="110" y="30" width="210" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="215" y="50" text-anchor="middle" fill="#FFFFFF">KiCad, live</text>
+<text class="ts" x="215" y="68" text-anchor="middle" fill="#D6DDF5">each via's settings</text>
+<rect x="360" y="30" width="210" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="465" y="50" text-anchor="middle" fill="#FFFFFF">Board file copy</text>
+<text class="ts" x="465" y="68" text-anchor="middle" fill="#D6DDF5">via defaults, edge flag</text>
+<rect x="60" y="140" width="170" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="145" y="160" text-anchor="middle" fill="#173404">Via reader</text>
+<text class="ts" x="145" y="178" text-anchor="middle" fill="#3B6D11">kicad_reader.py</text>
+<rect x="255" y="140" width="170" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="340" y="160" text-anchor="middle" fill="#173404">Board rules</text>
+<text class="ts" x="340" y="178" text-anchor="middle" fill="#3B6D11">board_specs.py</text>
+<rect x="450" y="140" width="170" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="535" y="160" text-anchor="middle" fill="#173404">Frames</text>
+<text class="ts" x="535" y="178" text-anchor="middle" fill="#3B6D11">protocol.py</text>
+<rect x="60" y="292" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="145" y="312" text-anchor="middle" fill="#412402">Apply</text>
+<text class="ts" x="145" y="330" text-anchor="middle" fill="#633806">apply.py</text>
+<rect x="255" y="292" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="312" text-anchor="middle" fill="#412402">Resolve each via</text>
+<text class="ts" x="340" y="330" text-anchor="middle" fill="#633806">protection.py</text>
+<rect x="450" y="292" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="535" y="312" text-anchor="middle" fill="#412402">Panel</text>
+<text class="ts" x="535" y="330" text-anchor="middle" fill="#633806">fill, max tent, wall</text>
+<rect x="45" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="111" y="420" text-anchor="middle" fill="#412402">Edge plating</text>
+<text class="ts" x="111" y="438" text-anchor="middle" fill="#633806">edge_plating.py</text>
+<rect x="197" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="263" y="420" text-anchor="middle" fill="#412402">3D vias</text>
+<text class="ts" x="263" y="438" text-anchor="middle" fill="#633806">nodes.vias</text>
+<rect x="349" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="415" y="420" text-anchor="middle" fill="#412402">Hole mask</text>
+<text class="ts" x="415" y="438" text-anchor="middle" fill="#633806">holes.py</text>
+<rect x="501" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="567" y="420" text-anchor="middle" fill="#412402">Cross section</text>
+<text class="ts" x="567" y="438" text-anchor="middle" fill="#633806">cut + section</text>
+<line x1="215" y1="86" x2="160" y2="138" class="arr" marker-end="url(#arrow)"/>
+<line x1="465" y1="86" x2="350" y2="138" class="arr" marker-end="url(#arrow)"/>
+<line x1="425" y1="168" x2="448" y2="168" class="arr" marker-end="url(#arrow)"/>
+<path d="M145 196 V218 H535 V198" class="arr" marker-end="url(#arrow)"/>
+<path d="M600 196 V250 H145 V290" class="arr" marker-end="url(#arrow)"/>
+<line x1="230" y1="320" x2="253" y2="320" class="arr" marker-end="url(#arrow)"/>
+<line x1="450" y1="320" x2="427" y2="320" class="arr" marker-end="url(#arrow)"/>
+<line x1="145" y1="348" x2="115" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="330" y1="348" x2="268" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="345" y1="348" x2="410" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="360" y1="348" x2="560" y2="398" class="arr" marker-end="url(#arrow)"/>
+</svg>
