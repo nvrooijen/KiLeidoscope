@@ -38,9 +38,17 @@ def test_only_an_unprotected_through_via_is_open():
     assert found["drilled"].all()  # all three are holes: rings, the tent closing the drill
     assert found["tent_top"].tolist() == [False, True, False] and found["tent_bottom"].tolist() == [False, False, True]
     assert found["finished"].tolist() == [True, False, False]  # a tent keeps the finish out of the barrel
-    blind = resolve(NONE, top=True, bottom=False)
-    assert not blind["open"].any() and not blind["drilled"].any()  # a blind via is never see-through
-    assert blind["finished"].all()  # but its open end is finished
+    blind = resolve(NONE, (1, 1, 0, 0, 0, 0, 0, 0), top=True, bottom=False)
+    assert blind["drilled"].all() and blind["side"].tolist() == [protection.TOP] * 2  # a hole from the top only
+    assert blind["tent_top"].tolist() == [False, True] and not blind["tent_bottom"].any()
+    assert blind["finished"].tolist() == [True, False]  # its open end is finished
+
+
+def test_a_buried_via_is_resin_filled_whatever_kicad_says():
+    found = resolve(NONE, (1, 1, 1, 1, 1, 1, 1, 0), (0, 0, 0, 0, 0, 0, 0, 1), top=False, bottom=False)
+    assert found["core_top"].all() and found["core_bottom"].all()  # pressed full of prepreg resin
+    assert found["filled"].tolist() == [False, False, True]  # resin, or KiCad's filled: the fill material
+    assert not (found["drilled"] | found["capped"] | found["tent_top"] | found["finished"]).any()
 
 
 def test_a_capped_via_is_no_hole():

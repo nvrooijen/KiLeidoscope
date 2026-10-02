@@ -325,6 +325,9 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
             reach = {name: (copper[name][0] - (land_lift if name == "B.Cu" else 0.0),
                             copper[name][1] + (land_lift if name == "F.Cu" else 0.0)) for name in ends}
             z0, z1 = min(r[0] for r in reach.values()), max(r[1] for r in reach.values())
+            if (top == "F.Cu") != (bottom == "B.Cu"):  # blind: drilled down onto its inner land, which stays whole
+                inner = bottom if top == "F.Cu" else top
+                z0, z1 = (copper[inner][1], z1) if top == "F.Cu" else (z0, copper[inner][0])
             if land_lift > 0 and "F.Cu" in ends:
                 plated.append((copper["F.Cu"][1], reach["F.Cu"][1], land))
             if land_lift > 0 and "B.Cu" in ends:

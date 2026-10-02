@@ -166,9 +166,24 @@ def main():
         scene.cycles.samples = 8
         scene.cycles.use_denoising = False
         protect(layered, [OPEN] * 3)
-        assert len(holes._sources["vias"]) == 1  # the through via is see-through; blind and buried never
+        # Holes: the through via both sides, the blind one from the top; the buried one is none.
+        assert holes._sources["vias"][:, 3].tolist() == [holes.TOP, holes.THROUGH]
+        mask = bpy.data.images[holes.IMAGE]
+        pixels = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
+        mask.pixels.foreach_get(pixels)
+        pixels = pixels.reshape(mask.size[1], mask.size[0], 4)
+        xmin, ymin, xmax, ymax = holes._bounds
+        pixel = max(xmax - xmin, ymax - ymin) / holes.RESOLUTION
+
+        def channels_at(index):
+            """(top, bottom, through) hole coverage at a via's centre."""
+            x, y = board.collection.all_objects["KLS vias"].data.vertices[index].co[:2]
+            red, green, _, alpha = pixels[int((y - ymin) / pixel), int((x - xmin) / pixel)]
+            return round(float(red)), round(float(green)), round(float(alpha))
+
+        assert channels_at(0) == (1, 0, 0) and channels_at(1) == (0, 0, 0) and channels_at(2) == (1, 1, 1)
         protect(layered, [PLUGGED] * 3)
-        assert len(holes._sources["vias"]) == 1  # still a hole: its lands are rings, the plug shows in it
+        assert len(holes._sources["vias"]) == 2  # still holes: their lands are rings, the plug shows in them
         assert attribute_values("bare_barrel") == [1, 1, 1]  # the plug kept the finish out
         # In 3D too the barrels are plugged: a core in the plug's material, and a highlighted
         # via's core in the highlight's (solid in X-ray mode, where everything else fades).
@@ -190,25 +205,26 @@ def main():
 
         plugged_faces, plugged_materials = via_faces()
         assert board.materials["via_resin"].name in plugged_materials, (plugged_faces, plugged_materials)
-        assert attribute("core_top") == [1, 0, 1] and attribute("core_bottom") == [1, 0, 1]  # buried: no outer end
+        assert attribute("core_top") == [1, 1, 1] and attribute("core_bottom") == [1, 1, 1]  # buried: always resin
         highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
         marked = board.collection.all_objects["KLS vias highlight selected"]
         assert attribute("core_top", marked) == [1] and             modifier_value_named(marked, "Fill Material") == board.materials["highlight_selected_barrel"]
         highlight.apply_selection({"selected": [], "pair": []})
         protect(layered, [PLUGGED_TOP] * 3)  # the blind via's one open end: still full; the through via: half
-        assert attribute("core_top") == [1, 0, 1] and attribute("core_bottom") == [1, 0, 0]
+        assert attribute("core_top") == [1, 1, 1] and attribute("core_bottom") == [1, 1, 0]
         protect(layered, [OPEN] * 3)
         assert attribute("bare_barrel") == [0, 1, 0]  # open: finished like the pads (buried: never reached)
         protect(layered, [(1, 1, 0, 0, 0, 0, 0, 0)] * 3)  # tented, type I-b
         assert attribute("tent_top") == [0, 0, 0] and board.via_too_big == 2  # 0.35 mm: too large to tent
         scene.kileido_max_tent_mm = 0.4
-        assert len(holes._sources["vias"]) == 1 and attribute("tent_top") == [0, 0, 1]  # a hole, closed by tents
+        assert len(holes._sources["vias"]) == 2 and attribute("tent_top") == [1, 0, 1]  # holes, closed by tents
+        assert attribute("tent_bottom") == [0, 0, 1]  # the blind via has no bottom end to tent
         assert {board.materials["tent_F"].name, board.materials["tent_B"].name} <= via_faces()[1]
         assert board.materials["plating_bare"].name in via_faces()[1]
         scene.kileido_max_tent_mm = 0.3
         protect(layered, [OPEN] * 3)
         open_faces, open_materials = via_faces()
-        assert open_faces < plugged_faces and board.materials["via_resin"].name not in open_materials
+        assert open_faces < plugged_faces and attribute("core_top") == [0, 1, 0]  # the buried via stays filled
         protect(layered, [FILLED_CAPPED] * 3)
         assert attribute("cap") == [round(CAP_PLATING_M, 9), 0, round(CAP_PLATING_M, 9)]  # buried: nothing to cap
 

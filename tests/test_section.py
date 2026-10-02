@@ -122,7 +122,8 @@ def color_at(rects, s, z):
     (10 + 0.15 - 0.0125, 1400, section.COPPER),  # the barrel wall
     (10 + 0.2, 1400, section.PREPREG),  # laminate around the barrel
     (10 + 0.25, 1520, section.COPPER),  # the F.Cu land
-    (10, 1290, section.RESIN),  # In1's level inside the bore: plug, not the pour
+    (10, 1290, section.COPPER),  # the blind via's floor: its In1 land, whole under the drill
+    (10, 1310, section.RESIN),  # the plug, from the floor up
     (10, 1000, section.CORE),  # below the blind via
     (25, 1000, None),  # beyond the board edge
 ])
@@ -143,7 +144,8 @@ def test_capped_via_is_plated_over_at_the_outer_copper_only():
     rects = _board("RESIN", capped=True)
     assert color_at(rects, 10 * MM, 1520 * UM) == section.COPPER  # the cap, across the drill in F.Cu
     assert color_at(rects, 10 * MM, 1400 * UM) == section.RESIN  # the plug under it
-    assert color_at(rects, 10 * MM, 1290 * UM) == section.RESIN  # the In1 end is inner copper: no cap
+    assert color_at(rects, 10 * MM, 1290 * UM) == section.COPPER  # the In1 end: the via's floor, not a cap
+    assert color_at(rects, 10 * MM, 1310 * UM) == section.RESIN
     assert color_at(_board(None, capped=True), 10 * MM, 1520 * UM) is None  # nothing to cap without a plug
 
 

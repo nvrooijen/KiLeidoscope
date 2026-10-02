@@ -558,7 +558,8 @@ def refresh_protection(highlights=True):
     board.via_too_big = int(found["too_big"].sum())
     xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
     bore = np.maximum(drill - 2 * via_plating(), 0.2 * drill)  # inside the plating, as nodes.vias draws it
-    holes.set_vias(xy[found["drilled"]], bore[found["drilled"]])  # rings; tents and cores close them
+    drilled = found["drilled"]  # rings; tents and cores close them
+    holes.set_vias(xy[drilled], bore[drilled], found["side"][drilled])
     if highlights:
         highlight.refresh(kind="vias")
     cut.invalidate()
@@ -601,5 +602,6 @@ def refresh_thickness():
     outline = board.collection.all_objects.get(OUTLINE)
     if outline is not None:
         _place_board(outline)
+    holes.refresh_sides()  # which heights are the board's top and bottom side
     highlight.refresh()
     cosmetics.recolor()
