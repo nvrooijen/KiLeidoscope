@@ -8,7 +8,9 @@ copper, or the board's finish, lit like all copper in Realistic mode.
 
 Stretches that follow on from each other (a rounded corner is many short ones) make one
 continuous strip whose walls are shaded smooth, so a curved edge reads as one surface
-instead of a row of facets; its top, bottom and ends stay flat.
+instead of a row of facets; its top, bottom and ends stay flat. At a sharp outside corner
+the two strips end on the corner, and a rounded piece wraps it (plating rounds a corner);
+at an inside corner they overlap.
 """
 
 import bpy
@@ -23,6 +25,7 @@ THICKNESS_M = 25e-6  # as a via barrel's wall
 WALL_GAP_M = 0.5e-6  # off the board's own wall, so the two never share a face
 JOIN_M = 1e-9  # stretches whose ends meet this closely continue one strip,
 SMOOTH_TURN = np.cos(np.radians(30))  # unless the edge turns more than this there (a real corner)
+CORNER_STEP = np.radians(10)  # a rounded corner piece, one face per this much turn
 REFRESH_DELAY_S = 0.05  # live edits arriving together redraw it once
 
 
@@ -55,6 +58,45 @@ def chains(stretches):
         joints /= np.maximum(np.hypot(joints[:, 0], joints[:, 1]), 1e-12)[:, None]
         result.append((points, joints, closed))
     return result
+
+
+def corners(stretches):
+    """Sharp outside corners between plated stretches: (corner xy, outward normal before,
+    outward normal after), where one stretch ends on the next's start and the edge turns
+    away from the board by more than a smooth bend."""
+    starts = {}
+    for start, end, outward in stretches:
+        starts.setdefault(tuple(np.round(np.asarray(start, np.float64) / JOIN_M)), []).append(
+            (np.asarray(start, np.float64), np.asarray(outward, np.float64)))
+    found = []
+    for start, end, outward in stretches:
+        end, before = np.asarray(end, np.float64), np.asarray(outward, np.float64)
+        along = end - np.asarray(start, np.float64)
+        for _, after in starts.get(tuple(np.round(end / JOIN_M)), ()):
+            if float(np.dot(before, after)) < SMOOTH_TURN and float(np.dot(after, along)) > 0:
+                found.append((end, before, after))
+    return found
+
+
+def _corner(point, before, after, top):
+    """(vertices, faces, smooth per face) of a rounded piece around an outside corner: a
+    quarter-round (or what the turn is) of the plating's thickness, centred on the corner."""
+    first, last = np.arctan2(before[1], before[0]), np.arctan2(after[1], after[0])
+    turn = (last - first + np.pi) % (2 * np.pi) - np.pi  # the short way round
+    steps = max(2, int(np.ceil(abs(turn) / CORNER_STEP)))
+    angles = first + turn * np.linspace(0.0, 1.0, steps + 1)
+    arc = point + THICKNESS_M * np.column_stack((np.cos(angles), np.sin(angles)))
+    vertices = [(*point, 0.0), (*point, top)]
+    vertices += [(x, y, 0.0) for x, y in arc] + [(x, y, top) for x, y in arc]
+    low, high = 2, 2 + len(arc)
+    faces, smooth = [], []
+    for k in range(steps):
+        wall = [low + k, low + k + 1, high + k + 1, high + k]
+        faces += [wall if turn > 0 else wall[::-1]]  # facing out of the corner
+        faces += [[0, low + k + 1, low + k] if turn > 0 else [0, low + k, low + k + 1],  # bottom, facing down
+                  [1, high + k, high + k + 1] if turn > 0 else [1, high + k + 1, high + k]]  # top, facing up
+        smooth += [True, False, False]
+    return vertices, faces, smooth
 
 
 def _shell(points, normals, closed, top):
@@ -109,8 +151,9 @@ def refresh():
     obj = owned_object(OBJECT)
     top = board.thickness_m or 0.0016
     vertices, faces, smooth = [], [], []
-    for points, normals, closed in chains(stretches):
-        part = _shell(points, normals, closed, top)
+    parts = [_shell(points, normals, closed, top) for points, normals, closed in chains(stretches)]
+    parts += [_corner(point, before, after, top) for point, before, after in corners(stretches)]
+    for part in parts:
         faces += [[index + len(vertices) for index in face] for face in part[1]]
         vertices += part[0]
         smooth += part[2]

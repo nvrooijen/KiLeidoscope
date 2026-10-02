@@ -63,6 +63,23 @@ def main():
         # stretches meet at 90 degree corners, so three strips; its walls are shaded smooth.
         assert len(edge_plating.chains(stretches)) == 3
         assert any(p.use_smooth for p in plating.data.polygons) and not all(p.use_smooth for p in plating.data.polygons)
+        # Its two outside corners (bottom and top left) are wrapped by rounded pieces: no gap
+        # between the strips, the plating's thickness around the corner.
+        found = edge_plating.corners(stretches)
+        assert len(found) == 2 and all(np.isclose(abs(float(np.dot(b, a))), 0, atol=1e-9) for _, b, a in found)
+        vertices, faces, smooth = edge_plating._corner(*found[0], board.thickness_m)
+        arc = np.array(vertices)[2:, :2]
+        assert np.allclose(np.hypot(*(arc - found[0][0]).T), edge_plating.THICKNESS_M)
+        for face, round_wall in zip(faces, smooth):
+            a, b, c = (np.array(vertices[index]) for index in face[:3])
+            normal, centre = np.cross(b - a, c - a), np.mean([vertices[index] for index in face], axis=0)
+            if round_wall:  # the rounded wall faces away from the corner
+                assert np.dot(normal[:2], centre[:2] - found[0][0]) > 0
+            else:  # top up, bottom down
+                assert np.sign(normal[2]) == (1 if centre[2] > board.thickness_m / 2 else -1)
+        assert not edge_plating.corners([(np.array((0.0, 0.0)), np.array((1.0, 0.0)), np.array((0.0, -1.0))),
+                                         (np.array((1.0, 0.0)), np.array((1.0, -1.0)), np.array((-1.0, 0.0)))])  # inside
+
         # A rounded edge, 3 degrees a segment: one strip, smooth along it (no facets).
         arc = [np.array((5 * MM * np.cos(a), 5 * MM * np.sin(a))) for a in np.radians(np.arange(0, 91, 3))]
         bend = [(p, q, (p + q) / np.hypot(*(p + q))) for p, q in zip(arc, arc[1:])]
