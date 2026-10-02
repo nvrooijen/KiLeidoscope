@@ -1,7 +1,7 @@
 """Copper from the board text, used while KiCad answers busy (route tool active)."""
 
 from kileido_bridge import model
-from kileido_bridge.board_text import copper_items, via_protection
+from kileido_bridge.board_text import copper_items, via_protection, via_rings
 
 TEXT = """(kicad_pcb
 \t(segment
@@ -72,3 +72,9 @@ def test_copper_items_match_the_ipc_records():
 def test_kicad_9_names_the_tented_sides():
     assert via_protection("(tenting front)") == (1, 0, -1, -1, -1, -1, -1, -1)
     assert via_protection("(tenting none)", (1,) * 8) == (0, 0, 1, 1, 1, 1, 1, 1)
+
+
+def test_annular_rings_as_kicad_writes_them():
+    assert via_rings("(layers \"F.Cu\" \"B.Cu\")") == model.RINGS_ALL  # KiCad's default writes nothing
+    assert via_rings("(remove_unused_layers yes)") == model.RINGS_CONNECTED
+    assert via_rings("(remove_unused_layers yes) (keep_end_layers yes)") == model.RINGS_ENDS_AND_CONNECTED

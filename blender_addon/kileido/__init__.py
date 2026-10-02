@@ -251,9 +251,11 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         scene = context.scene
         row = self.layout.row(align=True)
         row.prop(scene, "kileido_via_fill_material", text="Via fill")
-        row.prop(scene, "kileido_max_tent_mm", text="Max tent")
         if _icons is not None and "bucket" in _icons:
             row.label(text="", icon_value=_icons["bucket"].icon_id)
+        row = self.layout.row(align=True)
+        row.prop(scene, "kileido_max_tent_mm", text="Max tent")
+        row.prop(scene, "kileido_via_plating_um", text="Via wall")
         if board.via_too_big:
             count = board.via_too_big
             self.layout.label(text=f"{count} tented via{'s' if count > 1 else ''} too large to tent: shown open",
@@ -270,7 +272,6 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             row.operator(KILEIDO_OT_cut_plane.bl_idname, text=axis).axis = axis
         row.operator(KILEIDO_OT_cut_plane.bl_idname, text="Reset").axis = "RESET"
         row.prop(scene, "kileido_cut_flip", text="Flip", toggle=True)
-        box.prop(scene, "kileido_via_plating_um", text="Via wall")
         if not cut.upright(scene):
             box.label(text="Turn the plane upright for a cross section", icon="INFO")
 
@@ -736,8 +737,8 @@ def _scene_properties():
             update=lambda self, context: apply.refresh_protection()),
         "kileido_via_plating_um": FloatProperty(
             name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
-            description="Plating thickness of a via's barrel in the cross section (KiCad stores none)",
-            update=lambda self, context: cut.rebuild()),
+            description="Plating thickness of a via's barrel, in 3D and in the cross section (KiCad stores none)",
+            update=lambda self, context: apply.refresh_plating()),
         "kileido_center_in_kicad": BoolProperty(
             name="Center KiCad on click", default=True,
             description="Clicking an item here also pans KiCad's PCB editor to centre it, keeping its zoom"),

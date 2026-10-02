@@ -12,7 +12,7 @@ from mathutils import Matrix, Vector
 from . import focus, materials, transform
 from .objects import (camera_rays_only, hide, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, write_attribute)
-from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward
+from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward, via_plating
 from .state import board
 
 LIFT_M = 1e-6  # above the copper's outer surface
@@ -221,6 +221,7 @@ def _refresh_vias(wanted):
         set_modifier(obj, board.groups["vias"], board.materials[f"highlight_{kind}"],
                      {"Top Thickness": copper_thickness("F.Cu"),
                       "Bottom Thickness": copper_thickness("B.Cu"),
+                      "Plating": via_plating(),
                       **materials.via_inputs(barrel)})
         _show(obj)
 

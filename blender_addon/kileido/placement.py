@@ -50,5 +50,10 @@ def mask_thickness(side):
     return float(board.layer_thickness.get(f"{side}.Mask") or DEFAULT_MASK_M)
 
 
+def via_plating():
+    """A via barrel's plating (m): the panel's Via wall, as KiCad stores none."""
+    return max(0.0, float(getattr(bpy.context.scene, "kileido_via_plating_um", 25.0))) * 1e-6
+
+
 def stencil_thickness():
     return max(0.0, float(getattr(bpy.context.scene, "kileido_stencil_mm", 0.12))) * 1e-3

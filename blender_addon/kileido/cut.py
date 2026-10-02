@@ -21,7 +21,7 @@ import numpy as np
 from mathutils import Vector
 
 from . import focus, laminate, metal, nodes, section, shading, transform
-from .placement import CAP_PLATING_M, mask_thickness
+from .placement import CAP_PLATING_M, mask_thickness, via_plating
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -311,6 +311,8 @@ def _gather():
                 vias.update({name: read_attribute(mesh, name, np.float32) > 0.5
                              for name in ("core_top", "core_bottom", "fill_copper", "tent_top", "tent_bottom")
                              if name in mesh.attributes})
+            if "rings" in mesh.attributes:
+                vias["rings"] = read_attribute(mesh, "rings", np.int32)
                 vias["capped"] = read_attribute(mesh, "cap", np.float32) > 0
         elif obj.get("kls_drill"):
             width, height = _modifier_input(obj, "Width"), _modifier_input(obj, "Height")
@@ -466,7 +468,7 @@ def rectangles(scene=None):
                                          board.appearance.get("dielectrics"))
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
-                                  plating=float(getattr(scene, "kileido_via_plating_um", 25.0)) * 1e-6,
+                                  plating=via_plating(), land_lift=transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0}),
                                   cap_plating=CAP_PLATING_M, tents=_tents())
     return rects, (line, normal)
 

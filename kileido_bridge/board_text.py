@@ -22,6 +22,18 @@ _UUID = re.compile(r'\(uuid "([^"]+)"\)')
 _SIDED = re.compile(r"\((tenting|covering|plugging)\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _SIDE = re.compile(r"\((front|back)\s+(yes|no|none)\)")
 _SINGLE = re.compile(r"\((capping|filling)\s+(yes|no|none)\)")
+_RINGS = re.compile(r"\((remove_unused_layers|keep_end_layers|start_end_only)\s+yes\)")
+
+
+def via_rings(text: str) -> int:
+    """A via's annular rings (`model.RINGS_*`) from its text: `(remove_unused_layers yes)`,
+    with `(keep_end_layers yes)` for its ends too; nothing written is every layer."""
+    found = set(_RINGS.findall(text))
+    if "start_end_only" in found:  # assumed KiCad 10 spelling; not yet seen in a saved board
+        return model.RINGS_ENDS
+    if "remove_unused_layers" in found:
+        return model.RINGS_ENDS_AND_CONNECTED if "keep_end_layers" in found else model.RINGS_CONNECTED
+    return model.RINGS_ALL
 
 
 def via_protection(text: str, fallback: tuple[int, ...] = model.FROM_RULES) -> tuple[int, ...]:
@@ -68,7 +80,8 @@ def copper_items(text: str) -> tuple[tuple[model.Track, ...], tuple[model.Arc, .
             if "at" not in points or layers is None:
                 continue
             vias.append(model.Via(uuid.group(1), net, points["at"], numbers.get("size", 0),
-                                  numbers.get("drill", 0), layers.group(1), layers.group(2), via_protection(body)))
+                                  numbers.get("drill", 0), layers.group(1), layers.group(2), via_protection(body),
+                                  via_rings(body)))
             continue
         layer = _LAYER.search(body)
         if layer is None or "start" not in points or "end" not in points:

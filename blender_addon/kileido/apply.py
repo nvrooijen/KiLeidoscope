@@ -17,7 +17,7 @@ from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, set_modifier,
                       set_node_input, set_visible, single_point, view3d_spaces, write_attribute, outline_bounds)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
-                        laminate_faces, outward, stencil_thickness)
+                        laminate_faces, outward, stencil_thickness, via_plating)
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
@@ -435,11 +435,15 @@ def _apply_vias(header, arrays):
     if protect is None or len(protect) != count:
         protect = np.full((count, len(protection.FIELDS)), protection.FROM_RULES, np.uint8)
     write_attribute(mesh, "protection", "INT", protection.pack(protect))
+    rings = arrays.get("rings")  # KiCad's annular rings (kileido_bridge.model.RINGS_*): the cut draws them
+    write_attribute(mesh, "rings", "INT", np.asarray(rings if rings is not None and len(rings) == count
+                                                     else np.ones(count), np.int32))
     mesh.update()
     obj.location.z = 0
     obj["kls_ids"] = header["ids"]
     set_modifier(obj, board.groups["vias"], "vias", {"Top Thickness": copper_thickness("F.Cu"),
                                                      "Bottom Thickness": copper_thickness("B.Cu"),
+                                                     "Plating": via_plating(),
                                                      **materials.via_inputs()})
     refresh_protection(highlights=False)
     board.touched.add(obj.name)
@@ -553,10 +557,21 @@ def refresh_protection(highlights=True):
     mesh.update()
     board.via_too_big = int(found["too_big"].sum())
     xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
-    holes.set_vias(xy[found["drilled"]], drill[found["drilled"]])  # rings; tents and cores close them
+    bore = np.maximum(drill - 2 * via_plating(), 0.2 * drill)  # inside the plating, as nodes.vias draws it
+    holes.set_vias(xy[found["drilled"]], bore[found["drilled"]])  # rings; tents and cores close them
     if highlights:
         highlight.refresh(kind="vias")
     cut.invalidate()
+
+
+def refresh_plating():
+    """The panel's Via wall: the barrels, the holes inside them, and the cut."""
+    if board.collection is None:
+        return
+    vias = board.collection.all_objects.get("KLS vias")
+    if vias is not None and vias.modifiers:
+        set_node_input(vias, "Plating", via_plating())
+    refresh_protection()
 
 
 def refresh_solder():

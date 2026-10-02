@@ -477,11 +477,20 @@ def _via_protection(padstack) -> tuple[int, ...]:
         front.plugging_mode, back.plugging_mode, drill.capped, drill.filled))
 
 
+def _via_rings(padstack) -> int:
+    """KiCad's unconnected layer removal, numbered as `model.RINGS_*` (0, unknown: KiCad's
+    default, every layer)."""
+    proto = getattr(padstack, "_proto", None)
+    value = int(getattr(proto, "unconnected_layer_removal", 0) or 0)
+    return value if value in (model.RINGS_CONNECTED, model.RINGS_ENDS_AND_CONNECTED, model.RINGS_ENDS)         else model.RINGS_ALL
+
+
 def _convert_via(item) -> model.Via:
     return model.Via(
         item.id.value, item.net.name, _point(item.position), int(item.diameter),
         int(item.drill_diameter), canonical_layer(item.padstack.drill.start_layer),
         canonical_layer(item.padstack.drill.end_layer), _via_protection(item.padstack),
+        _via_rings(item.padstack),
     )
 
 

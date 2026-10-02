@@ -193,3 +193,37 @@ def test_cross_section_shows_the_plated_edge_as_a_strip_outside_the_board():
     assert color_at(rects, -20 * MM - 10 * UM, 1530 * UM) == section.COPPER  # the board's whole height
     assert color_at(rects, -20 * MM - 30 * UM, 800 * UM) is None  # 25 um thick
     assert color_at(rects, 20 * MM + 10 * UM, 800 * UM) is None  # the right edge is not plated
+
+
+def _through(rings, land_lift=0.0, capped=False):
+    """The same board with a through via at x = 10 mm instead (0.6 mm land, 0.3 mm drill);
+    In1 is poured over the whole board, In2 is empty."""
+    copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
+    layers = {"In1.Cu": section.rings(ALONG_X, *square(-20 * MM, -15 * MM, 20 * MM, 15 * MM))}
+    vias = {"xy": np.array([(10 * MM, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
+            "top": ["F.Cu"], "bottom": ["B.Cu"], "rings": [rings], "core_top": [capped], "core_bottom": [capped],
+            "capped": [capped]}
+    return section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), layers, copper, bands,
+                                 vias=vias, plating=25 * UM, cap_plating=20 * UM, land_lift=land_lift)
+
+
+@pytest.mark.parametrize("rings, on_in2", [(section.RINGS_ALL, True), (section.RINGS_CONNECTED, False),
+                                           (section.RINGS_ENDS_AND_CONNECTED, False), (section.RINGS_ENDS, False)])
+def test_annular_rings_on_inner_layers_follow_kicad(rings, on_in2):
+    rects = _through(rings)
+    ring = (10 + 0.25) * MM  # on the land, beside the drill
+    assert (color_at(rects, ring, 850 * UM) == section.COPPER) == on_in2  # In2: nothing connects here
+    assert color_at(rects, ring, 1290 * UM) == section.COPPER  # In1's pour reaches it (and is copper anyway)
+    assert color_at(rects, ring, 1520 * UM) == section.COPPER and color_at(rects, ring, 20 * UM) == section.COPPER
+    assert color_at(rects, 10 * MM, 850 * UM) is None  # a ring, not across the bore
+
+
+def test_lands_stand_as_far_out_as_in_3d():
+    rects = _through(section.RINGS_ALL, land_lift=3 * UM)
+    assert color_at(rects, (10 + 0.25) * MM, 1542 * UM) == section.COPPER  # F.Cu's top is 1540 um
+    assert color_at(rects, (10 + 0.25) * MM, -2 * UM) == section.COPPER
+    assert color_at(rects, 10 * MM, 1542 * UM) is None  # still a ring
+    capped = _through(section.RINGS_ALL, land_lift=3 * UM, capped=True)
+    assert color_at(capped, 10 * MM, 1542 * UM) == section.COPPER  # across the drill under the cap
+    assert color_at(capped, 10 * MM, 1560 * UM) == section.COPPER  # the cap plating, from 1543 um
+    assert color_at(capped, 10 * MM, 1564 * UM) is None

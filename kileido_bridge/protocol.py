@@ -184,7 +184,8 @@ def vias_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
         "span": np.array([(index[v.layer_top], index[v.layer_bottom]) for v in snapshot.vias],
                          dtype="<i4").reshape(-1, 2),
         # Per model.PROTECTION: 1 yes, 0 no, 2 the board's rules (the appearance's via_rules).
-        "protect": _protect(snapshot.vias)})
+        "protect": _protect(snapshot.vias),
+        "rings": np.array([v.rings for v in snapshot.vias], dtype="|u1")})  # model.RINGS_*
 
 
 def _protect(vias) -> np.ndarray:

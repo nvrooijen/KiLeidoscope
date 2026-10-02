@@ -264,8 +264,20 @@ def stack_layout(heights, thickness, stack, saved):
 
 # --- The section ------------------------------------------------------------------------------
 
+RINGS_ALL, RINGS_CONNECTED, RINGS_ENDS_AND_CONNECTED, RINGS_ENDS = 1, 2, 3, 4  # kileido_bridge.model
+
+
+def _ringed(mode, copper_here, land):
+    """An annular ring on a layer between a via's ends: on every layer, or only where that
+    layer's copper reaches the land (along the cut)."""
+    if mode == RINGS_ENDS:
+        return False
+    return mode == RINGS_ALL or len(intersect(copper_here, land)) > 0
+
+
 def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=None,
-                  plating=25e-6, cap_plating=0.0, plated_edges=(), edge_plating=25e-6, tents=None):
+                  plating=25e-6, cap_plating=0.0, plated_edges=(), edge_plating=25e-6, tents=None,
+                  land_lift=0.0):
     """Rectangles (s0, s1, z0, z1, sRGB colour), bottom up.
 
     outline: (a, b, item) edges of the board outline (even-odd: cutouts are holes).
@@ -278,7 +290,11 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     where it reaches the outer copper: copper across the whole drill there (the core ends
     under it), and `cap_plating` more over the land, outside the board.
     Also optional, `tent_top`/`tent_bottom`: the solder mask spans its drill there, drawn as
-    a film over the land from `tents` ({"F.Cu"/"B.Cu": (mask thickness, sRGB)}).
+    a film over the land from `tents` ({"F.Cu"/"B.Cu": (mask thickness, sRGB)}); `rings`:
+    which layers between its ends have an annular ring (`RINGS_*`, KiCad's "Annular
+    rings"; its two ends always have one). "Connected" is judged along the cut: that
+    layer's copper reaches the via's land there.
+    land_lift: the 3D outer lands stand this far out of the copper; their section does too.
     pad_drills: rows (x, y, width, height, angle, plated), through the whole board.
     plating: barrel wall thickness.
     plated_edges: stretches of a plated board edge (`plated_edges`): where the cut crosses
@@ -295,6 +311,7 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
         near = np.abs(line.d(xy)) < np.maximum(vias["diameter"], vias["drill"]) / 2
         flag = {name: np.asarray(vias.get(name, np.zeros(len(xy))), bool).reshape(-1)
                 for name in ("core_top", "core_bottom", "fill_copper", "capped", "tent_top", "tent_bottom")}
+        ring_modes = np.asarray(vias.get("rings", np.full(len(xy), RINGS_ALL)), np.int64).reshape(-1)
         for index in np.flatnonzero(near):
             top, bottom = vias["top"][index], vias["bottom"][index]
             if top not in copper or bottom not in copper:
@@ -303,25 +320,34 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
             outer = vias["drill"][index] / 2
             full = discs(line, centre, outer)
             bore = discs(line, centre, max(outer - plating, 0.0))
-            z0, z1 = min(copper[bottom][0], copper[top][0]), max(copper[bottom][1], copper[top][1])
+            land = discs(line, centre, vias["diameter"][index] / 2)
+            ends = {top, bottom}
+            reach = {name: (copper[name][0] - (land_lift if name == "B.Cu" else 0.0),
+                            copper[name][1] + (land_lift if name == "F.Cu" else 0.0)) for name in ends}
+            z0, z1 = min(r[0] for r in reach.values()), max(r[1] for r in reach.values())
+            if land_lift > 0 and "F.Cu" in ends:
+                plated.append((copper["F.Cu"][1], reach["F.Cu"][1], land))
+            if land_lift > 0 and "B.Cu" in ends:
+                plated.append((reach["B.Cu"][0], copper["B.Cu"][0], land))
             upper, lower = flag["core_top"][index], flag["core_bottom"][index]
             core = ((z0 if lower else (z0 + z1) / 2, z1 if upper else (z0 + z1) / 2,
                      COPPER if flag["fill_copper"][index] else RESIN) if upper or lower else None)
-            caps = [copper[name] for name in {top, bottom} if flag["capped"][index] and core and name in ("F.Cu", "B.Cu")]
+            caps = [reach[name] for name in ends if flag["capped"][index] and core and name in ("F.Cu", "B.Cu")]
             if caps and cap_plating > 0:
-                land = discs(line, centre, vias["diameter"][index] / 2)
-                if "F.Cu" in (top, bottom):
-                    plated.append((copper["F.Cu"][1], copper["F.Cu"][1] + cap_plating, land))
-                if "B.Cu" in (top, bottom):
-                    plated.append((copper["B.Cu"][0] - cap_plating, copper["B.Cu"][0], land))
+                if "F.Cu" in ends:
+                    plated.append((reach["F.Cu"][1], reach["F.Cu"][1] + cap_plating, land))
+                if "B.Cu" in ends:
+                    plated.append((reach["B.Cu"][0] - cap_plating, reach["B.Cu"][0], land))
             holes.append((z0, z1, full, bore, core, caps))
             for name, side in (("F.Cu", "tent_top"), ("B.Cu", "tent_bottom")):
-                if flag[side][index] and name in (top, bottom) and name in (tents or {}):
+                if flag[side][index] and name in ends and name in (tents or {}):
                     thickness, color = tents[name]
-                    face = copper[name][1] if name == "F.Cu" else copper[name][0] - thickness
-                    film.append((face, face + thickness, discs(line, centre, vias["diameter"][index] / 2), color))
-            for name in {top, bottom}:
-                lands.setdefault(name, []).append(discs(line, centre, vias["diameter"][index] / 2))
+                    face = reach[name][1] if name == "F.Cu" else reach[name][0] - thickness
+                    film.append((face, face + thickness, land, color))
+            between = [name for name, (c0, c1) in copper.items()
+                       if name not in ends and z0 < c0 and c1 < z1]
+            for name in ends | {name for name in between if _ringed(ring_modes[index], layers.get(name, EMPTY), land)}:
+                lands.setdefault(name, []).append(land)
     if pad_drills is not None and len(pad_drills):
         rows = np.asarray(pad_drills, np.float64).reshape(-1, 6)
         whole = (min(z[0] for z in copper.values()), max(z[1] for z in copper.values()))

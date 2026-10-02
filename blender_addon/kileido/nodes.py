@@ -4,10 +4,11 @@ import bpy
 
 from .placement import PLACEHOLDER_HEIGHT_M
 
-PLUG_SCALE = 0.97  # a plug's core, of the drill: inside the barrel wall
+PLUG_GAP_M = 1e-6  # a plug's core, this far inside the barrel's plating
+VIA_VERTICES = 48  # around a via's land, barrel and core: within 0.1 % of the circle the cut draws
 PLUG_INSET_M = 2e-6  # and this far short of each end, inside the lands
 TENT_LIFT_M = 0.5e-6  # a via's tent, above its land's surface
-TENT_SCALE = 1.02  # of the drill: over the edge of the see-through hole, onto the land
+TENT_SCALE = 1.02  # of the bore: over the edge of the see-through hole, onto the land
 
 
 def _group(name, extra=()):
@@ -459,8 +460,9 @@ def vias():
     (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill),
     its cap plating (`cap`, metres, on its outer lands), its mask tents (`tent_top`,
     `tent_bottom`) and a bare barrel (`bare_barrel`). A `drilled` via is see-through in its
-    drill (holes.py), so its lands read as rings and its core reaches the surface."""
-    group, source, sink = _group("KLS_Vias_v8", (("Material", "NodeSocketMaterial"),
+    bore (holes.py), so its lands read as rings and its core reaches the surface. `Plating`:
+    the barrel's wall, inside the drill (the bore is the drill less twice that)."""
+    group, source, sink = _group("KLS_Vias_v9", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Bare Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
@@ -468,7 +470,8 @@ def vias():
                                                    ("Fill Material", "NodeSocketMaterial"),
                                                    ("Copper Fill Material", "NodeSocketMaterial"),
                                                    ("Tent Top Material", "NodeSocketMaterial"),
-                                                   ("Tent Bottom Material", "NodeSocketMaterial")))
+                                                   ("Tent Bottom Material", "NodeSocketMaterial"),
+                                                   ("Plating", "NodeSocketFloat", 25e-6)))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -516,9 +519,10 @@ def vias():
         return compare.outputs["Result"]
 
     middle_points = shifted_points(middle.outputs[0])
+    bore = math("MAXIMUM", math("MULTIPLY_ADD", source.outputs["Plating"], -2.0, drill), math("MULTIPLY", drill, 0.2))
     circle = nodes.new("GeometryNodeMeshCircle")
     circle.fill_type = "NGON"
-    circle.inputs["Vertices"].default_value = 24
+    circle.inputs["Vertices"].default_value = VIA_VERTICES
     circle.inputs["Radius"].default_value = 0.5
 
     def annulus(z, thickness, sign, copper):
@@ -533,7 +537,7 @@ def vias():
         start.operation = "ADD"
         links.new(z, start.inputs[0])
         links.new(inward.outputs[0], start.inputs[1])
-        shape, height = _disk_or_cylinder(nodes, links, thickness, 24, 1.0, copper)
+        shape, height = _disk_or_cylinder(nodes, links, thickness, VIA_VERTICES, 1.0, copper)
         flip = nodes.new("ShaderNodeMath")  # the cylinder grows back out to the surface
         flip.operation = "MULTIPLY"
         links.new(height, flip.inputs[0])
@@ -568,11 +572,11 @@ def vias():
     outer_bottom = annulus(*capped_end(bottom, source.outputs["Bottom Thickness"], "outer_bottom", 1.0), 1.0,
                            source.outputs["Bottom Thickness"])
 
-    # The barrel: a plated wall at the drill diameter, top land to bottom land.
+    # The barrel: the plating's inner face (the bore), top land to bottom land.
     # The lands and board are see-through inside the drill (holes.py); no boolean.
     wall_circle = nodes.new("GeometryNodeMeshCircle")
     wall_circle.fill_type = "NONE"
-    wall_circle.inputs["Vertices"].default_value = 24
+    wall_circle.inputs["Vertices"].default_value = VIA_VERTICES
     wall_circle.inputs["Radius"].default_value = 0.5
     wall_curve = nodes.new("GeometryNodeMeshToCurve")
     links.new(wall_circle.outputs["Mesh"], wall_curve.inputs["Mesh"])
@@ -603,11 +607,11 @@ def vias():
             links.new(bare, finished.inputs[0])
             links.new(finished.outputs[0], barrel.inputs["Selection"])
         links.new(painted_wall.outputs["Geometry"], barrel.inputs["Instance"])
-        links.new(_xyz(nodes, links, drill, height.outputs[0]), barrel.inputs["Scale"])
+        links.new(_xyz(nodes, links, bore, height.outputs[0]), barrel.inputs["Scale"])
         links.new(barrel.outputs["Instances"], barrels.inputs["Geometry"])
     # A tent: the mask spanning the drill, a flat disk just outside the land (facing out).
     tents = nodes.new("GeometryNodeJoinGeometry")
-    tent_width = math("MULTIPLY", drill, TENT_SCALE)
+    tent_width = math("MULTIPLY", bore, TENT_SCALE)
     for name, z, sign in (("top", top, 1.0), ("bottom", bottom, -1.0)):
         painted_tent = nodes.new("GeometryNodeSetMaterial")
         links.new(circle.outputs["Mesh"], painted_tent.inputs["Geometry"])
@@ -623,16 +627,13 @@ def vias():
     # for `core_top`, down for `core_bottom`).
     core = nodes.new("GeometryNodeMeshCylinder")
     core.fill_type = "NGON"
-    core.inputs["Vertices"].default_value = 24
+    core.inputs["Vertices"].default_value = VIA_VERTICES
     core.inputs["Radius"].default_value = 0.5
     core.inputs["Depth"].default_value = 1.0
     core_flat = nodes.new("GeometryNodeSetShadeSmooth")  # smooth normals streak the flat ends
     core_flat.inputs["Shade Smooth"].default_value = False
     links.new(core.outputs["Mesh"], core_flat.inputs["Mesh"])
-    core_width = nodes.new("ShaderNodeMath")
-    core_width.operation = "MULTIPLY"
-    links.new(drill, core_width.inputs[0])
-    core_width.inputs[1].default_value = PLUG_SCALE
+    core_width = math("SUBTRACT", bore, 2 * PLUG_GAP_M)
 
     # Its ends: at the surface in a drilled via (inside the ring), else under the land.
     solid = math("SUBTRACT", 1.0, _named(nodes, "drilled"))
@@ -676,7 +677,7 @@ def vias():
         links.new(core_points, placed.inputs["Points"])
         links.new(which.outputs[0], placed.inputs["Selection"])
         links.new(painted_core.outputs["Geometry"], placed.inputs["Instance"])
-        links.new(_xyz(nodes, links, core_width.outputs[0], core_height), placed.inputs["Scale"])
+        links.new(_xyz(nodes, links, core_width, core_height), placed.inputs["Scale"])
         links.new(placed.outputs["Instances"], cores.inputs["Geometry"])
 
     copper = nodes.new("GeometryNodeJoinGeometry")
