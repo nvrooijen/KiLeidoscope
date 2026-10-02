@@ -78,7 +78,7 @@ def main():
     studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
     assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
     assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v3", "KLS_Fill_v3", "KLS_FillSingle_v3",
-                                                      "KLS_Drills_v2", "KLS_Vias_v12", "KLS_Board_v3",
+                                                      "KLS_Drills_v2", "KLS_Vias_v13", "KLS_Board_v3",
                                                       "KLS_Solder"))
 
     top = collection.all_objects["KLS F.Cu tracks"]

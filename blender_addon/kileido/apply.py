@@ -435,9 +435,18 @@ def _apply_vias(header, arrays):
     if protect is None or len(protect) != count:
         protect = np.full((count, len(protection.FIELDS)), protection.FROM_RULES, np.uint8)
     write_attribute(mesh, "protection", "INT", protection.pack(protect))
-    rings = arrays.get("rings")  # KiCad's annular rings (kileido_bridge.model.RINGS_*, else all): the cut draws them
-    write_attribute(mesh, "rings", "INT", np.asarray(rings if rings is not None and len(rings) == count
-                                                     else np.ones(count), np.int32))
+    # Its annular rings (kileido_bridge.via_rings): bit i on header["copper"][i]. A bridge from
+    # before them: every layer. The cut draws them all; the outer lands only where ringed.
+    copper = list(header.get("copper") or names)
+    ringed = arrays.get("ringed")
+    ringed = (ringed.view(np.uint32).astype(np.int64) if ringed is not None and len(ringed) == count
+              else np.full(count, (1 << len(copper)) - 1, np.int64))
+    write_attribute(mesh, "ringed", "INT", ringed.astype(np.uint32).view(np.int32))
+    obj["kls_ring_layers"] = copper
+    for flag, layer in (("ring_top", "F.Cu"), ("ring_bottom", "B.Cu")):
+        bit = 1 << copper.index(layer) if layer in copper else 0
+        write_attribute(mesh, flag, "FLOAT", ((ringed & bit) > 0).astype(np.float32) *
+                        read_attribute(mesh, "outer_" + flag.split("_")[1], np.float32))
     mesh.update()
     obj.location.z = 0
     obj["kls_ids"] = header["ids"]

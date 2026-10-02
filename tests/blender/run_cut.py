@@ -255,6 +255,22 @@ def main():
         # Its floor: plated like its barrel, flat on In1, not mask-covered.
         (floor,) = [z for z in blind[board.materials["plating_bare"].name] if z[0] == z[1]]
         assert abs(floor[0] - board.heights["In1.Cu"]) < 5e-6, floor
+
+        # KiCad's "Annular rings": the 3D outer lands and the section's rings follow the layers
+        # the bridge gives a ring (kileido_bridge.via_rings). Start and end layers only:
+        layered["vias"][2]["rings"] = 4  # model.RINGS_ENDS
+        protect(layered, [FILLED_CAPPED] * 3)
+        names = list(vias["kls_ring_layers"])
+        through = int(vias.data.attributes["ringed"].data[2].value) & 0xFFFFFFFF
+        assert {name for i, name in enumerate(names) if through >> i & 1} == {"F.Cu", "B.Cu"}
+        assert attribute("ring_top")[2] == 1 and attribute("ring_bottom")[2] == 1
+        layered["vias"][2]["rings"] = 2  # model.RINGS_CONNECTED, with no copper touching it on F.Cu or B.Cu
+        protect(layered, [FILLED_CAPPED] * 3)
+        assert attribute("ring_top")[2] == 0 and attribute("ring_bottom")[2] == 0
+        assert "KLS Vias" not in z_ranges(vias.data.vertices[2].co.x)  # no outer lands drawn
+        layered["vias"][2]["rings"] = 1  # model.RINGS_ALL again
+        protect(layered, [FILLED_CAPPED] * 3)
+        assert len(z_ranges(vias.data.vertices[2].co.x)["KLS Vias"]) == 2
         scene.kileido_via_fill_material = "COPPER"
         assert attribute("fill_copper") == [1, 1, 1]
         assert board.materials["via_resin"].name not in via_faces()[1]

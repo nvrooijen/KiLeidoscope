@@ -460,13 +460,14 @@ def vias():
     (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill;
     `plug_ink`: a plug of solder mask ink; else the resin), its cap plating (`cap`, metres,
     on its outer lands), its mask tents (`tent_top`, `tent_bottom`) and a bare barrel
-    (`bare_barrel`). `outer_top`/`outer_bottom`: the via reaches F.Cu / B.Cu. An end on
+    (`bare_barrel`). `outer_top`/`outer_bottom`: the via reaches F.Cu / B.Cu, and
+    `ring_top`/`ring_bottom`: it has an annular ring there (KiCad's "Annular rings"). An end on
     inner copper (a blind via's floor, a buried via's ends) is a flat land on that copper,
     plated like the barrel; `z_top`/`z_bottom` stand `Land Lift` outside the copper they end
     on. A `drilled` via is see-through in its bore (holes.py), so its lands read as rings
     and its core reaches the surface. `Plating`: the barrel's wall, inside the drill (the
     bore is the drill less twice that)."""
-    group, source, sink = _group("KLS_Vias_v12", (("Material", "NodeSocketMaterial"),
+    group, source, sink = _group("KLS_Vias_v13", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
                                                    ("Bare Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
@@ -555,8 +556,8 @@ def vias():
     circle.inputs["Radius"].default_value = 0.5
 
     def outer_land(z, copper, name, sign):
-        """A land on outer copper (sign -1 on top, +1 at the bottom), on the vias that reach it
-        (`name`): a disk at the copper surface, or, for thick `copper`, a cylinder from its
+        """A land on outer copper (sign -1 on top, +1 at the bottom), on the vias with a ring
+        there (`name`): a disk at the copper surface, or, for thick `copper`, a cylinder from its
         inner face out through it and a capped via's `cap` plating, which stands proud."""
         shape, scale_z = _disk_or_cylinder(nodes, links, math("ADD", copper, _named(nodes, "cap")), VIA_VERTICES,
                                            1.0, copper)
@@ -564,8 +565,8 @@ def vias():
                          _xyz(nodes, links, diameter, math("MULTIPLY", scale_z, -sign)))  # grown back outward
 
     # Top and bottom, so vias read correctly from either side.
-    lands = painted("Material", outer_land(top, source.outputs["Top Thickness"], "outer_top", -1.0),
-                    outer_land(bottom, source.outputs["Bottom Thickness"], "outer_bottom", 1.0))
+    lands = painted("Material", outer_land(top, source.outputs["Top Thickness"], "ring_top", -1.0),
+                    outer_land(bottom, source.outputs["Bottom Thickness"], "ring_bottom", 1.0))
 
     # Finished like the pads, or bare copper where a tent, plug or fill kept the finish out.
     bare = flag("bare_barrel")

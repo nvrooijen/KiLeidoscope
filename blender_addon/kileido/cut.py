@@ -320,8 +320,10 @@ def _gather():
                          if name in mesh.attributes})
             if "cap" in mesh.attributes:  # the cap plating's thickness, 0 where uncapped
                 vias["capped"] = read_attribute(mesh, "cap", np.float32) > 0
-            if "rings" in mesh.attributes:
-                vias["rings"] = read_attribute(mesh, "rings", np.int32)
+            if "ringed" in mesh.attributes:  # the layers with an annular ring (apply._apply_vias)
+                names = list(obj.get("kls_ring_layers", ()))
+                masks = read_attribute(mesh, "ringed", np.int32).view(np.uint32)
+                vias["ringed"] = [{name for i, name in enumerate(names) if int(mask) >> i & 1} for mask in masks]
         elif obj.get("kls_drill"):
             width, height = _modifier_input(obj, "Width"), _modifier_input(obj, "Height")
             plated = _modifier_input(obj, "Material") == board.materials.get("plating")

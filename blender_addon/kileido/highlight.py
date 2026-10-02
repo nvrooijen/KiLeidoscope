@@ -19,7 +19,7 @@ LIFT_M = 1e-6  # above the copper's outer surface
 GROW_M = 4e-6  # 2 um wider per side, so the copper edge never shows through
 # A via's outer ends and resolved protection (apply), copied as they are: nodes.vias draws from them.
 VIA_FLAGS = ("outer_top", "outer_bottom", "core_top", "core_bottom", "fill_copper", "plug_ink", "cap", "drilled",
-             "tent_top", "tent_bottom", "bare_barrel")
+             "tent_top", "tent_bottom", "bare_barrel", "ring_top", "ring_bottom")
 BOX_MARGIN_M = 0.1e-3  # around the component body
 
 

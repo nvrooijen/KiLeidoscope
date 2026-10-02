@@ -299,7 +299,6 @@ def stack_layout(heights, thickness, stack, saved):
 
 # --- The section ------------------------------------------------------------------------------
 
-RINGS_ALL, RINGS_CONNECTED, RINGS_ENDS_AND_CONNECTED, RINGS_ENDS = 1, 2, 3, 4  # kileido_bridge.model
 OUTER = ("F.Cu", "B.Cu")
 
 
@@ -324,14 +323,6 @@ def _copper_extent(copper):
     return min(z[0] for z in copper.values()), max(z[1] for z in copper.values())
 
 
-def _ringed(mode, copper_here, land):
-    """An annular ring on a layer between a via's ends: on every layer, or only where that
-    layer's copper reaches the land (along the cut)."""
-    if mode == RINGS_ENDS:
-        return False
-    return mode == RINGS_ALL or len(intersect(copper_here, land)) > 0
-
-
 def _via_parts(line, vias, layers, copper, plating, cap_plating, tents, land_lift, plug_color):
     """The vias the cut crosses, as (holes, lands, plated, films) for `cross_section`.
 
@@ -346,7 +337,7 @@ def _via_parts(line, vias, layers, copper, plating, cap_plating, tents, land_lif
     near = np.abs(line.d(xy)) < np.maximum(vias["diameter"], vias["drill"]) / 2
     flag = {name: np.asarray(vias.get(name, np.zeros(len(xy))), bool).reshape(-1)
             for name in ("core_top", "core_bottom", "fill_copper", "plug_ink", "capped", "tent_top", "tent_bottom")}
-    ring_modes = np.asarray(vias.get("rings", np.full(len(xy), RINGS_ALL)), np.int64).reshape(-1)
+    ringed = vias.get("ringed")  # per via, the layers with an annular ring; else every layer
     for index in np.flatnonzero(near):
         top, bottom = vias["top"][index], vias["bottom"][index]
         if top not in copper or bottom not in copper:
@@ -357,6 +348,8 @@ def _via_parts(line, vias, layers, copper, plating, cap_plating, tents, land_lif
         land = discs(line, centre, vias["diameter"][index] / 2)
         ends = {top, bottom}
         outer = [name for name in OUTER if name in ends]
+        ringed_here = ringed[index] if ringed is not None else set(copper)
+        pad = {name: land if name in ringed_here else EMPTY for name in outer}  # an outer end without a ring: none
         # Each end's land; an outer one stands `land_lift` out of its copper, as in 3D.
         reach = {name: (copper[name][0] - (land_lift if name == "B.Cu" else 0.0),
                         copper[name][1] + (land_lift if name == "F.Cu" else 0.0)) for name in ends}
@@ -378,18 +371,22 @@ def _via_parts(line, vias, layers, copper, plating, cap_plating, tents, land_lif
             sign = 1.0 if name == "F.Cu" else -1.0
             face = copper[name][1] if sign > 0 else copper[name][0]
             tent = flag["tent_top" if sign > 0 else "tent_bottom"][index] and name in tents
-            for thickness, color in ((land_lift, None), (cap_plating if capped else 0.0, None),
-                                     tents[name] if tent else (0.0, None)):
+            cover = land if len(pad[name]) else full  # without a ring: over the drill alone
+            for thickness, color, across in ((land_lift if len(pad[name]) else 0.0, None, land),
+                                             (cap_plating if capped else 0.0, None, cover),
+                                             (*(tents[name] if tent else (0.0, None)), cover)):
                 if thickness > 0:
                     span = sorted((face, face + sign * thickness))
                     if color is None:
-                        plated.append((*span, land))
+                        plated.append((*span, across))
                     else:
-                        films.append((*span, land, tuple(color)))
+                        films.append((*span, across, tuple(color)))
                     face += sign * thickness
+        # Rings: on the layers KiCad gives one; an inner end (a blind via's floor) always has its land.
         between = [name for name, (c0, c1) in copper.items() if name not in ends and z0 < c0 and c1 < z1]
-        for name in (*ends, *(name for name in between if _ringed(ring_modes[index], layers.get(name, EMPTY), land))):
-            lands.setdefault(name, []).append(land)
+        for name in (*ends, *between):
+            if name in ringed_here or (name in ends and name not in OUTER):
+                lands.setdefault(name, []).append(land)
     return holes, {name: _union(found) for name, found in lands.items()}, plated, films
 
 
@@ -492,9 +489,9 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     copper (the core ends under it), and `cap_plating` more over the land, outside it.
     `tent_top`/`tent_bottom`: the solder mask spans its drill there, drawn as a film over
     the land (outside any cap) from `tents` ({"F.Cu"/"B.Cu": (mask thickness, sRGB)}).
-    `rings`: which layers between its ends have an annular ring (`RINGS_*`, KiCad's
-    "Annular rings"; its two ends always have one). "Connected" is judged along the cut:
-    that layer's copper reaches the via's land there.
+    `ringed`: per via, the set of layers with an annular ring (KiCad's "Annular rings",
+    worked out by the bridge); without it, every layer. An outer end without one has no
+    land (a cap or tent then spans the drill alone); an inner end always keeps its land.
     land_lift: the 3D outer lands stand this far out of the copper; their section does too.
     pad_drills: rows (x, y, width, height, angle, plated), through the whole board.
     plating: barrel wall thickness, in vias and plated pad drills.

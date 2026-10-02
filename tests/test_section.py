@@ -198,35 +198,39 @@ def test_cross_section_shows_the_plated_edge_as_a_strip_outside_the_board():
     assert color_at(rects, 20 * MM + 10 * UM, 800 * UM) is None  # the right edge is not plated
 
 
-def _through(rings, land_lift=0.0, capped=False):
-    """The same board with a through via at x = 10 mm instead (0.6 mm land, 0.3 mm drill);
-    In1 is poured over the whole board, In2 is empty."""
+ALL_LAYERS = {"F.Cu", "In1.Cu", "In2.Cu", "B.Cu"}
+
+
+def _through(ringed=ALL_LAYERS, land_lift=0.0, capped=False):
+    """The same board with a through via at x = 10 mm instead (0.6 mm land, 0.3 mm drill),
+    with annular rings on the `ringed` layers; In1 is poured over the whole board."""
     copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
     layers = {"In1.Cu": section.rings(ALONG_X, *square(-20 * MM, -15 * MM, 20 * MM, 15 * MM))}
     vias = {"xy": np.array([(10 * MM, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
-            "top": ["F.Cu"], "bottom": ["B.Cu"], "rings": [rings], "core_top": [capped], "core_bottom": [capped],
+            "top": ["F.Cu"], "bottom": ["B.Cu"], "ringed": [set(ringed)], "core_top": [capped], "core_bottom": [capped],
             "capped": [capped]}
     return section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), layers, copper, bands,
                                  vias=vias, plating=25 * UM, cap_plating=20 * UM, land_lift=land_lift)
 
 
-@pytest.mark.parametrize("rings, on_in2", [(section.RINGS_ALL, True), (section.RINGS_CONNECTED, False),
-                                           (section.RINGS_ENDS_AND_CONNECTED, False), (section.RINGS_ENDS, False)])
-def test_annular_rings_on_inner_layers_follow_kicad(rings, on_in2):
-    rects = _through(rings)
+@pytest.mark.parametrize("ringed", [ALL_LAYERS, {"F.Cu", "In1.Cu", "B.Cu"}, {"In1.Cu", "B.Cu"}, {"In1.Cu"}])
+def test_annular_rings_on_the_layers_kicad_gives_one(ringed):
+    rects = _through(ringed)
     ring = (10 + 0.25) * MM  # on the land, beside the drill
-    assert (color_at(rects, ring, 850 * UM) == section.COPPER) == on_in2  # In2: nothing connects here
-    assert color_at(rects, ring, 1290 * UM) == section.COPPER  # In1's pour reaches it (and is copper anyway)
-    assert color_at(rects, ring, 1520 * UM) == section.COPPER and color_at(rects, ring, 20 * UM) == section.COPPER
+    assert (color_at(rects, ring, 850 * UM) == section.COPPER) == ("In2.Cu" in ringed)  # In2 has no copper here
+    assert color_at(rects, ring, 1290 * UM) == section.COPPER  # In1's pour (and ring)
+    assert (color_at(rects, ring, 1520 * UM) == section.COPPER) == ("F.Cu" in ringed)  # no ring: no land at all
+    assert (color_at(rects, ring, 20 * UM) == section.COPPER) == ("B.Cu" in ringed)
     assert color_at(rects, 10 * MM, 850 * UM) is None  # a ring, not across the bore
+    assert color_at(rects, (10 + 0.15 - 0.0125) * MM, 1520 * UM) == section.COPPER  # the barrel wall either way
 
 
 def test_lands_stand_as_far_out_as_in_3d():
-    rects = _through(section.RINGS_ALL, land_lift=3 * UM)
+    rects = _through(land_lift=3 * UM)
     assert color_at(rects, (10 + 0.25) * MM, 1542 * UM) == section.COPPER  # F.Cu's top is 1540 um
     assert color_at(rects, (10 + 0.25) * MM, -2 * UM) == section.COPPER
     assert color_at(rects, 10 * MM, 1542 * UM) is None  # still a ring
-    capped = _through(section.RINGS_ALL, land_lift=3 * UM, capped=True)
+    capped = _through(land_lift=3 * UM, capped=True)
     assert color_at(capped, 10 * MM, 1542 * UM) == section.COPPER  # across the drill under the cap
     assert color_at(capped, 10 * MM, 1560 * UM) == section.COPPER  # the cap plating, from 1543 um
     assert color_at(capped, 10 * MM, 1564 * UM) is None
@@ -265,3 +269,9 @@ def test_copper_rounded_at_a_corner_still_plates_it():
     ends = {tuple(np.round(np.asarray(point) / UM)) for start, end, _ in stretches for point in (start, end)}
     assert (-20_000, -15_000) in ends and (-20_000, 15_000) in ends  # run on to the board's corners
     assert (0, 15_000) in ends or (0, -15_000) in ends  # but not past the copper's own end mid-edge
+
+
+def test_a_cap_over_an_end_without_a_ring_spans_the_drill_alone():
+    rects = _through({"In1.Cu", "B.Cu"}, land_lift=3 * UM, capped=True)
+    assert color_at(rects, 10 * MM, 1550 * UM) == section.COPPER  # the cap plating over the drill
+    assert color_at(rects, (10 + 0.25) * MM, 1550 * UM) is None  # but no land under it to cover
