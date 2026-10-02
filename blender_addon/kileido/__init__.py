@@ -654,9 +654,14 @@ def _thickness_update(refresh_live):
     return update
 
 
+PLUG_FOR_FILL = "kls_plug_for_fill"  # on the scene while Via fill chose the resin plug
+
+
 def _via_plug_update(scene):
     """A plugged via is closed from above, and the cross section shows its plug. An open
     barrel cannot be capped: Via fill goes off with it."""
+    if PLUG_FOR_FILL in scene and scene.kileido_via_plug != "RESIN":
+        del scene[PLUG_FOR_FILL]  # a plug chosen by hand stays when Via fill goes off
     if scene.kileido_via_plug == "NONE" and scene.kileido_via_fill:
         scene.kileido_via_fill = False  # its own update refreshes the vias
         return
@@ -665,9 +670,15 @@ def _via_plug_update(scene):
 
 
 def _via_fill_update(scene):
-    """Capped vias are filled first: an open plug becomes resin."""
+    """Capped vias are filled first: an open plug becomes resin, and opens again when
+    Via fill goes off."""
     if scene.kileido_via_fill and scene.kileido_via_plug == "NONE":
+        scene[PLUG_FOR_FILL] = True
         scene.kileido_via_plug = "RESIN"  # its own update refreshes the vias
+        return
+    if not scene.kileido_via_fill and PLUG_FOR_FILL in scene:
+        del scene[PLUG_FOR_FILL]
+        scene.kileido_via_plug = "NONE"
         return
     apply.refresh_via_fill()
     cut.rebuild()
