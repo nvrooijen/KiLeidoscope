@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="492" viewBox="0 0 680 492" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="578" viewBox="0 0 680 578" role="img">
 <title>KiLeidoscope vias, cut plane and edge plating</title>
-<desc>KiCad's live API gives each via's protection and annular rings; a copy of the board file gives the board's via defaults and the plated-edge flag. The bridge reads both and sends frames to the Blender add-on, which resolves each via with the panel's settings and draws the 3D vias, the hole mask, the cross section and the edge plating.</desc>
+<desc>KiCad's live API gives each via's protection and annular rings; a copy of the board file gives the board's via defaults and the plated-edge flag. The bridge reads both and sends frames to the Blender add-on, which resolves each via with the panel's settings and draws the 3D vias, the hole mask, the cross section and the edge plating. The cross section's laminate gets a woven-glass texture and its copper a polish.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
 <style>
@@ -14,7 +14,7 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 </defs>
 <rect x="30" y="110" width="620" height="130" rx="8" class="group"/>
 <text class="ts lbl" x="46" y="126">Bridge</text>
-<rect x="30" y="262" width="620" height="210" rx="8" class="group"/>
+<rect x="30" y="262" width="620" height="296" rx="8" class="group"/>
 <text class="ts lbl" x="46" y="278">Blender add-on</text>
 <rect x="110" y="30" width="210" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
 <text class="th" x="215" y="50" text-anchor="middle" fill="#FFFFFF">KiCad, live</text>
@@ -52,6 +52,12 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 <rect x="501" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
 <text class="th" x="567" y="420" text-anchor="middle" fill="#412402">Cross section</text>
 <text class="ts" x="567" y="438" text-anchor="middle" fill="#633806">cut + section</text>
+<rect x="349" y="486" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="415" y="506" text-anchor="middle" fill="#412402">Polished copper</text>
+<text class="ts" x="415" y="524" text-anchor="middle" fill="#633806">metal.py</text>
+<rect x="501" y="486" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="567" y="506" text-anchor="middle" fill="#412402">Glass weave</text>
+<text class="ts" x="567" y="524" text-anchor="middle" fill="#633806">laminate.py</text>
 <line x1="215" y1="86" x2="160" y2="138" class="arr" marker-end="url(#arrow)"/>
 <line x1="465" y1="86" x2="350" y2="138" class="arr" marker-end="url(#arrow)"/>
 <line x1="425" y1="168" x2="448" y2="168" class="arr" marker-end="url(#arrow)"/>
@@ -63,4 +69,6 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 <line x1="330" y1="348" x2="268" y2="398" class="arr" marker-end="url(#arrow)"/>
 <line x1="345" y1="348" x2="410" y2="398" class="arr" marker-end="url(#arrow)"/>
 <line x1="360" y1="348" x2="560" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="567" y1="486" x2="567" y2="458" class="arr" marker-end="url(#arrow)"/>
+<line x1="440" y1="486" x2="540" y2="458" class="arr" marker-end="url(#arrow)"/>
 </svg>
