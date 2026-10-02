@@ -35,9 +35,15 @@ Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> b
 - View-only boards: save a board as a `.blend` package, place several side by side and check them for collisions. In a future update, Linux users will be able to control multiple boards simultaneously in the same Blender UI, allowing for true multi-PCB assemblies. 
 
 <p align="center">
-  <img src="assets/collisions.png" width="480" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
+  <img src="assets/collisions.png" width="290" align="middle" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
+  &nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/CutPlaneViasAnnotatedDark_web.png">
+    <img src="assets/CutPlaneViasAnnotatedLight_web.png" width="510" align="middle" alt="A board cut open with the cut plane. The cross section shows laminate bands and copper layers, with labels for edge plating and for buried, blind, tented, plugged, filled and capped vias.">
+  </picture>
 </p>
-<p align="center"><sub>Multi-board assembly mode, visualizing board and component collisions. Malformed board outlines are highlighted.</sub></p>
+<p align="center"><sub>Left: Multi-board assembly mode, visualizing board and component collisions. Malformed board outlines are highlighted.<br>
+Right: the cut plane opens the board and shows its cross section, with each via drawn as KiCad has it set. See the <a href="docs/cut-plane/README.md">cut plane guide</a>.</sub></p>
 
 ## Architecture
 
