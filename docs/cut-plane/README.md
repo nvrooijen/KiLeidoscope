@@ -1,4 +1,4 @@
-# (New!) Cutting planes and via cross sections
+# (New!) Cutting planes and via cross-sections
 
 As new and requested feature, board inspections can now be done on a cross-sectional level. This can be particularly useful when dealing with complex stack-ups. Simply by selecting the cut plane feature, a movable upright plane appears upon which the cross-section sit: the laminate of the stack-up, every copper layer at its stack-up thickness, vias with their plating, plugs, fills, caps and tents and a plated board edge. The tool relies on KiCad's built-in board stack-up and via settings, and the bridge synchronizes your changes directly to Blender. Edit a via's protection, move a track or change the stackup, and the section redraws a moment later.
 
