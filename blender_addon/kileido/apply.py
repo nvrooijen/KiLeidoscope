@@ -11,7 +11,7 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
+from . import (balance, cosmetics, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
                render_depth, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
@@ -32,6 +32,7 @@ def load_frames(data: bytes) -> float:
 
 
 def apply_frame(header, arrays):
+    balance.observe(header, arrays)  # copper frames feed the copper balance analysis
     message_type = header["type"]
     if message_type == "snapshot_begin":
         _begin_snapshot()

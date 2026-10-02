@@ -24,6 +24,7 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_outline.py
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_silk.py
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_exports.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_balance.py
 ```
 
 `python tools/build_package.py` writes the KiCad package, `dist/kileidoscope-<version>.zip`.
