@@ -438,10 +438,9 @@ def _apply_vias(header, arrays):
     mesh.update()
     obj.location.z = 0
     obj["kls_ids"] = header["ids"]
-    set_modifier(obj, board.groups["vias"], "vias", {"Drill Material": board.materials["plating"],
-                                                     "Top Thickness": copper_thickness("F.Cu"),
+    set_modifier(obj, board.groups["vias"], "vias", {"Top Thickness": copper_thickness("F.Cu"),
                                                      "Bottom Thickness": copper_thickness("B.Cu"),
-                                                     **materials.fill_inputs()})
+                                                     **materials.via_inputs()})
     refresh_protection(highlights=False)
     board.touched.add(obj.name)
     highlight.refresh(kind="vias")
@@ -530,7 +529,8 @@ def set_board_visible(visible):
 
 def refresh_protection(highlights=True):
     """Resolve each via's protection (KiCad's, with the board's rules and the panel's
-    Max tent drill): the 3D plugs, fills and caps, and which vias stay see-through."""
+    Max tent drill): the 3D plugs, fills, caps and tents, bare or finished barrels, and
+    which vias are drilled through the board (protection.py)."""
     if board.collection is None:
         return
     vias = board.collection.all_objects.get("KLS vias")
@@ -546,12 +546,14 @@ def refresh_protection(highlights=True):
     copper_fill = getattr(scene, "kileido_via_fill_material", "RESIN") == "COPPER"
     for name, values in (("core_top", found["core_top"]), ("core_bottom", found["core_bottom"]),
                          ("fill_copper", found["filled"] & copper_fill),
-                         ("cap", found["capped"] * CAP_PLATING_M)):
+                         ("cap", found["capped"] * CAP_PLATING_M), ("drilled", found["drilled"]),
+                         ("tent_top", found["tent_top"]), ("tent_bottom", found["tent_bottom"]),
+                         ("bare_barrel", ~found["finished"])):
         write_attribute(mesh, name, "FLOAT", np.asarray(values, np.float32))
     mesh.update()
     board.via_too_big = int(found["too_big"].sum())
     xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
-    holes.set_vias(xy[found["open"]], drill[found["open"]])
+    holes.set_vias(xy[found["drilled"]], drill[found["drilled"]])  # rings; tents and cores close them
     if highlights:
         highlight.refresh(kind="vias")
     cut.invalidate()

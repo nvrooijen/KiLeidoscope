@@ -21,7 +21,7 @@ import numpy as np
 from mathutils import Vector
 
 from . import focus, laminate, metal, nodes, section, shading, transform
-from .placement import CAP_PLATING_M
+from .placement import CAP_PLATING_M, mask_thickness
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -307,9 +307,10 @@ def _gather():
                     "drill": read_attribute(mesh, "drill", np.float32).astype(np.float64),
                     "top": _layers_at(read_attribute(mesh, "z_top", np.float32) - land),
                     "bottom": _layers_at(read_attribute(mesh, "z_bottom", np.float32) + land)}
-            if "core_top" in mesh.attributes:  # plug, fill and cap, as apply.refresh_protection resolved them
+            if "core_top" in mesh.attributes:  # plug, fill, cap and tents, as apply.refresh_protection resolved them
                 vias.update({name: read_attribute(mesh, name, np.float32) > 0.5
-                             for name in ("core_top", "core_bottom", "fill_copper")})
+                             for name in ("core_top", "core_bottom", "fill_copper", "tent_top", "tent_bottom")
+                             if name in mesh.attributes})
                 vias["capped"] = read_attribute(mesh, "cap", np.float32) > 0
         elif obj.get("kls_drill"):
             width, height = _modifier_input(obj, "Width"), _modifier_input(obj, "Height")
@@ -466,8 +467,19 @@ def rectangles(scene=None):
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=float(getattr(scene, "kileido_via_plating_um", 25.0)) * 1e-6,
-                                  cap_plating=CAP_PLATING_M)
+                                  cap_plating=CAP_PLATING_M, tents=_tents())
     return rects, (line, normal)
+
+
+def _tents():
+    """The solder mask over tented vias, per outer layer: (thickness, sRGB), while shown."""
+    from . import materials  # materials imports this module
+    found = {}
+    for side, layer in (("F", "F.Cu"), ("B", "B.Cu")):
+        mask = materials.mask_color(side)
+        if mask:
+            found[layer] = (mask_thickness(side), tuple(materials.seen_through(mask, materials.COPPER_UNDER_MASK)))
+    return found
 
 
 def rebuild(scene=None):
@@ -498,7 +510,7 @@ def rebuild(scene=None):
     attribute = mesh.color_attributes.get(FACE_COLOR) or mesh.color_attributes.new(FACE_COLOR, "FLOAT_COLOR", "POINT")
     attribute.data.foreach_set("color", colors.ravel())
     copper = np.repeat([rect[4] == section.COPPER for rect in rects], 4).astype(np.float32)
-    weave = np.repeat([rect[4] not in (section.COPPER, section.RESIN) for rect in rects], 4).astype(np.float32)
+    weave = np.repeat([rect[4] in section.WOVEN for rect in rects], 4).astype(np.float32)
     for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave), (FACE_METAL, copper)):
         found = mesh.attributes.get(name) or mesh.attributes.new(name, "FLOAT", "POINT")
         found.data.foreach_set("value", values)

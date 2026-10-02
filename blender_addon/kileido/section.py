@@ -17,6 +17,7 @@ CORE = (0.89, 0.83, 0.62)
 PREPREG = (0.80, 0.72, 0.46)
 RESIN = (0.88, 0.87, 0.80)  # epoxy plugging a via: milky (cut.py lets the barrel show through it)
 LAMINATES = {"polyimide": (0.80, 0.50, 0.05), "ptfe": (0.94, 0.94, 0.90), "rogers": (0.92, 0.90, 0.84)}
+WOVEN = {CORE, PREPREG, *LAMINATES.values()}  # glass-reinforced: cut.py draws the weave in these
 DEFAULT_COPPER_M = 35e-6  # KiCad's own default copper thickness, when the stackup has none
 
 EMPTY = np.empty((0, 2))
@@ -264,7 +265,7 @@ def stack_layout(heights, thickness, stack, saved):
 # --- The section ------------------------------------------------------------------------------
 
 def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=None,
-                  plating=25e-6, cap_plating=0.0, plated_edges=(), edge_plating=25e-6):
+                  plating=25e-6, cap_plating=0.0, plated_edges=(), edge_plating=25e-6, tents=None):
     """Rectangles (s0, s1, z0, z1, sRGB colour), bottom up.
 
     outline: (a, b, item) edges of the board outline (even-odd: cutouts are holes).
@@ -276,6 +277,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     lower half; `fill_copper`, that core is copper (else resin); `capped`, plated over
     where it reaches the outer copper: copper across the whole drill there (the core ends
     under it), and `cap_plating` more over the land, outside the board.
+    Also optional, `tent_top`/`tent_bottom`: the solder mask spans its drill there, drawn as
+    a film over the land from `tents` ({"F.Cu"/"B.Cu": (mask thickness, sRGB)}).
     pad_drills: rows (x, y, width, height, angle, plated), through the whole board.
     plating: barrel wall thickness.
     plated_edges: stretches of a plated board edge (`plated_edges`): where the cut crosses
@@ -285,12 +288,13 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     laminate_z = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (0.0, 0.0)
     holes = []  # (z0, z1, full interval, bore interval, core (z0, z1, colour) or None, capped z ranges)
     plated = []  # (z0, z1, intervals): caps over capped vias' lands, outside the outer copper
+    film = []  # (z0, z1, intervals, colour): tents, the mask over a tented via's land and drill
     lands = {}  # layer -> land intervals
     if vias is not None and len(vias["xy"]):
         xy = np.asarray(vias["xy"], np.float64).reshape(-1, 2)
         near = np.abs(line.d(xy)) < np.maximum(vias["diameter"], vias["drill"]) / 2
         flag = {name: np.asarray(vias.get(name, np.zeros(len(xy))), bool).reshape(-1)
-                for name in ("core_top", "core_bottom", "fill_copper", "capped")}
+                for name in ("core_top", "core_bottom", "fill_copper", "capped", "tent_top", "tent_bottom")}
         for index in np.flatnonzero(near):
             top, bottom = vias["top"][index], vias["bottom"][index]
             if top not in copper or bottom not in copper:
@@ -311,6 +315,11 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
                 if "B.Cu" in (top, bottom):
                     plated.append((copper["B.Cu"][0] - cap_plating, copper["B.Cu"][0], land))
             holes.append((z0, z1, full, bore, core, caps))
+            for name, side in (("F.Cu", "tent_top"), ("B.Cu", "tent_bottom")):
+                if flag[side][index] and name in (top, bottom) and name in (tents or {}):
+                    thickness, color = tents[name]
+                    face = copper[name][1] if name == "F.Cu" else copper[name][0] - thickness
+                    film.append((face, face + thickness, discs(line, centre, vias["diameter"][index] / 2), color))
             for name in {top, bottom}:
                 lands.setdefault(name, []).append(discs(line, centre, vias["diameter"][index] / 2))
     if pad_drills is not None and len(pad_drills):
@@ -366,6 +375,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
                     done.append(tuple(rect))
                 growing[key] = [s0, s1, z0, z1, color]
     rects = done + [tuple(rect) for rect in growing.values()]
+    for z0, z1, intervals, color in film:  # outside the copper: nothing else is drawn there
+        rects += [(s0, s1, z0, z1, tuple(color)) for s0, s1 in intervals]
     if plated_edges and copper:
         bottom, top = min(z[0] for z in copper.values()), max(z[1] for z in copper.values())
         for start, end, outward in plated_edges:

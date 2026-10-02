@@ -211,17 +211,17 @@ def _refresh_vias(wanted):
         target.vertices.foreach_set("co", read_coordinates(mesh)[chosen_vertices].ravel())
         for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M),
                                   ("z_top", LIFT_M), ("z_bottom", -LIFT_M), ("outer_top", 0.0), ("outer_bottom", 0.0),
-                                  ("core_top", 0.0), ("core_bottom", 0.0), ("fill_copper", 0.0), ("cap", 0.0)):
+                                  ("core_top", 0.0), ("core_bottom", 0.0), ("fill_copper", 0.0), ("cap", 0.0),
+                                  ("drilled", 0.0), ("tent_top", 0.0), ("tent_bottom", 0.0), ("bare_barrel", 0.0)):
             values = read_attribute(mesh, attribute, np.float32)[chosen_vertices]
             write_attribute(target, attribute, "FLOAT", values + change)
         target.update()
         obj.location.z = 0
         barrel = board.materials[f"highlight_{kind}_barrel"]
         set_modifier(obj, board.groups["vias"], board.materials[f"highlight_{kind}"],
-                     {"Drill Material": barrel,
-                      "Top Thickness": copper_thickness("F.Cu"),
+                     {"Top Thickness": copper_thickness("F.Cu"),
                       "Bottom Thickness": copper_thickness("B.Cu"),
-                      **materials.fill_inputs(barrel)})
+                      **materials.via_inputs(barrel)})
         _show(obj)
 
 

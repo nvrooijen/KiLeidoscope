@@ -35,7 +35,18 @@ def test_pack_round_trips():
 def test_only_an_unprotected_through_via_is_open():
     found = resolve(NONE, (1, 0, 0, 0, 0, 0, 0, 0), (0, 0, 0, 1, 0, 0, 0, 0))  # none, I-a, II-a's cover
     assert found["open"].tolist() == [True, False, False]
-    assert not resolve(NONE, top=True, bottom=False)["open"].any()  # a blind via is never see-through
+    assert found["drilled"].all()  # all three are holes: rings, the tent closing the drill
+    assert found["tent_top"].tolist() == [False, True, False] and found["tent_bottom"].tolist() == [False, False, True]
+    assert found["finished"].tolist() == [True, False, False]  # a tent keeps the finish out of the barrel
+    blind = resolve(NONE, top=True, bottom=False)
+    assert not blind["open"].any() and not blind["drilled"].any()  # a blind via is never see-through
+    assert blind["finished"].all()  # but its open end is finished
+
+
+def test_a_capped_via_is_no_hole():
+    found = resolve((0, 0, 0, 0, 0, 0, 1, 1), (0, 0, 0, 0, 1, 1, 0, 0))  # VII, III-b
+    assert found["drilled"].tolist() == [False, True]  # the cap is copper across; a plug shows in a ring
+    assert not found["finished"].any() and not found["open"].any()
 
 
 def test_from_rules_follows_the_board():

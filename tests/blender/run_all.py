@@ -78,7 +78,7 @@ def main():
     studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
     assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
     assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v3", "KLS_Fill_v3", "KLS_FillSingle_v3",
-                                                      "KLS_Drills_v2", "KLS_Vias_v7", "KLS_Board_v3",
+                                                      "KLS_Drills_v2", "KLS_Vias_v8", "KLS_Board_v3",
                                                       "KLS_Solder"))
 
     top = collection.all_objects["KLS F.Cu tracks"]
@@ -421,10 +421,12 @@ def main():
         assert "via_rules" not in state.board.appearance  # KiCad's defaults: tented both sides
         assert via_alpha() > 0.99 and state.board.via_too_big == len(via_obj.data.vertices)
         scene.kileido_max_tent_mm = 0.4
-        assert via_alpha() == 0.0 and state.board.via_too_big == 0
+        tents = via_obj.data.attributes["tent_top"]
+        assert via_alpha() > 0.99 and tents.data[0].value == 1.0  # a hole, the tent closing it
+        assert state.board.via_too_big == 0
         state.board.appearance["via_rules"] = [0] * 8  # a board whose vias are unprotected
         apply.refresh_protection()
-        assert via_alpha() > 0.99 and state.board.via_too_big == 0
+        assert via_alpha() > 0.99 and state.board.via_too_big == 0 and tents.data[0].value == 0.0
         state.board.appearance["via_rules"] = [0, 0, 0, 0, 0, 0, 1, 1]  # filled and capped (type VII)
         apply.refresh_protection()
         assert via_alpha() == 0.0

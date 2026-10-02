@@ -77,7 +77,7 @@ def test_stack_layout_places_copper_and_colours_each_dielectric():
     assert {color for _, _, color in unknown} == {section.CORE}
 
 
-def _board(plug, capped=False, cap_plating=0.0, halves=(True, True)):
+def _board(plug, capped=False, cap_plating=0.0, halves=(True, True), tented=False):
     """40 x 30 mm board; In1 poured over all of it; a 0.5 mm F.Cu track from x = -5 to 5;
     a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill). plug: None (open),
     "RESIN" or "COPPER", in the barrel's (upper, lower) `halves`."""
@@ -87,9 +87,23 @@ def _board(plug, capped=False, cap_plating=0.0, halves=(True, True)):
     vias = {"xy": np.array([(10 * MM, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
             "top": ["F.Cu"], "bottom": ["In1.Cu"],
             "core_top": [bool(plug) and halves[0]], "core_bottom": [bool(plug) and halves[1]],
-            "fill_copper": [plug == "COPPER"], "capped": [capped]}
+            "fill_copper": [plug == "COPPER"], "capped": [capped], "tent_top": [tented], "tent_bottom": [tented]}
     return section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), layers, copper, bands,
-                                 vias=vias, plating=25 * UM, cap_plating=cap_plating)
+                                 vias=vias, plating=25 * UM, cap_plating=cap_plating,
+                                 tents={"F.Cu": (20 * UM, MASK), "B.Cu": (20 * UM, MASK)})
+
+
+MASK = (0.1, 0.3, 0.6)
+
+
+def test_a_tent_is_a_mask_film_over_the_land_and_drill():
+    rects = _board(None, tented=True)  # F.Cu's top at 1.535 mm
+    assert color_at(rects, 10 * MM, 1545 * UM) == MASK  # over the empty drill
+    assert color_at(rects, (10 + 0.25) * MM, 1545 * UM) == MASK  # over the land
+    assert color_at(rects, 10 * MM, 1560 * UM) is None  # 20 um thick
+    assert color_at(rects, 10 * MM, 1400 * UM) is None  # the barrel under it stays empty
+    assert color_at(_board(None), 10 * MM, 1545 * UM) is None  # untented
+    assert MASK not in section.WOVEN
 
 
 def color_at(rects, s, z):

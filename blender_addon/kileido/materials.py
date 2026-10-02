@@ -29,6 +29,7 @@ HIGHLIGHT_METALLIC = 1.0
 HIGHLIGHT_ROUGHNESS = 0.25
 HIGHLIGHT_GLOW = 0.5  # emission strength: vivid under any lighting (glow 1.0 washed to salmon)
 HIGHLIGHT_BOX_ALPHA = 0.3
+TENT_ALPHA = 0.999  # below 1: `make` builds the mix that hides a tent with its mask (`paint_tents`)
 
 COPPER_METALLIC, COPPER_ROUGHNESS = 1.0, 0.25
 # KiCad's finish colours are display swatches (ENIG: 0.70, 0.61, 0.0): as a metal's
@@ -61,6 +62,11 @@ def create_all():
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
+        # A via barrel the finish never reached (a tent, plug or fill closes it): bare copper.
+        "plating_bare": make("KLS Hole plating bare", BARE_COPPER),
+        # The solder mask spanning a tented via's drill, one per side; see-through while hidden.
+        "tent_F": make("KLS Via tent top", FALLBACK_MASK, TENT_ALPHA),
+        "tent_B": make("KLS Via tent bottom", FALLBACK_MASK, TENT_ALPHA),
         # A resin plug's core: milky, so the barrel around it shows through (as in the cut).
         "via_resin": make("KLS Via resin", section.RESIN, cut.RESIN_OPACITY),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
@@ -113,11 +119,33 @@ def paint(material, color):
             node.outputs[0].default_value = (*linear, 1.0)
 
 
-def fill_inputs(highlight_material=None):
-    """The via group's plug and fill materials: milky resin, and copper for vias filled with
-    copper (or a highlight's, so a selected via's core stays solid in X-ray mode)."""
-    return {"Fill Material": highlight_material or board.materials["via_resin"],
-            "Copper Fill Material": highlight_material or board.materials["plating"]}
+def via_inputs(highlight_material=None):
+    """The via group's materials besides its lands': finished and bare barrels, milky resin
+    and copper fills, and the tents (or a highlight's for all, so a selected via stays
+    solid in X-ray mode)."""
+    if highlight_material is not None:
+        return {name: highlight_material for name in ("Drill Material", "Bare Drill Material", "Fill Material",
+                                                      "Copper Fill Material", "Tent Top Material",
+                                                      "Tent Bottom Material")}
+    return {"Drill Material": board.materials["plating"], "Bare Drill Material": board.materials["plating_bare"],
+            "Fill Material": board.materials["via_resin"], "Copper Fill Material": board.materials["plating"],
+            "Tent Top Material": board.materials["tent_F"], "Tent Bottom Material": board.materials["tent_B"]}
+
+
+def paint_tents():
+    """A tent is the mask over a hole: coloured like the mask over copper around it (the
+    land's covered colour), gone while that side's mask is hidden."""
+    realistic = board.color_mode == "REALISTIC"
+    for side in "FB":
+        material = board.materials.get(f"tent_{side}")
+        if material is None:
+            continue
+        mask = mask_color(side)
+        paint(material, seen_through(mask, COPPER_UNDER_MASK) if mask else FALLBACK_MASK)
+        set_surface(material, realistic, 0.0, 0.35)
+        mix = next(node for node in material.node_tree.nodes if node.type == "MIX_SHADER")
+        mix.inputs[0].default_value = 1.0 if mask else 0.0
+    cut.invalidate()  # the section draws the tents in the mask colour too
 
 
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):
@@ -227,6 +255,7 @@ def refresh_mask_colors():
     for key, material in board.materials.items():
         if key in FINISHED:
             finish_mask(material, key)
+    paint_tents()
 
 
 def finish_mask(material, key):
@@ -602,6 +631,9 @@ def set_color_mode(mode):
     # Hole walls: copper plated, then finished like the pads.
     paint(board.materials["plating"], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
     set_surface(board.materials["plating"], realistic, COPPER_METALLIC, 0.3)
+    paint(board.materials["plating_bare"], _lit_metal(BARE_COPPER))
+    set_surface(board.materials["plating_bare"], realistic, COPPER_METALLIC, 0.3)
+    paint_tents()
     paint(board.materials["via_resin"], section.RESIN)
     set_surface(board.materials["via_resin"], realistic, 0.0, 0.5)
     _paint_highlights()

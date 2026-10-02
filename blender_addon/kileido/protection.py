@@ -5,9 +5,13 @@ covered and plugged per side, capped, filled. A via without its own setting foll
 board's (the appearance's `via_rules`). Nothing here is a Blender-side override: the panel
 adds only what KiCad does not store (the fill material, the largest drill a tent spans).
 
-- Open: a through via with none of them is see-through (holes.py), board, copper and mask.
-- Tented or covered on a side: closed there; KiCad's own mask plot draws the tent. No tent
-  spans a large empty hole, so above `max_tent` a side is closed only over a plug or fill.
+- Drilled: a through via is a real hole (holes.py: board, copper and mask see-through in
+  its drill), so its lands read as rings, unless it is capped (copper over the drill).
+  Blind vias do not go through: their lands stay solid.
+- Tented or covered on a side: a thin mask disk closes the drill there. No tent spans a
+  large empty hole, so above `max_tent` a side is closed only over a plug or fill.
+- Finished: only a via with nothing on either end gets the board finish in its barrel;
+  a tent, plug or fill keeps the plating chemistry out.
 - Plugged: resin from that side, half the barrel (type III-a); plugged from every outer end
   (both sides, or a blind via's one) it fills the barrel.
 - Filled: the whole barrel, in the panel's fill material. Capped: filled, and plated over
@@ -38,8 +42,10 @@ def resolve(packed, rules, drill, outer_top, outer_bottom, max_tent=MAX_TENT_M):
 
     core_top, core_bottom: plug or fill in the barrel's upper / lower half. filled: the
     whole barrel is filled (in the fill material; a plug alone is resin). capped: plated
-    over at its outer ends. open: see-through. too_big: KiCad tents or covers it over an
-    empty drill larger than `max_tent`, so it is drawn open there.
+    over at its outer ends. drilled: a through hole (rings, see-through where nothing
+    closes it). tent_top, tent_bottom: a mask tent over the drill. open: nothing closes
+    it, see-through. finished: the finish reaches its barrel. too_big: KiCad tents or
+    covers it over an empty drill larger than `max_tent`, so it is drawn open there.
     """
     codes = unpack(packed)
     rules = np.asarray(rules if rules is not None and len(rules) == len(FIELDS) else KICAD_DEFAULT, bool)
@@ -55,7 +61,9 @@ def resolve(packed, rules, drill, outer_top, outer_bottom, max_tent=MAX_TENT_M):
     asked_top, asked_bottom = (on[:, 0] | on[:, 2]) & top, (on[:, 1] | on[:, 3]) & bottom
     closed_top = asked_top & (small | core_top)
     closed_bottom = asked_bottom & (small | core_bottom)
-    through = top & bottom
+    drilled = top & bottom & ~capped
+    shut = closed_top | closed_bottom | core_top | core_bottom
     return {"core_top": core_top, "core_bottom": core_bottom, "filled": filled, "capped": capped,
-            "open": through & ~(closed_top | closed_bottom | core_top | core_bottom),
+            "drilled": drilled, "tent_top": drilled & closed_top, "tent_bottom": drilled & closed_bottom,
+            "open": drilled & ~shut, "finished": (top | bottom) & ~shut & ~capped,
             "too_big": (asked_top & ~closed_top) | (asked_bottom & ~closed_bottom)}

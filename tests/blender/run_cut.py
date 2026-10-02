@@ -58,6 +58,11 @@ def protect(snapshot, codes, revision=[100]):
     cut.rebuild()  # what cut.invalidate's timer does, soon after (timers do not run headless)
 
 
+def attribute_values(name):
+    mesh = state.board.collection.all_objects["KLS vias"].data
+    return [round(value.value, 9) for value in mesh.attributes[name].data]
+
+
 def camera(scene, ortho_scale=None, location=(0, -0.2, 0.0008), rotation=(math.pi / 2, 0, 0), size=(1400, 300)):
     data = bpy.data.cameras.get("cut test") or bpy.data.cameras.new("cut test")
     obj = bpy.data.objects.get("cut test") or bpy.data.objects.new("cut test", data)
@@ -163,7 +168,8 @@ def main():
         protect(layered, [OPEN] * 3)
         assert len(holes._sources["vias"]) == 1  # the through via is see-through; blind and buried never
         protect(layered, [PLUGGED] * 3)
-        assert len(holes._sources["vias"]) == 0  # a plugged through via is closed
+        assert len(holes._sources["vias"]) == 1  # still a hole: its lands are rings, the plug shows in it
+        assert attribute_values("bare_barrel") == [1, 1, 1]  # the plug kept the finish out
         # In 3D too the barrels are plugged: a core in the plug's material, and a highlighted
         # via's core in the highlight's (solid in X-ray mode, where everything else fades).
         vias = board.collection.all_objects["KLS vias"]
@@ -191,6 +197,15 @@ def main():
         highlight.apply_selection({"selected": [], "pair": []})
         protect(layered, [PLUGGED_TOP] * 3)  # the blind via's one open end: still full; the through via: half
         assert attribute("core_top") == [1, 0, 1] and attribute("core_bottom") == [1, 0, 0]
+        protect(layered, [OPEN] * 3)
+        assert attribute("bare_barrel") == [0, 1, 0]  # open: finished like the pads (buried: never reached)
+        protect(layered, [(1, 1, 0, 0, 0, 0, 0, 0)] * 3)  # tented, type I-b
+        assert attribute("tent_top") == [0, 0, 0] and board.via_too_big == 2  # 0.35 mm: too large to tent
+        scene.kileido_max_tent_mm = 0.4
+        assert len(holes._sources["vias"]) == 1 and attribute("tent_top") == [0, 0, 1]  # a hole, closed by tents
+        assert {board.materials["tent_F"].name, board.materials["tent_B"].name} <= via_faces()[1]
+        assert board.materials["plating_bare"].name in via_faces()[1]
+        scene.kileido_max_tent_mm = 0.3
         protect(layered, [OPEN] * 3)
         open_faces, open_materials = via_faces()
         assert open_faces < plugged_faces and board.materials["via_resin"].name not in open_materials

@@ -6,6 +6,8 @@ from .placement import PLACEHOLDER_HEIGHT_M
 
 PLUG_SCALE = 0.97  # a plug's core, of the drill: inside the barrel wall
 PLUG_INSET_M = 2e-6  # and this far short of each end, inside the lands
+TENT_LIFT_M = 0.5e-6  # a via's tent, above its land's surface
+TENT_SCALE = 1.02  # of the drill: over the edge of the see-through hole, onto the land
 
 
 def _group(name, extra=()):
@@ -453,15 +455,20 @@ def _xyz(nodes, links, xy, z):
 
 
 def vias():
-    """Lands, barrels and, per via (protection.py, as point attributes), its plug or fill
-    (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill)
-    and its cap plating (`cap`, metres, on its outer lands)."""
-    group, source, sink = _group("KLS_Vias_v7", (("Material", "NodeSocketMaterial"),
+    """Lands, barrels and, per via (protection.py, as point attributes): its plug or fill
+    (`core_top`/`core_bottom`: the barrel's halves it fills; `fill_copper`: a copper fill),
+    its cap plating (`cap`, metres, on its outer lands), its mask tents (`tent_top`,
+    `tent_bottom`) and a bare barrel (`bare_barrel`). A `drilled` via is see-through in its
+    drill (holes.py), so its lands read as rings and its core reaches the surface."""
+    group, source, sink = _group("KLS_Vias_v8", (("Material", "NodeSocketMaterial"),
                                                    ("Drill Material", "NodeSocketMaterial"),
+                                                   ("Bare Drill Material", "NodeSocketMaterial"),
                                                    ("Top Thickness", "NodeSocketFloat"),
                                                    ("Bottom Thickness", "NodeSocketFloat"),
                                                    ("Fill Material", "NodeSocketMaterial"),
-                                                   ("Copper Fill Material", "NodeSocketMaterial")))
+                                                   ("Copper Fill Material", "NodeSocketMaterial"),
+                                                   ("Tent Top Material", "NodeSocketMaterial"),
+                                                   ("Tent Bottom Material", "NodeSocketMaterial")))
     if source is None:
         return group
     nodes, links = group.nodes, group.links
@@ -489,6 +496,24 @@ def vias():
         links.new(z, vector.inputs["Z"])
         links.new(vector.outputs["Vector"], set_position.inputs["Offset"])
         return set_position.outputs["Geometry"]
+
+    def math(operation, *values):
+        node = nodes.new("ShaderNodeMath")
+        node.operation = operation
+        for socket, value in zip(node.inputs, values):
+            if isinstance(value, float):
+                socket.default_value = value
+            else:
+                links.new(value, socket)
+        return node.outputs[0]
+
+    def flag(name):
+        compare = nodes.new("FunctionNodeCompare")
+        compare.data_type = "FLOAT"
+        compare.operation = "GREATER_THAN"
+        links.new(_named(nodes, name), compare.inputs[0])
+        compare.inputs[1].default_value = 0.5
+        return compare.outputs["Result"]
 
     middle_points = shifted_points(middle.outputs[0])
     circle = nodes.new("GeometryNodeMeshCircle")
@@ -561,13 +586,41 @@ def vias():
     wall_mesh = nodes.new("GeometryNodeCurveToMesh")
     links.new(normal.outputs["Curve"], wall_mesh.inputs["Curve"])
     links.new(vertical_profile.outputs["Curve"], wall_mesh.inputs["Profile Curve"])
-    barrel = nodes.new("GeometryNodeInstanceOnPoints")
-    links.new(middle_points, barrel.inputs["Points"])
-    links.new(wall_mesh.outputs["Mesh"], barrel.inputs["Instance"])
-    links.new(_xyz(nodes, links, drill, height.outputs[0]), barrel.inputs["Scale"])
-    # A plug or fill: a closed cylinder a hair inside the wall, between the lands' undersides
-    # (it never shows through a land, or shares a face with one), over the halves of the
-    # barrel it fills (from the middle up for `core_top`, down for `core_bottom`).
+    # Finished like the pads, or bare copper where a tent, plug or fill kept the finish out.
+    barrels = nodes.new("GeometryNodeJoinGeometry")
+    bare = flag("bare_barrel")
+    for material, bare_only in (("Drill Material", False), ("Bare Drill Material", True)):
+        painted_wall = nodes.new("GeometryNodeSetMaterial")
+        links.new(wall_mesh.outputs["Mesh"], painted_wall.inputs["Geometry"])
+        links.new(source.outputs[material], painted_wall.inputs["Material"])
+        barrel = nodes.new("GeometryNodeInstanceOnPoints")
+        links.new(middle_points, barrel.inputs["Points"])
+        if bare_only:
+            links.new(bare, barrel.inputs["Selection"])
+        else:
+            finished = nodes.new("FunctionNodeBooleanMath")
+            finished.operation = "NOT"
+            links.new(bare, finished.inputs[0])
+            links.new(finished.outputs[0], barrel.inputs["Selection"])
+        links.new(painted_wall.outputs["Geometry"], barrel.inputs["Instance"])
+        links.new(_xyz(nodes, links, drill, height.outputs[0]), barrel.inputs["Scale"])
+        links.new(barrel.outputs["Instances"], barrels.inputs["Geometry"])
+    # A tent: the mask spanning the drill, a flat disk just outside the land (facing out).
+    tents = nodes.new("GeometryNodeJoinGeometry")
+    tent_width = math("MULTIPLY", drill, TENT_SCALE)
+    for name, z, sign in (("top", top, 1.0), ("bottom", bottom, -1.0)):
+        painted_tent = nodes.new("GeometryNodeSetMaterial")
+        links.new(circle.outputs["Mesh"], painted_tent.inputs["Geometry"])
+        links.new(source.outputs[f"Tent {name.capitalize()} Material"], painted_tent.inputs["Material"])
+        tent = nodes.new("GeometryNodeInstanceOnPoints")
+        links.new(shifted_points(math("ADD", z, sign * TENT_LIFT_M)), tent.inputs["Points"])
+        links.new(flag(f"tent_{name}"), tent.inputs["Selection"])
+        links.new(painted_tent.outputs["Geometry"], tent.inputs["Instance"])
+        links.new(_xyz(nodes, links, tent_width, sign), tent.inputs["Scale"])
+        links.new(tent.outputs["Instances"], tents.inputs["Geometry"])
+    # A plug or fill: a closed cylinder a hair inside the wall, short of each end (it never
+    # shares a face with a land), over the halves of the barrel it fills (from the middle up
+    # for `core_top`, down for `core_bottom`).
     core = nodes.new("GeometryNodeMeshCylinder")
     core.fill_type = "NGON"
     core.inputs["Vertices"].default_value = 24
@@ -581,18 +634,10 @@ def vias():
     links.new(drill, core_width.inputs[0])
     core_width.inputs[1].default_value = PLUG_SCALE
 
-    def math(operation, a, b):
-        node = nodes.new("ShaderNodeMath")
-        node.operation = operation
-        for socket, value in zip(node.inputs, (a, b)):
-            if isinstance(value, float):
-                socket.default_value = value
-            else:
-                links.new(value, socket)
-        return node.outputs[0]
-
-    under_top = math("SUBTRACT", top, math("ADD", source.outputs["Top Thickness"], PLUG_INSET_M))
-    over_bottom = math("ADD", bottom, math("ADD", source.outputs["Bottom Thickness"], PLUG_INSET_M))
+    # Its ends: at the surface in a drilled via (inside the ring), else under the land.
+    solid = math("SUBTRACT", 1.0, _named(nodes, "drilled"))
+    under_top = math("SUBTRACT", top, math("MULTIPLY_ADD", source.outputs["Top Thickness"], solid, PLUG_INSET_M))
+    over_bottom = math("ADD", bottom, math("MULTIPLY_ADD", source.outputs["Bottom Thickness"], solid, PLUG_INSET_M))
     core_middle = math("MULTIPLY", math("ADD", under_top, over_bottom), 0.5)
     reach = math("MAXIMUM", math("MULTIPLY", math("SUBTRACT", under_top, over_bottom), 0.5), 0.0)
     upper, lower = _named(nodes, "core_top"), _named(nodes, "core_bottom")
@@ -640,12 +685,10 @@ def vias():
     painted_copper = nodes.new("GeometryNodeSetMaterial")
     links.new(copper.outputs["Geometry"], painted_copper.inputs["Geometry"])
     links.new(source.outputs["Material"], painted_copper.inputs["Material"])
-    painted_hole = nodes.new("GeometryNodeSetMaterial")  # "Drill Material" is the plating
-    links.new(barrel.outputs["Instances"], painted_hole.inputs["Geometry"])
-    links.new(source.outputs["Drill Material"], painted_hole.inputs["Material"])
     together = nodes.new("GeometryNodeJoinGeometry")
     links.new(painted_copper.outputs["Geometry"], together.inputs["Geometry"])
-    links.new(painted_hole.outputs["Geometry"], together.inputs["Geometry"])
+    links.new(barrels.outputs["Geometry"], together.inputs["Geometry"])
+    links.new(tents.outputs["Geometry"], together.inputs["Geometry"])
     links.new(cores.outputs["Geometry"], together.inputs["Geometry"])
     links.new(together.outputs["Geometry"], sink.inputs["Geometry"])
     return group
