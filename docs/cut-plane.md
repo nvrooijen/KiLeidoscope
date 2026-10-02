@@ -4,8 +4,8 @@ As new and requested feature, board inspections can now be done on a cross-secti
 
 <p align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/CutPlaneViasAnnotatedDark_web.png">
-  <img src="../../assets/CutPlaneViasAnnotatedLight_web.png" width="760" alt="A multilayer test board cut open. The cross section shows woven laminate bands and copper layers, with seven labelled features: edge plating on the board's wall; a buried, filled via; a blind via, filled and tented; a through via tented on top with outer rings; a tented via; a via plugged from the top; and a filled and capped via.">
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/CutPlaneViasAnnotatedDark_web.png">
+  <img src="../assets/CutPlaneViasAnnotatedLight_web.png" width="760" alt="A multilayer test board cut open. The cross section shows woven laminate bands and copper layers, with seven labelled features: edge plating on the board's wall; a buried, filled via; a blind via, filled and tented; a through via tented on top with outer rings; a tented via; a via plugged from the top; and a filled and capped via.">
 </picture>
 </p>
 <p align="center"><sub>A test board cut open in Realistic mode. Each via's type is set in KiCad; KiLeidoscope draws what KiCad stores.</sub></p>
@@ -48,8 +48,8 @@ The cut works together with the other view modes:
 
 <p align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/CutPlaneVias_XrayWipe_dark.gif">
-  <img src="../../assets/CutPlaneVias_XrayWipe_light.gif" width="680" alt="The cut-open test board with its laminate hidden; a slider wipes between the normal render and X-ray mode, where the highlighted net stays red and its vias and tracks show through the see-through grey board.">
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/CutPlaneVias_XrayWipe_dark.gif">
+  <img src="../assets/CutPlaneVias_XrayWipe_light.gif" width="680" alt="The cut-open test board with its laminate hidden; a slider wipes between the normal render and X-ray mode, where the highlighted net stays red and its vias and tracks show through the see-through grey board.">
 </picture>
 </p>
 <p align="center"><sub>The demo board with the laminate hidden, wiping into X-ray mode.</sub></p>
@@ -89,8 +89,8 @@ Copper counts as reaching the edge when it comes within 50 µm of it. KiCad roun
 
 <p align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/via-structure-dark.svg">
-  <img src="../../assets/via-structure-light.svg" width="680" alt="KiCad's live API gives each via's protection and annular rings; a copy of the board file gives the board's via defaults and the plated-edge flag. The bridge reads both and sends frames to the Blender add-on, which resolves each via with the panel's settings and draws the 3D vias, the hole mask, the cross section and the edge plating. The cross section's laminate gets a woven-glass texture and its copper a polish.">
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/via-structure-dark.svg">
+  <img src="../assets/via-structure-light.svg" width="680" alt="KiCad's live API gives each via's protection and annular rings; a copy of the board file gives the board's via defaults and the plated-edge flag. The bridge reads both and sends frames to the Blender add-on, which resolves each via with the panel's settings and draws the 3D vias, the hole mask, the cross section and the edge plating. The cross section's laminate gets a woven-glass texture and its copper a polish.">
 </picture>
 </p>
 
@@ -167,4 +167,4 @@ The cross-section is an illustration built from your design data and the assumpt
 - **It does not replace KiCad's DRC or your fabricator's review.** Give your fabricator explicit notes for via protection, via fill and edge plating. Do not rely on a render to convey them.
 - **It says nothing about electrical, thermal or mechanical behaviour.** Impedance, current capacity and the reliability of filled or capped vias need proper analysis and measurement.
 
-The [disclaimer](../../README.md#disclaimer) and [license](../../LICENSE) of KiLeidoscope apply in full: the software comes without any warranty, and you use it at your own risk.
+The [disclaimer](../README.md#disclaimer) and [license](../LICENSE) of KiLeidoscope apply in full: the software comes without any warranty, and you use it at your own risk.
