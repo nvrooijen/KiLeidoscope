@@ -605,6 +605,8 @@ def set_color_mode(mode):
             if metal:
                 finish_mask(material, key)
     laminate.set_edges(board.materials["board_core"], realistic)  # routed edges and bare drills show the layers
+    # Copper in the cut plane's section: bare (a cut never has the finish), lit like the rest.
+    cut.set_look(realistic, shading.srgb_to_linear(metal_color(BARE_COPPER)), COPPER_METALLIC, COPPER_ROUGHNESS)
 
 
 def _paint_board_faces(viewer):

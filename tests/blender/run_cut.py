@@ -221,6 +221,9 @@ def main():
         principled = next(n for n in core.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
         scene.kileido_color_mode = "REALISTIC"
         assert principled.inputs["Base Color"].links[0].from_node.name == laminate.EDGE_NODE
+        section_nodes = bpy.data.materials[cut.FACE].node_tree.nodes  # its copper: lit metal, as all copper here
+        assert section_nodes["KLS realistic"].outputs[0].default_value == 1.0
+        assert section_nodes["KLS cut copper"].inputs["Metallic"].default_value == 1.0
         scene.kileido_cut = False
         camera(scene, ortho_scale=0.002, location=(-0.012, -0.05, 800 * UM), size=(1000, 500))
         scene.cycles.samples = 64  # lit, so noisier than the flat section
@@ -233,6 +236,7 @@ def main():
         scene.kileido_cut = True
         scene.kileido_color_mode = "FAB"
         assert not principled.inputs["Base Color"].is_linked
+        assert section_nodes["KLS realistic"].outputs[0].default_value == 0.0  # flat, like the board's copper
 
         # Off: stages gone, plane and face hidden, nothing drawn.
         scene.kileido_cut = False

@@ -32,7 +32,7 @@ FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
 FACE_METAL = "kls_metal"  # 1 on copper: polished metal
-FACE_MATERIAL_VERSION = 6
+FACE_MATERIAL_VERSION = 7
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
@@ -44,6 +44,8 @@ REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
 _data = None  # the board's geometry for the section (`_gather`), until it changes
+# How the section's copper is lit (`set_look`): Realistic, its linear colour, metallic, roughness.
+_look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
 
 def enabled(scene=None):
@@ -319,7 +321,7 @@ def _attribute(tree, name):
 
 def _face_material():
     """Flat, as a micrograph reads: the section's colours, with the glass weave in laminate
-    and polished metal in copper."""
+    and polished metal in copper. In Realistic mode its copper is lit metal, as all copper is."""
     material = bpy.data.materials.get(FACE) or bpy.data.materials.new(FACE)
     if material.get("kls_version") == FACE_MATERIAL_VERSION:
         return material
@@ -342,10 +344,52 @@ def _face_material():
     tree.links.new(_attribute(tree, FACE_METAL).outputs["Fac"], polish.inputs["Metal"])
     emission = tree.nodes.new("ShaderNodeEmission")
     tree.links.new(polish.outputs["Color"], emission.inputs["Color"])
-    tree.links.new(emission.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
+    # Copper lit as metal (bare: a cut never carries the finish), with the same polish.
+    lit_color = tree.nodes.new("ShaderNodeRGB")
+    lit_color.name = "KLS cut copper colour"
+    lit_polish = tree.nodes.new("ShaderNodeGroup")
+    lit_polish.node_tree = metal.group()
+    tree.links.new(lit_color.outputs[0], lit_polish.inputs["Base"])
+    tree.links.new(_attribute(tree, FACE_ALONG).outputs["Fac"], lit_polish.inputs["Along"])
+    tree.links.new(height.outputs["Z"], lit_polish.inputs["Height"])
+    lit_polish.inputs["Metal"].default_value = 1.0
+    lit = tree.nodes.new("ShaderNodeBsdfPrincipled")
+    lit.name = "KLS cut copper"
+    tree.links.new(lit_polish.outputs["Color"], lit.inputs["Base Color"])
+    realistic = tree.nodes.new("ShaderNodeValue")
+    realistic.name = "KLS realistic"
+    use_lit = tree.nodes.new("ShaderNodeMath")
+    use_lit.operation = "MULTIPLY"
+    tree.links.new(_attribute(tree, FACE_METAL).outputs["Fac"], use_lit.inputs[0])
+    tree.links.new(realistic.outputs[0], use_lit.inputs[1])
+    surface = tree.nodes.new("ShaderNodeMixShader")
+    tree.links.new(use_lit.outputs[0], surface.inputs[0])
+    tree.links.new(emission.outputs[0], surface.inputs[1])
+    tree.links.new(lit.outputs[0], surface.inputs[2])
+    tree.links.new(surface.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
     focus.add_to(material)  # X-ray mode fades the section with the board
     material["kls_version"] = FACE_MATERIAL_VERSION
+    _apply_look(material)
     return material
+
+
+def _apply_look(material):
+    realistic, color, metallic, roughness = _look
+    nodes = material.node_tree.nodes
+    nodes["KLS realistic"].outputs[0].default_value = 1.0 if realistic else 0.0
+    nodes["KLS cut copper colour"].outputs[0].default_value = (*color, 1.0)
+    nodes["KLS cut copper"].inputs["Metallic"].default_value = metallic
+    nodes["KLS cut copper"].inputs["Roughness"].default_value = roughness
+
+
+def set_look(realistic, color, metallic, roughness):
+    """The colour mode changed (materials.set_color_mode): the section's copper is lit metal
+    in Realistic mode (`color` linear), flat otherwise, like the board's own copper."""
+    global _look
+    _look = (bool(realistic), tuple(color), float(metallic), float(roughness))
+    material = bpy.data.materials.get(FACE)
+    if material is not None and material.get("kls_version") == FACE_MATERIAL_VERSION:
+        _apply_look(material)
 
 
 def _face_object(create):
