@@ -4,6 +4,11 @@ Every module reads and writes the same `board` instance; nothing else holds boar
 """
 
 
+def log(message):
+    """One line in Blender's output (blender.log): what changed the board's model bindings."""
+    print(f"KiLeidoscope: {message}", flush=True)
+
+
 class BoardState:
     def __init__(self):
         # Identity and frame: KiCad nanometres become Blender metres around `origin_nm`.
@@ -51,7 +56,25 @@ class BoardState:
 
     def reset(self):
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
+        if self.model_bound:
+            log(f"board state reset; {len(self.model_bound)} bound models forgotten")
         self.__init__()
+
+    def drop_if_freed(self, where):
+        """True after a collection freed under us (undo, file load) was forgotten: the board
+        state starts over and a live bridge sends the board again."""
+        if self.collection is None:
+            return False
+        try:
+            self.collection.name
+        except ReferenceError:
+            log(f"the board's collection was freed ({where}); state reset, resync requested "
+                f"({len(self.model_bound)} bound models lost)")
+            self.reset()
+            from . import live
+            live.request_resync()
+            return True
+        return False
 
     def fail(self, message):
         """Show `message` and never leave a half-loaded board hidden."""

@@ -24,7 +24,7 @@ from kipy.proto.common.types import KIID
 from kipy.util.board_layer import CANONICAL_LAYER_NAMES, is_copper_layer
 
 from . import model
-from .diff import Key, combine, fingerprint, item_digest
+from .diff import Key, combine, fingerprint, item_bytes, item_digest
 from .geometry import (circle_ring, outline_crossings, outline_warning, polyline_strokes, sample_arc,
                        sample_bezier, stroke)
 
@@ -141,7 +141,9 @@ def saved_board_path(board) -> str:
         project_path = Path(getattr(project, "path", "") or "")
         if not str(project_path) or str(project_path) == ".":
             return ""
-        path = (project_path.parent if project_path.suffix else project_path) / path
+        # KiCad gives the project as its folder or as its .kicad_pro file. Ask the disk which:
+        # a folder may have a dot in its name ("ecc83v1.2"), so a suffix does not mean a file.
+        path = (project_path if project_path.is_dir() else project_path.parent) / path
     return str(path.resolve()) if path.is_file() else ""
 
 
@@ -522,26 +524,109 @@ def _convert_zone(item) -> tuple[model.ZoneFill, ...]:
     )
 
 
-def _pad_polygons(board, call, raw_pads, layers) -> dict[str, dict[str, tuple[model.Polygon, ...]]]:
-    """Copper and paste shapes of the given pads, per canonical layer (two RPCs per layer)."""
+def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tuple[model.Polygon, ...]]], set[str]]:
+    """Copper and paste shapes of the given pads, per canonical layer (two RPCs per layer),
+    and the ids of pads whose shape KiCad only had in an outdated form.
+
+    After an undo, KiCad 10.0 answers id lookups of the undone footprint's pads with a
+    copy that is no longer on the board (measured: the pre-undo position, until the
+    board is reopened). Every pad-shape call goes by id, so such a pad's shape is
+    the copy's. A copy that differs only in placement (moved, rotated, flipped) is
+    mapped onto the pad as the board has it; any other difference is reported.
+    """
     polygons_by_pad: dict[str, dict[str, tuple[model.Polygon, ...]]] = defaultdict(dict)
     if not raw_pads or not layers:
-        return polygons_by_pad
-    presence = call("check_padstack_presence_on_layers",
-                    board.check_padstack_presence_on_layers, raw_pads, layers)
-    for layer in layers:
-        candidates = [pad for pad in raw_pads if presence.get(pad, {}).get(layer, False)]
-        if not candidates:
+        return polygons_by_pad, set()
+    answered = {item.id.value: item for item in call("get_items_by_id", board.get_items_by_id,
+                                                     [pad.id for pad in raw_pads])}
+    flip = _flipped_layers(layers)
+    placements, outdated = {}, set()
+    for pad in raw_pads:
+        copy = answered.get(pad.id.value, pad)
+        if _same_item(copy, pad):
             continue
-        shapes = call("get_pad_shapes_as_polygons", board.get_pad_shapes_as_polygons, candidates, layer)
+        mirrored = copy.padstack.drill.start_layer != pad.padstack.drill.start_layer  # a flip swaps them
+        placements[pad.id.value] = (mirrored, _placement_map(copy, pad, mirrored))
+        if _shape_bytes(copy, mirrored) != _shape_bytes(pad, mirrored):
+            outdated.add(pad.id.value)
+    asked = list(dict.fromkeys([*layers, *(flip.get(layer, layer) for layer in layers)]))
+    presence = call("check_padstack_presence_on_layers",
+                    board.check_padstack_presence_on_layers, raw_pads, asked)
+    wanted: dict[object, list] = defaultdict(list)  # layer KiCad is asked for -> [(pad, board layer)]
+    for pad in raw_pads:
+        mirrored = placements.get(pad.id.value, (False, None))[0]
+        for layer in layers:
+            query = flip.get(layer, layer) if mirrored else layer
+            if presence.get(pad, {}).get(query, False):
+                wanted[query].append((pad, layer))
+    for query, entries in wanted.items():
+        candidates = [pad for pad, _ in entries]
+        shapes = call("get_pad_shapes_as_polygons", board.get_pad_shapes_as_polygons, candidates, query)
         if len(shapes) != len(candidates):
             # kipy's list overload omits absent polygons rather than returning None slots.
-            shapes = [call("get_pad_shapes_as_polygons", board.get_pad_shapes_as_polygons, pad, layer)
+            shapes = [call("get_pad_shapes_as_polygons", board.get_pad_shapes_as_polygons, pad, query)
                       for pad in candidates]
-        for pad, shape in zip(candidates, shapes):
+        for (pad, layer), shape in zip(entries, shapes):
             if shape is not None:
-                polygons_by_pad[pad.id.value][canonical_layer(layer)] = (_polygon(shape),)
-    return polygons_by_pad
+                polygon = _polygon(shape)
+                if pad.id.value in placements:
+                    polygon = _place_polygon(polygon, *placements[pad.id.value])
+                polygons_by_pad[pad.id.value][canonical_layer(layer)] = (polygon,)
+    return polygons_by_pad, outdated
+
+
+def _same_item(a, b) -> bool:
+    return a is b or item_bytes(a) == item_bytes(b)
+
+
+def _flipped_layers(layers) -> dict:
+    """Each pad layer and the layer a flip puts it on: copper mirrors through the stack."""
+    copper = sorted(layer for layer in layers if is_copper_layer(layer))  # F.Cu, In1.Cu, ..., B.Cu
+    flip = {layer: copper[-1 - index] for index, layer in enumerate(copper)}
+    flip.update({BoardLayer.BL_F_Paste: BoardLayer.BL_B_Paste, BoardLayer.BL_B_Paste: BoardLayer.BL_F_Paste})
+    return flip
+
+
+def _shape_bytes(pad, mirrored: bool) -> bytes:
+    """What decides a pad's shape apart from its placement. A flip also mirrors the
+    pad's own geometry (offsets, chamfered corners, custom shapes) and swaps its
+    layers, so for a flipped pair those are left out too."""
+    stack = type(pad.proto.pad_stack)()
+    stack.CopyFrom(pad.proto.pad_stack)
+    stack.ClearField("angle")
+    if mirrored:
+        for name in ("layers", "front_outer_layers", "back_outer_layers"):
+            stack.ClearField(name)
+        for drill in (stack.drill, stack.secondary_drill, stack.tertiary_drill):
+            drill.ClearField("start_layer")
+            drill.ClearField("end_layer")
+        for layer in stack.copper_layers:
+            for name in ("layer", "offset", "trapezoid_delta", "chamfered_corners", "custom_shapes"):
+                layer.ClearField(name)
+    return bytes([pad.proto.type]) + stack.SerializeToString(deterministic=True)
+
+
+def _placement_map(copy, pad, mirrored: bool):
+    """Board-to-board map from the copy's placement to the pad's: into the copy's own
+    frame, mirrored across its x axis for a flip, out through the pad's frame.
+    Rotations follow KiCad's RotatePoint (y points down)."""
+    (cx, cy), (px, py) = _point(copy.position), _point(pad.position)
+    copy_angle, pad_angle = copy.padstack.angle.to_radians(), pad.padstack.angle.to_radians()
+    c0, s0 = math.cos(copy_angle), math.sin(copy_angle)
+    c1, s1 = math.cos(pad_angle), math.sin(pad_angle)
+    sign = -1 if mirrored else 1
+
+    def place(point: model.Point) -> model.Point:
+        dx, dy = point[0] - cx, point[1] - cy
+        local_x, local_y = dx * c0 - dy * s0, sign * (dx * s0 + dy * c0)
+        return (round(px + local_x * c1 + local_y * s1), round(py - local_x * s1 + local_y * c1))
+    return place
+
+
+def _place_polygon(polygon: model.Polygon, mirrored: bool, place) -> model.Polygon:
+    """A mirror reverses each ring's winding; reversing the points keeps it."""
+    rings = (tuple(place(point) for point in ring) for ring in polygon)
+    return tuple(ring[::-1] if mirrored else ring for ring in rings)
 
 
 def _track_groups(raw_tracks, digests) -> dict[Key, list[bytes]]:
@@ -594,6 +679,7 @@ class PollResult:
     snapshot: model.BoardSnapshot
     dirty: frozenset[Key]  # (layer, kind) groups whose content changed since the last poll
     full_read: bool
+    outdated_pads: int = 0  # pads drawn from an outdated KiCad copy (see _pad_polygons)
 
 
 class BoardReader:
@@ -612,6 +698,7 @@ class BoardReader:
         self._busy_since_read = True
         self._hashes: dict[object, bytes] = {}
         self._pad_layers: list = []
+        self._outdated_pads: set[bytes] = set()  # digests of pads KiCad had only an outdated shape for
         self._cache: dict[str, dict[bytes, object]] = {}  # source -> item digest -> converted record
         self._parts: dict[str, object] = {
             "tracks": (), "arcs": (), "vias": (), "footprints": (), "pads": (), "zones": (),
@@ -718,7 +805,7 @@ class BoardReader:
             tuple(w for group in warnings.values() for w in group), timings,
             graphics=parts["graphics"],
         )
-        return PollResult(snapshot, frozenset(dirty), slow)
+        return PollResult(snapshot, frozenset(dirty), slow, len(self._outdated_pads))
 
     # --- Conversion of changed sources (order matters: pads need footprints and layers) --
 
@@ -800,9 +887,11 @@ class BoardReader:
         footprint_by_pad = self._parts["footprint_by_pad"]
         cached = self._cache.get("pads", {})
         fresh = [pad for pad, digest in zip(raw_pads, digests) if digest not in cached]
-        shapes = _pad_polygons(self.board, self._call, fresh, self._pad_layers)  # RPCs for new pads only
+        shapes, outdated = _pad_polygons(self.board, self._call, fresh, self._pad_layers)  # RPCs for new pads only
         records, added, removed = self._timed("convert", self._convert_cached, "pads", raw_pads, digests,
                                               lambda item: _convert_pad(item, shapes))
+        self._outdated_pads = {digest for pad, digest in zip(raw_pads, digests)
+                               if (digest in self._outdated_pads if digest in cached else pad.id.value in outdated)}
         owner = [footprint_by_pad.get(record.id, "") for record in records]
         self._parts["pads"] = tuple(record if record.footprint_id == fp else replace(record, footprint_id=fp)
                                     for record, fp in zip(records, owner))

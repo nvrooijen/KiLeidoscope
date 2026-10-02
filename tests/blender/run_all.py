@@ -472,6 +472,18 @@ def main():
         assert math.isclose(surface_area(sheet), 0.6e-6, rel_tol=1e-3)  # the 1 x 0.6 mm pad
         box = collection.all_objects[f"KLS footprint highlight {smd['footprint_id']}"]
         assert not box.hide_get()
+        # Moved in KiCad (an edit or an undo) with the selection unchanged: the box follows.
+        def footprint_frame(shift_nm):  # bounds as the bridge sends them; the box wraps the envelope
+            return {"type": "footprints", "footprints": [
+                {"id": fp["id"], "ref": fp["reference"], "x": fp["pos"][0] + shift_nm, "y": fp["pos"][1],
+                 "rot": fp["rotation_rad"], "side": fp["side"], "model_paths": fp["model_paths"],
+                 "bbox_nm": [fp["pos"][0] + shift_nm - 1_000_000, fp["pos"][1] - 2_000_000, 2_000_000, 4_000_000]}
+                for fp in snapshot["footprints"]]}
+        apply.apply_frame(footprint_frame(0), {})
+        before = box.matrix_world.translation.x
+        apply.apply_frame(footprint_frame(5_000_000), {})
+        assert math.isclose(box.matrix_world.translation.x - before, 0.005, abs_tol=1e-9), box.matrix_world
+        apply.apply_frame(footprint_frame(0), {})
         highlight.apply_selection({"selected": [], "pair": [], "footprints": [], "pads": []})
         assert sheet.hide_get() and box.hide_get()
 

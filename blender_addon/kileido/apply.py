@@ -18,6 +18,7 @@ from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute
                       set_node_input, set_visible, single_point, view3d_spaces, write_attribute, outline_bounds)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
+from . import state
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
@@ -50,6 +51,7 @@ def apply_frame(header, arrays):
         refresh_protection()  # the board's via rules come with it
     elif message_type == "footprints":
         footprints.apply(header)
+        highlight.refresh_components()
     elif message_type == "stackup":
         board.warnings = list(dict.fromkeys([*board.warnings, *header.get("warnings", [])]))
         board.layer_names = dict(header.get("display_names", {}))  # the Layers list uses KiCad's names
@@ -151,6 +153,7 @@ def _collection(board_name):
 def apply_board(header):
     """Board identity, stackup heights and appearance; always the first snapshot frame."""
     name = header["board_name"]
+    board.drop_if_freed("board header")
     board_changed = board.board_name != name
     if not board.groups:
         board.groups = nodes.ensure_all()
@@ -166,6 +169,8 @@ def apply_board(header):
     lock_selection(board.collection)
     if board_changed:
         board.origin_nm = tuple(header["origin_nm"])
+        if board.model_bound:
+            state.log(f"board changed to {name!r}; {len(board.model_bound)} bound models dropped")
         board.model_bound.clear()
         board.model_objects_by_fp.clear()
         board.mask_images.clear()  # the previous board's mask plots no longer apply

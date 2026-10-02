@@ -22,6 +22,7 @@ from mathutils import Euler, Matrix
 
 from . import cut, focus, highlight, kicad_cli
 from .objects import link_owned, set_visible
+from . import state
 from .state import board
 from .watcher import BoardWatcher
 
@@ -202,8 +203,11 @@ def _source_root(objects):
 
 
 def _source_meshes(reference_obj):
+    """The meshes of one GLB reference node. kicad-cli puts a single-part model's mesh
+    on the reference node itself (R1 [mesh], no children); an assembly's parts are
+    its children (D1 -> Body, PinK, ...)."""
     pending = list(reference_obj.children)
-    meshes = []
+    meshes = [reference_obj] if reference_obj.type == "MESH" else []
     while pending:
         obj = pending.pop()
         pending.extend(obj.children)
@@ -339,6 +343,7 @@ def _saved_footprint_matrix(target, saved_positions):
 
 def bind_root(root, asset_hash, saved_positions=None):
     """Link imported mesh data to existing footprint transforms, without file I/O."""
+    board.drop_if_freed("model bind")
     if board.collection is None:
         raise ValueError("Load or connect a board before loading models")
     bpy.context.view_layer.update()
@@ -402,6 +407,9 @@ def bind_root(root, asset_hash, saved_positions=None):
             flags = list(footprint.get("kls_model_visible", ())) if footprint else []
             visible = visible and bool(footprint.get("kls_model_paths")) and (not flags or any(flags))
             set_visible(obj, visible and footprint_id not in board.model_bound)
+    unbound = [footprint_id for footprint_id in list(board.model_bound) if not board.model_objects_by_fp.get(footprint_id)]
+    state.log(f"models bound: {len(board.model_bound)} footprints, {len(active)} parts, "
+              f"{len(matches)} GLB roots matched, {len(unbound)} without parts")
     return {"matched": len(board.model_bound),
             "parts": len(active),
             "distinct_meshes": len({board.collection.all_objects[name].data.as_pointer()
