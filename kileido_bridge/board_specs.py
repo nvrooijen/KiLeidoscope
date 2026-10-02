@@ -20,6 +20,7 @@ _TYPE = re.compile(r'\(type\s+"([^"]*)"\)')
 _MATERIAL = re.compile(r'\(material\s+"([^"]*)"\)')
 _STACKUP = re.compile(r"\(stackup\b")
 _COPPER_FINISH = re.compile(r'\(copper_finish\s+"([^"]*)"\)')
+_EDGE_PLATING = re.compile(r"\(edge_plating\s+yes\)")  # Board Setup > Board Finish: Plated board edge
 
 # KiCad 10 3d-viewer/3d_canvas/board_adapter.cpp: named stackup colours and their
 # 3D-viewer values (sRGB bytes, alpha).  Stackup names outside these lists render
@@ -301,6 +302,7 @@ def read_appearance(board_path: str = "") -> dict:
                      if (color := _rgba(copper.get(key))) is not None}
     return {
         "copper_finish": finish,
+        "edge_plating": bool(_EDGE_PLATING.search(text)),
         "dielectrics": _saved_dielectrics(text),
         "saved_colors": {name: color for name, value in saved.items()
                          if (color := _rgba(value)) is not None},

@@ -85,6 +85,13 @@ def test_viewer_colors_follow_theme_without_stackup_colors(tmp_path, monkeypatch
     assert viewer["copper"] == [179/255, 156/255, 0, 1.0]
 
 
+@pytest.mark.parametrize("field, plated", [("(edge_plating yes)", True), ("", False)])
+def test_saved_edge_plating(tmp_path, field, plated):
+    board = tmp_path / "edge.kicad_pcb"
+    board.write_text(f'(kicad_pcb (setup (stackup (copper_finish "ENIG") {field})))')
+    assert read_appearance(str(board))["edge_plating"] is plated
+
+
 def test_saved_dielectrics_give_core_or_prepreg_and_material_top_first(tmp_path):
     board = tmp_path / "stack.kicad_pcb"
     board.write_text('''(kicad_pcb (setup (stackup
