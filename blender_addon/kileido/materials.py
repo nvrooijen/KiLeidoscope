@@ -64,12 +64,12 @@ def create_all():
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
         # A via barrel the finish never reached (a tent, plug or fill closes it): bare copper.
         "plating_bare": make("KLS Hole plating bare", BARE_COPPER),
-        # The solder mask spanning a tented via's drill, one per side; see-through while hidden.
         # A plugged via's plug: solder mask ink, in the board's mask colour.
         "via_plug": make("KLS Via plug ink", FALLBACK_MASK),
+        # The solder mask spanning a tented via's hole, one per side; see-through while hidden.
         "tent_F": make("KLS Via tent top", FALLBACK_MASK, TENT_ALPHA),
         "tent_B": make("KLS Via tent bottom", FALLBACK_MASK, TENT_ALPHA),
-        # A resin plug's core: milky, so the barrel around it shows through (as in the cut).
+        # A resin fill (and a buried via's prepreg resin): milky, so the barrel shows through (as in the cut).
         "via_resin": make("KLS Via resin", section.RESIN, cut.RESIN_OPACITY),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair": make("KLS Highlight pair", HIGHLIGHT_COLORS["pair"]),
@@ -122,17 +122,14 @@ def paint(material, color):
 
 
 def via_inputs(highlight_material=None):
-    """The via group's materials besides its lands': finished and bare barrels, milky resin
-    and copper fills, and the tents (or a highlight's for all, so a selected via stays
+    """The via group's materials besides its lands': finished and bare barrels, resin and
+    copper fills, plug ink and tents (or a highlight's for all, so a selected via stays
     solid in X-ray mode)."""
-    if highlight_material is not None:
-        return {name: highlight_material for name in ("Drill Material", "Bare Drill Material", "Fill Material",
-                                                      "Copper Fill Material", "Plug Material", "Tent Top Material",
-                                                      "Tent Bottom Material")}
-    return {"Drill Material": board.materials["plating"], "Bare Drill Material": board.materials["plating_bare"],
-            "Fill Material": board.materials["via_resin"], "Copper Fill Material": board.materials["plating"],
-            "Plug Material": board.materials["via_plug"],
-            "Tent Top Material": board.materials["tent_F"], "Tent Bottom Material": board.materials["tent_B"]}
+    inputs = {"Drill Material": board.materials["plating"], "Bare Drill Material": board.materials["plating_bare"],
+              "Fill Material": board.materials["via_resin"], "Copper Fill Material": board.materials["plating"],
+              "Plug Material": board.materials["via_plug"],
+              "Tent Top Material": board.materials["tent_F"], "Tent Bottom Material": board.materials["tent_B"]}
+    return inputs if highlight_material is None else dict.fromkeys(inputs, highlight_material)
 
 
 def plug_ink():

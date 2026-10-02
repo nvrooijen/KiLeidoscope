@@ -69,6 +69,13 @@ def test_copper_items_match_the_ipc_records():
                               (0, 0, 0, -1, 1, 0, 1, 1)))  # as KiCad 10 writes a Type VII via; "none": the rules
 
 
+def test_a_via_padstack_keeps_the_front_size():
+    text = ('(kicad_pcb\n\t(via\n\t\t(at 0 0)\n\t\t(size 0.6)\n\t\t(drill 0.3)\n\t\t(layers "F.Cu" "B.Cu")\n'
+            '\t\t(padstack\n\t\t\t(mode front_inner_back)\n\t\t\t(layer "Inner"\n\t\t\t\t(size 0.4)\n\t\t\t)\n\t\t)\n'
+            '\t\t(uuid "via-3")\n\t)\n)')
+    assert copper_items(text)[2][0].diameter == 600_000  # as IPC's diameter: the front's
+
+
 def test_kicad_9_names_the_tented_sides():
     assert via_protection("(tenting front)") == (1, 0, -1, -1, -1, -1, -1, -1)
     assert via_protection("(tenting none)", (1,) * 8) == (0, 0, 1, 1, 1, 1, 1, 1)

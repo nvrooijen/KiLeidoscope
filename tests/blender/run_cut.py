@@ -59,9 +59,10 @@ def protect(snapshot, codes, revision=[100]):
     cut.rebuild()  # what cut.invalidate's timer does, soon after (timers do not run headless)
 
 
-def attribute_values(name):
-    mesh = state.board.collection.all_objects["KLS vias"].data
-    return [round(value.value, 9) for value in mesh.attributes[name].data]
+def attribute(name, obj=None):
+    """A per-via attribute's values, of the via mesh unless `obj` is given."""
+    obj = obj or state.board.collection.all_objects["KLS vias"]
+    return [round(value.value, 9) for value in obj.data.attributes[name].data]
 
 
 def camera(scene, ortho_scale=None, location=(0, -0.2, 0.0008), rotation=(math.pi / 2, 0, 0), size=(1400, 300)):
@@ -185,7 +186,7 @@ def main():
         assert channels_at(0) == (1, 0, 0) and channels_at(1) == (0, 0, 0) and channels_at(2) == (1, 1, 1)
         protect(layered, [PLUGGED] * 3)
         assert len(holes._sources["vias"]) == 2  # still holes: their lands are rings, the plug shows in them
-        assert attribute_values("bare_barrel") == [1, 1, 1]  # the plug kept the finish out
+        assert attribute("bare_barrel") == [1, 1, 1]  # the plug kept the finish out
         # In 3D too the barrels are plugged: a core in the plug's material, and a highlighted
         # via's core in the highlight's (solid in X-ray mode, where everything else fades).
         vias = board.collection.all_objects["KLS vias"]
@@ -201,9 +202,6 @@ def main():
                     names |= {material.name for material in instance.object.data.materials if material}
             return count, names
 
-        def attribute(name, obj=vias):
-            return [round(value.value, 9) for value in obj.data.attributes[name].data]
-
         plugged_faces, plugged_materials = via_faces()
         assert board.materials["via_plug"].name in plugged_materials, (plugged_faces, plugged_materials)
         assert board.materials["via_resin"].name in plugged_materials  # the buried via: the prepreg's resin
@@ -212,7 +210,8 @@ def main():
         assert attribute("core_top") == [1, 1, 1] and attribute("core_bottom") == [1, 1, 1]  # buried: always resin
         highlight.apply_selection({"selected": ["44444444-4444-4444-8444-444444444443"], "pair": []})
         marked = board.collection.all_objects["KLS vias highlight selected"]
-        assert attribute("core_top", marked) == [1] and             modifier_value_named(marked, "Fill Material") == board.materials["highlight_selected_barrel"]
+        assert attribute("core_top", marked) == [1]
+        assert modifier_value_named(marked, "Fill Material") == board.materials["highlight_selected_barrel"]
         highlight.apply_selection({"selected": [], "pair": []})
         protect(layered, [PLUGGED_TOP] * 3)  # the blind via's one open end: still full; the through via: half
         assert attribute("core_top") == [1, 1, 1] and attribute("core_bottom") == [1, 1, 0]
@@ -253,8 +252,9 @@ def main():
         assert core[1] < top_land[0] and core[0] > bottom_land[1]  # the fill stays under both lands
         blind = z_ranges(vias.data.vertices[0].co.x)  # F.Cu to In1: one outer land, a floor on In1
         assert len(blind["KLS Vias"]) == 1
-        (floor,) = [z for z in blind[board.materials["plating_bare"].name] if z[0] == z[1]]  # plated like its
-        assert abs(floor[0] - board.heights["In1.Cu"]) < 5e-6, floor  # barrel, flat on In1, not mask-covered
+        # Its floor: plated like its barrel, flat on In1, not mask-covered.
+        (floor,) = [z for z in blind[board.materials["plating_bare"].name] if z[0] == z[1]]
+        assert abs(floor[0] - board.heights["In1.Cu"]) < 5e-6, floor
         scene.kileido_via_fill_material = "COPPER"
         assert attribute("fill_copper") == [1, 1, 1]
         assert board.materials["via_resin"].name not in via_faces()[1]
@@ -289,7 +289,6 @@ def main():
             polished = patch(scene, via, (-0.010 - 290 * UM, 0, 1275 * UM), (-0.010 - 200 * UM, 0, 1300 * UM))
             assert woven.std() > 0.01 and polished.std() > 0.004, (
                 engine, woven.std(), polished.std())  # weave in laminate, polish in copper
-        scene.render.engine = "CYCLES"
         # Filled and capped (type VII): plated over at the outer copper, in the section and in 3D.
         scene.render.engine = "BLENDER_EEVEE"
         protect(layered, [FILLED_CAPPED] * 3)

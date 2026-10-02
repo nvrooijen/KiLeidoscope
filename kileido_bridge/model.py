@@ -36,8 +36,9 @@ class Arc:
 PROTECTION = ("tent_front", "tent_back", "cover_front", "cover_back", "plug_front", "plug_back", "cap", "fill")
 FROM_RULES = (-1,) * len(PROTECTION)
 # Which copper layers a via has an annular ring on (KiCad's "Annular rings", its padstack's
-# unconnected layer removal): every layer it spans (KiCad's default), only those it
-# connects to, its start and end layers and those, or its start and end layers only.
+# unconnected layer removal, numbered as KiCad's IPC `UnconnectedLayerRemoval`): every layer
+# it spans (KiCad's default), only those it connects to, those plus its start and end
+# layers, or its start and end layers only.
 RINGS_ALL, RINGS_CONNECTED, RINGS_ENDS_AND_CONNECTED, RINGS_ENDS = 1, 2, 3, 4
 
 

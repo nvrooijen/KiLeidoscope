@@ -42,7 +42,7 @@ def main():
         plating = board.collection.all_objects.get(edge_plating.OBJECT)
         assert plating is None or not len(plating.data.polygons)
 
-        # Asked for: where both outer layers' copper reaches the edge: the whole left edge, and
+        # Set: where both outer layers' copper reaches the edge: the whole left edge, and
         # the pours' 3 mm along the top and bottom edges.
         apply.load_frames(frames(True))
         stretches = cut.plated_edges()
@@ -77,8 +77,9 @@ def main():
                 assert np.dot(normal[:2], centre[:2] - found[0][0]) > 0
             else:  # top up, bottom down
                 assert np.sign(normal[2]) == (1 if centre[2] > board.thickness_m / 2 else -1)
-        assert not edge_plating.corners([(np.array((0.0, 0.0)), np.array((1.0, 0.0)), np.array((0.0, -1.0))),
-                                         (np.array((1.0, 0.0)), np.array((1.0, -1.0)), np.array((-1.0, 0.0)))])  # inside
+        inside = [(np.array((0.0, 0.0)), np.array((1.0, 0.0)), np.array((0.0, -1.0))),
+                  (np.array((1.0, 0.0)), np.array((1.0, -1.0)), np.array((-1.0, 0.0)))]
+        assert not edge_plating.corners(inside)  # an inside corner: the strips overlap, no piece
 
         # A rounded edge, 3 degrees a segment: one strip, smooth along it (no facets).
         arc = [np.array((5 * MM * np.cos(a), 5 * MM * np.sin(a))) for a in np.radians(np.arange(0, 91, 3))]
@@ -88,7 +89,8 @@ def main():
         _, faces, smooth = edge_plating._shell(points, normals, closed, board.thickness_m)
         assert sum(smooth) == 2 * len(bend) and len(faces) == 4 * len(bend) + 2  # walls smooth; top, bottom, ends flat
         circle = [np.array((5 * MM * np.cos(a), 5 * MM * np.sin(a))) for a in np.radians(np.arange(0, 361, 3))]
-        (points, _, closed), = edge_plating.chains([(p, q, (p + q) / np.hypot(*(p + q))) for p, q in zip(circle, circle[1:])])
+        loop = [(p, q, (p + q) / np.hypot(*(p + q))) for p, q in zip(circle, circle[1:])]
+        (points, _, closed), = edge_plating.chains(loop)
         assert closed and len(points) == 120
 
         # With the board solid hidden, the plating goes too.

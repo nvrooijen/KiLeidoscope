@@ -171,11 +171,11 @@ class KILEIDO_OT_viewport(bpy.types.Operator):
 class KILEIDO_OT_cut_plane(bpy.types.Operator):
     bl_idname = "kileido.cut_plane"
     bl_label = "Cut plane"
-    bl_description = "Turn the cut plane across the board (keeping its position), or put it back in the middle"
+    bl_description = "Turn the cut plane across X or Y (keeping its position), or put it back across the middle"
 
-    axis: EnumProperty(items=(("X", "X", "Across X: the right half removed, seen from the right view"),
-                              ("Y", "Y", "Across Y: the front half removed, seen from the front view"),
-                              ("RESET", "Reset", "Across the middle of the board, front half removed")))
+    axis: EnumProperty(items=(("X", "X", "Across X: the right side removed, seen from the right view"),
+                              ("Y", "Y", "Across Y: the front side removed, seen from the front view"),
+                              ("RESET", "Reset", "Across Y through the middle of the board, front half removed")))
 
     def execute(self, context):
         if self.axis == "RESET":
@@ -256,9 +256,9 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         row = self.layout.row(align=True)
         row.prop(scene, "kileido_max_tent_mm", text="Max tent hole")
         row.prop(scene, "kileido_via_plating_um", text="Via wall")
-        if board.via_too_big:
-            count = board.via_too_big
-            self.layout.label(text=f"{count} tented via{'s' if count > 1 else ''} too large to tent: shown open",
+        count = board.via_too_big
+        if count:
+            self.layout.label(text=f"{count} via{'s' if count > 1 else ''} too large to tent: shown open",
                               icon="ERROR")
 
     def _draw_cut(self, context):
@@ -636,10 +636,10 @@ def _swatch(kind, color):
     return preview.icon_id
 
 
-CLASSES = (KILEIDO_OT_cut_plane, KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
+CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
-           KILEIDO_PT_status)
+           KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel,
+           KILEIDO_PT_boards, KILEIDO_PT_status)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -716,8 +716,8 @@ def _scene_properties():
             update=lambda self, context: focus.refresh()),
         "kileido_cut": BoolProperty(
             name="Cut plane", default=False,
-            description="Cut the board open along an upright plane (the \"KLS cut plane\" object; move it, or "
-                        "turn it about Z) and show the cross section: laminate, copper layers, vias",
+            description="Cut the board open along a plane (the \"KLS cut plane\" object: move or turn it) and, "
+                        "while it stands upright, show the cross section: laminate, copper layers, vias",
             update=lambda self, context: cut.refresh()),
         "kileido_cut_flip": BoolProperty(
             name="Flip", default=False, description="Remove the other side of the cut plane",

@@ -462,7 +462,7 @@ def _convert_track(item) -> model.Track | model.Arc:
 
 def _mode(value) -> int:
     """KiCad's via protection modes all number 1 = yes, 2 = no, 0 or 3 = from the design
-    rules (measured on KiCad 10.0.3: a via without its own setting reports 0)."""
+    rules (measured on KiCad 10.0.3: a via without its own setting reports 0), as 1, 0, -1."""
     return {1: 1, 2: 0}.get(int(value), -1)
 
 
@@ -478,11 +478,10 @@ def _via_protection(padstack) -> tuple[int, ...]:
 
 
 def _via_rings(padstack) -> int:
-    """KiCad's unconnected layer removal, numbered as `model.RINGS_*` (0, unknown: KiCad's
-    default, every layer)."""
-    proto = getattr(padstack, "_proto", None)
-    value = int(getattr(proto, "unconnected_layer_removal", 0) or 0)
-    return value if value in (model.RINGS_CONNECTED, model.RINGS_ENDS_AND_CONNECTED, model.RINGS_ENDS)         else model.RINGS_ALL
+    """KiCad's unconnected layer removal (`UnconnectedLayerRemoval` numbers `model.RINGS_*`
+    the same); 0, unknown, or a stand-in padstack (tests) is KiCad's default, every layer."""
+    value = getattr(getattr(padstack, "_proto", None), "unconnected_layer_removal", model.RINGS_ALL)
+    return value if model.RINGS_ALL <= value <= model.RINGS_ENDS else model.RINGS_ALL
 
 
 def _convert_via(item) -> model.Via:

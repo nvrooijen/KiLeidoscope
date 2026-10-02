@@ -22,6 +22,9 @@ _UUID = re.compile(r'\(uuid "([^"]+)"\)')
 _SIDED = re.compile(r"\((tenting|covering|plugging)\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _SIDE = re.compile(r"\((front|back)\s+(yes|no|none)\)")
 _SINGLE = re.compile(r"\((capping|filling)\s+(yes|no|none)\)")
+# Where each written field lands in `model.PROTECTION` (a sided one: its front; back is next).
+_SIDED_INDEX = {"tenting": 0, "covering": 2, "plugging": 4}
+_SINGLE_INDEX = {"capping": 6, "filling": 7}
 _RINGS = re.compile(r"\((remove_unused_layers|keep_end_layers|start_end_only)\s+yes\)")
 
 
@@ -45,18 +48,17 @@ def via_protection(text: str, fallback: tuple[int, ...] = model.FROM_RULES) -> t
     as bare words, `(tenting front back)`. What is not written takes `fallback`.
     """
     found = list(fallback)
-    base = {"tenting": 0, "covering": 2, "plugging": 4}
     for name, body in _SIDED.findall(text):
         sides = dict(_SIDE.findall(body))
         if not sides:  # KiCad 9: the sides named are the ones on
             words = body.split()
             sides = {side: "yes" if side in words else "no" for side in ("front", "back")}
         for offset, side in enumerate(("front", "back")):
-            if side in sides and sides[side] != "none":
-                found[base[name] + offset] = 1 if sides[side] == "yes" else 0
+            if sides.get(side, "none") != "none":
+                found[_SIDED_INDEX[name] + offset] = 1 if sides[side] == "yes" else 0
     for name, value in _SINGLE.findall(text):
         if value != "none":
-            found[6 if name == "capping" else 7] = 1 if value == "yes" else 0
+            found[_SINGLE_INDEX[name]] = 1 if value == "yes" else 0
     return tuple(found)
 
 
@@ -72,7 +74,9 @@ def copper_items(text: str) -> tuple[tuple[model.Track, ...], tuple[model.Arc, .
         if uuid is None:
             continue
         points = {name: (_nm(x), _nm(y)) for name, x, y in _POINT.findall(body)}
-        numbers = {name: _nm(value) for name, value in _NUMBER.findall(body)}
+        numbers = {}  # the first of each: a via's front size (IPC's diameter), not its padstack's per-layer ones
+        for name, value in _NUMBER.findall(body):
+            numbers.setdefault(name, _nm(value))
         net_match = _NET.search(body)
         net = net_match.group(1).replace('\\"', '"').replace("\\\\", "\\") if net_match else ""
         if kind == "via":

@@ -17,6 +17,9 @@ from .state import board
 
 LIFT_M = 1e-6  # above the copper's outer surface
 GROW_M = 4e-6  # 2 um wider per side, so the copper edge never shows through
+# A via's outer ends and resolved protection (apply), copied as they are: nodes.vias draws from them.
+VIA_FLAGS = ("outer_top", "outer_bottom", "core_top", "core_bottom", "fill_copper", "plug_ink", "cap", "drilled",
+             "tent_top", "tent_bottom", "bare_barrel")
 BOX_MARGIN_M = 0.1e-3  # around the component body
 
 
@@ -209,11 +212,8 @@ def _refresh_vias(wanted):
         target.clear_geometry()
         target.vertices.add(len(chosen_vertices))
         target.vertices.foreach_set("co", read_coordinates(mesh)[chosen_vertices].ravel())
-        for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M),
-                                  ("z_top", LIFT_M), ("z_bottom", -LIFT_M), ("outer_top", 0.0), ("outer_bottom", 0.0),
-                                  ("core_top", 0.0), ("core_bottom", 0.0), ("fill_copper", 0.0), ("cap", 0.0),
-                                  ("drilled", 0.0), ("tent_top", 0.0), ("tent_bottom", 0.0), ("bare_barrel", 0.0),
-                                  ("plug_ink", 0.0)):
+        for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M), ("z_top", LIFT_M),
+                                  ("z_bottom", -LIFT_M), *((name, 0.0) for name in VIA_FLAGS)):
             values = read_attribute(mesh, attribute, np.float32)[chosen_vertices]
             write_attribute(target, attribute, "FLOAT", values + change)
         target.update()

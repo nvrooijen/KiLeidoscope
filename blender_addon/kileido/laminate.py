@@ -189,8 +189,9 @@ def update_bands(tree=None):
         while len(elements) > 1:
             elements.remove(elements[-1])
         for index, (z0, color) in enumerate(stops):
-            element = elements[0] if index == 0 else elements.new(min(max(z0 / total, 0.0), 0.999))
-            element.position = 0.0 if index == 0 else min(max(z0 / total, 0.0), 0.999)
+            position = 0.0 if index == 0 else min(max(z0 / total, 0.0), 0.999)  # the first band runs from the bottom
+            element = elements[0] if index == 0 else elements.new(position)
+            element.position = position
             element.color = value(color)
 
 

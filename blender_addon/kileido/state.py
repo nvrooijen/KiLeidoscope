@@ -27,7 +27,7 @@ class BoardState:
         self.mask_images = {}  # "F"/"B" -> (saved-board mask plot image, world XY bounds)
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
-        self.via_too_big = 0  # vias KiCad tents over a drill larger than the panel's Max tent drill
+        self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
 
         # Snapshot bookkeeping: objects not touched by a full snapshot are cleared.
         self.in_snapshot = False

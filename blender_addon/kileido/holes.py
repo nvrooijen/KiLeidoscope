@@ -29,6 +29,7 @@ HOLED = ("board", "board_bottom", "vias", "highlight_selected", "highlight_pair"
 THROUGH, TOP, BOTTOM = 0, 1, 2  # a via hole's side
 SIDE_MARGIN_M = 10e-6  # this far inside a laminate face still counts as that side (the board's own faces)
 CHANNELS = (("F", TOP), ("B", BOTTOM), ("through", THROUGH))  # red, green, alpha
+SIDE_NODE = "KLS holes side"  # a holed material's channel pick (`_side_select`)
 
 _sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
 _bounds = None
@@ -37,12 +38,12 @@ _drawn = None  # (bounds, {channel: (rows, alpha)}, pixels) of the last redraw, 
 PARTIAL_MAX = 64  # more changed holes than this: redraw the whole mask
 
 
-def set_vias(xy_m, drill_m, side=None):
-    """Via holes: x, y and diameter in Blender metres, and per via THROUGH (default),
+def set_vias(xy_m, diameter_m, side=None):
+    """Via holes: x, y and hole diameter in Blender metres, and per via THROUGH (default),
     TOP or BOTTOM: the side a blind via opens on."""
     xy = np.asarray(xy_m, np.float64).reshape(-1, 2)
-    side = np.zeros(len(xy)) if side is None else np.asarray(side, np.float64).reshape(-1)
-    _sources["vias"] = np.column_stack((xy, np.asarray(drill_m, np.float64).reshape(-1), side))
+    side = np.full(len(xy), THROUGH) if side is None else np.asarray(side, np.float64).reshape(-1)
+    _sources["vias"] = np.column_stack((xy, np.asarray(diameter_m, np.float64).reshape(-1), side))
     rebuild()
 
 
@@ -145,13 +146,8 @@ def _rows(channel_side):
     """Hole rows (x, y, w, h, angle, oval) on one channel: through holes, plus that
     side's blind vias."""
     vias = _sources["vias"]
-    if len(vias):
-        vias = vias[(vias[:, 3] == THROUGH) | (vias[:, 3] == channel_side)] if channel_side else \
-            vias[vias[:, 3] == THROUGH]
-    return np.concatenate((
-        np.column_stack((vias[:, :2], vias[:, 2], vias[:, 2],
-                         np.zeros(len(vias)), np.zeros(len(vias)))) if len(vias) else np.empty((0, 6)),
-        _sources["pads"]))
+    vias = vias[np.isin(vias[:, 3], (THROUGH, channel_side))]
+    return np.concatenate((np.column_stack((vias[:, :3], vias[:, 2], np.zeros((len(vias), 2)))), _sources["pads"]))
 
 
 def rebuild():
@@ -227,7 +223,6 @@ def add_to(material):
         shading.project_plot(tree, nodes.new("ShaderNodeNewGeometry").outputs["Position"], texture,
                              "KLS holes offset", "KLS holes scale")
         opening = shading.sharp_alpha(material, texture)
-        _side_select(material, texture)
         solid = nodes.new("ShaderNodeMath")
         solid.operation = "SUBTRACT"
         solid.inputs[0].default_value = 1.0
@@ -251,7 +246,7 @@ def add_to(material):
             links.new(solid.outputs[0], both.inputs[1])
             links.new(both.outputs[0], mix.inputs[0])
         focus.set_render_method(material)
-    if tree.nodes.get(SIDE_NODE) is None:  # a material from before the side channels
+    if nodes.get(SIDE_NODE) is None:  # a new material, or one from before the side channels
         _side_select(material, texture)
     _set_side_heights(material)
     texture.image = image
@@ -259,9 +254,6 @@ def add_to(material):
     width, height = image.size
     pixel = max(xmax - xmin, ymax - ymin) / RESOLUTION
     shading.set_plot_rectangle(tree, "KLS holes offset", "KLS holes scale", xmin, ymin, width * pixel, height * pixel)
-
-
-SIDE_NODE = "KLS holes side"
 
 
 def _side_select(material, texture):

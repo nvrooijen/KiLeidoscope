@@ -22,9 +22,10 @@ LIGHTEST = 1 + GRAIN_SPREAD / 2  # the shade's range, for checks
 DARKEST = 1 - GRAIN_SPREAD / 2 - SCRATCH_DARK
 
 
-def _hash(tree, cell_a, cell_b, a, b):
+def _hash(tree, cell_a, a, cell_b=None, b=0.0):
     """0..1, the same for a cell and unrelated between neighbours (a sine hash)."""
-    seed = shading.math_node(tree, "MULTIPLY_ADD", cell_a, a, shading.math_node(tree, "MULTIPLY", cell_b, b))
+    seed = (shading.math_node(tree, "MULTIPLY", cell_a, a) if cell_b is None else
+            shading.math_node(tree, "MULTIPLY_ADD", cell_a, a, shading.math_node(tree, "MULTIPLY", cell_b, b)))
     return shading.math_node(tree, "FRACT", shading.math_node(tree, "MULTIPLY", shading.math_node(
         tree, "SINE", seed), 43758.5453))
 
@@ -47,13 +48,13 @@ def group():
     across = m(tree, "DIVIDE", m(tree, "MULTIPLY_ADD", along, math.sin(SCRATCH_ANGLE),
                                   m(tree, "MULTIPLY", height, math.cos(SCRATCH_ANGLE))), SCRATCH_PITCH_M)
     line = shading.ease(tree, m(tree, "ABSOLUTE", shading.centred_fract(tree, across)), 0.15, 0.4)
-    depth = _hash(tree, m(tree, "FLOOR", across), 0.0, 12.9898, 0.0)
+    depth = _hash(tree, m(tree, "FLOOR", across), 12.9898)
     shown = shading.ease(tree, depth, 1 - SCRATCH_SHARE, 1 - SCRATCH_SHARE - 0.02)  # 1 for the deepest share
     scratch = m(tree, "MULTIPLY", line, shown)
     # Grain: cells a few um across, each a little lighter or darker.
     row = m(tree, "FLOOR", m(tree, "DIVIDE", height, GRAIN_M))
     cell = m(tree, "FLOOR", m(tree, "ADD", m(tree, "DIVIDE", along, GRAIN_M), m(tree, "MULTIPLY", row, 0.5)))
-    grain = m(tree, "SUBTRACT", _hash(tree, cell, row, 39.3468, 11.135), 0.5)
+    grain = m(tree, "SUBTRACT", _hash(tree, cell, 39.3468, row, 11.135), 0.5)
 
     change = m(tree, "SUBTRACT", m(tree, "MULTIPLY", grain, GRAIN_SPREAD), m(tree, "MULTIPLY", scratch, SCRATCH_DARK))
     shade = m(tree, "MULTIPLY_ADD", change, source.outputs["Metal"], 1.0)

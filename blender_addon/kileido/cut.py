@@ -4,9 +4,10 @@ Two parts, no booleans:
 - Everything on the removed side of the plane turns transparent: one shared shader
   group ("KLS_Clip_v1") sits last in every shown material (after X-ray mode, focus.py).
 - The cross section is drawn on the plane as one flat mesh ("KLS cut face"): laminate
-  bands from the stackup, copper at each layer's stackup thickness, via walls and plugs
-  (section.py works it out from the board's own edges and points). It covers what lies
-  behind it, so the cut reads as a solid face, like a micrograph.
+  bands from the stackup, copper at each layer's stackup thickness, via walls, cores,
+  caps and tents, and a plated board edge (section.py works it out from the board's own
+  edges and points). It covers what lies behind it, so the cut reads as a solid face,
+  like a micrograph.
 
 The plane is an ordinary mesh object ("KLS cut plane"; move it, or turn it about Z) and
 its arrow points to the removed side. A section needs the plane upright; tilted, only the
@@ -35,7 +36,7 @@ FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
 FACE_METAL = "kls_metal"  # 1 on copper: polished metal
 FACE_MILKY = "kls_resin"  # 1 on resin: milky, the barrel behind it shows through
 FACE_MATERIAL_VERSION = 9
-RESIN_OPACITY = 0.55  # a resin plug is milky: the barrel behind it shows through, faded
+RESIN_OPACITY = 0.55  # resin in a via is milky: the barrel behind it shows through, faded
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
 ORIENTATIONS = {"X": (0.0, math.pi / 2, 0.0), "Y": (math.pi / 2, 0.0, 0.0)}
@@ -265,6 +266,11 @@ def _modifier_input(obj, name):
     return nodes.modifier_value(modifier, item.identifier) if item is not None else None
 
 
+def _land_lift():
+    """How far the 3D outer lands (and a via's ends) stand out of their copper."""
+    return transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0})
+
+
 def _layers_at(heights):
     """The copper layer at each height (vias store heights, not their layers' names)."""
     names = list(board.heights)
@@ -300,22 +306,22 @@ def _gather():
         elif obj.name == "KLS outline":
             xy, edges = _world_xy(obj), read_edges(obj.data)
             outline = (xy[edges[:, 0]], xy[edges[:, 1]], np.zeros(len(edges), np.int64))
-        elif obj.name == "KLS vias":
+        elif obj.name == "KLS vias" and board.heights:
             mesh = obj.data
-            land = transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0})  # a via's z sits this far outside its copper
+            lift = _land_lift()  # a via's z sits this far outside its copper
             vias = {"xy": _world_xy(obj),
                     "diameter": read_attribute(mesh, "diameter", np.float32).astype(np.float64),
                     "drill": read_attribute(mesh, "drill", np.float32).astype(np.float64),
-                    "top": _layers_at(read_attribute(mesh, "z_top", np.float32) - land),
-                    "bottom": _layers_at(read_attribute(mesh, "z_bottom", np.float32) + land)}
-            if "core_top" in mesh.attributes:  # plug, fill, cap and tents, as apply.refresh_protection resolved them
-                vias.update({name: read_attribute(mesh, name, np.float32) > 0.5
-                             for name in ("core_top", "core_bottom", "fill_copper", "tent_top", "tent_bottom",
-                                          "plug_ink")
-                             if name in mesh.attributes})
+                    "top": _layers_at(read_attribute(mesh, "z_top", np.float32) - lift),
+                    "bottom": _layers_at(read_attribute(mesh, "z_bottom", np.float32) + lift)}
+            # Plug, fill, cap and tents, as apply.refresh_protection resolved them.
+            vias.update({name: read_attribute(mesh, name, np.float32) > 0.5
+                         for name in ("core_top", "core_bottom", "fill_copper", "tent_top", "tent_bottom", "plug_ink")
+                         if name in mesh.attributes})
+            if "cap" in mesh.attributes:  # the cap plating's thickness, 0 where uncapped
+                vias["capped"] = read_attribute(mesh, "cap", np.float32) > 0
             if "rings" in mesh.attributes:
                 vias["rings"] = read_attribute(mesh, "rings", np.int32)
-                vias["capped"] = read_attribute(mesh, "cap", np.float32) > 0
         elif obj.get("kls_drill"):
             width, height = _modifier_input(obj, "Width"), _modifier_input(obj, "Height")
             plated = _modifier_input(obj, "Material") == board.materials.get("plating")
@@ -340,20 +346,23 @@ def _face_material():
     material.use_nodes = True
     tree = material.node_tree
     tree.nodes.clear()
-    weave = tree.nodes.new("ShaderNodeGroup")
-    weave.node_tree = laminate.group()
-    tree.links.new(_attribute(tree, FACE_COLOR).outputs["Color"], weave.inputs["Base"])
-    tree.links.new(_attribute(tree, FACE_ALONG).outputs["Fac"], weave.inputs["Along"])
+    color = _attribute(tree, FACE_COLOR).outputs["Color"]
+    along = _attribute(tree, FACE_ALONG).outputs["Fac"]
+    is_metal = _attribute(tree, FACE_METAL).outputs["Fac"]
     height = tree.nodes.new("ShaderNodeSeparateXYZ")
     tree.links.new(tree.nodes.new("ShaderNodeNewGeometry").outputs["Position"], height.inputs[0])
+    weave = tree.nodes.new("ShaderNodeGroup")
+    weave.node_tree = laminate.group()
+    tree.links.new(color, weave.inputs["Base"])
+    tree.links.new(along, weave.inputs["Along"])
     tree.links.new(height.outputs["Z"], weave.inputs["Height"])
     tree.links.new(_attribute(tree, FACE_WEAVE).outputs["Fac"], weave.inputs["Weave"])
     polish = tree.nodes.new("ShaderNodeGroup")
     polish.node_tree = metal.group()
     tree.links.new(weave.outputs["Color"], polish.inputs["Base"])
-    tree.links.new(_attribute(tree, FACE_ALONG).outputs["Fac"], polish.inputs["Along"])
+    tree.links.new(along, polish.inputs["Along"])
     tree.links.new(height.outputs["Z"], polish.inputs["Height"])
-    tree.links.new(_attribute(tree, FACE_METAL).outputs["Fac"], polish.inputs["Metal"])
+    tree.links.new(is_metal, polish.inputs["Metal"])
     emission = tree.nodes.new("ShaderNodeEmission")
     tree.links.new(polish.outputs["Color"], emission.inputs["Color"])
     # Copper lit as metal (bare: a cut never carries the finish), with the same polish.
@@ -362,7 +371,7 @@ def _face_material():
     lit_polish = tree.nodes.new("ShaderNodeGroup")
     lit_polish.node_tree = metal.group()
     tree.links.new(lit_color.outputs[0], lit_polish.inputs["Base"])
-    tree.links.new(_attribute(tree, FACE_ALONG).outputs["Fac"], lit_polish.inputs["Along"])
+    tree.links.new(along, lit_polish.inputs["Along"])
     tree.links.new(height.outputs["Z"], lit_polish.inputs["Height"])
     lit_polish.inputs["Metal"].default_value = 1.0
     lit = tree.nodes.new("ShaderNodeBsdfPrincipled")
@@ -372,22 +381,21 @@ def _face_material():
     realistic.name = "KLS realistic"
     use_lit = tree.nodes.new("ShaderNodeMath")
     use_lit.operation = "MULTIPLY"
-    tree.links.new(_attribute(tree, FACE_METAL).outputs["Fac"], use_lit.inputs[0])
+    tree.links.new(is_metal, use_lit.inputs[0])
     tree.links.new(realistic.outputs[0], use_lit.inputs[1])
     surface = tree.nodes.new("ShaderNodeMixShader")
     tree.links.new(use_lit.outputs[0], surface.inputs[0])
     tree.links.new(emission.outputs[0], surface.inputs[1])
     tree.links.new(lit.outputs[0], surface.inputs[2])
     # Resin is milky: partly see-through to the barrel behind it.
-    resin = _attribute(tree, FACE_MILKY)
     milky_colour = tree.nodes.new("ShaderNodeEmission")
-    tree.links.new(_attribute(tree, FACE_COLOR).outputs["Color"], milky_colour.inputs["Color"])
+    tree.links.new(color, milky_colour.inputs["Color"])
     milky = tree.nodes.new("ShaderNodeMixShader")
     milky.inputs[0].default_value = RESIN_OPACITY
     tree.links.new(tree.nodes.new("ShaderNodeBsdfTransparent").outputs[0], milky.inputs[1])
     tree.links.new(milky_colour.outputs[0], milky.inputs[2])
     plugged = tree.nodes.new("ShaderNodeMixShader")
-    tree.links.new(resin.outputs["Fac"], plugged.inputs[0])
+    tree.links.new(_attribute(tree, FACE_MILKY).outputs["Fac"], plugged.inputs[0])
     tree.links.new(surface.outputs[0], plugged.inputs[1])
     tree.links.new(milky.outputs[0], plugged.inputs[2])
     tree.links.new(plugged.outputs[0], tree.nodes.new("ShaderNodeOutputMaterial").inputs["Surface"])
@@ -450,8 +458,8 @@ def plated_edges():
 
 
 def rectangles(scene=None):
-    """The section's (s0, s1, z0, z1, sRGB) rectangles and the plane's (origin, normal),
-    or None when there is no section to draw."""
+    """(rectangles, (line, normal)): the section's (s0, s1, z0, z1, sRGB) rectangles, the
+    cut as a section.Line and the plane's normal; None when there is no section to draw."""
     scene = scene or bpy.context.scene
     on, origin, normal = _state(scene)
     if not on or abs(normal[2]) >= UPRIGHT or board.collection is None or board.in_snapshot or not board.heights:
@@ -463,24 +471,24 @@ def rectangles(scene=None):
                                          board.appearance.get("dielectrics"))
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
-                                  plating=via_plating(), land_lift=transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0}),
+                                  plating=via_plating(), land_lift=_land_lift(),
                                   cap_plating=CAP_PLATING_M, tents=_tents(), plug_color=_plug_ink())
     return rects, (line, normal)
 
 
 def _plug_ink():
-    from . import materials  # materials imports this module
-    return materials.plug_ink()
+    from . import materials as colors  # materials imports this module
+    return colors.plug_ink()
 
 
 def _tents():
     """The solder mask over tented vias, per outer layer: (thickness, sRGB), while shown."""
-    from . import materials  # materials imports this module
+    from . import materials as colors  # materials imports this module
     found = {}
     for side, layer in (("F", "F.Cu"), ("B", "B.Cu")):
-        mask = materials.mask_color(side)
+        mask = colors.mask_color(side)
         if mask:
-            found[layer] = (mask_thickness(side), tuple(materials.seen_through(mask, materials.COPPER_UNDER_MASK)))
+            found[layer] = (mask_thickness(side), tuple(colors.seen_through(mask, colors.COPPER_UNDER_MASK)))
     return found
 
 
@@ -541,13 +549,14 @@ def _rebuild_soon():
 def refresh():
     """The tick box, or a whole new board: bring materials, plane and face in line."""
     global _pushed, _data, _edges
+    _data = _edges = None  # before ensure_plane: placing a new plane already draws the section
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:
         hide(plane, not on)
     for material in materials():
         (add_to if on else remove_from)(material)
-    _pushed, _data, _edges = None, None, None
+    _pushed = None
     push()
 
 

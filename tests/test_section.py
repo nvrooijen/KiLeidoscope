@@ -238,6 +238,26 @@ def test_a_plug_is_solder_mask_ink():
     assert color_at(rects, (10 + 0.15 - 0.0125) * MM, 1400 * UM) == section.COPPER  # inside the wall
 
 
+def test_a_tent_over_a_capped_via_lies_on_the_cap():
+    rects = _board("RESIN", capped=True, cap_plating=20 * UM, tented=True)  # cap 1540-1560 um, then the mask
+    assert color_at(rects, 10 * MM, 1550 * UM) == section.COPPER
+    assert color_at(rects, 10 * MM, 1570 * UM) == MASK
+    assert color_at(rects, 10 * MM, 1585 * UM) is None
+
+
+def test_pad_drills_without_copper_draw_nothing():
+    assert section.cross_section(ALONG_X, None, {}, {}, [], pad_drills=[(0, 0, 1 * MM, 1 * MM, 0, 1)]) == []
+
+
+def test_sharp_corners_whichever_way_the_outline_runs():
+    hairpin = section._sharp_ends(np.array([(0.0, 0.0), (10.0, 0.0)]), np.array([(10.0, 0.0), (0.0, 1.0)]))
+    assert hairpin[0][1] and hairpin[1][0]  # turning back on itself is the sharpest corner
+    reversed_ = section._sharp_ends(np.array([(0.0, 0.0), (10.0, 10.0)]), np.array([(10.0, 0.0), (10.0, 0.0)]))
+    assert reversed_[0][1] and reversed_[1][1]  # two ends meeting: a right angle
+    straight = section._sharp_ends(np.array([(0.0, 0.0), (20.0, 0.0)]), np.array([(10.0, 0.0), (10.0, 0.0)]))
+    assert not straight[0][1] and not straight[1][1]
+
+
 def test_copper_rounded_at_a_corner_still_plates_it():
     outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
     near = square(-20 * MM + 30 * UM, -15 * MM + 30 * UM, 0, 15 * MM - 30 * UM)  # stops 30 um short of the corners

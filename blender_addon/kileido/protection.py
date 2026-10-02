@@ -44,14 +44,15 @@ def unpack(packed):
 
 
 def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
-    """Per via, what is drawn: a dict of bool arrays.
+    """Per via, what is drawn: a dict of bool arrays (`side`: ints).
 
-    core_top, core_bottom: plug or fill in the barrel's upper / lower half. filled: the
-    whole barrel is filled (in the fill material). plugged: its core is a plug alone, of
-    solder mask ink (a buried via's is the prepreg's resin). capped: plated
-    over at its outer ends. drilled: a hole on its outer sides (rings, see-through where
-    nothing closes it); side: holes.THROUGH, TOP or BOTTOM. tent_top, tent_bottom: a mask tent over the drill. open: nothing closes
-    it, see-through. finished: the finish reaches its barrel. too_big: KiCad tents or
+    core_top, core_bottom: a plug or fill in the barrel's upper / lower half. filled: the
+    whole barrel is filled, in the panel's fill material. plugged: the core is a plug of
+    solder mask ink (not a fill, not a buried via's resin). capped: plated over at its
+    outer ends. drilled: a hole on its outer sides (rings, see-through where nothing closes
+    it); side: holes.THROUGH, TOP or BOTTOM, the sides it is a hole on. tent_top,
+    tent_bottom: a mask tent over the hole. open: nothing closes it, see-through; the same
+    vias are `finished`, the board finish reaching the barrel. too_big: KiCad tents or
     covers it over an empty finished `hole` (diameter inside the plating) larger than
     `max_tent`, so it is drawn open there.
     """
@@ -63,7 +64,7 @@ def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
     filled = on[:, 7] | capped
     plug_top, plug_bottom = on[:, 4] & top, on[:, 5] & bottom
     every_end = (plug_top | ~top) & (plug_bottom | ~bottom) & (plug_top | plug_bottom)
-    buried = ~top & ~bottom  # laminated over: always resin-filled
+    buried = ~top & ~bottom  # laminated over: pressed full of prepreg resin
     core_top = filled | every_end | plug_top | buried
     core_bottom = filled | every_end | plug_bottom | buried
     small = np.asarray(hole, np.float64) <= max_tent + 1e-9
@@ -71,9 +72,10 @@ def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
     closed_top = asked_top & (small | core_top)
     closed_bottom = asked_bottom & (small | core_bottom)
     drilled = (top | bottom) & ~capped
-    shut = closed_top | closed_bottom | core_top | core_bottom
+    open_ = drilled & ~(closed_top | closed_bottom | core_top | core_bottom)
     return {"core_top": core_top, "core_bottom": core_bottom, "filled": filled, "capped": capped,
-            "plugged": (core_top | core_bottom) & ~filled & ~buried, "drilled": drilled, "tent_top": drilled & closed_top, "tent_bottom": drilled & closed_bottom,
-            "open": drilled & ~shut, "finished": (top | bottom) & ~shut & ~capped,
+            "plugged": (core_top | core_bottom) & ~filled & ~buried, "drilled": drilled,
+            "tent_top": drilled & closed_top, "tent_bottom": drilled & closed_bottom,
+            "open": open_, "finished": open_,
             "too_big": (asked_top & ~closed_top) | (asked_bottom & ~closed_bottom),
             "side": np.where(top & bottom, THROUGH, np.where(top, TOP, BOTTOM))}

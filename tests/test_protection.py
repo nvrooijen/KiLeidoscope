@@ -32,10 +32,10 @@ def test_pack_round_trips():
     assert (protection.unpack(protection.pack(codes)) == codes).all()
 
 
-def test_only_an_unprotected_through_via_is_open():
+def test_only_an_unprotected_via_is_open():
     found = resolve(NONE, (1, 0, 0, 0, 0, 0, 0, 0), (0, 0, 0, 1, 0, 0, 0, 0))  # none, I-a, II-a's cover
     assert found["open"].tolist() == [True, False, False]
-    assert found["drilled"].all()  # all three are holes: rings, the tent closing the drill
+    assert found["drilled"].all()  # all three are holes: rings, the tent closing the hole
     assert found["tent_top"].tolist() == [False, True, False] and found["tent_bottom"].tolist() == [False, False, True]
     assert found["finished"].tolist() == [True, False, False]  # a tent keeps the finish out of the barrel
     blind = resolve(NONE, (1, 1, 0, 0, 0, 0, 0, 0), top=True, bottom=False)
@@ -77,7 +77,7 @@ def test_a_plug_fills_half_from_its_side_and_all_from_both():
     assert blind["core_top"][0] and blind["core_bottom"][0]
 
 
-def test_a_tent_does_not_span_a_large_empty_drill():
+def test_a_tent_does_not_span_a_large_empty_hole():
     found = resolve((1, 1, 0, 0, 0, 0, 0, 0), hole=0.5e-3)
     assert found["open"][0] and found["too_big"][0]
     filled = resolve((1, 1, 0, 0, 0, 0, 0, 1), hole=0.5e-3)  # VI-b: the fill carries the mask

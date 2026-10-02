@@ -21,7 +21,7 @@ from .objects import OUTLINE, owned_object, set_visible
 from .state import board
 
 OBJECT = "KLS edge plating"
-THICKNESS_M = 25e-6  # as a via barrel's wall
+THICKNESS_M = 25e-6  # a typical plated wall, as the panel's default Via wall
 WALL_GAP_M = 0.5e-6  # off the board's own wall, so the two never share a face
 JOIN_M = 1e-9  # stretches whose ends meet this closely continue one strip,
 SMOOTH_TURN = np.cos(np.radians(30))  # unless the edge turns more than this there (a real corner)
@@ -33,7 +33,7 @@ def chains(stretches):
     """Runs of stretches that follow on from each other: (points, outward normal per
     point, closed), each normal the mean of its two segments' at a joint."""
     def follows(run, start, outward):
-        return np.hypot(*(run[0][-1] - start)) < JOIN_M and float(np.dot(run[1][-1], outward)) >= SMOOTH_TURN
+        return bool(np.hypot(*(run[0][-1] - start)) < JOIN_M) and float(np.dot(run[1][-1], outward)) >= SMOOTH_TURN
 
     runs = []
     for start, end, outward in stretches:
@@ -43,13 +43,19 @@ def chains(stretches):
             runs[-1][1].append(outward)
         else:
             runs.append(([start, end], [outward]))
-    if len(runs) > 1 and follows(runs[-1], runs[0][0][0], runs[0][1][0]):  # the last runs into the first
-        last = runs.pop()
-        runs[0] = (last[0][:-1] + runs[0][0], last[1] + runs[0][1])
+    # An outline loop that starts part way along a strip lists the strip's start last: that
+    # run goes on into the loop's first one (in every loop, cutouts too).
+    for index in range(len(runs) - 1, -1, -1):
+        run = runs[index]
+        into = next((other for other in runs if other is not run and follows(run, other[0][0], other[1][0])), None)
+        if into is not None:
+            into[0][:0] = run[0][:-1]
+            into[1][:0] = run[1]
+            del runs[index]
     result = []
-    for points, normals in runs:
-        points, normals = np.array(points), np.array(normals)
-        closed = len(points) > 2 and np.hypot(*(points[-1] - points[0])) < JOIN_M
+    for run in runs:
+        closed = len(run[0]) > 2 and follows(run, run[0][0], run[1][0])  # round to its own start, smoothly
+        points, normals = np.array(run[0]), np.array(run[1])
         if closed:
             points = points[:-1]
             joints = normals + np.roll(normals, 1, axis=0)
@@ -64,15 +70,15 @@ def corners(stretches):
     """Sharp outside corners between plated stretches: (corner xy, outward normal before,
     outward normal after), where one stretch ends on the next's start and the edge turns
     away from the board by more than a smooth bend."""
-    starts = {}
-    for start, end, outward in stretches:
+    starts = {}  # rounded start -> outward normals of the stretches starting there
+    for start, _, outward in stretches:
         starts.setdefault(tuple(np.round(np.asarray(start, np.float64) / JOIN_M)), []).append(
-            (np.asarray(start, np.float64), np.asarray(outward, np.float64)))
+            np.asarray(outward, np.float64))
     found = []
     for start, end, outward in stretches:
         end, before = np.asarray(end, np.float64), np.asarray(outward, np.float64)
         along = end - np.asarray(start, np.float64)
-        for _, after in starts.get(tuple(np.round(end / JOIN_M)), ()):
+        for after in starts.get(tuple(np.round(end / JOIN_M)), ()):
             if float(np.dot(before, after)) < SMOOTH_TURN and float(np.dot(after, along)) > 0:
                 found.append((end, before, after))
     return found
@@ -113,8 +119,8 @@ def _shell(points, normals, closed, top):
 
     def add(quad, facing, round_wall):
         """A quad, wound so its normal points along `facing`."""
-        corners = np.array([vertices[index] for index in quad])
-        normal = np.cross(corners[1] - corners[0], corners[3] - corners[0])
+        at = np.array([vertices[index] for index in quad])
+        normal = np.cross(at[1] - at[0], at[3] - at[0])
         faces.append(list(quad) if np.dot(normal, facing) >= 0 else list(quad)[::-1])
         smooth.append(round_wall)
 
@@ -132,7 +138,8 @@ def _shell(points, normals, closed, top):
             add((outer_ring[k], outer_ring[n], inner_ring[n], inner_ring[k]), (0.0, 0.0, up), False)
     if not closed:
         for k, along in ((0, points[0] - points[1]), (count - 1, points[-1] - points[-2])):
-            low, high = ring(np.array([inner[k], outer[k]]), 0.0), ring(np.array([inner[k], outer[k]]), top)
+            across = np.array([inner[k], outer[k]])
+            low, high = ring(across, 0.0), ring(across, top)
             add((low[0], low[1], high[1], high[0]), (*along, 0.0), False)
     return vertices, faces, smooth
 
@@ -162,9 +169,10 @@ def refresh():
     mesh.from_pydata(vertices, [], faces)
     mesh.polygons.foreach_set("use_smooth", np.array(smooth, bool))
     mesh.update()
-    if not mesh.materials:
+    if mesh.materials:
+        mesh.materials[0] = board.materials["plating"]
+    else:
         mesh.materials.append(board.materials["plating"])
-    mesh.materials[0] = board.materials["plating"]
     outline = board.collection.all_objects.get(OUTLINE)
     set_visible(obj, outline is None or not outline.hide_get())  # with the board solid
     board.touched.add(obj.name)

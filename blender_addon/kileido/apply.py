@@ -435,7 +435,7 @@ def _apply_vias(header, arrays):
     if protect is None or len(protect) != count:
         protect = np.full((count, len(protection.FIELDS)), protection.FROM_RULES, np.uint8)
     write_attribute(mesh, "protection", "INT", protection.pack(protect))
-    rings = arrays.get("rings")  # KiCad's annular rings (kileido_bridge.model.RINGS_*): the cut draws them
+    rings = arrays.get("rings")  # KiCad's annular rings (kileido_bridge.model.RINGS_*, else all): the cut draws them
     write_attribute(mesh, "rings", "INT", np.asarray(rings if rings is not None and len(rings) == count
                                                      else np.ones(count), np.int32))
     mesh.update()
@@ -532,9 +532,10 @@ def set_board_visible(visible):
 
 
 def refresh_protection(highlights=True):
-    """Resolve each via's protection (KiCad's, with the board's rules and the panel's
-    Max tent hole and Via wall): the 3D plugs, fills, caps and tents, bare or finished barrels, and
-    which vias are drilled through the board (protection.py)."""
+    """Resolve each via's protection (KiCad's, with the board's rules and the panel's Via
+    fill, Max tent hole and Via wall; protection.py) into the point attributes nodes.vias
+    draws (plugs, fills, caps, tents, bare or finished barrels), and draw the vias that are
+    holes into the hole mask, on the sides they open on."""
     if board.collection is None:
         return
     vias = board.collection.all_objects.get("KLS vias")
@@ -605,3 +606,4 @@ def refresh_thickness():
     holes.refresh_sides()  # which heights are the board's top and bottom side
     highlight.refresh()
     cosmetics.recolor()
+    cut.invalidate()  # the section's lands stand out of the copper as far as the 3D pads

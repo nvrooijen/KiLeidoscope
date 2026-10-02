@@ -10,8 +10,8 @@ While focused, EEVEE blends the faded materials instead of dithering them:
 dithered low opacity through a stack of layers stayed grainy at the viewport's
 16 samples. Blended lit layers were 2.5x slower per frame than unfocused (1,500
 synthetic parts: 1.79 s vs 0.71 s per 16 samples), since every stacked layer was
-fully shaded; the unlit grey takes 0.49 s (the user chose it over the muted lit
-colours). Transparency overlap stays on: without it each faded object writes
+fully shaded; the unlit grey takes 0.49 s, and replaces the muted lit colours.
+Transparency overlap stays on: without it each faded object writes
 depth, and a faint part hid the faded board layers behind it as a dark blob.
 Unfocused materials go back to dithered, as before.
 """
