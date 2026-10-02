@@ -258,30 +258,32 @@ def find():
     return regions
 
 
-def _material():
-    material = bpy.data.materials.get(MATERIAL)
+def glow_material(name=MATERIAL, color=(1.0, 0.05, 0.02), alpha=0.35, base=None, glow=0.6):
+    """A translucent, glowing marker material (also proximity.py's). A dark `base` with a
+    stronger `glow` keeps a colour saturated under the studio lights."""
+    material = bpy.data.materials.get(name)
     if material is None:
-        material = bpy.data.materials.new(MATERIAL)
+        material = bpy.data.materials.new(name)
         material.use_nodes = True
         # By type: node names are translated with "Translate New Data" on.
         shader = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
-        shader.inputs["Base Color"].default_value = (1.0, 0.05, 0.02, 1.0)
-        shader.inputs["Emission Color"].default_value = (1.0, 0.05, 0.02, 1.0)
-        shader.inputs["Emission Strength"].default_value = 0.6
-        shader.inputs["Alpha"].default_value = 0.35
+        shader.inputs["Base Color"].default_value = (*(base or color), 1.0)
+        shader.inputs["Emission Color"].default_value = (*color, 1.0)
+        shader.inputs["Emission Strength"].default_value = glow
+        shader.inputs["Alpha"].default_value = alpha
         material.surface_render_method = "BLENDED"
-        material.diffuse_color = (1.0, 0.05, 0.02, 0.35)
+        material.diffuse_color = (*color, alpha)
     return material
 
 
-def _cube():
+def unit_cube(name="KiLeidoscope collision box", material=None):
     """One shared unit cube, found by name (a module-level reference would outlive a file load)."""
-    cube = bpy.data.meshes.get("KiLeidoscope collision box") or bpy.data.meshes.new("KiLeidoscope collision box")
+    cube = bpy.data.meshes.get(name) or bpy.data.meshes.new(name)
     if not len(cube.vertices):
         corners = [(x, y, z) for x in (-0.5, 0.5) for y in (-0.5, 0.5) for z in (-0.5, 0.5)]
         faces = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
         cube.from_pydata(corners, [], faces)
-        cube.materials.append(_material())
+        cube.materials.append(material or glow_material())
     return cube
 
 
@@ -311,7 +313,7 @@ def run():
         if index < len(boxes):
             obj = boxes[index]
         else:
-            obj = bpy.data.objects.new(f"KiLeidoscope collision {index + 1}", _cube())
+            obj = bpy.data.objects.new(f"KiLeidoscope collision {index + 1}", unit_cube())
             obj.hide_select = True
             collection.objects.link(obj)
         size = np.maximum(high - low, 0.05e-3)  # a touch point still gets a visible box

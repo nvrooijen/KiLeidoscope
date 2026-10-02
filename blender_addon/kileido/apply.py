@@ -273,6 +273,7 @@ def _apply_tracks(header, arrays):
     obj = owned_object(f"KLS {layer} tracks")
     _segment_edges(obj.data, arrays["seg"], arrays["item"])
     _place_copper(obj, header, layer, "tracks", "tracks")
+    obj["kls_nets"] = header.get("nets") or [""] * len(header["ids"])  # by item, for proximity.py
     highlight.refresh(layer, "tracks")
 
 
