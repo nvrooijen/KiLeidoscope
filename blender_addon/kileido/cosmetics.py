@@ -122,7 +122,7 @@ def set_layer_visible(layer, visible):
 
 def visible_layers():
     """The panel's Appearance list: layers with an overlay for the current board."""
-    if board.collection is None:
+    if board.collection is None or board.drop_if_freed("panel draw"):
         return []
     return [entry for entry in LAYERS
             if (obj := board.collection.all_objects.get(object_name(entry[0]))) is not None
