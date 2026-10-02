@@ -54,3 +54,41 @@ def sharp_alpha(material, texture):
         for target in targets:
             links.new(edge.outputs["Result"], target)
     return edge.outputs["Result"]
+
+
+# --- Building node groups ------------------------------------------------------------------
+
+def math_node(tree, operation, a, b=None, c=None):
+    """A Math node in `tree` doing `operation` on sockets or numbers; its output."""
+    node = tree.nodes.new("ShaderNodeMath")
+    node.operation = operation
+    for index, value in enumerate((a, b, c)):
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            node.inputs[index].default_value = value
+        else:
+            tree.links.new(value, node.inputs[index])
+    return node.outputs[0]
+
+
+def ease(tree, value, inner, outer):
+    """1 up to `inner`, easing to 0 at `outer`."""
+    node = tree.nodes.new("ShaderNodeMapRange")
+    node.interpolation_type = "SMOOTHSTEP"
+    tree.links.new(value, node.inputs["Value"])
+    node.inputs["From Min"].default_value = inner
+    node.inputs["From Max"].default_value = outer
+    node.inputs["To Min"].default_value = 1.0
+    node.inputs["To Max"].default_value = 0.0
+    return node.outputs["Result"]
+
+
+def centred_fract(tree, value):
+    """-0.5..0.5 within each unit cell."""
+    return math_node(tree, "SUBTRACT", math_node(tree, "FRACT", value), 0.5)
+
+
+def typed_socket(sockets, name, kind="RGBA"):
+    """A socket by name and type: a Mix node has an A, B and Result per data type."""
+    return next(socket for socket in sockets if socket.name == name and socket.type == kind)

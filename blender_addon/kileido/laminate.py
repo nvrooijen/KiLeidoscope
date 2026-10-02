@@ -49,40 +49,6 @@ EDGE_NODE = "KLS laminate"
 _bands_set = None
 
 
-def _math(tree, operation, a, b=None, c=None):
-    node = tree.nodes.new("ShaderNodeMath")
-    node.operation = operation
-    for index, value in enumerate((a, b, c)):
-        if value is None:
-            continue
-        if isinstance(value, (int, float)):
-            node.inputs[index].default_value = value
-        else:
-            tree.links.new(value, node.inputs[index])
-    return node.outputs[0]
-
-
-def _ease(tree, value, inner, outer):
-    """1 up to `inner`, easing to 0 at `outer`."""
-    node = tree.nodes.new("ShaderNodeMapRange")
-    node.interpolation_type = "SMOOTHSTEP"
-    tree.links.new(value, node.inputs["Value"])
-    node.inputs["From Min"].default_value = inner
-    node.inputs["From Max"].default_value = outer
-    node.inputs["To Min"].default_value = 1.0
-    node.inputs["To Max"].default_value = 0.0
-    return node.outputs["Result"]
-
-
-def _centred_fract(tree, value):
-    """-0.5..0.5 within each unit cell."""
-    return _math(tree, "SUBTRACT", _math(tree, "FRACT", value), 0.5)
-
-
-def _socket(sockets, name, kind="RGBA"):
-    return next(socket for socket in sockets if socket.name == name and socket.type == kind)
-
-
 def group():
     """Color = Base (or the stackup band at Height, by Banded) shaded by the weave at
     (Along, Height), by Weave (0: flat)."""
@@ -104,98 +70,98 @@ def group():
     ramp = tree.nodes.new("ShaderNodeValToRGB")
     ramp.name = "Bands"
     ramp.color_ramp.interpolation = "CONSTANT"
-    tree.links.new(_math(tree, "DIVIDE", height, span.outputs[0]), ramp.inputs["Fac"])
+    tree.links.new(shading.math_node(tree, "DIVIDE", height, span.outputs[0]), ramp.inputs["Fac"])
     banded = tree.nodes.new("ShaderNodeMix")  # A, B and Result exist once per data type: use the colour ones
     banded.data_type = "RGBA"
     tree.links.new(source.outputs["Banded"], banded.inputs[0])
-    tree.links.new(source.outputs["Base"], _socket(banded.inputs, "A"))
-    tree.links.new(ramp.outputs["Color"], _socket(banded.inputs, "B"))
+    tree.links.new(source.outputs["Base"], shading.typed_socket(banded.inputs, "A"))
+    tree.links.new(ramp.outputs["Color"], shading.typed_socket(banded.inputs, "B"))
 
     # The cloth at this height: core or prepreg (the stackup's bands, red = pitch, green = ply, in mm).
     cloth_ramp = tree.nodes.new("ShaderNodeValToRGB")
     cloth_ramp.name = "Cloth"
     cloth_ramp.color_ramp.interpolation = "CONSTANT"
     cloth_ramp.color_ramp.elements[0].color = (*PREPREG_CLOTH, 0.0, 1.0)
-    tree.links.new(_math(tree, "DIVIDE", height, span.outputs[0]), cloth_ramp.inputs["Fac"])
+    tree.links.new(shading.math_node(tree, "DIVIDE", height, span.outputs[0]), cloth_ramp.inputs["Fac"])
     cloth = tree.nodes.new("ShaderNodeSeparateColor")
     tree.links.new(cloth_ramp.outputs["Color"], cloth.inputs[0])
-    pitch = _math(tree, "MULTIPLY", cloth.outputs["Red"], 1e-3)
-    ply = _math(tree, "MULTIPLY", cloth.outputs["Green"], 1e-3)
+    pitch = shading.math_node(tree, "MULTIPLY", cloth.outputs["Red"], 1e-3)
+    ply = shading.math_node(tree, "MULTIPLY", cloth.outputs["Green"], 1e-3)
 
     # Cells: one ply high, one yarn pitch wide; every other ply shifted half a pitch.
-    v = _math(tree, "DIVIDE", height, ply)
-    across_ply = _centred_fract(tree, v)
-    u = _math(tree, "ADD", _math(tree, "DIVIDE", along, pitch), _math(tree, "MULTIPLY", _math(tree, "FLOOR", v), 0.5))
-    along_pitch = _centred_fract(tree, u)  # 0 in a bundle's middle
-    widthwise = _math(tree, "POWER", _math(tree, "DIVIDE", along_pitch, LENS_HALF_WIDTH), 2.0)
+    v = shading.math_node(tree, "DIVIDE", height, ply)
+    across_ply = shading.centred_fract(tree, v)
+    u = shading.math_node(tree, "ADD", shading.math_node(tree, "DIVIDE", along, pitch), shading.math_node(tree, "MULTIPLY", shading.math_node(tree, "FLOOR", v), 0.5))
+    along_pitch = shading.centred_fract(tree, u)  # 0 in a bundle's middle
+    widthwise = shading.math_node(tree, "POWER", shading.math_node(tree, "DIVIDE", along_pitch, LENS_HALF_WIDTH), 2.0)
 
     def lens(raise_by=0.0):
         """A bundle cut across: a lens, |v| / h + (u / w)^2 < 1, pointed at both ends (or the
         one just above, `raise_by` plies up: what shades the resin under it)."""
-        across = _math(tree, "ADD", across_ply, raise_by) if raise_by else across_ply
-        return _ease(tree, _math(tree, "ADD", _math(tree, "DIVIDE", _math(tree, "ABSOLUTE", across),
+        across = shading.math_node(tree, "ADD", across_ply, raise_by) if raise_by else across_ply
+        return shading.ease(tree, shading.math_node(tree, "ADD", shading.math_node(tree, "DIVIDE", shading.math_node(tree, "ABSOLUTE", across),
                                                    LENS_HALF_HEIGHT), widthwise), 0.8, 1.0)
 
     bundle = lens()
     # The yarn along the cut, over one bundle and under the next: cos(pi (u - 1/2)) is
     # +1, -1, +1, ... at the bundles' middles.
-    phase = _math(tree, "MULTIPLY", _math(tree, "SUBTRACT", u, 0.5), math.pi)
-    swing = _math(tree, "MULTIPLY", _math(tree, "COSINE", phase), YARN_SWING)
-    off_yarn = _math(tree, "SUBTRACT", across_ply, swing)  # 0 on the yarn's middle line
+    phase = shading.math_node(tree, "MULTIPLY", shading.math_node(tree, "SUBTRACT", u, 0.5), math.pi)
+    swing = shading.math_node(tree, "MULTIPLY", shading.math_node(tree, "COSINE", phase), YARN_SWING)
+    off_yarn = shading.math_node(tree, "SUBTRACT", across_ply, swing)  # 0 on the yarn's middle line
 
     def strand(raise_by=0.0):
-        across = _math(tree, "ADD", off_yarn, raise_by) if raise_by else off_yarn
-        return _ease(tree, _math(tree, "DIVIDE", _math(tree, "ABSOLUTE", across), YARN_HALF), 0.75, 1.0)
+        across = shading.math_node(tree, "ADD", off_yarn, raise_by) if raise_by else off_yarn
+        return shading.ease(tree, shading.math_node(tree, "DIVIDE", shading.math_node(tree, "ABSOLUTE", across), YARN_HALF), 0.75, 1.0)
 
     yarn = strand()
     # Filaments: ends in a bundle (dots, each nudged off a staggered grid by a sine hash of its
     # cell, so they pack irregularly), lengths in a yarn (lines along it).
-    w = _math(tree, "DIVIDE", height, FIBRE_PITCH_M)
-    row_w = _math(tree, "FLOOR", w)
-    grid_u = _math(tree, "ADD", _math(tree, "DIVIDE", along, FIBRE_PITCH_M), _math(tree, "MULTIPLY", row_w, 0.5))
-    cell_u = _math(tree, "FLOOR", grid_u)
-    nudge_u, nudge_v = (_math(tree, "MULTIPLY", _centred_fract(tree, _math(tree, "MULTIPLY", _math(
-        tree, "SINE", _math(tree, "MULTIPLY_ADD", cell_u, a, _math(tree, "MULTIPLY", row_w, b))), 43758.5453)),
+    w = shading.math_node(tree, "DIVIDE", height, FIBRE_PITCH_M)
+    row_w = shading.math_node(tree, "FLOOR", w)
+    grid_u = shading.math_node(tree, "ADD", shading.math_node(tree, "DIVIDE", along, FIBRE_PITCH_M), shading.math_node(tree, "MULTIPLY", row_w, 0.5))
+    cell_u = shading.math_node(tree, "FLOOR", grid_u)
+    nudge_u, nudge_v = (shading.math_node(tree, "MULTIPLY", shading.centred_fract(tree, shading.math_node(tree, "MULTIPLY", shading.math_node(
+        tree, "SINE", shading.math_node(tree, "MULTIPLY_ADD", cell_u, a, shading.math_node(tree, "MULTIPLY", row_w, b))), 43758.5453)),
         FIBRE_JITTER) for a, b in ((12.9898, 78.233), (39.3468, 11.135)))
-    dot_u = _math(tree, "SUBTRACT", _centred_fract(tree, grid_u), nudge_u)
-    dot_v = _math(tree, "SUBTRACT", _centred_fract(tree, w), nudge_v)
-    dot = _ease(tree, _math(tree, "ADD", _math(tree, "MULTIPLY", dot_u, dot_u), _math(tree, "MULTIPLY", dot_v, dot_v)),
+    dot_u = shading.math_node(tree, "SUBTRACT", shading.centred_fract(tree, grid_u), nudge_u)
+    dot_v = shading.math_node(tree, "SUBTRACT", shading.centred_fract(tree, w), nudge_v)
+    dot = shading.ease(tree, shading.math_node(tree, "ADD", shading.math_node(tree, "MULTIPLY", dot_u, dot_u), shading.math_node(tree, "MULTIPLY", dot_v, dot_v)),
                 0.04, 0.10)
-    across_line = _centred_fract(tree, _math(tree, "DIVIDE", _math(tree, "MULTIPLY", off_yarn, ply), LINE_PITCH_M))
-    line = _ease(tree, _math(tree, "ABSOLUTE", across_line), 0.10, 0.22)
+    across_line = shading.centred_fract(tree, shading.math_node(tree, "DIVIDE", shading.math_node(tree, "MULTIPLY", off_yarn, ply), LINE_PITCH_M))
+    line = shading.ease(tree, shading.math_node(tree, "ABSOLUTE", across_line), 0.10, 0.22)
 
     # Depth: top-lit relief, a darker lower rim, a soft shadow under each bundle and yarn.
     def relief(mask, position):
         """(emboss, lower rim) of a shape: `position` runs -1 at its bottom to +1 at its top."""
-        rim = _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", mask, _math(tree, "SUBTRACT", 1.0, mask)), 4.0)
-        return (_math(tree, "MULTIPLY", mask, position),
-                _math(tree, "MULTIPLY", rim, _math(tree, "LESS_THAN", position, 0.0)))
+        rim = shading.math_node(tree, "MULTIPLY", shading.math_node(tree, "MULTIPLY", mask, shading.math_node(tree, "SUBTRACT", 1.0, mask)), 4.0)
+        return (shading.math_node(tree, "MULTIPLY", mask, position),
+                shading.math_node(tree, "MULTIPLY", rim, shading.math_node(tree, "LESS_THAN", position, 0.0)))
 
-    bundle_relief, bundle_rim = relief(bundle, _math(tree, "DIVIDE", across_ply, LENS_HALF_HEIGHT))
-    yarn_relief, yarn_rim = relief(yarn, _math(tree, "DIVIDE", off_yarn, YARN_HALF))
-    glass = _math(tree, "MINIMUM", _math(tree, "ADD", bundle, yarn), 1.0)
-    shadowed = _math(tree, "MULTIPLY", _math(tree, "MINIMUM", _math(tree, "ADD", lens(DROP_REACH), strand(DROP_REACH)),
-                                             1.0), _math(tree, "SUBTRACT", 1.0, glass))  # only in resin
+    bundle_relief, bundle_rim = relief(bundle, shading.math_node(tree, "DIVIDE", across_ply, LENS_HALF_HEIGHT))
+    yarn_relief, yarn_rim = relief(yarn, shading.math_node(tree, "DIVIDE", off_yarn, YARN_HALF))
+    glass = shading.math_node(tree, "MINIMUM", shading.math_node(tree, "ADD", bundle, yarn), 1.0)
+    shadowed = shading.math_node(tree, "MULTIPLY", shading.math_node(tree, "MINIMUM", shading.math_node(tree, "ADD", lens(DROP_REACH), strand(DROP_REACH)),
+                                             1.0), shading.math_node(tree, "SUBTRACT", 1.0, glass))  # only in resin
 
     # Shade = 1 + Weave * (glass lift + relief - filaments - rims - shadows).
-    fibres = _math(tree, "ADD", _math(tree, "MULTIPLY", dot, bundle), _math(tree, "MULTIPLY", line, yarn))
-    change = _math(tree, "SUBTRACT", _math(tree, "MULTIPLY", glass, GLASS_LIFT),
-                   _math(tree, "MULTIPLY", fibres, FIBRE_DARK))
-    change = _math(tree, "MULTIPLY_ADD", _math(tree, "ADD", bundle_relief, yarn_relief), EMBOSS, change)
-    change = _math(tree, "SUBTRACT", change, _math(tree, "MULTIPLY", _math(tree, "ADD", bundle_rim, yarn_rim),
+    fibres = shading.math_node(tree, "ADD", shading.math_node(tree, "MULTIPLY", dot, bundle), shading.math_node(tree, "MULTIPLY", line, yarn))
+    change = shading.math_node(tree, "SUBTRACT", shading.math_node(tree, "MULTIPLY", glass, GLASS_LIFT),
+                   shading.math_node(tree, "MULTIPLY", fibres, FIBRE_DARK))
+    change = shading.math_node(tree, "MULTIPLY_ADD", shading.math_node(tree, "ADD", bundle_relief, yarn_relief), EMBOSS, change)
+    change = shading.math_node(tree, "SUBTRACT", change, shading.math_node(tree, "MULTIPLY", shading.math_node(tree, "ADD", bundle_rim, yarn_rim),
                                                    EDGE_SHADOW))
-    change = _math(tree, "SUBTRACT", change, _math(tree, "MULTIPLY", shadowed, DROP_SHADOW))
-    shade = _math(tree, "MULTIPLY_ADD", change, source.outputs["Weave"], 1.0)
+    change = shading.math_node(tree, "SUBTRACT", change, shading.math_node(tree, "MULTIPLY", shadowed, DROP_SHADOW))
+    shade = shading.math_node(tree, "MULTIPLY_ADD", change, source.outputs["Weave"], 1.0)
     shaded = tree.nodes.new("ShaderNodeMix")
     shaded.data_type = "RGBA"
     shaded.blend_type = "MULTIPLY"
-    _socket(shaded.inputs, "Factor", "VALUE").default_value = 1.0
-    tree.links.new(_socket(banded.outputs, "Result"), _socket(shaded.inputs, "A"))
+    shading.typed_socket(shaded.inputs, "Factor", "VALUE").default_value = 1.0
+    tree.links.new(shading.typed_socket(banded.outputs, "Result"), shading.typed_socket(shaded.inputs, "A"))
     grey = tree.nodes.new("ShaderNodeCombineColor")
     for channel in ("Red", "Green", "Blue"):
         tree.links.new(shade, grey.inputs[channel])
-    tree.links.new(grey.outputs[0], _socket(shaded.inputs, "B"))
-    tree.links.new(_socket(shaded.outputs, "Result"), sink.inputs["Color"])
+    tree.links.new(grey.outputs[0], shading.typed_socket(shaded.inputs, "B"))
+    tree.links.new(shading.typed_socket(shaded.outputs, "Result"), sink.inputs["Color"])
     update_bands(tree)
     return tree
 
@@ -251,8 +217,8 @@ def set_edges(material, realistic):
         normal = tree.nodes.new("ShaderNodeSeparateXYZ")
         tree.links.new(geometry.outputs["Normal"], normal.inputs[0])
         # Along a wall: position . (-ny, nx), the wall's horizontal tangent.
-        along = _math(tree, "SUBTRACT", _math(tree, "MULTIPLY", position.outputs["Y"], normal.outputs["X"]),
-                      _math(tree, "MULTIPLY", position.outputs["X"], normal.outputs["Y"]))
+        along = shading.math_node(tree, "SUBTRACT", shading.math_node(tree, "MULTIPLY", position.outputs["Y"], normal.outputs["X"]),
+                      shading.math_node(tree, "MULTIPLY", position.outputs["X"], normal.outputs["Y"]))
         tree.links.new(along, stage.inputs["Along"])
         tree.links.new(position.outputs["Z"], stage.inputs["Height"])
     if stage.node_tree != group():
