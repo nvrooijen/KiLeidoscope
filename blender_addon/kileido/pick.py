@@ -4,16 +4,20 @@ A ray from the view passes overlays and highlights (mask, silkscreen, glow boxes
 solder, drill walls) and stops at the first KiCad item. The hit object says what
 kind of item it is; its source mesh (the frames KiLeidoscope received) says which one:
 point-to-segment distance for tracks, point in polygon for pads, nearest via.
-Only the live board picks: view-only boards are not in KiCad.
+Only the live board picks: view-only boards are not in KiCad. With the board cut open
+(cut.py), the ray only counts where it runs through the side that is shown.
 """
 
 import numpy as np
 
+from . import cut
 from .objects import OUTLINE, read_attribute, read_coordinates, read_edges
 from .state import board
 
 SKIP_PREFIXES = ("KLS overlay", "KLS footprint highlight")
 TOLERANCE_M = 5e-6
+STEP_M = 1e-7  # past a hit that is not an item, to the next one
+FAR_M = 1e6  # a ray without an end
 
 
 def _local_xy(obj, location):
@@ -111,13 +115,22 @@ def item_at(scene, depsgraph, origin, direction, max_hits=32):
     if collection is None:
         return None
     direction = direction.normalized()
+    span = cut.shown_span(scene, origin, direction)
+    if span is None:
+        return None
+    start, end = span
+    origin = origin + direction * start
+    reach = FAR_M if end is None else end - start
     for _ in range(max_hits):
-        hit, location, _normal, _index, obj, _matrix = scene.ray_cast(depsgraph, origin, direction)
+        if reach <= 0:
+            return None
+        hit, location, _normal, _index, obj, _matrix = scene.ray_cast(depsgraph, origin, direction, distance=reach)
         if not hit:
             return None
         if obj.name in collection.all_objects and not obj.name.startswith(SKIP_PREFIXES) and "highlight" not in obj.name:
             item, stop = _item(obj, location)
             if item is not None or stop:
                 return item
-        origin = location + direction * 1e-7
+        reach -= (location - origin).length + STEP_M
+        origin = location + direction * STEP_M
     return None

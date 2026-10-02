@@ -13,11 +13,14 @@ from mathutils import Matrix, Vector
 from . import focus, materials, transform
 from .objects import (camera_rays_only, hide, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, write_attribute)
-from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward
+from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward, via_plating
 from .state import board
 
 LIFT_M = 1e-6  # above the copper's outer surface
 GROW_M = 4e-6  # 2 um wider per side, so the copper edge never shows through
+# A via's outer ends and resolved protection (apply), copied as they are: nodes.vias draws from them.
+VIA_FLAGS = ("outer_top", "outer_bottom", "core_top", "core_bottom", "fill_copper", "plug_ink", "cap", "drilled",
+             "tent_top", "tent_bottom", "bare_barrel", "ring_top", "ring_bottom")
 BOX_MARGIN_M = 0.1e-3  # around the component body
 
 
@@ -219,16 +222,47 @@ def _refresh_vias(wanted):
         target.clear_geometry()
         target.vertices.add(len(chosen_vertices))
         target.vertices.foreach_set("co", read_coordinates(mesh)[chosen_vertices].ravel())
-        for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M),
-                                  ("z_top", LIFT_M), ("z_bottom", -LIFT_M)):
+        for attribute, change in (("diameter", GROW_M), ("drill", -GROW_M), ("z_top", LIFT_M),
+                                  ("z_bottom", -LIFT_M), *((name, 0.0) for name in VIA_FLAGS)):
             values = read_attribute(mesh, attribute, np.float32)[chosen_vertices]
             write_attribute(target, attribute, "FLOAT", values + change)
         target.update()
         obj.location.z = 0
+        barrel = board.materials[f"highlight_{kind}_barrel"]
         set_modifier(obj, board.groups["vias"], board.materials[f"highlight_{kind}"],
-                     {"Drill Material": board.materials[f"highlight_{kind}_barrel"],
-                      "Top Thickness": copper_thickness("F.Cu"),
-                      "Bottom Thickness": copper_thickness("B.Cu")})
+                     {"Top Thickness": copper_thickness("F.Cu"),
+                      "Bottom Thickness": copper_thickness("B.Cu"),
+                      "Plating": via_plating(),
+                      "Land Lift": transform.copper_z("F.Cu", "drills", {"F.Cu": 0.0}) + LIFT_M,
+                      **materials.via_inputs(barrel)})
+        _show(obj)
+    _refresh_via_rings(wanted, ids, count)
+
+
+def _refresh_via_rings(wanted, ids, count):
+    """A highlighted via's inner annular rings, in its highlight colour (X-ray mode shows them)."""
+    source = board.collection.all_objects.get("KLS vias rings")
+    mesh = source.data if source is not None else None
+    owners = read_attribute(mesh, "via", np.int32) if mesh is not None and "via" in mesh.attributes else []
+    for kind, chosen in wanted.items():
+        name = f"KLS vias rings highlight {kind}"
+        picked = (np.fromiter((item_id in chosen for item_id in ids), bool, len(ids))
+                  if chosen and len(ids) == count else np.zeros(count, bool))
+        keep = picked[owners] if len(owners) and len(picked) else np.zeros(len(owners), bool)
+        if not keep.any():
+            if (obj := board.collection.all_objects.get(name)) is not None:
+                _hide(obj)
+            continue
+        chosen_points = np.flatnonzero(keep)
+        obj = owned_object(name)
+        target = obj.data
+        target.clear_geometry()
+        target.vertices.add(len(chosen_points))
+        target.vertices.foreach_set("co", (read_coordinates(mesh)[chosen_points] + (0.0, 0.0, LIFT_M)).ravel())
+        write_attribute(target, "diameter", "FLOAT", read_attribute(mesh, "diameter", np.float32)[chosen_points] + GROW_M)
+        target.update()
+        obj.location.z = 0
+        set_modifier(obj, board.groups["via_rings"], board.materials[f"highlight_{kind}"], {})
         _show(obj)
 
 

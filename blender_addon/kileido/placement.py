@@ -11,6 +11,7 @@ BOARD_FACE_CLEARANCE_M = 2e-6
 DEFAULT_MASK_M = 10e-6  # KiCad's default solder-mask thickness, if the stackup has none
 SOLDER_TOP_SCALE = 0.8  # reflowed-deposit look: top face shrunk toward the pad centre
 PLACEHOLDER_HEIGHT_M = 0.0004  # a component without a 3D model: an envelope this tall
+CAP_PLATING_M = 20e-6  # a capped via's cap over its land (IPC-4761 type VII: 12 um and up)
 
 
 def copper_thickness(layer):
@@ -47,6 +48,11 @@ def laminate_faces():
 
 def mask_thickness(side):
     return float(board.layer_thickness.get(f"{side}.Mask") or DEFAULT_MASK_M)
+
+
+def via_plating():
+    """A via barrel's plating (m): the panel's Via wall, as KiCad stores none."""
+    return max(0.0, float(getattr(bpy.context.scene, "kileido_via_plating_um", 25.0))) * 1e-6
 
 
 def stencil_thickness():

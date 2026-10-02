@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 3, 7),
+    "version": (0, 4, 0),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -20,8 +20,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, dump, focus, layers, lighting, live, models, packages, pick,
-               render_depth, watcher)
+from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, layers, lighting, live, models, packages,
+               pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -140,6 +140,13 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         coordinate = (event.mouse_region_x, event.mouse_region_y)
         origin = view3d_utils.region_2d_to_origin_3d(context.region, context.region_data, coordinate)
         direction = view3d_utils.region_2d_to_vector_3d(context.region, context.region_data, coordinate)
+        # The cut plane is an object to move, not a KiCad item: a click on its wireframe selects it
+        # (this operator takes the click before Blender can).
+        if cut.clicked(lambda point: view3d_utils.location_3d_to_region_2d(context.region, context.region_data,
+                                                                            point), coordinate):
+            cut.select(self.extend)
+            self.report({"INFO"}, "KiLeidoscope: cut plane selected (G moves it, R then Z turns it)")
+            return {"FINISHED"}
         item = pick.item_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
@@ -165,6 +172,23 @@ class KILEIDO_OT_viewport(bpy.types.Operator):
             context.scene.render.engine = "CYCLES"
         for space in view3d_spaces():
             space.shading.type = self.mode
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_cut_plane(bpy.types.Operator):
+    bl_idname = "kileido.cut_plane"
+    bl_label = "Cut plane"
+    bl_description = "Turn the cut plane across X or Y (keeping its position), or put it back across the middle"
+
+    axis: EnumProperty(items=(("X", "X", "Across X: the right side removed, seen from the right view"),
+                              ("Y", "Y", "Across Y: the front side removed, seen from the front view"),
+                              ("RESET", "Reset", "Across Y through the middle of the board, front half removed")))
+
+    def execute(self, context):
+        if self.axis == "RESET":
+            cut.place("Y", centered=True)
+        else:
+            cut.place(self.axis)
         return {"FINISHED"}
 
 
@@ -219,14 +243,44 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         layout.prop(context.scene, "kileido_reflections", text="Reflections")
         layout.prop(context.scene, "kileido_mask_opacity", text="Solder mask opacity", slider=True)
         layout.prop(context.scene, "kileido_silk_opacity", text="Silkscreen opacity", slider=True)
-        for prop, label, icon in (("kileido_via_fill", "Via fill (capped vias)", "bucket"),
-                                  ("kileido_focus", "X-ray mode", "xray"),
+        self._draw_vias(context)
+        for prop, label, icon in (("kileido_focus", "X-ray mode", "xray"),
                                   ("kileido_center_in_kicad", "Center KiCad on click", None),
                                   ("kileido_clip_silkscreen", "Clip silkscreen to board outline", "scissors")):
             row = layout.row(align=True)
             row.prop(context.scene, prop, text=label)
             if _icons is not None and icon in _icons:
                 row.label(text="", icon_value=_icons[icon].icon_id)
+        self._draw_cut(context)
+
+    def _draw_vias(self, context):
+        """Via protection comes from KiCad; only what KiCad does not store is set here."""
+        scene = context.scene
+        row = self.layout.row(align=True)
+        row.prop(scene, "kileido_via_fill_material", text="Via fill")
+        if _icons is not None and "bucket" in _icons:
+            row.label(text="", icon_value=_icons["bucket"].icon_id)
+        row = self.layout.row(align=True)
+        row.prop(scene, "kileido_max_tent_mm", text="Max tent hole")
+        row.prop(scene, "kileido_via_plating_um", text="Via wall")
+        count = board.via_too_big
+        if count:
+            self.layout.label(text=f"{count} via{'s' if count > 1 else ''} too large to tent: shown open",
+                              icon="ERROR")
+
+    def _draw_cut(self, context):
+        scene = context.scene
+        box = self.layout.box()
+        box.prop(scene, "kileido_cut", text="Cut plane")
+        if not scene.kileido_cut:
+            return
+        row = box.row(align=True)
+        for axis in ("X", "Y"):
+            row.operator(KILEIDO_OT_cut_plane.bl_idname, text=axis).axis = axis
+        row.operator(KILEIDO_OT_cut_plane.bl_idname, text="Reset").axis = "RESET"
+        row.prop(scene, "kileido_cut_flip", text="Flip", toggle=True)
+        if not cut.upright(scene):
+            box.label(text="Turn the plane upright for a cross section", icon="INFO")
 
     def _draw_outline_warnings(self, context):
         """KiCad's own words when a board has no usable Edge.Cuts outline, then where."""
@@ -592,8 +646,8 @@ def _swatch(kind, color):
 
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel, KILEIDO_PT_boards,
-           KILEIDO_PT_status)
+           KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel,
+           KILEIDO_PT_boards, KILEIDO_PT_status)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -668,14 +722,34 @@ def _scene_properties():
             name="X-ray mode", default=False,
             description="While something is selected in KiCad, everything else turns see-through and grey",
             update=lambda self, context: focus.refresh()),
+        "kileido_cut": BoolProperty(
+            name="Cut plane", default=False,
+            description="Cut the board open along a plane (the \"KLS cut plane\" object: move or turn it) and, "
+                        "while it stands upright, show the cross section: laminate, copper layers, vias",
+            update=lambda self, context: cut.refresh()),
+        "kileido_cut_flip": BoolProperty(
+            name="Flip", default=False, description="Remove the other side of the cut plane",
+            update=lambda self, context: cut.push()),
+        "kileido_via_fill_material": EnumProperty(
+            name="Via fill", items=(("RESIN", "Resin", "Epoxy-filled barrels (milky)"),
+                                    ("COPPER", "Copper", "Copper-filled barrels")),
+            default="RESIN",
+            description="What fills the vias KiCad marks filled (or capped). KiCad sets each via's protection "
+                        "(select it, E, Protection features); it does not store the fill material",
+            update=lambda self, context: apply.refresh_protection()),
+        "kileido_max_tent_mm": FloatProperty(
+            name="Max tent hole", default=protection.MAX_TENT_M * 1e3, min=0.05, soft_max=1.0, max=5.0,
+            step=1, precision=2,
+            description="Largest finished hole (mm; the drill less twice the Via wall) a solder mask tent can span. "
+                        "A via KiCad tents or covers over a larger empty hole is shown open, and listed here",
+            update=lambda self, context: apply.refresh_protection()),
+        "kileido_via_plating_um": FloatProperty(
+            name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
+            description="Plating thickness of a via's barrel, in 3D and in the cross section (KiCad stores none)",
+            update=lambda self, context: apply.refresh_plating()),
         "kileido_center_in_kicad": BoolProperty(
             name="Center KiCad on click", default=True,
             description="Clicking an item here also pans KiCad's PCB editor to centre it, keeping its zoom"),
-        "kileido_via_fill": BoolProperty(
-            name="Via fill", default=False,
-            description="Filled and capped vias: copper (or finish) caps under the mask and silkscreen. "
-                        "Off: through vias are open, also through the solder mask",
-            update=lambda self, context: apply.refresh_via_fill()),
         "kileido_copper_3d": BoolProperty(
             name="Copper thickness", default=True,
             description="Give outer copper its stackup thickness; the mask sits on the laminate between it",
@@ -754,6 +828,7 @@ def register():
             entry.properties.extend = shift
             _KEYMAPS.append((keymap, entry))
     collisions.install()
+    cut.install()
     bpy.app.handlers.load_post.append(_file_loaded)
 
 
@@ -770,6 +845,8 @@ def unregister():
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
+    cut.uninstall()
+    edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):

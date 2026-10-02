@@ -7,7 +7,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 
 import bpy
 
-from . import focus, holes, shading
+from . import cut, focus, holes, laminate, section, shading
 from .placement import copper_thickness
 from .state import board
 
@@ -29,6 +29,7 @@ HIGHLIGHT_METALLIC = 1.0
 HIGHLIGHT_ROUGHNESS = 0.25
 HIGHLIGHT_GLOW = 0.5  # emission strength: vivid under any lighting (glow 1.0 washed to salmon)
 HIGHLIGHT_BOX_ALPHA = 0.3
+TENT_ALPHA = 0.999  # below 1: `make` builds the mix that hides a tent with its mask (`paint_tents`)
 
 COPPER_METALLIC, COPPER_ROUGHNESS = 1.0, 0.25
 # KiCad's finish colours are display swatches (ENIG: 0.70, 0.61, 0.0): as a metal's
@@ -42,6 +43,8 @@ MASK_COAT_ROUGHNESS = 0.08
 COAT_WEIGHT = "KLS coat weight"
 COAT_AMOUNT = "KLS coat amount"  # 1 while the mask covers the copper (0: mask hidden)
 RELIEF_BUMP = "KLS relief bump"
+EXPOSED = "KLS exposed colour"  # copper without mask on it: the finish, or bare on a face turned into the board
+INNER_FACE_Z = 0.5  # a face whose normal points this much into the board lies on the laminate
 RELIEF_HEIGHT = 1.0  # the mask's rise over copper edges, times the copper thickness
 # Materials whose copper shows the board finish in mask openings, and the mask plots they sample.
 FINISHED = {"copper:F.Cu": ("F",), "copper:B.Cu": ("B",), "vias": ("F", "B")}
@@ -55,12 +58,23 @@ def create_all():
     Copper gets one material per layer on first use (`layer_material`)."""
     board.materials = {
         "vias": make("KLS Vias", (1.0, 0.6, 0.16)),
+        # A via's annular rings on inner copper: never exposed, so never the finish or the mask's colour.
+        "via_rings": make("KLS Via rings inner", BARE_COPPER),
         "board": make("KLS Board mask top", FALLBACK_MASK),
         "board_bottom": make("KLS Board mask bottom", FALLBACK_MASK),
         "board_core": make("KLS Board FR4 core", FALLBACK_CORE),
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
+        # A via barrel the finish never reached (a tent, plug or fill closes it): bare copper.
+        "plating_bare": make("KLS Hole plating bare", BARE_COPPER),
+        # A plugged via's plug: solder mask ink, in the board's mask colour.
+        "via_plug": make("KLS Via plug ink", FALLBACK_MASK),
+        # The solder mask spanning a tented via's hole, one per side; see-through while hidden.
+        "tent_F": make("KLS Via tent top", FALLBACK_MASK, TENT_ALPHA),
+        "tent_B": make("KLS Via tent bottom", FALLBACK_MASK, TENT_ALPHA),
+        # A resin fill (and a buried via's prepreg resin): milky, so the barrel shows through (as in the cut).
+        "via_resin": make("KLS Via resin", section.RESIN, cut.RESIN_OPACITY),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair": make("KLS Highlight pair", HIGHLIGHT_COLORS["pair"]),
         # Via barrels sit inside the drill, where the hole mask makes the land
@@ -109,6 +123,42 @@ def paint(material, color):
             node.inputs["Base Color"].default_value = (*linear, 1.0)
         elif node.name == BASE_COLOR:  # the colour under the silkscreen ink (`print_silk`)
             node.outputs[0].default_value = (*linear, 1.0)
+
+
+def via_inputs(highlight_material=None):
+    """The via group's materials besides its lands': finished and bare barrels, resin and
+    copper fills, plug ink and tents (or a highlight's for all, so a selected via stays
+    solid in X-ray mode)."""
+    inputs = {"Drill Material": board.materials["plating"], "Bare Drill Material": board.materials["plating_bare"],
+              "Fill Material": board.materials["via_resin"], "Copper Fill Material": board.materials["plating"],
+              "Plug Material": board.materials["via_plug"],
+              "Tent Top Material": board.materials["tent_F"], "Tent Bottom Material": board.materials["tent_B"]}
+    return inputs if highlight_material is None else dict.fromkeys(inputs, highlight_material)
+
+
+def plug_ink():
+    """A plug's solder mask ink (sRGB): the top mask's colour, else the bottom's, shown or not."""
+    mask = mask_color("F", shown=True) or mask_color("B", shown=True)
+    return tuple(mask[:3]) if mask else FALLBACK_MASK
+
+
+def paint_tents():
+    """A tent is the mask over a hole: coloured like the mask over copper around it (the
+    land's covered colour), gone while that side's mask is hidden. Plugs are the ink itself."""
+    realistic = board.color_mode == "REALISTIC"
+    if "via_plug" in board.materials:
+        paint(board.materials["via_plug"], plug_ink())
+        set_surface(board.materials["via_plug"], realistic, 0.0, 0.4)
+    for side in "FB":
+        material = board.materials.get(f"tent_{side}")
+        if material is None:
+            continue
+        mask = mask_color(side)
+        paint(material, seen_through(mask, COPPER_UNDER_MASK) if mask else FALLBACK_MASK)
+        set_surface(material, realistic, 0.0, 0.35)
+        mix = next(node for node in material.node_tree.nodes if node.type == "MIX_SHADER")
+        mix.inputs[0].default_value = 1.0 if mask else 0.0
+    cut.invalidate()  # the section draws the tents in the mask colour too
 
 
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):
@@ -194,6 +244,8 @@ def layer_material(layer):
     if key not in board.materials:
         board.materials[key] = make(f"KLS {layer} copper", FALLBACK_COPPER)
         holes.add_to(board.materials[key])
+        if cut.enabled():  # a layer's first copper while the board is cut open
+            cut.add_to(board.materials[key])
     material = board.materials[key]
     paint(material, _copper_color(layer))
     set_surface(material, board.color_mode == "REALISTIC", COPPER_METALLIC, COPPER_ROUGHNESS)
@@ -216,6 +268,7 @@ def refresh_mask_colors():
     for key, material in board.materials.items():
         if key in FINISHED:
             finish_mask(material, key)
+    paint_tents()
 
 
 def finish_mask(material, key):
@@ -231,6 +284,7 @@ def finish_mask(material, key):
         _unlink_finish_mask(material)
         return
     mix = nodes.get("KLS finish mix") or _build_finish_mask(material, sides)
+    _bare_inner_faces(material, sides)
     for side in sides:
         image, (xmin, ymin, xmax, ymax) = board.mask_images[side]
         nodes[f"KLS mask plot {side}"].image = image
@@ -239,7 +293,8 @@ def finish_mask(material, key):
     if "KLS mask side" in nodes:
         nodes["KLS mask side"].inputs[1].default_value = board.thickness_m / 2
     exposed = _lit_metal(finish_color() or board.appearance.get("viewer", {}).get("copper") or BARE_COPPER)
-    mix.inputs["B"].default_value = (*shading.srgb_to_linear(exposed[:3]), 1.0)
+    for name, color in (("A", exposed), ("B", _lit_metal(BARE_COPPER))):  # the finish; bare on an inner face
+        shading.typed_socket(nodes[EXPOSED].inputs, name).default_value = (*shading.srgb_to_linear(color[:3]), 1.0)
     metal, rough = _metal_ramps(material, mix)
     metal.inputs["To Max"].default_value = COPPER_METALLIC
     rough.inputs["To Max"].default_value = COPPER_ROUGHNESS
@@ -349,6 +404,42 @@ def _build_finish_mask(material, sides):
         opening = alphas[sides[0]]
     links.new(opening, mix.inputs["Factor"])
     return mix
+
+
+def _bare_inner_faces(material, sides):
+    """Outer copper's face on the laminate (seen with the board cut open, hidden or see-through)
+    has no mask on it and never got the finish: bare copper. Such a face counts as a mask
+    opening for everything the opening drives (no mask colour, ink or coat; metal), and the
+    exposed colour there is bare copper instead of the finish. Built once per material, also
+    into one from before this (a saved file's)."""
+    tree = material.node_tree
+    nodes, links = tree.nodes, tree.links
+    if EXPOSED in nodes:
+        return
+    mix = nodes["KLS finish mix"]
+    opening = mix.inputs["Factor"].links[0].from_socket
+    driven = [link.to_socket for link in opening.links]
+    normal = nodes.new("ShaderNodeSeparateXYZ")  # the normal on the side seen: a flat sheet's back counts too
+    links.new(nodes.new("ShaderNodeNewGeometry").outputs["Normal"], normal.inputs[0])
+    facing_in = {"F": shading.math_node(tree, "LESS_THAN", normal.outputs["Z"], -INNER_FACE_Z),
+                 "B": shading.math_node(tree, "GREATER_THAN", normal.outputs["Z"], INNER_FACE_Z)}
+    if len(sides) == 2:  # vias: the top land above mid-board, the bottom land below
+        choose = nodes.new("ShaderNodeMix")
+        choose.data_type = "FLOAT"
+        links.new(nodes["KLS mask side"].outputs[0], choose.inputs["Factor"])
+        links.new(facing_in["B"], choose.inputs["A"])
+        links.new(facing_in["F"], choose.inputs["B"])
+        inner = choose.outputs["Result"]
+    else:
+        inner = facing_in[sides[0]]
+    uncovered = shading.math_node(tree, "MAXIMUM", opening, inner)
+    for socket in driven:
+        links.new(uncovered, socket)
+    exposed = nodes.new("ShaderNodeMix")
+    exposed.name = EXPOSED
+    exposed.data_type = "RGBA"
+    links.new(inner, exposed.inputs["Factor"])
+    links.new(shading.typed_socket(exposed.outputs, "Result"), shading.typed_socket(mix.inputs, "B"))
 
 
 def _metal_ramps(material, mix):
@@ -588,20 +679,31 @@ def set_color_mode(mode):
     paint(board.materials["vias"],
           (board.appearance.get("editor_via") if mode == "EDITOR" else
            (finish_color() or viewer.get("copper"))) or FALLBACK_COPPER)
+    # Its rings on inner copper: the via colour in the editor's theme, else as inner copper (no finish).
+    paint(board.materials["via_rings"],
+          (board.appearance.get("editor_via") if mode == "EDITOR" else _copper_color("inner")) or FALLBACK_COPPER)
     # Hole walls: copper plated, then finished like the pads.
     paint(board.materials["plating"], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
     set_surface(board.materials["plating"], realistic, COPPER_METALLIC, 0.3)
+    paint(board.materials["plating_bare"], _lit_metal(BARE_COPPER))
+    set_surface(board.materials["plating_bare"], realistic, COPPER_METALLIC, 0.3)
+    paint_tents()
+    paint(board.materials["via_resin"], section.RESIN)
+    set_surface(board.materials["via_resin"], realistic, 0.0, 0.5)
     _paint_highlights()
     paint(board.materials["solder"], viewer.get("solderpaste") or (0.5, 0.5, 0.5))  # KiCad's 3D paste colour
     for key, material in board.materials.items():
         if key == "solder":
             set_surface(material, realistic, 0.9, 0.3)  # tin-silver-copper alloy
-        if key in {"board", "board_bottom", "board_core", "vias"} or key.startswith("copper:"):
-            metal = key == "vias" or key.startswith("copper:")
+        if key in {"board", "board_bottom", "board_core", "vias", "via_rings"} or key.startswith("copper:"):
+            metal = key in ("vias", "via_rings") or key.startswith("copper:")
             set_surface(material, realistic, COPPER_METALLIC if metal else 0.0,
                         COPPER_ROUGHNESS if metal else 0.42)
             if metal:
                 finish_mask(material, key)
+    laminate.set_edges(board.materials["board_core"], realistic)  # routed edges and bare drills show the layers
+    # Copper in the cut plane's section: bare (a cut never has the finish), lit like the rest.
+    cut.set_look(realistic, shading.srgb_to_linear(metal_color(BARE_COPPER)), COPPER_METALLIC, COPPER_ROUGHNESS)
 
 
 def _paint_board_faces(viewer):

@@ -14,6 +14,7 @@ import re
 
 import bpy
 
+from . import cut, edge_plating
 from .objects import hide
 from .state import board
 
@@ -70,6 +71,8 @@ def refresh(row):
         own = row_of(obj)
         if own == row or (row == "Components" and own == "Placeholders"):
             switch(obj, not hidden(obj))
+    cut.invalidate()  # the section and the plated edge are worked out from what is shown
+    edge_plating.invalidate()
 
 
 def rows():

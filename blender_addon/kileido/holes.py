@@ -2,9 +2,15 @@
 
 Copper geometry is never cut (no booleans; copper is never merged), and a track's
 end cap sits on its via, so an opening in the via land alone would
-stay plugged. Instead every through hole is drawn into one antialiased mask in
-board XY; board faces and copper turn transparent inside it (`add_to`), and a
-plated or bare wall object lines the hole (nodes.drills, nodes.vias).
+stay plugged. Instead every hole is drawn into one antialiased mask in board XY;
+board faces and copper turn transparent inside it (`add_to`), and a plated or bare
+wall object lines the hole (nodes.drills, nodes.vias).
+
+A blind via is a hole on one side only. The mask has a channel per side: red holes
+the top side (every through hole and the blind vias from F.Cu), green the bottom,
+alpha only the through holes. A material picks by height: at or above the top
+laminate face it is on the top side, at or below the bottom face on the bottom side,
+between (inner copper, a blind via's floor) only through holes reach it.
 """
 
 import hashlib
@@ -13,23 +19,31 @@ import bpy
 import numpy as np
 
 from . import focus, shading
+from .placement import laminate_faces
 from .state import board
 
 RESOLUTION = 2048  # long side; ~22 um per pixel on the reference board, edges sharpened in shading
 IMAGE = "KLS holes"
-HOLED = ("board", "board_bottom", "vias", "highlight_selected", "highlight_pair")  # + copper:<layer>
+HOLED = ("board", "board_bottom", "vias", "via_rings", "highlight_selected", "highlight_pair")  # + copper:<layer>
 
-_sources = {"vias": np.empty((0, 3), np.float64), "pads": np.empty((0, 6), np.float64)}
+THROUGH, TOP, BOTTOM = 0, 1, 2  # a via hole's side
+SIDE_MARGIN_M = 10e-6  # this far inside a laminate face still counts as that side (the board's own faces)
+CHANNELS = (("F", TOP), ("B", BOTTOM), ("through", THROUGH))  # red, green, alpha
+SIDE_NODE = "KLS holes side"  # a holed material's channel pick (`_side_select`)
+
+_sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
 _bounds = None
 _digest = None
-_drawn = None  # (bounds, rows, alpha, pixels) of the last redraw, for partial redraws
+_drawn = None  # (bounds, {channel: (rows, alpha)}, pixels) of the last redraw, for partial redraws
 PARTIAL_MAX = 64  # more changed holes than this: redraw the whole mask
 
 
-def set_vias(xy_m, drill_m):
-    """Through vias only: x, y and drill diameter in Blender metres."""
-    _sources["vias"] = np.column_stack((np.asarray(xy_m, np.float64).reshape(-1, 2),
-                                        np.asarray(drill_m, np.float64).reshape(-1)))
+def set_vias(xy_m, diameter_m, side=None):
+    """Via holes: x, y and hole diameter in Blender metres, and per via THROUGH (default),
+    TOP or BOTTOM: the side a blind via opens on."""
+    xy = np.asarray(xy_m, np.float64).reshape(-1, 2)
+    side = np.full(len(xy), THROUGH) if side is None else np.asarray(side, np.float64).reshape(-1)
+    _sources["vias"] = np.column_stack((xy, np.asarray(diameter_m, np.float64).reshape(-1), side))
     rebuild()
 
 
@@ -128,6 +142,14 @@ def _redraw_changed(alpha, bounds, old_rows, rows):
     return alpha
 
 
+def _rows(channel_side):
+    """Hole rows (x, y, w, h, angle, oval) on one channel: through holes, plus that
+    side's blind vias."""
+    vias = _sources["vias"]
+    vias = vias[np.isin(vias[:, 3], (THROUGH, channel_side))]
+    return np.concatenate((np.column_stack((vias[:, :3], vias[:, 2], np.zeros((len(vias), 2)))), _sources["pads"]))
+
+
 def rebuild():
     """Redraw the mask when holes or the board bounds changed. A few moved holes
     redraw only their own pixels; a new board or bounds redraws everything.
@@ -135,35 +157,39 @@ def rebuild():
     global _digest, _drawn
     if _bounds is None or board.in_snapshot:
         return
-    vias = _sources["vias"]
-    rows = np.concatenate((
-        np.column_stack((vias[:, :2], vias[:, 2], vias[:, 2],
-                         np.zeros(len(vias)), np.zeros(len(vias)))) if len(vias) else np.empty((0, 6)),
-        _sources["pads"]))
-    digest = hashlib.blake2b(np.asarray(_bounds).tobytes() + rows.tobytes(), digest_size=16).digest()
+    rows = {name: _rows(side) for name, side in CHANNELS}
+    digest = hashlib.blake2b(np.asarray(_bounds).tobytes() + b"".join(r.tobytes() for r in rows.values()),
+                             digest_size=16).digest()
     if digest == _digest and bpy.data.images.get(IMAGE) is not None:
+        refresh_sides()
         return
     _digest = digest
     image = bpy.data.images.get(IMAGE)
-    alpha = pixels = None
-    if _drawn is not None and _drawn[0] == _bounds and image is not None:
-        alpha = _redraw_changed(_drawn[2], _bounds, _drawn[1], rows)
-        pixels = _drawn[3]
-    if alpha is None:
-        alpha = rasterize(_bounds, rows)
-        pixels = None
-    height, width = alpha.shape
+    previous = _drawn[1] if _drawn is not None and _drawn[0] == _bounds and image is not None else {}
+    pixels = _drawn[2] if previous else None
+    alphas = {}
+    for name, _ in CHANNELS:
+        same = next((alphas[other] for other in alphas if np.array_equal(rows[other], rows[name])), None)
+        if same is not None:  # no blind vias on this side: the through holes' drawing
+            alphas[name] = same.copy()
+            continue
+        alpha = None
+        if name in previous:
+            alpha = _redraw_changed(previous[name][1], _bounds, previous[name][0], rows[name])
+        alphas[name] = alpha if alpha is not None else rasterize(_bounds, rows[name])
+    height, width = alphas["through"].shape
     if image is None or tuple(image.size) != (width, height):
         if image is not None:
             bpy.data.images.remove(image)
         image = bpy.data.images.new(IMAGE, width, height, alpha=True)
         image.colorspace_settings.name = "Non-Color"
-    if pixels is None or pixels.shape[:2] != alpha.shape:
+    image.alpha_mode = "CHANNEL_PACKED"  # the colour channels are holes too, not colour under alpha
+    if pixels is None or pixels.shape[:2] != (height, width):
         pixels = np.ones((height, width, 4), np.float32)  # reused while the size holds
-    pixels[..., 3] = alpha
+    pixels[..., 0], pixels[..., 1], pixels[..., 3] = alphas["F"], alphas["B"], alphas["through"]
     image.pixels.foreach_set(pixels.ravel())
     image.update()
-    _drawn = (_bounds, rows, alpha, pixels)
+    _drawn = (_bounds, {name: (rows[name], alphas[name]) for name in alphas}, pixels)
     for key, material in board.materials.items():
         if key in HOLED or key.startswith("copper:"):
             add_to(material)
@@ -220,8 +246,56 @@ def add_to(material):
             links.new(solid.outputs[0], both.inputs[1])
             links.new(both.outputs[0], mix.inputs[0])
         focus.set_render_method(material)
+    if nodes.get(SIDE_NODE) is None:  # a new material, or one from before the side channels
+        _side_select(material, texture)
+    _set_side_heights(material)
     texture.image = image
     xmin, ymin, xmax, ymax = _bounds
     width, height = image.size
     pixel = max(xmax - xmin, ymax - ymin) / RESOLUTION
     shading.set_plot_rectangle(tree, "KLS holes offset", "KLS holes scale", xmin, ymin, width * pixel, height * pixel)
+
+
+def _side_select(material, texture):
+    """Feed the hole edge the channel of this point's side (see the module docstring)."""
+    tree = material.node_tree
+    nodes, links = tree.nodes, tree.links
+    edge = nodes.get(f"KLS alpha edge {texture.name}")
+    channels = nodes.new("ShaderNodeSeparateColor")
+    links.new(texture.outputs["Color"], channels.inputs["Color"])
+    z = nodes.new("ShaderNodeSeparateXYZ")
+    links.new(nodes.new("ShaderNodeNewGeometry").outputs["Position"], z.inputs["Vector"])
+    picked = texture.outputs["Alpha"]
+    for name, channel, operation in (("KLS holes bottom", "Green", "LESS_THAN"), ("KLS holes top", "Red",
+                                                                                 "GREATER_THAN")):
+        limit = nodes.new("ShaderNodeValue")
+        limit.name = name
+        beyond = nodes.new("ShaderNodeMath")
+        beyond.operation = operation
+        links.new(z.outputs["Z"], beyond.inputs[0])
+        links.new(limit.outputs[0], beyond.inputs[1])
+        mix = nodes.new("ShaderNodeMix")
+        mix.data_type = "FLOAT"
+        links.new(beyond.outputs[0], mix.inputs["Factor"])
+        links.new(picked, mix.inputs["A"])
+        links.new(channels.outputs[channel], mix.inputs["B"])
+        picked = mix.outputs["Result"]
+    picked.node.name = SIDE_NODE
+    links.new(picked, edge.inputs["Value"])
+
+
+def _set_side_heights(material):
+    nodes = material.node_tree.nodes
+    top, bottom = laminate_faces()
+    if "KLS holes top" in nodes:
+        nodes["KLS holes top"].outputs[0].default_value = top - SIDE_MARGIN_M
+        nodes["KLS holes bottom"].outputs[0].default_value = bottom + SIDE_MARGIN_M
+
+
+def refresh_sides():
+    """The laminate faces moved (thickness settings): every holed material's side limits."""
+    for key, material in board.materials.items():
+        if (key in HOLED or key.startswith("copper:")) and material.node_tree is not None:
+            _set_side_heights(material)
+    for material in mask_materials():
+        _set_side_heights(material)

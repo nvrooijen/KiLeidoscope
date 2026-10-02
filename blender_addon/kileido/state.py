@@ -3,8 +3,6 @@
 Every module reads and writes the same `board` instance; nothing else holds board state.
 """
 
-import numpy as np
-
 
 def log(message):
     """One line in Blender's output (blender.log): what changed the board's model bindings."""
@@ -34,7 +32,7 @@ class BoardState:
         self.mask_images = {}  # "F"/"B" -> (saved-board mask plot image, world XY bounds)
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
-        self.via_holes = (np.empty((0, 2)), np.empty(0))  # through-via XY (m) and drill (m)
+        self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
 
         # Snapshot bookkeeping: objects not touched by a full snapshot are cleared.
         self.in_snapshot = False

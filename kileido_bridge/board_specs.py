@@ -1,8 +1,9 @@
 """Read-only appearance metadata from a saved KiCad board and its local theme.
 
 Geometry comes only from KiCad IPC. The board file (the bridge's live copy, else
-the saved board) supplies the colours and finish that KiCad 10's IPC stackup
-response omits; it is never modified here.
+the saved board) supplies what KiCad 10's IPC API omits: stackup colours, finish,
+dielectric types and materials, the plated edge and the via protection rules. It is
+never modified here.
 """
 
 from __future__ import annotations
@@ -13,11 +14,19 @@ import re
 import sys
 from pathlib import Path
 
+from .board_text import via_protection
+
 _RGB = re.compile(r"rgba?\(([^)]+)\)")
 _LAYER = re.compile(r'\(layer\s+"([^"]+)"')
 _COLOR = re.compile(r'\(color\s+"([^"]+)"\)')
+_TYPE = re.compile(r'\(type\s+"([^"]*)"\)')
+_MATERIAL = re.compile(r'\(material\s+"([^"]*)"\)')
 _STACKUP = re.compile(r"\(stackup\b")
 _COPPER_FINISH = re.compile(r'\(copper_finish\s+"([^"]*)"\)')
+_EDGE_PLATING = re.compile(r"\(edge_plating\s+yes\)")  # Board Setup > Board Finish: Plated board edge
+_SETUP = re.compile(r"\(setup\b")
+# KiCad's own via protection defaults (BOARD_DESIGN_SETTINGS), per model.PROTECTION: tented both sides.
+DEFAULT_VIA_RULES = (1, 1, 0, 0, 0, 0, 0, 0)
 
 # KiCad 10 3d-viewer/3d_canvas/board_adapter.cpp: named stackup colours and their
 # 3D-viewer values (sRGB bytes, alpha).  Stackup names outside these lists render
@@ -123,20 +132,47 @@ def _saved_board_text(board_path: str) -> str:
         return ""
 
 
-def _saved_stackup_colors(text: str) -> dict:
-    marker = _STACKUP.search(text)
-    if marker is None:
-        return {}
-    colors = {}
+def _section(text: str, marker: re.Pattern) -> str:
+    """The board's first `marker` section, or "" when it has none or the file is cut
+    short (read while KiCad saves it)."""
+    found = marker.search(text)
+    if found is None:
+        return ""
     try:
-        stackup = _block(text, marker.start())
-        for layer in _LAYER.finditer(stackup):
-            color = _COLOR.search(_block(stackup, layer.start()))
-            if color is not None:
-                colors[layer.group(1)] = color.group(1)
-    except ValueError:  # a truncated file (read while KiCad saves it): no colours this time
-        pass
-    return colors
+        return _block(text, found.start())
+    except ValueError:
+        return ""
+
+
+def _stackup_layers(text: str) -> list[tuple[str, str]]:
+    """The saved stackup's layers, top first: (name, its section)."""
+    stackup = _section(text, _STACKUP)
+    return [(layer.group(1), _block(stackup, layer.start())) for layer in _LAYER.finditer(stackup)]
+
+
+def _saved_stackup_colors(text: str) -> dict:
+    return {name: color.group(1) for name, block in _stackup_layers(text)
+            if (color := _COLOR.search(block)) is not None}
+
+
+def _saved_dielectrics(text: str) -> list[dict]:
+    """The saved stackup's dielectric layers, top first: {"type": "core" or "prepreg",
+    "material": its material name or ""}. The IPC stackup leaves both out."""
+    found = []
+    for _name, block in _stackup_layers(text):
+        kind = _TYPE.search(block)
+        if kind is None or kind.group(1).casefold() not in ("core", "prepreg"):
+            continue
+        material = _MATERIAL.search(block)
+        found.append({"type": kind.group(1).casefold(), "material": material.group(1) if material else ""})
+    return found
+
+
+def via_rules(text: str) -> list[int]:
+    """The board's via protection defaults, per `model.PROTECTION` (1 or 0): what a via
+    set to "From design rules" gets. Only the board file has them (its setup section);
+    KiCad's IPC API has no getter for them. KiCad's own defaults when the setup is missing."""
+    return list(via_protection(_section(text, _SETUP), DEFAULT_VIA_RULES))
 
 
 def _named(value: str | None, table: dict):
@@ -267,8 +303,8 @@ def appearance_signature(board_path: str = "") -> tuple:
 
 
 def read_appearance(board_path: str = "") -> dict:
-    """Serializable colours; no guessed dielectric or material properties."""
-    text = _saved_board_text(board_path)  # read once: stackup colours and finish
+    """Serializable colours and board-file settings; no guessed dielectric or material properties."""
+    text = _saved_board_text(board_path)  # read once for every board-file field below
     saved = _saved_stackup_colors(text)
     finish_match = _COPPER_FINISH.search(text)
     finish = finish_match[1] if finish_match else None
@@ -278,6 +314,9 @@ def read_appearance(board_path: str = "") -> dict:
                      if (color := _rgba(copper.get(key))) is not None}
     return {
         "copper_finish": finish,
+        "edge_plating": bool(_EDGE_PLATING.search(text)),
+        "via_rules": via_rules(text),
+        "dielectrics": _saved_dielectrics(text),
         "saved_colors": {name: color for name, value in saved.items()
                          if (color := _rgba(value)) is not None},
         # Final 3D-viewer colours, stackup names ("White", "FR4 natural") resolved.

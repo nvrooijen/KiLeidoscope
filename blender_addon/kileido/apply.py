@@ -11,17 +11,19 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, focus, footprints, highlight, holes, layers, lighting, materials, models, nodes,
-               render_depth, transform)
+from . import (cosmetics, cut, edge_plating, focus, footprints, highlight, holes, laminate, layers, lighting,
+               materials, models, nodes, protection, render_depth, transform)
 from .client import FrameDecoder
-from .objects import (OUTLINE, ensure_groups, hide, owned_object, set_modifier, set_node_input, set_visible,
-                      single_point, view3d_spaces, write_attribute, outline_bounds)
-from .placement import (BOARD_FACE_CLEARANCE_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
-                        laminate_faces, outward, stencil_thickness)
+from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, set_modifier,
+                      set_node_input, set_visible, single_point, view3d_spaces, write_attribute, outline_bounds)
+from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
+                        laminate_faces, outward, stencil_thickness, via_plating)
 from . import state
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
+VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
+SECTION_INPUTS = ("board", "layer_data", "appearance", "stackup")  # frames the cut plane's section reads
 
 
 def load_frames(data: bytes) -> float:
@@ -46,6 +48,7 @@ def apply_frame(header, arrays):
         # Saved-board or theme colours changed (after a KiCad save): recolour in place.
         board.appearance = header.get("appearance", {})
         set_color_mode(board.color_mode)
+        refresh_protection()  # the board's via rules come with it
     elif message_type == "footprints":
         footprints.apply(header)
         highlight.refresh_components()
@@ -61,6 +64,10 @@ def apply_frame(header, arrays):
         pass  # KiCad's link state: live.LiveLink reads it
     else:
         raise ValueError(f"unknown message type: {message_type}")
+    if message_type in SECTION_INPUTS:
+        cut.invalidate()
+        laminate.update_bands()
+        edge_plating.invalidate()
 
 
 def apply_layer_data(header, arrays):
@@ -123,6 +130,8 @@ def _end_snapshot():
             layers.refresh(row)
     lighting.ensure_studio_lights()
     focus.refresh()
+    cut.refresh()
+    edge_plating.refresh()
     frame_board()
     models.follow_board(board.board_path, board.export)
     cosmetics.follow_board(board.board_path, board.export)
@@ -214,6 +223,7 @@ def frame_board(force=False):
         view = space.region_3d
         view.view_location = ((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2)
         view.view_distance = extent * 1.5  # the whole board fits a 50 mm lens view
+        space.clip_start = VIEW_CLIP_START_M
     board.framed_board = board.board_name
 
 
@@ -423,19 +433,69 @@ def _apply_vias(header, arrays):
     write_attribute(mesh, "z_top", "FLOAT", spans.max(axis=1) + land if count else np.empty(0, np.float32))
     write_attribute(mesh, "z_bottom", "FLOAT", spans.min(axis=1) - land if count else np.empty(0, np.float32))
     write_attribute(mesh, "item", "INT", np.arange(count, dtype=np.int32))
+    for flag, layer in (("outer_top", "F.Cu"), ("outer_bottom", "B.Cu")):  # its outer ends: tents, plugs, caps
+        write_attribute(mesh, flag, "FLOAT", np.array([layer in (names[a], names[b]) for a, b in arrays["span"]],
+                                                      dtype=np.float32) if count else np.empty(0, np.float32))
+    protect = arrays.get("protect")  # KiCad's protection features (a bridge from before them: the board's rules)
+    if protect is None or len(protect) != count:
+        protect = np.full((count, len(protection.FIELDS)), protection.FROM_RULES, np.uint8)
+    write_attribute(mesh, "protection", "INT", protection.pack(protect))
+    # Its annular rings (kileido_bridge.via_rings): bit i on header["copper"][i]. A bridge from
+    # before them: every layer. The cut draws them all; the outer lands only where ringed.
+    copper = list(header.get("copper") or names)
+    ringed = arrays.get("ringed")
+    ringed = (ringed.view(np.uint32).astype(np.int64) if ringed is not None and len(ringed) == count
+              else np.full(count, (1 << len(copper)) - 1, np.int64))
+    write_attribute(mesh, "ringed", "INT", ringed.astype(np.uint32).view(np.int32))
+    obj["kls_ring_layers"] = copper
+    for flag, layer in (("ring_top", "F.Cu"), ("ring_bottom", "B.Cu")):
+        bit = 1 << copper.index(layer) if layer in copper else 0
+        write_attribute(mesh, flag, "FLOAT", ((ringed & bit) > 0).astype(np.float32) *
+                        read_attribute(mesh, "outer_" + flag.split("_")[1], np.float32))
     mesh.update()
     obj.location.z = 0
     obj["kls_ids"] = header["ids"]
-    through = (np.array([{names[a], names[b]} == {"F.Cu", "B.Cu"} for a, b in arrays["span"]], dtype=bool)
-               if count else np.zeros(0, dtype=bool))
-    # Blind and buried vias stay closed.
-    board.via_holes = (coords[through, :2].copy(), via[through, 3].astype(np.float64) * 1e-9)
-    refresh_via_fill()
-    set_modifier(obj, board.groups["vias"], "vias", {"Drill Material": board.materials["plating"],
-                                                     "Top Thickness": copper_thickness("F.Cu"),
-                                                     "Bottom Thickness": copper_thickness("B.Cu")})
+    set_modifier(obj, board.groups["vias"], "vias", {"Top Thickness": copper_thickness("F.Cu"),
+                                                     "Bottom Thickness": copper_thickness("B.Cu"),
+                                                     "Plating": via_plating(), "Land Lift": land,
+                                                     **materials.via_inputs()})
+    refresh_protection(highlights=False)
     board.touched.add(obj.name)
+    _apply_via_rings(coords, via[:, 2].astype(np.float64) * 1e-9, [(names[a], names[b]) for a, b in arrays["span"]],
+                     copper, ringed)
     highlight.refresh(kind="vias")
+
+
+VIA_RINGS = "KLS vias rings"
+
+
+def _apply_via_rings(xy, diameter, ends, copper, ringed):
+    """A via's annular rings on the inner layers between its ends (the outer ones are its
+    lands, nodes.vias): one point per ring, at that copper, drawn as flat disks
+    (nodes.via_rings) that show in X-ray mode and inside a see-through board."""
+    order = {name: i for i, name in enumerate(copper)}
+    points, sizes, owners = [], [], []
+    for index, (top, bottom) in enumerate(ends):
+        if top not in order or bottom not in order:
+            continue
+        first, last = sorted((order[top], order[bottom]))
+        for i in range(first + 1, last):
+            if ringed[index] >> i & 1 and copper[i] in board.heights:
+                points.append((*xy[index, :2], transform.copper_z(copper[i], "drills", board.heights)))
+                sizes.append(diameter[index])
+                owners.append(index)
+    obj = owned_object(VIA_RINGS)
+    mesh = obj.data
+    mesh.clear_geometry()
+    mesh.vertices.add(len(points))
+    if points:
+        mesh.vertices.foreach_set("co", np.asarray(points, np.float32).ravel())
+    write_attribute(mesh, "diameter", "FLOAT", np.asarray(sizes, np.float32))
+    write_attribute(mesh, "via", "INT", np.asarray(owners, np.int32))
+    mesh.update()
+    obj.location.z = 0
+    set_modifier(obj, board.groups["via_rings"], "via_rings", {})  # inner copper: bare, never the finish
+    board.touched.add(obj.name)
 
 
 def _apply_outline(arrays):
@@ -516,16 +576,53 @@ def set_board_visible(visible):
     obj = board.collection.all_objects.get(OUTLINE)
     if obj is not None:
         set_visible(obj, visible)
+    cut.invalidate()  # the section has no laminate while the board solid is hidden
+    edge_plating.refresh()  # the plated edge goes with the board solid
 
 
-def refresh_via_fill():
-    """Via fill on: vias are capped (filled and plated over), so they stay out of
-    the hole mask; the land reads as a copper or finish cap and the mask and
-    silkscreen run over it. Off: through vias are open, in copper, board and mask."""
-    xy, drill = board.via_holes
-    if getattr(bpy.context.scene, "kileido_via_fill", False):
-        xy, drill = xy[:0], drill[:0]
-    holes.set_vias(xy, drill)
+def refresh_protection(highlights=True):
+    """Resolve each via's protection (KiCad's, with the board's rules and the panel's Via
+    fill, Max tent hole and Via wall; protection.py) into the point attributes nodes.vias
+    draws (plugs, fills, caps, tents, bare or finished barrels), and draw the vias that are
+    holes into the hole mask, on the sides they open on."""
+    if board.collection is None:
+        return
+    vias = board.collection.all_objects.get("KLS vias")
+    if vias is None or "protection" not in vias.data.attributes:
+        return
+    mesh = vias.data
+    scene = bpy.context.scene
+    drill = read_attribute(mesh, "drill", np.float32).astype(np.float64)
+    bore = np.maximum(drill - 2 * via_plating(), 0.2 * drill)  # the finished hole, as nodes.vias draws it
+    found = protection.resolve(read_attribute(mesh, "protection", np.int32), board.appearance.get("via_rules"),
+                               bore, read_attribute(mesh, "outer_top", np.float32) > 0.5,
+                               read_attribute(mesh, "outer_bottom", np.float32) > 0.5,
+                               float(getattr(scene, "kileido_max_tent_mm", 0.3)) * 1e-3)
+    copper_fill = getattr(scene, "kileido_via_fill_material", "RESIN") == "COPPER"
+    for name, values in (("core_top", found["core_top"]), ("core_bottom", found["core_bottom"]),
+                         ("fill_copper", found["filled"] & copper_fill), ("plug_ink", found["plugged"]),
+                         ("cap", found["capped"] * CAP_PLATING_M), ("drilled", found["drilled"]),
+                         ("tent_top", found["tent_top"]), ("tent_bottom", found["tent_bottom"]),
+                         ("bare_barrel", ~found["finished"])):
+        write_attribute(mesh, name, "FLOAT", np.asarray(values, np.float32))
+    mesh.update()
+    board.via_too_big = int(found["too_big"].sum())
+    xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
+    drilled = found["drilled"]  # rings; tents and cores close them
+    holes.set_vias(xy[drilled], bore[drilled], found["side"][drilled])
+    if highlights:
+        highlight.refresh(kind="vias")
+    cut.invalidate()
+
+
+def refresh_plating():
+    """The panel's Via wall: the barrels, the holes inside them, and the cut."""
+    if board.collection is None:
+        return
+    vias = board.collection.all_objects.get("KLS vias")
+    if vias is not None and vias.modifiers:
+        set_node_input(vias, "Plating", via_plating())
+    refresh_protection()
 
 
 def refresh_solder():
@@ -555,5 +652,7 @@ def refresh_thickness():
     outline = board.collection.all_objects.get(OUTLINE)
     if outline is not None:
         _place_board(outline)
+    holes.refresh_sides()  # which heights are the board's top and bottom side
     highlight.refresh()
     cosmetics.recolor()
+    cut.invalidate()  # the section's lands stand out of the copper as far as the 3D pads
