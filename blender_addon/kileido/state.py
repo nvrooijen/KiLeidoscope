@@ -62,19 +62,21 @@ class BoardState:
             log(f"board state reset; {len(self.model_bound)} bound models forgotten")
         self.__init__()
 
-    def drop_if_freed(self, where):
+    def drop_if_freed(self, where, resync=True):
         """True after a collection freed under us (undo, file load) was forgotten: the board
-        state starts over and a live bridge sends the board again."""
+        state starts over and a live bridge sends the board again (`resync`; not needed
+        when a full snapshot is what just arrived)."""
         if self.collection is None:
             return False
         try:
             self.collection.name
         except ReferenceError:
-            log(f"the board's collection was freed ({where}); state reset, resync requested "
-                f"({len(self.model_bound)} bound models lost)")
+            log(f"the board's collection was freed ({where}); state reset"
+                f"{', resync requested' if resync else ''} ({len(self.model_bound)} bound models lost)")
             self.reset()
-            from . import live
-            live.request_resync()
+            if resync:
+                from . import live
+                live.request_resync()
             return True
         return False
 
