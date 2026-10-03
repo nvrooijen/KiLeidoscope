@@ -21,6 +21,10 @@ PREPREG = (0.80, 0.72, 0.46)
 RESIN = (0.88, 0.87, 0.80)  # epoxy filling a via (or a buried via's prepreg): milky, the barrel shows through
 LAMINATES = {"polyimide": (0.80, 0.50, 0.05), "ptfe": (0.94, 0.94, 0.90), "rogers": (0.92, 0.90, 0.84)}
 WOVEN = {CORE, PREPREG, *LAMINATES.values()}  # glass-reinforced: cut.py draws the weave in these
+ALUMINUM = (0.80, 0.81, 0.83)  # polished aluminum in a micrograph: bright, a cool grey
+BASE_METALS = {"AL": ALUMINUM, "CU": COPPER}  # an IMS board's metal base (ims.METALS keys)
+METALS = {COPPER, ALUMINUM}  # cut.py polishes these
+IMS_DIELECTRIC = (0.93, 0.92, 0.86)  # an IMS's thermal dielectric: ceramic-filled epoxy, chalky, no glass
 DEFAULT_COPPER_M = 35e-6  # KiCad's own default copper thickness, when the stackup has none
 
 EMPTY = np.empty((0, 2))
@@ -254,7 +258,7 @@ def _laminate_color(saved):
     return PREPREG if (saved or {}).get("type") == "prepreg" else CORE
 
 
-def stack_layout(heights, thickness, stack, saved):
+def stack_layout(heights, thickness, stack, saved, base=None):
     """(copper, bands): each copper layer's z range, and the laminate between the outer
     copper as (z0, z1, colour) bands, from the bottom up.
 
@@ -263,6 +267,11 @@ def stack_layout(heights, thickness, stack, saved):
     the gap by their thickness; `saved` (the saved board's types, top first) colours
     them when it matches the stack. Inner copper's own z range takes the colour of the
     laminate below it: that is what fills between its traces.
+
+    `base`: an IMS board's metal base as (z0, z1, colour), in B.Cu's place (the heights
+    already leave it room): a band of its own, under the IMS's thermal dielectric. B.Cu
+    then has no copper of its own (an empty range at the base's bottom): its via lands
+    would otherwise stand the base's whole height.
     """
     copper = {}
     for name, height in heights.items():
@@ -293,6 +302,9 @@ def stack_layout(heights, thickness, stack, saved):
         z0, z1 = copper[name]
         below = next((color for b0, b1, color in reversed(bands) if b1 <= z0 + 1e-12), CORE)
         bands.append((z0, z1, below))
+    if base is not None:
+        bands = [(z0, z1, IMS_DIELECTRIC) for z0, z1, _ in bands] + [tuple(base)]
+        copper["B.Cu"] = (base[0], base[0])
     bands.sort()
     return copper, bands
 

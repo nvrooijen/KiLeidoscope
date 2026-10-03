@@ -77,6 +77,31 @@ def test_stack_layout_places_copper_and_colours_each_dielectric():
     assert {color for _, _, color in unknown} == {section.CORE}
 
 
+def test_ims_base_is_metal_under_a_chalky_dielectric():
+    """A 1.5 mm aluminum base in B.Cu's place, 0.1 mm dielectric, 35 um F.Cu (ims.stack's heights)."""
+    stack = [STACK[0], {"name": "Dielectric 1", "type": "dielectric", "thickness_nm": 100_000}, STACK[-1]]
+    heights, thickness = {"B.Cu": 0.0, "F.Cu": 1635 * UM}, {"F.Cu": 35 * UM, "B.Cu": 1500 * UM}
+    copper, bands = section.stack_layout(heights, thickness, stack, SAVED[:1], base=(0.0, 1500 * UM, section.ALUMINUM))
+    assert {name: tuple(round(z / UM) for z in zr) for name, zr in copper.items()} == {
+        "B.Cu": (0, 0), "F.Cu": (1600, 1635)}  # the base is no B.Cu copper
+    assert [(round(z0 / UM), round(z1 / UM), color) for z0, z1, color in bands] == [
+        (0, 1500, section.ALUMINUM), (1500, 1600, section.IMS_DIELECTRIC)]
+    assert section.IMS_DIELECTRIC not in section.WOVEN and section.ALUMINUM in section.METALS
+    # Cut across the board: aluminum below, dielectric above, nothing drawn twice.
+    rects = section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), {}, copper, bands)
+    assert sorted((round(r[2] / UM), round(r[3] / UM), r[4]) for r in rects) == [
+        (0, 1500, section.ALUMINUM), (1500, 1600, section.IMS_DIELECTRIC)]
+    # A through via: plated barrel down through the base, but no B.Cu land the base's height.
+    vias = {"xy": np.array([(0.0, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
+            "top": ["F.Cu"], "bottom": ["B.Cu"], "core_top": [False], "core_bottom": [False],
+            "fill_copper": [False], "capped": [False], "tent_top": [False], "tent_bottom": [False],
+            "plug_ink": [False]}
+    rects = section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), {}, copper, bands,
+                                  vias=vias, plating=25 * UM)
+    in_base = [r for r in rects if r[4] == section.COPPER and r[2] < 1500 * UM]  # reaching into the base
+    assert in_base and all(round((r[1] - r[0]) / UM) == 25 for r in in_base), in_base  # only the barrel walls
+
+
 def _board(plug, capped=False, cap_plating=0.0, halves=(True, True), tented=False, ink=False):
     """40 x 30 mm board; In1 poured over all of it; a 0.5 mm F.Cu track from x = -5 to 5;
     a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill). plug: None (open),

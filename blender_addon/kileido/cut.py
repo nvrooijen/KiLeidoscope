@@ -22,7 +22,7 @@ import numpy as np
 from mathutils import Vector
 
 from . import focus, laminate, metal, nodes, section, shading, transform
-from .placement import CAP_PLATING_M, mask_thickness, via_plating
+from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -33,9 +33,10 @@ FACE = focus.CUT_FACE  # the section's object and material
 FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
-FACE_METAL = "kls_metal"  # 1 on copper: polished metal
+FACE_METAL = "kls_metal"  # 1 on copper and an IMS base: polished metal
+FACE_OWN_METAL = "kls_own_metal"  # 1 on metal that is not copper (an aluminum base): lit in its own colour
 FACE_MILKY = "kls_resin"  # 1 on resin: milky, the barrel behind it shows through
-FACE_MATERIAL_VERSION = 9
+FACE_MATERIAL_VERSION = 10
 RESIN_OPACITY = 0.55  # resin in a via is milky: the barrel behind it shows through, faded
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
@@ -433,9 +434,14 @@ def _face_material():
     # Copper lit as metal (bare: a cut never carries the finish), with the same polish.
     lit_color = tree.nodes.new("ShaderNodeRGB")
     lit_color.name = "KLS cut copper colour"
+    lit_base = tree.nodes.new("ShaderNodeMix")  # copper's lit colour, or an aluminum base's own
+    lit_base.data_type = "RGBA"
+    tree.links.new(_attribute(tree, FACE_OWN_METAL).outputs["Fac"], lit_base.inputs[0])
+    tree.links.new(lit_color.outputs[0], shading.typed_socket(lit_base.inputs, "A"))
+    tree.links.new(color, shading.typed_socket(lit_base.inputs, "B"))
     lit_polish = tree.nodes.new("ShaderNodeGroup")
     lit_polish.node_tree = metal.group()
-    tree.links.new(lit_color.outputs[0], lit_polish.inputs["Base"])
+    tree.links.new(shading.typed_socket(lit_base.outputs, "Result"), lit_polish.inputs["Base"])
     tree.links.new(along, lit_polish.inputs["Along"])
     tree.links.new(height.outputs["Z"], lit_polish.inputs["Height"])
     lit_polish.inputs["Metal"].default_value = 1.0
@@ -533,7 +539,7 @@ def rectangles(scene=None):
     line = section.Line(origin[:2], normal[:2])
     layers = {layer: section.copper_along(line, found) for layer, found in data["copper"].items()}
     copper, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,
-                                         board.appearance.get("dielectrics"))
+                                         board.appearance.get("dielectrics"), base=ims_band())
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=via_plating(), land_lift=_land_lift(),
@@ -584,11 +590,13 @@ def rebuild(scene=None):
         colors[:, :3] = np.repeat([shading.srgb_to_linear(rect[4]) for rect in rects], 4, axis=0)
     attribute = mesh.color_attributes.get(FACE_COLOR) or mesh.color_attributes.new(FACE_COLOR, "FLOAT_COLOR", "POINT")
     attribute.data.foreach_set("color", colors.ravel())
-    copper = np.repeat([rect[4] == section.COPPER for rect in rects], 4).astype(np.float32)
+    copper = np.repeat([rect[4] in section.METALS for rect in rects], 4).astype(np.float32)
+    own_metal = np.repeat([rect[4] in section.METALS and rect[4] != section.COPPER for rect in rects],
+                          4).astype(np.float32)
     weave = np.repeat([rect[4] in section.WOVEN for rect in rects], 4).astype(np.float32)
     milky = np.repeat([rect[4] == section.RESIN for rect in rects], 4).astype(np.float32)
     for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave), (FACE_METAL, copper),
-                         (FACE_MILKY, milky)):
+                         (FACE_OWN_METAL, own_metal), (FACE_MILKY, milky)):
         found = mesh.attributes.get(name) or mesh.attributes.new(name, "FLOAT", "POINT")
         found.data.foreach_set("value", values)
     mesh.update()

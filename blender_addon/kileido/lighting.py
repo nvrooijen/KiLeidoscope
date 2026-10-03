@@ -90,7 +90,7 @@ def exposure():
     mask = materials.mask_color("F", shown=True) if board.appearance else None
     if not mask:
         return 1.0
-    core = board.appearance.get("viewer", {}).get("core") or materials.FALLBACK_CORE
+    core = materials.core_color()
     red, green, blue = shading.srgb_to_linear(materials.mask_on_laminate(mask, core))
     luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
     return min(1.0, max(MIN_EXPOSURE, EXPOSURE_ALBEDO / max(luminance, 1e-6)))

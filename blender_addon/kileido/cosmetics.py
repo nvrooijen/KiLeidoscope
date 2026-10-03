@@ -157,7 +157,7 @@ def _layer_color(layer):
 def recolor():
     """Colour, opacity and height of every overlay for the current colour mode (and,
     through `set_layer_visible`, where the silkscreen is drawn)."""
-    core = board.appearance.get("viewer", {}).get("core") or materials.FALLBACK_CORE
+    core = materials.core_color()
     for layer, _, default in LAYERS:
         material = bpy.data.materials.get(material_name(layer))
         if material is None:

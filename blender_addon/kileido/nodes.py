@@ -1,5 +1,7 @@
 """Geometry Nodes groups. Input geometry stays as edges and points."""
 
+import math
+
 import bpy
 
 from .placement import PLACEHOLDER_HEIGHT_M
@@ -444,6 +446,31 @@ def board():
     return group
 
 
+SMOOTH_UP_TO = math.radians(30)  # a curved wall's facets meet flatter than this; rims and corners do not
+
+
+def smooth_walls():
+    """Smooth shading on a solid's curved walls, sharp rims and corners: flat facets
+    streak a reflective metal (the IMS base)."""
+    group, source, sink = _group("KLS_SmoothWalls_v1")
+    if source is None:
+        return group
+    nodes, links = group.nodes, group.links
+    faces = nodes.new("GeometryNodeSetShadeSmooth")
+    faces.domain = "FACE"
+    links.new(source.outputs["Geometry"], faces.inputs["Mesh"])
+    gentle = nodes.new("FunctionNodeCompare")
+    gentle.data_type, gentle.operation = "FLOAT", "LESS_THAN"
+    links.new(nodes.new("GeometryNodeInputMeshEdgeAngle").outputs["Unsigned Angle"], gentle.inputs[0])
+    gentle.inputs[1].default_value = SMOOTH_UP_TO
+    edges = nodes.new("GeometryNodeSetShadeSmooth")
+    edges.domain = "EDGE"
+    links.new(faces.outputs["Mesh"], edges.inputs["Mesh"])
+    links.new(gentle.outputs["Result"], edges.inputs["Shade Smooth"])
+    links.new(edges.outputs["Mesh"], sink.inputs["Geometry"])
+    return group
+
+
 def _named(nodes, name):
     node = nodes.new("GeometryNodeInputNamedAttribute")
     node.data_type = "FLOAT"
@@ -831,4 +858,5 @@ def ensure_all():
     return {"tracks": tracks(), "fill": fill(), "solder": fill("KLS_Solder", solder=True),
             "fill_single": fill_single(),
             "drills": drills(), "vias": vias(), "via_rings": via_rings(), "board": board(),
+            "smooth_walls": smooth_walls(),
             "footprint_placeholder": footprint_placeholder(), "highlight_box": highlight_box()}

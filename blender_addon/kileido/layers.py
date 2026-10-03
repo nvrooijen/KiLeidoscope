@@ -50,11 +50,21 @@ def shown(row):
     return bool(getattr(bpy.context.scene, property_name(row), True))
 
 
+def under_base(row):
+    """True for a bottom-layer row while IMS mode is on: the metal base takes its place,
+    so the row is hidden and left out of the Layers list."""
+    return board.ims is not None and row is not None and row.startswith("B.")
+
+
 def hidden(obj):
     """True when the object's row is switched off in the panel. A placeholder stands in
-    for a component, so switching Components off hides it too."""
+    for a component, so switching Components off hides it too; under an IMS metal base
+    the bottom layers, bottom-side components and bottom paste are hidden."""
     row = row_of(obj)
     if row == "Placeholders" and not shown("Components"):
+        return True
+    if under_base(row) or (board.ims is not None and
+                           (obj.get("kls_side") == "bottom" or obj.get("kls_paste_side") == "B")):
         return True
     return row is not None and row != "Board" and not shown(row)
 
@@ -110,7 +120,7 @@ def sections():
     stack = []
 
     def add(row, kind, thickness_m=None):
-        if row in rows_here:
+        if row in rows_here and not under_base(row):
             stack.append(Entry(row, rows_here[row], kind, thickness_m))
 
     add("F.SilkS", "silk")
@@ -139,7 +149,7 @@ def sections():
     objects = [Entry(row, rows_here[row], row.lower()) for row in ("Vias", "Components", "Placeholders")
                if row in rows_here]
     listed = {entry.row for entry in (*stack, *objects)}
-    drawings = [Entry(row, label, "drawing") for row, label in rows() if row not in listed]
+    drawings = [Entry(row, label, "drawing") for row, label in rows() if row not in listed and not under_base(row)]
     return [(title, entries) for title, entries in
             (("Stackup", stack), ("Objects", objects), ("Drawings", drawings)) if entries]
 
@@ -152,15 +162,14 @@ def recorded():
                                        "thickness_m": entry.thickness_m or 0.0, "detail": entry.detail,
                                        "color": list(swatch_color(entry))} for entry in entries]}
                          for title, entries in sections()],
-            "off": [row for row, _ in rows() if not shown(row)],
+            "off": [row for row, _ in rows() if not shown(row) or under_base(row)],
             "thickness_m": board.thickness_m}
 
 
 def swatch_color(entry):
     """sRGB of an entry's swatch in the current colour mode (as the board shows it)."""
     from . import cosmetics, materials, shading
-    viewer = board.appearance.get("viewer", {})
-    core = viewer.get("core") or materials.FALLBACK_CORE
+    core = materials.core_color()
     if entry.kind == "copper":
         return materials._copper_color(entry.row)
     if entry.kind == "vias":

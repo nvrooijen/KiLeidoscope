@@ -11,11 +11,12 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, cut, edge_plating, focus, footprints, highlight, holes, laminate, layers, lighting,
+from . import (cosmetics, cut, edge_plating, focus, footprints, highlight, holes, ims, laminate, layers, lighting,
                materials, models, nodes, protection, render_depth, transform)
 from .client import FrameDecoder
-from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, set_modifier,
-                      set_node_input, set_visible, single_point, view3d_spaces, write_attribute, outline_bounds)
+from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, read_edges,
+                      set_modifier, set_node_input, set_visible, single_point, view3d_spaces, write_attribute,
+                      outline_bounds)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
 from . import state
@@ -64,6 +65,8 @@ def apply_frame(header, arrays):
         pass  # KiCad's link state: live.LiveLink reads it
     else:
         raise ValueError(f"unknown message type: {message_type}")
+    if message_type == "layer_data" and not board.in_snapshot:  # a live edit: what shorts may have changed
+        refresh_ims_warnings()
     if message_type in SECTION_INPUTS:
         cut.invalidate()
         laminate.update_bands()
@@ -125,10 +128,11 @@ def _end_snapshot():
     board.status = f"Loaded {board.board_name}"
     highlight.refresh()  # skipped per frame during the snapshot
     holes.rebuild()  # likewise: one redraw for the snapshot's pads, vias and outline
-    for row, _ in layers.rows():  # rows switched off stay off for the new objects too
-        if not layers.shown(row):
+    for row, _ in layers.rows():  # rows switched off (or under the IMS base) stay off for the new objects too
+        if not layers.shown(row) or layers.under_base(row):
             layers.refresh(row)
     lighting.ensure_studio_lights()
+    refresh_ims_warnings()
     focus.refresh()
     cut.refresh()
     edge_plating.refresh()
@@ -179,6 +183,7 @@ def apply_board(header):
     board.heights = {entry["name"]: float(entry["z_m"]) for entry in header["layers"]}
     board.thickness_m = float(header["board_thickness_m"])
     board.layer_thickness = dict(header.get("layer_thickness_m") or {})
+    _shape_ims()
     see_through_holes(bpy.context.scene)
     render_depth.install()  # EEVEE renders: 35 um copper under the default clip range
     board.appearance = header.get("appearance", {})
@@ -189,6 +194,23 @@ def apply_board(header):
     board.status = f"Loaded {name}"
     for space in view3d_spaces():
         space.overlay.show_relationship_lines = False
+
+
+def _shape_ims():
+    """IMS mode on a 2-layer board: the base takes B.Cu's place, so every height read from
+    here on (copper, vias, drills, components) is the IMS stack's. The bottom layers hide
+    under the base, or come back when IMS mode ends."""
+    was = board.ims is not None
+    scene = bpy.context.scene
+    board.ims = None
+    if getattr(scene, "kileido_ims", False) and ims.eligible(board.heights)[0]:
+        board.ims = ims.stack(board.heights, board.layer_thickness, scene.kileido_ims_epoxy_um * 1e-6)
+        board.heights = board.ims.heights
+        board.layer_thickness = board.ims.layer_thickness
+        board.thickness_m = board.ims.thickness_m
+    if was != (board.ims is not None):  # what the base hides, or shows again: every row (layers.hidden)
+        for row, _ in layers.rows():
+            layers.refresh(row)
 
 
 def lock_selection(collection):
@@ -329,9 +351,13 @@ def _apply_drills(header, arrays):
         width, height = (float(value) * 1e-9 for value in row[2:4])
         if not oval:
             width = height = min(width, height)
-        # Plated holes: copper wall with the finish; np_thru_hole: bare laminate.
-        set_modifier(obj, board.groups["drills"], "plating" if plated else "board_core",
+        # Plated holes: copper wall with the finish; np_thru_hole: bare laminate, or on an IMS
+        # board the metal base (all but its thin epoxy).
+        bare = "ims_wall" if board.ims is not None else "board_core"
+        set_modifier(obj, board.groups["drills"], "plating" if plated else bare,
                      {"Width": width, "Height": height, "Depth": board.thickness_m})
+        _smooth_walls(obj, not plated and board.ims is not None)
+        obj["kls_plated"] = bool(plated)
         hole_rows.append((x, y, width, height, float(angle), bool(oval)))
         obj["kls_id"] = pad_id
         set_visible(obj, True)
@@ -558,6 +584,47 @@ def _place_board(obj):
                   "Bottom Material": board.materials["board_bottom"],
                   "Core Material": board.materials["board_core"]})
     obj.update_tag()
+    _place_ims_base(obj)
+
+
+IMS_BASE = "KLS IMS base"
+
+
+def _smooth_walls(obj, on):
+    """Smooth shading after an object's own modifier (on), or none: flat facets streak a
+    reflective metal wall, the IMS base's and its bare drill walls."""
+    smooth = board.groups["smooth_walls"]
+    modifier = obj.modifiers.get(smooth.name)
+    if on and modifier is None:
+        obj.modifiers.new(smooth.name, "NODES").node_group = smooth
+    elif not on and modifier is not None:
+        obj.modifiers.remove(modifier)
+
+
+def _place_ims_base(outline):
+    """The IMS metal base: the outline's fill (sharing its mesh), from the board's bottom
+    up to the dielectric. Gone again when IMS mode is off."""
+    existing = board.collection.all_objects.get(IMS_BASE)
+    if board.ims is None:
+        if existing is not None:
+            bpy.data.objects.remove(existing)
+        return
+    obj = existing or owned_object(IMS_BASE)
+    if obj.data != outline.data:
+        own = obj.data
+        obj.data = outline.data
+        if own.users == 0:
+            bpy.data.meshes.remove(own)
+    z0, z1 = board.ims.base
+    clearance = min(BOARD_FACE_CLEARANCE_M, (z1 - z0) / 4)  # its top just under the dielectric's bottom face
+    obj.location.z = z1 - clearance
+    metal = board.materials["ims_base"]
+    set_modifier(obj, board.groups["board"], metal,
+                 {"Thickness": -(z1 - z0 - clearance), "Bottom Material": metal, "Core Material": metal})
+    _smooth_walls(obj, True)  # a round cutout's wall without facets
+    set_visible(obj, getattr(bpy.context.scene, "kileido_show_board", True))
+    board.touched.add(obj.name)
+    obj.update_tag()
 
 
 # --- Panel settings -------------------------------------------------------------------------
@@ -573,11 +640,57 @@ def set_color_mode(mode):
 def set_board_visible(visible):
     if board.collection is None:
         return
-    obj = board.collection.all_objects.get(OUTLINE)
-    if obj is not None:
-        set_visible(obj, visible)
+    for name in (OUTLINE, IMS_BASE):
+        obj = board.collection.all_objects.get(name)
+        if obj is not None:
+            set_visible(obj, visible)
     cut.invalidate()  # the section has no laminate while the board solid is hidden
     edge_plating.refresh()  # the plated edge goes with the board solid
+
+
+def _fill_area(obj):
+    """Area (m2) an object's rings enclose (zones, the outline)."""
+    mesh = obj.data
+    if not len(mesh.vertices) or "hole" not in mesh.attributes:
+        return 0.0
+    following = np.empty(len(mesh.vertices), np.int64)
+    edges = read_edges(mesh)
+    following[edges[:, 0]] = edges[:, 1]
+    return ims.fill_area(read_coordinates(mesh)[:, :2], following, read_attribute(mesh, "hole", np.int32) > 0)
+
+
+def refresh_ims_warnings():
+    """What an IMS board cannot have, for the panel: vias and plated holes (they would
+    reach the metal base) and copper of B.Cu's own."""
+    board.ims_warnings = []
+    if board.ims is None or board.collection is None:
+        return
+    objects = board.collection.all_objects
+    vias = objects.get("KLS vias")
+    plated = {obj["kls_id"] for obj in objects
+              if obj.get("kls_drill") and obj.get("kls_plated") and len(obj.data.vertices)}
+    routed = 0
+    for name in ("KLS B.Cu tracks", "KLS B.Cu pads", "KLS B.Cu graphics"):
+        obj = objects.get(name)
+        if obj is not None and len(obj.data.vertices):
+            # Tracks by segment; pads and graphics by item, a through-hole pad's B.Cu land not counted.
+            routed += len(obj.data.edges) if name.endswith("tracks") else len(set(obj.get("kls_ids", ())) - plated)
+    zones = sum(_fill_area(obj) for obj in objects if obj.get("kls_zone_layer") == "B.Cu")
+    outline = objects.get(OUTLINE)
+    bottom = ims.bottom_copper(routed, zones, _fill_area(outline) if outline is not None else 0.0)
+    board.ims_warnings = ims.warnings(len(vias.data.vertices) if vias is not None else 0, len(plated), bottom)
+
+
+def refresh_ims_metal():
+    """The IMS base's metal changed: its colour in 3D and in the cut."""
+    materials.paint_ims_base()
+    laminate.update_bands()
+    cut.invalidate()
+
+
+def refresh_ims_finish():
+    """The IMS base's finish changed: its two materials only (the cut is always polished)."""
+    materials.paint_ims_base()
 
 
 def refresh_protection(highlights=True):
