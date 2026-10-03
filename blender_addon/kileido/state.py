@@ -22,6 +22,8 @@ class BoardState:
         self.thickness_m = 0.0
         self.layer_names = {}  # canonical layer -> KiCad's display name ("F.SilkS" -> "Top Overlay")
         self.stackup = []  # KiCad's stackup top to bottom: {"name", "type", "thickness_nm", "material", ...}
+        self.ims = None  # ims.Stack while IMS mode puts a metal base under the board (the heights above are its)
+        self.ims_warnings = []  # what would short to the metal base (apply.refresh_ims_warnings)
 
         # Shared display resources.
         self.groups = {}  # Geometry Nodes groups by role (nodes.ensure_all)

@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 4, 0),
+    "version": (0, 4, 1),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -20,8 +20,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, layers, lighting, live, models, packages,
-               pick, protection, render_depth, watcher)
+from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, ims, layers, lighting, live, models,
+               packages, pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -341,6 +341,46 @@ def _draw_thickness(layout, scene, copper_m):
             right.prop(scene, value, text=value_label)
 
 
+def _draw_ims(layout, scene):
+    """IMS mode, for a 2-layer live board: the base's metal and finish and the epoxy are set
+    here; the board keeps KiCad's thickness, and the base takes what the epoxy and copper leave."""
+    box = layout.box()
+    ok, why = ims.eligible(board.heights)
+    if not ok:  # unticked whatever the setting: it waits for the next 2-layer board
+        toggle = box.row()
+        toggle.enabled = False
+        toggle.label(text="IMS (metal base)", icon="CHECKBOX_DEHLT")
+        for index, line in enumerate(_wrap(bpy.context, why)):
+            box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+        return
+    box.prop(scene, "kileido_ims", text="IMS (metal base)")
+    stack = board.ims
+    if scene.kileido_ims != (stack is not None) and _ims_source() is None:  # nothing to rebuild it from
+        for index, line in enumerate(_wrap(bpy.context, "Connect KiCad or load the dump again to redraw the board")):
+            box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+    if not scene.kileido_ims:
+        return
+    box.row(align=True).prop(scene, "kileido_ims_metal", expand=True)
+    box.prop(scene, "kileido_ims_finish", text="Finish")
+    box.prop(scene, "kileido_ims_epoxy_um", text="Epoxy (µm)")
+    if stack is None:  # the board is on its way again, with the base (_ims_update)
+        if _ims_source() is not None:
+            box.label(text="Rebuilding the board…", icon="TIME")
+        return
+    column = box.column(align=True)
+    for label, metres, source in (("Base", stack.base[1] - stack.base[0], "rest"),
+                                  ("Copper", board.layer_thickness.get("F.Cu"), "stackup"),
+                                  ("Board", stack.thickness_m, "KiCad")):
+        split = column.split(factor=0.5, align=True)
+        split.label(text=label)
+        right = split.row(align=True)
+        right.alignment = "RIGHT"
+        right.label(text=f"{layers.format_thickness(metres) or '–'} {source}")
+    for warning in board.ims_warnings:
+        for index, line in enumerate(_wrap(bpy.context, warning)):
+            box.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+
+
 def _layers_board(scene):
     """The board the Layers list shows: None for the live board, "ALL" for every board,
     else a view-only index."""
@@ -505,6 +545,7 @@ class KILEIDO_PT_boards(bpy.types.Panel):
 
         self._draw_rows(sections, board.thickness_m, layers.shown, eye, all_eye)
         _draw_thickness(self.layout, scene, board.layer_thickness.get("F.Cu"))
+        _draw_ims(self.layout, scene)
 
     def _draw_view_only(self, index):
         recorded = packages.layer_list(index)
@@ -529,6 +570,11 @@ class KILEIDO_PT_boards(bpy.types.Panel):
         self._draw_rows(sections, recorded["thickness_m"], lambda row: packages.row_shown(index, row), eye,
                         all_eye)
         _draw_thickness(self.layout, bpy.context.scene, packages.copper_thickness_of(index))
+        found = packages.ims_of(index)
+        if found:  # as exported: a view-only board keeps its own base
+            base = found["base"][1] - found["base"][0]
+            self.layout.box().label(text=f"IMS: {ims.METALS.get(found['metal'], found['metal'])} base, "
+                                         f"{layers.format_thickness(base)}", icon="INFO")
 
     def _draw_all_boards(self, scene):
         sections = [(title, [(layers.Entry(row, label, kind), color) for row, label, kind, color in entries])
@@ -674,6 +720,33 @@ def _thickness_update(refresh_live):
     return update
 
 
+IMS_REBUILD_DELAY_S = 0.4  # after the last change: dragging the epoxy value rebuilds once
+
+
+def _ims_update(_scene, _context):
+    """IMS mode or its base changed: every height moves, so the board comes again (from
+    KiCad, or the dump file) and apply._shape_ims fits it to the new stack as it arrives."""
+    if bpy.app.timers.is_registered(_ims_rebuild):
+        bpy.app.timers.unregister(_ims_rebuild)
+    bpy.app.timers.register(_ims_rebuild, first_interval=IMS_REBUILD_DELAY_S)
+
+
+def _ims_source():
+    """Where the board can come from again: "live", "dump", or None (the panel says so)."""
+    return "live" if live.connected() else "dump" if dump.last_path else None
+
+
+def _ims_rebuild():
+    if board.collection is None or not ims.eligible(board.heights)[0]:
+        return None
+    source = _ims_source()
+    if source == "live":
+        live.request_resync()
+    elif source == "dump":
+        dump.load_async(dump.last_path)
+    return None
+
+
 def _mask_opacity_update():
     """The solder mask opacity changed: recolour the live board, then the view-only ones."""
     if board.materials:
@@ -754,6 +827,27 @@ def _scene_properties():
             name="Copper thickness", default=True,
             description="Give outer copper its stackup thickness; the mask sits on the laminate between it",
             update=_thickness_update(apply.refresh_thickness)),
+        "kileido_ims": BoolProperty(
+            name="IMS", default=False,
+            description="Insulated metal substrate: a 2-layer board on an aluminum or copper base. The board "
+                        "keeps KiCad's thickness; the panel's epoxy sits under F.Cu and the base takes the rest, "
+                        "B.Cu's place included",
+            update=_ims_update),
+        "kileido_ims_metal": EnumProperty(
+            name="Base metal", items=tuple((key, name, f"{name} base") for key, name in ims.METALS.items()),
+            default="AL", description="The metal of the IMS base (KiCad stores none)",
+            update=lambda self, context: apply.refresh_ims_metal()),
+        "kileido_ims_finish": EnumProperty(
+            name="Base finish", items=tuple((key, label, f"{label} base (Realistic colours)")
+                                            for key, (label, _, _) in ims.FINISHES.items()),
+            default="MILL", description="The IMS base's outer faces in Realistic colours; the cut plane always "
+                                        "shows a polished section, as a micrograph does",
+            update=lambda self, context: apply.refresh_ims_finish()),
+        "kileido_ims_epoxy_um": IntProperty(
+            name="Epoxy", default=ims.EPOXY_UM[2], min=ims.EPOXY_UM[0], max=ims.EPOXY_UM[1],
+            description="The IMS's thermal dielectric under F.Cu, in µm (the fab's; KiCad's 2-layer stackup "
+                        "holds the board's thickness). The metal base takes the rest of the board",
+            update=_ims_update),
         "kileido_show_solder": BoolProperty(
             name="Solder paste", default=False,
             description="Stencil deposits on pads with a paste aperture (KiCad's F.Paste/B.Paste pad shapes)",
@@ -835,8 +929,9 @@ def register():
 def unregister():
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
-    if bpy.app.timers.is_registered(dump.drain):
-        bpy.app.timers.unregister(dump.drain)
+    for timer in (dump.drain, _ims_rebuild):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()

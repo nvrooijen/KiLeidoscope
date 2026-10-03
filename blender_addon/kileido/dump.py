@@ -16,6 +16,7 @@ READ_BYTES = 1 << 20
 _queue = queue.SimpleQueue()
 _worker = None
 _generation = 0
+last_path = ""  # the dump shown ("" once a live link takes over): IMS mode reloads it (kileido._ims_rebuild)
 
 
 def load_async(filepath):
@@ -24,8 +25,9 @@ def load_async(filepath):
     The worker never touches bpy. One FrameDecoder per stream: frames may span reads.
     A newer load supersedes frames still queued from an older one.
     """
-    global _worker, _generation
+    global _worker, _generation, last_path
     _generation += 1
+    last_path = filepath
     generation = _generation
     board.status = "Loading dump…"
 

@@ -17,6 +17,7 @@ import math
 import bpy
 
 from . import section, shading
+from .placement import ims_band
 from .state import board
 
 GROUP = "KLS_Laminate_v3"
@@ -173,7 +174,7 @@ def update_bands(tree=None):
     if tree is None or not board.heights:
         return
     _, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,
-                                    board.appearance.get("dielectrics"))
+                                    board.appearance.get("dielectrics"), base=ims_band())
     signature = (tree.as_pointer(), board.thickness_m, tuple(bands))
     if signature == _bands_set:
         return

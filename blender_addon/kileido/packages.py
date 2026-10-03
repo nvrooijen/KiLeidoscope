@@ -15,7 +15,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import apply, cosmetics, cut, highlight, layers, lighting, materials, nodes, render_depth, transform
+from . import apply, cosmetics, cut, highlight, ims, layers, lighting, materials, nodes, render_depth, transform
 from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
@@ -122,7 +122,7 @@ def _mask_sheets(collection):
     {"mask": sRGBA, "core": sRGB}). None in PCB Editor colours (translucent sheets)."""
     if board.color_mode == "EDITOR":
         return []
-    core = board.appearance.get("viewer", {}).get("core") or materials.FALLBACK_CORE
+    core = materials.core_color()
     found = []
     for obj in tuple(collection.all_objects):
         layer = obj.get("kls_cosmetic_layer", "")
@@ -145,8 +145,12 @@ def export_board(filepath):
     collection["kls_thickness_m"] = board.thickness_m
     collection["kls_layers"] = json.dumps(layers.recorded())
     collection["kls_outline_warnings"] = json.dumps(outline_warnings())
-    collection["kls_stackup"] = json.dumps({"heights": board.heights, "layer_thickness": board.layer_thickness,
-                                           "color_mode": board.color_mode})
+    stackup = {"heights": board.heights, "layer_thickness": board.layer_thickness, "color_mode": board.color_mode}
+    if board.ims is not None:  # its metal base goes along as drawn; this places the rest around it again
+        stackup["ims"] = {"base": list(board.ims.base), "dielectric": list(board.ims.dielectric),
+                          "metal": getattr(bpy.context.scene, "kileido_ims_metal", "AL"),
+                          "finish": getattr(bpy.context.scene, "kileido_ims_finish", "MILL")}
+    collection["kls_stackup"] = json.dumps(stackup)
     finished = _finished_materials()
     for material, side in finished:  # a view-only mask eye recolours covered copper like the live one
         material["kls_covered"] = json.dumps({"side": side, "shown": materials.covered_state(side, True),
@@ -398,13 +402,16 @@ def _as_board(collection):
     """Lend `board` a view-only board's stackup while the shared placement code runs
     on its objects; the live board's state comes back after."""
     saved = dict(vars(board))
-    stackup = json.loads(collection.get("kls_stackup", "{}"))
+    stackup = _stackup(collection)
     board.collection = collection
     board.name_prefix = f"KV{collection['kls_view_only']} "
     board.heights = stackup.get("heights", {})
     board.layer_thickness = stackup.get("layer_thickness", {})
     board.thickness_m = float(collection.get("kls_thickness_m", 0.0016))
     board.color_mode = stackup.get("color_mode", board.color_mode)
+    found = stackup.get("ims")  # its own IMS base, whatever the live board's
+    board.ims = (ims.Stack(board.heights, board.layer_thickness, board.thickness_m, tuple(found["base"]),
+                           tuple(found["dielectric"])) if found else None)
     try:
         yield
     finally:
@@ -412,11 +419,19 @@ def _as_board(collection):
         board.__dict__.update(saved)
 
 
+def _stackup(collection):
+    """A view-only board's stackup as exported (kls_stackup), {} without one."""
+    return json.loads(collection.get("kls_stackup", "{}")) if collection is not None else {}
+
+
 def copper_thickness_of(index):
     """A view-only board's F.Cu stackup thickness (m), or None."""
-    collection = collection_of(index)
-    stackup = json.loads(collection.get("kls_stackup", "{}")) if collection is not None else {}
-    return stackup.get("layer_thickness", {}).get("F.Cu")
+    return _stackup(collection_of(index)).get("layer_thickness", {}).get("F.Cu")
+
+
+def ims_of(index):
+    """A view-only board's IMS base as exported: {"base", "dielectric", "metal"}, or None."""
+    return _stackup(collection_of(index)).get("ims")
 
 
 def refresh_thickness(index=None):

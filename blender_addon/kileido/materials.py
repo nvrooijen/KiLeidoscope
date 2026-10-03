@@ -7,7 +7,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 
 import bpy
 
-from . import cut, focus, holes, laminate, section, shading
+from . import cut, focus, holes, ims, laminate, section, shading
 from .placement import copper_thickness
 from .state import board
 
@@ -64,6 +64,9 @@ def create_all():
         "board": make("KLS Board mask top", FALLBACK_MASK),
         "board_bottom": make("KLS Board mask bottom", FALLBACK_MASK),
         "board_core": make("KLS Board FR4 core", FALLBACK_CORE),
+        "ims_base": make("KLS IMS base", ims.COLORS["AL"]),
+        # Its bare drill walls: the same metal, never see-through (they stand inside the hole mask).
+        "ims_wall": make("KLS IMS hole wall", ims.COLORS["AL"]),
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
@@ -710,6 +713,8 @@ def set_color_mode(mode):
     paint(board.materials["plating_bare"], _lit_metal(BARE_COPPER))
     set_surface(board.materials["plating_bare"], realistic, COPPER_METALLIC, 0.3)
     paint_tents()
+    for key in ("ims_base", "ims_wall"):
+        _paint_ims_base(board.materials[key], realistic)
     paint(board.materials["via_resin"], section.RESIN)
     set_surface(board.materials["via_resin"], realistic, 0.0, 0.5)
     _paint_highlights()
@@ -723,15 +728,45 @@ def set_color_mode(mode):
                         COPPER_ROUGHNESS if metal else 0.42)
             if metal:
                 finish_mask(material, key)
-    laminate.set_edges(board.materials["board_core"], realistic)  # routed edges and bare drills show the layers
+    # Routed edges and bare drills show the layers; an IMS's thin epoxy has no glass weave.
+    laminate.set_edges(board.materials["board_core"], realistic and board.ims is None)
     # Copper in the cut plane's section: bare (a cut never has the finish), lit like the rest.
     cut.set_look(realistic, shading.srgb_to_linear(metal_color(BARE_COPPER)), COPPER_METALLIC, COPPER_ROUGHNESS)
+
+
+def _paint_ims_base(material, realistic):
+    """The IMS base: its metal, or nickel over it, with the panel's finish."""
+    scene = bpy.context.scene
+    finish = getattr(scene, "kileido_ims_finish", "MILL")
+    _, roughness, anisotropy = ims.FINISHES.get(finish, ims.FINISHES["MILL"])
+    color = ims.NICKEL if finish == "NICKEL" else ims.COLORS.get(getattr(scene, "kileido_ims_metal", "AL"),
+                                                                 ims.COLORS["AL"])
+    paint(material, _lit_metal(color))
+    set_surface(material, realistic, 1.0, roughness)
+    principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
+    principled.inputs["Anisotropic"].default_value = anisotropy
+
+
+def paint_ims_base():
+    """The IMS base's metal or finish changed: its two materials, nothing else."""
+    if board.materials:
+        realistic = board.color_mode == "REALISTIC"
+        for key in ("ims_base", "ims_wall"):
+            _paint_ims_base(board.materials[key], realistic)
+
+
+def core_color():
+    """The laminate under the mask (sRGB): KiCad's 3D core colour, or on an IMS board its
+    thin cream epoxy, whatever KiCad's colour."""
+    if board.ims is not None:
+        return section.IMS_DIELECTRIC
+    return board.appearance.get("viewer", {}).get("core") or FALLBACK_CORE
 
 
 def _paint_board_faces(viewer):
     appearance = board.appearance
     editor = board.color_mode == "EDITOR"
-    core = viewer.get("core") or FALLBACK_CORE
+    core = core_color()
     for key, side, suffix in (("board", "F", "top"), ("board_bottom", "B", "bottom")):
         mask = ((appearance.get(f"editor_mask_{suffix}") if editor else
                  viewer.get(f"soldermask_{suffix}") or appearance.get("saved_colors", {}).get(f"{side}.Mask")) or

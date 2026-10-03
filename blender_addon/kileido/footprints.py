@@ -145,6 +145,7 @@ def _place_placeholder(name, record, all_hidden):
     box = owned_object(name)
     box["kls_footprint_placeholder"] = 1
     box["kls_footprint_id"] = record["id"]
+    box["kls_side"] = record["side"]
     single_point(box.data)
     center = transform.xy_m([[bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2]], board.origin_nm)[0]
     bottom = record["side"] == "bottom"

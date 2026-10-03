@@ -5,7 +5,7 @@ from collections import deque
 
 import bpy
 
-from . import apply
+from . import apply, dump
 from .client import PROTOCOL, SocketClient
 from .state import board
 
@@ -42,6 +42,7 @@ class LiveLink:
     def connect(self, port, token):
         self.disconnect()
         self.enabled = True
+        dump.last_path = ""  # the board is KiCad's from here on, not the dump's
         self.port, self.token = port, token
         self.next_retry = 0.0
         self.last_update_at = None

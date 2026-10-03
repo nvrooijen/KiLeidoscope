@@ -384,6 +384,7 @@ def bind_root(root, asset_hash, saved_positions=None):
             clone.matrix_world = target.matrix_world @ local
             clone["kileido_owned"] = 1
             clone["kls_model_fp_id"] = footprint_id
+            clone["kls_side"] = target.get("kls_side", "")
             clone["kls_model_asset"] = asset_hash
             clone["kls_model_index"] = model_index
             clone["kls_model_count"] = model_count
