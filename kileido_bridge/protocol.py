@@ -21,6 +21,7 @@ import numpy as np
 from . import model
 from .diff import Key
 from .geometry import sample_arc
+from .via_rings import copper_order, ringed_masks
 
 PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
@@ -177,12 +178,22 @@ def fill_message(snapshot: model.BoardSnapshot, layer: str, kind: str, revision:
 def vias_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
     layers = sorted({v.layer_top for v in snapshot.vias} | {v.layer_bottom for v in snapshot.vias})
     index = {name: i for i, name in enumerate(layers)}
+    copper = copper_order(snapshot)
     header = {"type": "layer_data", "layer": "", "kind": "vias", "revision": revision,
-              "ids": [v.id for v in snapshot.vias], "layers": layers}
+              "ids": [v.id for v in snapshot.vias], "layers": layers, "copper": copper}
     return encode_frame(header, {
         "via": np.array([(*v.pos, v.diameter, v.drill) for v in snapshot.vias], dtype="<i4").reshape(-1, 4),
         "span": np.array([(index[v.layer_top], index[v.layer_bottom]) for v in snapshot.vias],
-                         dtype="<i4").reshape(-1, 2)})
+                         dtype="<i4").reshape(-1, 2),
+        "protect": _protect(snapshot.vias),
+        # Bit i: a ring on header["copper"][i] (up to 32 layers, so read the bits unsigned).
+        "ringed": ringed_masks(snapshot, copper).astype(np.uint32).view(np.int32)})
+
+
+def _protect(vias) -> np.ndarray:
+    """(n, 8) per model.PROTECTION: 1 yes, 0 no, 2 the board's rules (the appearance's via_rules)."""
+    found = np.array([v.protection for v in vias], dtype=np.int8).reshape(-1, len(model.PROTECTION))
+    return np.where(found < 0, 2, found).astype("|u1")
 
 
 def outline_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
@@ -219,6 +230,9 @@ def stackup_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
                          "layers": [model.to_jsonable(layer) for layer in snapshot.stackup.layers]})
 
 
+COPPER_KINDS = ("tracks", "arcs", "zones", "pads", "graphics")
+
+
 def messages_for(snapshot: model.BoardSnapshot, dirty: frozenset[Key], revision: int) -> list[bytes]:
     """One frame per dirty display group; arcs and tracks share a layer's track object."""
     frames = []
@@ -226,6 +240,8 @@ def messages_for(snapshot: model.BoardSnapshot, dirty: frozenset[Key], revision:
         frames.append(tracks_message(snapshot, layer, revision))
     for layer, kind in sorted(k for k in dirty if k[1] in ("pads", "paste", "zones", "graphics")):
         frames.append(fill_message(snapshot, layer, kind, revision))
+    if any(kind in COPPER_KINDS for _, kind in dirty) and any(v.rings != model.RINGS_ALL for v in snapshot.vias):
+        dirty = dirty | {("", "vias")}  # a via's rings follow the copper it connects to
     builders = {"vias": vias_message, "outline": outline_message,
                 "footprints": footprints_message, "stackup": stackup_message}
     for kind, build in builders.items():

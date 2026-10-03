@@ -10,6 +10,7 @@ from mathutils import Matrix
 
 from . import models, transform
 from .objects import owned_object, set_modifier, set_visible, single_point
+from . import state
 from .state import board
 
 HIDDEN_EMPTY_SIZE_M = 1e-4  # Blender 5.1's minimum Empty display size
@@ -102,6 +103,7 @@ def _keep(footprint, box_name, footprint_id):
 
 
 def _unbind_models(footprint_id):
+    state.log(f"models unbound from footprint {footprint_id}: its model definitions changed")
     board.model_bound.discard(footprint_id)
     for model_name in board.model_objects_by_fp.pop(footprint_id, ()):
         model_obj = board.collection.all_objects.get(model_name)
@@ -175,7 +177,10 @@ def _retire_missing(active_ids, active_placeholders):
     """Hide the objects of footprints that left the board, and forget their models."""
     for footprint_id in set(board.footprint_state) - active_ids:
         del board.footprint_state[footprint_id]
-    for footprint_id in set(board.model_bound) - active_ids:
+    gone = set(board.model_bound) - active_ids
+    if gone:
+        state.log(f"{len(gone)} bound footprints left the board: models forgotten")
+    for footprint_id in gone:
         board.model_bound.discard(footprint_id)
         board.model_objects_by_fp.pop(footprint_id, None)
     active = {footprint_name(footprint_id) for footprint_id in active_ids}

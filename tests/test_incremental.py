@@ -166,6 +166,59 @@ def test_changed_pad_fetches_shapes_for_that_pad_only_and_dirties_its_layer():
     assert [p.footprint_id for p in result.snapshot.pads] == ["f1", "f1"]
 
 
+def kicad_pad(x=0, y=0, degrees=0.0, bottom=False, size=(2_000_000, 1_000_000)):
+    """A real kipy pad: the outdated-copy checks compare protos."""
+    from kipy.board_types import Pad
+    from kipy.proto.board import board_types_pb2 as bt
+    proto = bt.Pad(type=bt.PT_SMD)
+    proto.id.value = "p1"
+    proto.number = "1"
+    proto.position.x_nm, proto.position.y_nm = x, y
+    stack = proto.pad_stack
+    stack.layers.extend([BoardLayer.BL_B_Cu, BoardLayer.BL_B_Paste] if bottom else
+                        [BoardLayer.BL_F_Cu, BoardLayer.BL_F_Paste])
+    stack.drill.start_layer, stack.drill.end_layer = ((BoardLayer.BL_B_Cu, BoardLayer.BL_F_Cu) if bottom else
+                                                      (BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu))
+    stack.angle.value_degrees = degrees
+    copper = stack.copper_layers.add(layer=BoardLayer.BL_F_Cu, shape=bt.PSS_RECTANGLE)
+    copper.size.x_nm, copper.size.y_nm = size
+    return Pad(proto)
+
+
+def read_outdated(fresh, copy, copy_polygon):
+    """KiCad answers for `fresh` with `copy`, whose shape is `copy_polygon` on F.Cu."""
+    from test_phase1 import footprint, polygon
+    board = CountingBoard()
+    board.pads = [fresh]
+    board.footprints = [footprint(pads=[fresh])]
+    board.outdated = {"p1": copy}
+    board.pad_polygons[("p1", BoardLayer.BL_F_Cu)] = polygon(copy_polygon)
+    return BoardReader(board).poll(full=True)
+
+
+TRIANGLE = [(0, 0), (1000, 0), (0, 500)]  # no symmetry hides a wrong rotation or mirror
+
+
+def test_outdated_copy_is_moved_and_rotated_onto_the_pad():
+    result = read_outdated(kicad_pad(10_000_000, 5_000_000, 90.0), kicad_pad(), TRIANGLE)
+    # +90 degrees in KiCad turns +x up the screen (-y).
+    assert result.snapshot.pads[0].polygons == {"F.Cu": (((
+        (10_000_000, 5_000_000), (10_000_000, 4_999_000), (10_000_500, 5_000_000)),),)}
+    assert result.outdated_pads == 0
+
+
+def test_outdated_copy_of_a_flipped_pad_is_mirrored_onto_the_bottom():
+    result = read_outdated(kicad_pad(bottom=True), kicad_pad(), TRIANGLE)
+    # Mirrored across the pad's x axis, ring reversed to keep its winding.
+    assert result.snapshot.pads[0].polygons == {"B.Cu": ((((0, -500), (1000, 0), (0, 0)),),)}
+    assert result.outdated_pads == 0
+
+
+def test_outdated_copy_with_another_shape_is_counted():
+    result = read_outdated(kicad_pad(size=(3_000_000, 1_000_000)), kicad_pad(), TRIANGLE)
+    assert result.outdated_pads == 1
+
+
 def test_zone_change_dirties_only_its_layer():
     from test_phase1 import item_id, polygon
     square = [(0, 0), (10, 0), (10, 10), (0, 10)]

@@ -3,7 +3,10 @@
 Every module reads and writes the same `board` instance; nothing else holds board state.
 """
 
-import numpy as np
+
+def log(message):
+    """One line in Blender's output (blender.log): what changed the board's model bindings."""
+    print(f"KiLeidoscope: {message}", flush=True)
 
 
 class BoardState:
@@ -29,7 +32,7 @@ class BoardState:
         self.mask_images = {}  # "F"/"B" -> (saved-board mask plot image, world XY bounds)
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
-        self.via_holes = (np.empty((0, 2)), np.empty(0))  # through-via XY (m) and drill (m)
+        self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
 
         # Snapshot bookkeeping: objects not touched by a full snapshot are cleared.
         self.in_snapshot = False
@@ -56,7 +59,25 @@ class BoardState:
 
     def reset(self):
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
+        if self.model_bound:
+            log(f"board state reset; {len(self.model_bound)} bound models forgotten")
         self.__init__()
+
+    def drop_if_freed(self, where):
+        """True after a collection freed under us (undo, file load) was forgotten: the board
+        state starts over and a live bridge sends the board again."""
+        if self.collection is None:
+            return False
+        try:
+            self.collection.name
+        except ReferenceError:
+            log(f"the board's collection was freed ({where}); state reset, resync requested "
+                f"({len(self.model_bound)} bound models lost)")
+            self.reset()
+            from . import live
+            live.request_resync()
+            return True
+        return False
 
     def fail(self, message):
         """Show `message` and never leave a half-loaded board hidden."""

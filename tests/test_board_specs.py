@@ -8,6 +8,16 @@ from kileido_bridge.kicad_reader import saved_board_path
 import pytest
 
 
+def test_via_rules_from_the_setup_else_kicads_defaults(tmp_path):
+    board = tmp_path / "rules.kicad_pcb"
+    board.write_text('(kicad_pcb (setup (tenting (front yes) (back no)) (covering (front no) (back no)) '
+                     '(plugging (front no) (back yes)) (capping no) (filling yes)) '
+                     '(via (at 0 0) (tenting (front no) (back no)) (capping yes)))')
+    assert read_appearance(str(board))["via_rules"] == [1, 0, 0, 0, 0, 1, 0, 1]  # not the via's own
+    board.write_text("(kicad_pcb (setup (pad_to_mask_clearance 0)))")
+    assert read_appearance(str(board))["via_rules"] == [1, 1, 0, 0, 0, 0, 0, 0]  # KiCad's: tented
+
+
 @pytest.mark.parametrize("finish", ["None", "ENIG", "HASL lead-free", "Custom finish", None])
 def test_saved_finish_preserves_explicit_none(tmp_path, finish):
     board = tmp_path / "finish.kicad_pcb"
@@ -51,6 +61,22 @@ def test_saved_board_path_from_document_specifier(tmp_path):
     assert saved_board_path(source) == ""
 
 
+@pytest.mark.parametrize("folder", ["ecc83v1.2", "rev.b", "plain"])
+def test_saved_board_path_in_a_project_folder_with_a_dot_in_its_name(tmp_path, folder):
+    """KiCad gives the project as its folder or as its .kicad_pro file. A folder named
+    "ecc83v1.2" is still a folder: its ".2" is not a file extension."""
+    project = tmp_path / folder
+    project.mkdir()
+    board = project / "amp.kicad_pcb"
+    board.write_text("(kicad_pcb)")
+    for given in (project, project / "amp.kicad_pro"):  # the folder; the project file (saved or not)
+        source = SimpleNamespace(_doc=SimpleNamespace(
+            board_filename=board.name, project=SimpleNamespace(path=str(given))))
+        assert saved_board_path(source) == str(board.resolve()), given
+    (project / "amp.kicad_pro").write_text("{}")
+    assert saved_board_path(source) == str(board.resolve())
+
+
 def _viewer_setup(tmp_path, monkeypatch, stackup_colors=None):
     board = tmp_path / "viewer.kicad_pcb"
     board.write_text('''(kicad_pcb (setup (stackup
@@ -83,3 +109,24 @@ def test_viewer_colors_follow_theme_without_stackup_colors(tmp_path, monkeypatch
     viewer = _viewer_setup(tmp_path, monkeypatch, stackup_colors=False)
     assert viewer["silkscreen_top"] == pytest.approx([45/255, 94/255, 182/255, 0.702])
     assert viewer["copper"] == [179/255, 156/255, 0, 1.0]
+
+
+@pytest.mark.parametrize("field, plated", [("(edge_plating yes)", True), ("", False)])
+def test_saved_edge_plating(tmp_path, field, plated):
+    board = tmp_path / "edge.kicad_pcb"
+    board.write_text(f'(kicad_pcb (setup (stackup (copper_finish "ENIG") {field})))')
+    assert read_appearance(str(board))["edge_plating"] is plated
+
+
+def test_saved_dielectrics_give_core_or_prepreg_and_material_top_first(tmp_path):
+    board = tmp_path / "stack.kicad_pcb"
+    board.write_text('''(kicad_pcb (setup (stackup
+      (layer "F.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 1" (type "prepreg") (thickness 0.1) (material "FR4"))
+      (layer "In1.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 2" (type "core") (thickness 1.2) (material "Polyimide"))
+      (layer "B.Mask" (type "Bottom Solder Mask") (thickness 0.01))
+      (layer "B.Cu" (type "copper") (thickness 0.035)))))''')
+    assert read_appearance(str(board))["dielectrics"] == [{"type": "prepreg", "material": "FR4"},
+                                                          {"type": "core", "material": "Polyimide"}]
+    assert read_appearance("")["dielectrics"] == []
