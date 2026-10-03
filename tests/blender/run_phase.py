@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import kileido  # noqa: E402
 import phase_boards  # noqa: E402
-from kileido import apply, highlight, packages, phase, pick, state  # noqa: E402
+from kileido import apply, high_speed_panel, highlight, packages, phase, pick, state  # noqa: E402
 from kileido.objects import read_attribute, read_coordinates  # noqa: E402
 from kileido_bridge.phase import PhaseTracker  # noqa: E402
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -24,6 +24,20 @@ from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
 def objects(prefix):
     return {obj.name: obj for obj in state.board.collection.all_objects if obj.name.startswith(prefix)}
+
+
+class Layout:
+    """Stands in for a Blender UI layout: every call gives another, so the panel's own
+    drawing code runs headless."""
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: Layout()
+
+
+def draws(data):
+    """The pair box draws without raising."""
+    high_speed_panel._draw_pair(bpy.context, Layout(), data, lambda _context, text: [text])
+    return True
 
 
 def main():
@@ -93,6 +107,26 @@ def main():
         glow = state.board.collection.all_objects[f"KLS phase glow p {slots['D_P']}"]
         assert not glow.hide_get() and "kls_phase_ids" not in glow and len(glow.data.polygons) > 100
         assert read_coordinates(glow.data)[:, 2].max() > top + phase.GLOW_RADIUS_M
+        # Its rings stand at least a radius apart: two closer ones lean into each other where the
+        # trace turns and the tube between them turns inside out (a dark seam at a bend).
+        vertices, faces, _ = phase._tube(data["p_xyz"])
+        centres = vertices.reshape(-1, phase.GLOW_SIDES, 3).mean(axis=1)
+        assert np.linalg.norm(np.diff(centres, axis=0), axis=1).min() >= phase.GLOW_RADIUS_M * 0.99
+        # A 1 mm radius bend with its points 2 to 100 um apart (arc chords and alignment samples
+        # side by side), then a sharp 90 degree corner: every face of the tube faces outward.
+        rng = np.random.default_rng(1)
+        angles = np.cumsum(rng.uniform(2e-3, 0.1, 40))
+        angles = angles[angles < np.pi / 2]
+        bend = np.column_stack((10e6 + 1e6 * np.sin(angles), 3e6 - 1e6 * np.cos(angles)))
+        path = np.vstack(((5e6, 2e6), bend, (11e6, 3e6), (11e6, 8e6), (16e6, 8e6)))
+        path = np.column_stack((path, np.full(len(path), data["p_xyz"][0, 2])))
+        vertices, faces, _ = phase._tube(path)
+        centres = vertices.reshape(-1, phase.GLOW_SIDES, 3).mean(axis=1)
+        corners = vertices[np.asarray(faces)]
+        normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 3] - corners[:, 0])
+        axis = (centres[np.asarray(faces)[:, 0] // phase.GLOW_SIDES] +
+                centres[np.asarray(faces)[:, 2] // phase.GLOW_SIDES]) / 2
+        assert ((normals * (corners.mean(axis=1) - axis)).sum(axis=1) > 0).all()
         assert glow.data.materials[0].name == f"{phase.GLOW} P"
         assert glow.data.materials[0].node_tree.nodes[phase.CLOCK_NODES[0]].outputs[0].default_value == clock
         # Brighter pulses: one value in the tints and the glows.
@@ -111,12 +145,14 @@ def main():
         assert not bpy.app.timers.is_registered(phase._pulse_tick)
         scene.frame_set(scene.frame_start + 13)  # the next frame moves them on
         assert nodes[phase.CLOCK_NODES[0]].outputs[0].default_value > expected
-        # The second pulse runs half a loop behind the first.
+        # Four pulses, each a quarter of a loop behind the one before.
         width = phase._pulse_width()
         longest = max(max(data['delay_p_ps'], data['delay_n_ps']) for data in state.board.phase.values())
         period = longest + 6 * width + 4 * phase._pulse_tail()  # the slowest pair sets the loop
-        leading, trailing = (nodes[name].outputs[0].default_value for name in phase.CLOCK_NODES)
-        assert abs((trailing - leading) % period - period / 2) < 1e-3
+        clocks = [nodes[name].outputs[0].default_value for name in phase.CLOCK_NODES]
+        assert len(clocks) == 4
+        for leading, trailing in zip(clocks, clocks[1:]):
+            assert abs((trailing - leading) % period - period / 4) < 1e-3
         scene.kileido_phase_pulse_clock = "LIVE"
         scene.kileido_phase_pulses = False
         assert phase._pulse_tick() is None and nodes[phase.PULSE_NODE].outputs[0].default_value == 0.0
@@ -247,6 +283,36 @@ def main():
         assert set(state.board.phase) == {"D_P"} and [row.key for row in rows] == ["D_P"]
         assert not len(dive.data.vertices) and dive.hide_get()
         assert labels["E_P start"].hide_get()
+
+        # A shorted pair: a marker where P touches N, SHORT in its row, and trace copies from the
+        # start terminal only up to the short, for the pulses (no lead: no phase); no end marker.
+        found = state.board.collection.all_objects
+        shorted = phase_boards.shorted()
+        apply.load_frames(b"".join(snapshot_frames(shorted, revision=5)))
+        apply.load_frames(b"".join(tracker.update(shorted, revision=5)))
+        cut = state.board.phase["D_P"]
+        reached = read_attribute(p_trace.data, phase.DELAY, np.float32)
+        assert len(p_trace.data.vertices) and abs(reached.max() - cut["delay_p_ps"]) < 1e-3
+        assert not read_attribute(p_trace.data, phase.LEAD, np.float32).any()
+        assert not start.hide_get() and found[f"KLS phase end {slots['D_P']}"].hide_get()
+        short = found[f"KLS phase short {slots['D_P']} 0"]
+        bridge = next(track.id for track in shorted.tracks if track.start == (20_000_000, 0))
+        assert not short.hide_get() and short.data.materials[0].name == "KLS Phase short"
+        assert list(short["kls_phase_ids"])[0] == bridge and len(short["kls_phase_ids"]) == 2
+        assert [(row.key, row.shorted, row.route) for row in rows] == [("D_P", True, "SHORT")]
+        assert phase.selection_split() == (set(), set())  # its copper keeps the selection's own highlight
+        assert draws(state.board.phase["D_P"])
+        # A loop beside the route: measured as ever, a marker on the copper the route leaves out.
+        looped = phase_boards.looped()
+        apply.load_frames(b"".join(snapshot_frames(looped, revision=6)))
+        apply.load_frames(b"".join(tracker.update(looped, revision=6)))
+        assert len(p_trace.data.vertices) and not p_trace.hide_get() and not start.hide_get()
+        assert not len(short.data.vertices) and short.hide_get()
+        loop = found[f"KLS phase loop {slots['D_P']} 0"]
+        detour = {track.id for track in looped.tracks if track.net == "D_P" and track.start != (0, 0)}
+        assert not loop.hide_get() and set(loop["kls_phase_ids"]) == detour
+        assert [(row.shorted, row.loops) for row in rows] == [(False, 1)]
+        assert draws(state.board.phase["D_P"])
 
     finally:
         kileido.unregister()

@@ -106,6 +106,18 @@ class Trace:
 
 
 @dataclass(frozen=True)
+class Shorted:
+    """A pair whose P copper touches its N copper: no differential signal, so no phase or
+    numbers; where they touch, for a marker and the panel. When both sides still route
+    from end to end, `measured` walks them, so the pulses can run from the start terminal
+    up to the short (pair_frame cuts them there)."""
+    channel: channels.Channel
+    contacts: tuple[channels.Contact, ...]
+    net_ids: tuple = ()
+    measured: "PairPhase | None" = None
+
+
+@dataclass(frozen=True)
 class PairPhase:
     channel: channels.Channel
     p: channels.Route  # both walked from the same end
@@ -501,6 +513,8 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
             warnings.append(f"{side} side is not fully routed")
         if route.branches:
             warnings.append(f"{side} side has {len(route.branches)} branch" + ("es" if len(route.branches) > 1 else ""))
+        for loop in route.loops:
+            warnings.append(f"{side} side has a loop: {loop.length_nm / 1e6:.1f} mm of copper beside the route")
     leads = (-_per_sample(i, dt, len(a)), _per_sample(j, dt, len(b)))  # Δt < 0: P ahead
     traces = (_trace(walks[0], s_a, leads[0]), _trace(walks[1], s_b, leads[1]))
     crossings = tuple(replace(crossing, lead_ps=float(np.interp(crossing.at_nm, s, lead)))
@@ -536,13 +550,17 @@ def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | Non
 
 
 def _analyze_channel(channel, by_net, heights, references, model_, settings, grounds=None):
-    routes = channels.pair_routes(channels.combined(by_net, channel.p_nets), channels.combined(by_net, channel.n_nets),
-                                  heights, references, channel.p_links, channel.n_links)
+    p_items, n_items = channels.combined(by_net, channel.p_nets), channels.combined(by_net, channel.n_nets)
+    items = channels.combined(by_net, channel.nets)
+    net_ids = tuple(item.id for kind in (items.tracks, items.arcs, items.vias, items.pads) for item in kind)
+    touching = channels.contacts(p_items, n_items, heights)
+    routes = channels.pair_routes(p_items, n_items, heights, references, channel.p_links, channel.n_links)
+    if touching:
+        measured = analyze(channel, *routes, model_, heights, settings, grounds) if None not in routes else None
+        return Shorted(channel, tuple(touching), net_ids, measured), ""
     if routes[0] is None or routes[1] is None:
         return None, f"{channel.name}: no routed path between two pads yet"
     result = analyze(channel, *routes, model_, heights, settings, grounds)
-    items = channels.combined(by_net, channel.nets)
-    net_ids = tuple(item.id for kind in (items.tracks, items.arcs, items.vias, items.pads) for item in kind)
     return replace(result, net_ids=net_ids), ""
 
 
@@ -733,21 +751,62 @@ class PhaseTracker:
         return ([self.list_frame] if self.list_frame else []) + list(frames.values())
 
 
-def pair_frame(result: PairPhase, revision: int) -> bytes:
-    """One pair for Blender (protocol.phase_pair_message)."""
-    p, n = result.p, result.n
+def _end(p_end: channels.Terminal, n_end: channels.Terminal) -> dict:
+    """One end of the pair for the frame, marked between its P and N terminals."""
+    return {"label": end_label(p_end, n_end), "p": p_end.label, "n": n_end.label,
+            "ids": [p_end.item_id, n_end.item_id], "layer": p_end.layer,
+            "x": round((p_end.pos[0] + n_end.pos[0]) / 2), "y": round((p_end.pos[1] + n_end.pos[1]) / 2)}
 
-    def end(p_end: channels.Terminal, n_end: channels.Terminal):
-        """One end of the pair, marked between its P and N terminals."""
-        return {"label": end_label(p_end, n_end), "p": p_end.label, "n": n_end.label,
-                "ids": [p_end.item_id, n_end.item_id], "layer": p_end.layer,
-                "x": round((p_end.pos[0] + n_end.pos[0]) / 2), "y": round((p_end.pos[1] + n_end.pos[1]) / 2)}
+
+def _until(trace: Trace, pos) -> tuple[Trace, float]:
+    """The trace from its start to its point nearest `pos` (x, y nm), with no lead (a
+    shorted pair has no phase), and the delay there: where a short stops the pulses."""
+    near = int(np.argmin(np.hypot(*(trace.xyz_nm[:, :2] - np.asarray(pos, np.float64)).T)))
+    keep = slice(0, near + 1)
+    return (Trace(trace.xyz_nm[keep], trace.delay_ps[keep], np.zeros(near + 1), trace.width_nm[keep]),
+            float(trace.delay_ps[near]))
+
+
+def _shorted_frame(result: Shorted, revision: int) -> bytes:
+    """A shorted pair: where P and N touch; with its routes, the traces from the start
+    terminal up to the first short along P, for the pulses."""
+    info = {
+        "key": result.channel.key, "name": result.channel.name,
+        "p_nets": list(result.channel.p_nets), "n_nets": list(result.channel.n_nets),
+        "parts": [link.reference for link in (*result.channel.p_links, *result.channel.n_links)],
+        "shorts": [{"x": contact.pos[0], "y": contact.pos[1], "layer": contact.layer,
+                    "ids": [contact.p_id, contact.n_id]} for contact in result.contacts],
+        "ids": list(result.net_ids), "net_ids": list(result.net_ids),
+        "warnings": [f"P and N are shorted ({len(result.contacts)} place" + ("s)" if len(result.contacts) > 1 else ")")]}
+    measured = result.measured
+    if measured is None or len(measured.traces) != 2:
+        return protocol.phase_pair_message(info, {}, revision)
+    first = min(result.contacts, key=lambda contact: _until(measured.traces[0], contact.pos)[1])
+    cut = {side: _until(trace, first.pos) for side, trace in zip("pn", measured.traces)}
+    info.update({
+        "start": _end(measured.p.start, measured.n.start), "flipped": measured.flipped,
+        "delay_p_ps": cut["p"][1], "delay_n_ps": cut["n"][1],
+        "vias": [{"side": crossing.side.lower(), "id": crossing.item_id, "x": crossing.pos[0], "y": crossing.pos[1],
+                  "diameter": crossing.diameter_nm, "drill": crossing.drill_nm,
+                  "layers": [crossing.from_layer, crossing.to_layer],
+                  "t": [crossing.reached_ps, crossing.reached_ps + crossing.delay_ps], "lead": 0.0}
+                 for crossing in measured.crossings if crossing.reached_ps <= cut[crossing.side.lower()][1]],
+        "pads": [dict(pad, lead=0.0) for pad in measured.pads if pad["t"] <= cut[pad["side"]][1]]})
+    traces = {side: (trace.xyz_nm, trace.delay_ps, trace.lead_ps, trace.width_nm) for side, (trace, _) in cut.items()}
+    return protocol.phase_pair_message(info, traces, revision)
+
+
+def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
+    """One pair for Blender (protocol.phase_pair_message)."""
+    if isinstance(result, Shorted):
+        return _shorted_frame(result, revision)
+    p, n = result.p, result.n
 
     info = {
         "key": result.channel.key, "name": result.channel.name,
         "p_nets": list(result.channel.p_nets), "n_nets": list(result.channel.n_nets),
         "parts": [link.reference for link in (*result.channel.p_links, *result.channel.n_links)],
-        "start": end(p.start, n.start), "end": end(p.end, n.end),
+        "start": _end(p.start, n.start), "end": _end(p.end, n.end),
         "delay_p_ps": result.delay_p_ps, "delay_n_ps": result.delay_n_ps, "skew_ps": result.skew_ps,
         "max_ps": result.max_abs_ps, "length_p_mm": p.length_nm / 1e6, "length_n_mm": n.length_nm / 1e6,
         "width_nm": result.width_nm, "flipped": result.flipped,
@@ -757,6 +816,9 @@ def pair_frame(result: PairPhase, revision: int) -> bytes:
         "branches": [{"side": side, "label": branch.terminal.label, "id": branch.terminal.item_id,
                       "at_mm": branch.at_nm / 1e6, "length_mm": branch.length_nm / 1e6}
                      for side, route in (("P", p), ("N", n)) for branch in route.branches],
+        "loops": [{"side": side, "x": loop.pos[0], "y": loop.pos[1], "layer": loop.layer, "ids": list(loop.item_ids),
+                   "length_mm": loop.length_nm / 1e6}
+                  for side, route in (("P", p), ("N", n)) for loop in route.loops],
         "sources": list(result.sources), "warnings": list(result.warnings),
         "ids": list(dict.fromkeys(p.item_ids + n.item_ids)),
         "pads": list(result.pads),

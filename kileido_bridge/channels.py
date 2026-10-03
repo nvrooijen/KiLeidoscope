@@ -64,6 +64,16 @@ class Branch:
 
 
 @dataclass(frozen=True)
+class Loop:
+    """Copper that closes a loop with the route: a second path the signal splits over,
+    which the route (the shortest path) leaves out."""
+    item_ids: tuple[str, ...]  # its tracks, off the route
+    length_nm: float
+    pos: model.Point  # the middle of its longest track
+    layer: str
+
+
+@dataclass(frozen=True)
 class Route:
     start: Terminal
     end: Terminal
@@ -71,6 +81,7 @@ class Route:
     branches: tuple[Branch, ...] = ()
     complete: bool = True  # every pad of the nets is on the route's copper
     pads: tuple[model.Pad, ...] = ()  # the pads it starts, ends or runs through, in walking order
+    loops: tuple[Loop, ...] = ()
 
     @property
     def length_nm(self) -> float:
@@ -86,7 +97,7 @@ class Route:
         pieces = tuple(replace(piece, layer=piece.to_layer, to_layer=piece.layer, points=piece.points[::-1])
                        for piece in reversed(self.pieces))
         branches = tuple(replace(branch, at_nm=total - branch.at_nm) for branch in self.branches)
-        return Route(self.end, self.start, pieces, branches, self.complete, self.pads[::-1])
+        return Route(self.end, self.start, pieces, branches, self.complete, self.pads[::-1], self.loops)
 
 
 @dataclass(frozen=True)
@@ -436,6 +447,119 @@ def combined(by_net: dict[str, NetItems], nets) -> NetItems:
                       for kind in ("tracks", "arcs", "vias", "pads")))
 
 
+# --- Shorts: P copper touching N copper ----------------------------------------------------
+
+MAX_CONTACTS = 8
+
+
+@dataclass(frozen=True)
+class Contact:
+    """Where P's copper touches N's: the pair is shorted there."""
+    pos: model.Point
+    layer: str
+    p_id: str
+    n_id: str
+
+
+def _shapes(items: NetItems, layer: str, heights: dict[str, int]):
+    """One side's copper on `layer` as fat segments (a, b, half width, id), where a via is
+    a segment of no length and a pad its outline, and its pads' outlines for what lies inside."""
+    segments, outlines = [], []
+    for track in items.tracks:
+        if track.layer == layer:
+            segments.append((track.start, track.end, track.width / 2, track.id))
+    for arc in items.arcs:
+        if arc.layer == layer:
+            points = _arc_polyline(arc)[0]
+            segments += [(a, b, arc.width / 2, arc.id) for a, b in zip(points, points[1:])]
+    height = heights.get(layer)
+    for via in items.vias:
+        low, high = sorted((heights.get(via.layer_top, 0), heights.get(via.layer_bottom, 0)))
+        if height is not None and low <= height <= high:
+            segments.append((via.pos, via.pos, via.diameter / 2, via.id))
+    for pad in items.pads:
+        polygons = pad.polygons.get(layer) if layer in pad.layers else None
+        if polygons:
+            outlines.append((polygons, pad.id))
+            for polygon in polygons:
+                for ring in polygon:
+                    segments += [(ring[index - 1], ring[index], 0.0, pad.id) for index in range(len(ring))]
+    return segments, outlines
+
+
+def _closest(points, a, b):
+    """Distance from each of `points` to the segment a-b (all broadcast, (..., 2)) and the
+    nearest point on it."""
+    span = b - a
+    t = np.clip(((points - a) * span).sum(axis=-1) / np.maximum((span * span).sum(axis=-1), 1e-9), 0.0, 1.0)
+    nearest = a + t[..., None] * span
+    return np.hypot(*np.moveaxis(points - nearest, -1, 0)), nearest
+
+
+def _touching(first, second, chunk=64):
+    """(i, j, where) for every fat segment of `first` touching one of `second`: closer than
+    their half widths together, or crossing. `first` goes in chunks, each against only the
+    segments of `second` near it, so a long pair never builds a full table."""
+    def arrays(segments):
+        ends = np.array([(s[0], s[1]) for s in segments], np.float64)  # (n, 2, 2)
+        return ends[:, 0], ends[:, 1], np.array([s[2] for s in segments], np.float64)
+
+    def cross(u, v):
+        return u[..., 0] * v[..., 1] - u[..., 1] * v[..., 0]
+
+    (a1_all, b1_all, w1_all), (a2_all, b2_all, w2_all) = arrays(first), arrays(second)
+    low2, high2 = np.minimum(a2_all, b2_all) - w2_all[:, None], np.maximum(a2_all, b2_all) + w2_all[:, None]
+    for start in range(0, len(first), chunk):
+        a1, b1, w1 = a1_all[start:start + chunk], b1_all[start:start + chunk], w1_all[start:start + chunk]
+        low = np.minimum(a1, b1).min(axis=0) - w1.max()
+        high = np.maximum(a1, b1).max(axis=0) + w1.max()
+        near = np.flatnonzero((high2 >= low).all(axis=1) & (low2 <= high).all(axis=1))
+        if not len(near):
+            continue
+        a1, b1 = a1[:, None, :], b1[:, None, :]
+        a2, b2 = a2_all[near][None, :, :], b2_all[near][None, :, :]
+        shape = np.broadcast_shapes(a1.shape, a2.shape)
+        a1, b1, a2, b2 = (np.broadcast_to(array, shape) for array in (a1, b1, a2, b2))
+        options = [(*_closest(a1, a2, b2), a1), (*_closest(b1, a2, b2), b1),
+                   (*_closest(a2, a1, b1), a2), (*_closest(b2, a1, b1), b2)]
+        distance = np.min([option[0] for option in options], axis=0)
+        pick = np.argmin([option[0] for option in options], axis=0)
+        pos = np.choose(pick[..., None], [(option[1] + option[2]) / 2 for option in options])
+        d1, d2 = cross(b1 - a1, a2 - a1), cross(b1 - a1, b2 - a1)
+        d3, d4 = cross(b2 - a2, a1 - a2), cross(b2 - a2, b1 - a2)
+        crossing = (d1 * d2 < 0) & (d3 * d4 < 0)
+        if crossing.any():
+            denominator = cross(b1 - a1, b2 - a2)
+            t = cross(a2 - a1, b2 - a2) / np.where(denominator == 0, 1.0, denominator)
+            pos = np.where(crossing[..., None], a1 + t[..., None] * (b1 - a1), pos)
+            distance = np.where(crossing, 0.0, distance)
+        reach = w1[:, None] + w2_all[near][None, :]
+        for i, j in zip(*np.nonzero(distance <= reach)):
+            yield start + int(i), int(near[j]), (round(pos[i, j, 0]), round(pos[i, j, 1]))
+
+
+def contacts(p_items: NetItems, n_items: NetItems, heights: dict[str, int]) -> list[Contact]:
+    """Every place P's copper touches N's (one per pair of items, at most MAX_CONTACTS):
+    fat segments closer than their half widths, or one inside the other's pad."""
+    found: dict[tuple[str, str], Contact] = {}
+    for layer in heights:
+        (p_segments, p_pads), (n_segments, n_pads) = (_shapes(items, layer, heights) for items in (p_items, n_items))
+        if p_segments and n_segments:
+            for i, j, pos in _touching(p_segments, n_segments):
+                key = (p_segments[i][3], n_segments[j][3])
+                found.setdefault(key, Contact(pos, layer, *key))
+        for segments, pads, flip in ((p_segments, n_pads, False), (n_segments, p_pads, True)):
+            for a, b, _, item_id in segments:
+                for polygons, pad_id in pads:
+                    for point in (a, b):
+                        if _inside(point, polygons):
+                            key = (pad_id, item_id) if flip else (item_id, pad_id)
+                            found.setdefault(key, Contact(tuple(point), layer, *key))
+        if len(found) >= MAX_CONTACTS:
+            break
+    return list(found.values())[:MAX_CONTACTS]
+
+
 # --- The route: terminals, the path between them, branches --------------------------------
 
 def _adjacency(graph: _Graph) -> dict[int, list[tuple[int, _Edge]]]:
@@ -588,7 +712,96 @@ def _route(ends: _Ends, first: int, second: int, references: dict[str, str]) -> 
     complete = all(node in reached for node in range(len(graph.kind)) if graph.kind[node] == "pad")
     pads = tuple(graph.item[node] for _, node in sorted(pads, key=lambda entry: entry[0]))
     return Route(_terminal(graph, first, references, adjacent), _terminal(graph, second, references, adjacent),
-                 pieces, tuple(sorted(branches, key=lambda branch: branch.at_nm)), complete, pads)
+                 pieces, tuple(sorted(branches, key=lambda branch: branch.at_nm)), complete, pads,
+                 _loops(graph, {id(edge) for _, edge, _ in steps}))
+
+
+def _loops(graph: _Graph, on_route: set[int]) -> tuple[Loop, ...]:
+    """Track copper on a closed loop that the route (`on_route`: its edges' ids) leaves out.
+
+    Joins of no length (a track end in a via in a pad, stacked vias) are contracted first,
+    so they close no loop; neither does a track lying exactly over another (the same two
+    ends, length and middle). What stays on a cycle is a real second path: an old route
+    left beside a new one, or a stub that rejoins."""
+    join = _Parent()
+    for edge in graph.edges:
+        if edge.kind == "port":
+            join.union(edge.a, edge.b)
+    hubs: dict[int, list] = {}  # joined node -> the pads and vias in it
+    for node, kind in enumerate(graph.kind):
+        if kind in ("pad", "via"):
+            hubs.setdefault(join.find(node), []).append(graph.item[node])
+    edges, seen = [], set()
+    for edge in sorted(graph.edges, key=lambda edge: id(edge) not in on_route):  # of two alike, the route's stays
+        if edge.kind == "port":
+            continue
+        a, b = sorted((join.find(edge.a), join.find(edge.b)))
+        if a == b and any(all(_within(hub, edge.layer, point) for point in edge.points) for hub in hubs.get(a, ())):
+            continue  # copper inside the pad or via it starts and ends in: no path around anything
+        middle = edge.points[len(edge.points) // 2] if edge.points else ()
+        key = (a, b, round(edge.length / 1_000), tuple(round(value / 1_000) for value in middle))
+        if key in seen:
+            continue  # a duplicate lying over another track: no loop
+        seen.add(key)
+        edges.append((a, b, edge))
+    on_cycle = _cycle_edges(edges)
+    loose = [(a, b, edge) for index, (a, b, edge) in enumerate(edges)
+             if index in on_cycle and edge.kind == "track" and id(edge) not in on_route]
+    groups = _Parent()
+    for a, b, _ in loose:
+        groups.union(a, b)
+    found: dict[int, list[_Edge]] = {}
+    for a, _, edge in loose:
+        found.setdefault(groups.find(a), []).append(edge)
+    loops = []
+    for group in found.values():
+        longest = max(group, key=lambda edge: edge.length)
+        loops.append(Loop(tuple(dict.fromkeys(edge.item_id for edge in group)), sum(edge.length for edge in group),
+                          longest.points[len(longest.points) // 2] if len(longest.points) > 2 else
+                          tuple(round(sum(values) / 2) for values in zip(longest.points[0], longest.points[-1])),
+                          longest.layer))
+    return tuple(sorted(loops, key=lambda loop: -loop.length_nm))
+
+
+def _within(hub, layer: str, point) -> bool:
+    """Is `point` on `hub`'s copper (a pad's outline, a via's land) on `layer`?"""
+    if isinstance(hub, model.Via):
+        return math.dist(point, hub.pos) <= max(hub.diameter / 2, CONTACT_NM)
+    return _on_pad(hub, layer, point)
+
+
+def _cycle_edges(edges) -> set[int]:
+    """Indices of the edges (a, b, ...) that lie on a cycle: every edge but the bridges
+    (Tarjan, iterative), parallel edges and self-loops included."""
+    adjacent: dict[int, list[tuple[int, int]]] = {}
+    for index, (a, b, _) in enumerate(edges):
+        adjacent.setdefault(a, []).append((b, index))
+        adjacent.setdefault(b, []).append((a, index))
+    order, low, bridges = {}, {}, set()
+    for root in adjacent:
+        if root in order:
+            continue
+        order[root] = low[root] = len(order)
+        stack = [(root, -1, iter(adjacent[root]))]
+        while stack:
+            node, via, neighbours = stack[-1]
+            for other, index in neighbours:
+                if index == via:
+                    continue
+                if other in order:
+                    low[node] = min(low[node], order[other])
+                else:
+                    order[other] = low[other] = len(order)
+                    stack.append((other, index, iter(adjacent[other])))
+                    break
+            else:
+                stack.pop()
+                if stack:
+                    parent = stack[-1][0]
+                    low[parent] = min(low[parent], low[node])
+                    if low[node] > order[parent]:
+                        bridges.add(via)
+    return {index for index in range(len(edges)) if index not in bridges}
 
 
 def _drill(hub) -> int:

@@ -12,7 +12,12 @@ Dynamic phase shows how far P and N are apart in time **at every point along the
 - **Pulses:** start together at the start end and travel at each trace's own delay, slowed down. The pulse in front is ahead.
 - **Via light:** columns in the via barrels, in the colour of the side.
 - **Amber markers:** where |Δt| stays above your tolerance for longer than your minimum length.
-- **Pair list:** every pair with its total delay, end-to-end skew and largest |Δt|, and a warning icon when it has an excursion.
+- **Pink markers:** where P's copper touches N's, a short. A shorted pair has no phase and no numbers. Its pulses run from the start end up to the short and stop there.
+- **Cyan markers:** copper that closes a loop with the route, such as an old route left beside a new one. The pair is measured along the shortest path. The loop's copper is listed, and a click selects it in KiCad.
+- **Pair list:** every pair with its total delay, end-to-end skew and largest |Δt|, a warning icon when it has an excursion or a loop, and SHORT for a shorted pair.
+
+> [!WARNING]
+> The pulses are a timing indicator only. They are not electric or magnetic (E/H) fields, currents or voltages. A pulse reaches each point of a trace at the delay dynamic phase computes for it, slowed down from picoseconds to seconds. Nothing else about it is physical. Its shape, width, brightness, tail and glow are chosen to be easy to see. No field, rise time, reflection, loss, crosstalk or radiation is simulated, and a pulse stopping at a short is not what a signal does there.
 
 The tool measures and shows. It doesn't judge: there are no interface standards or pass/fail, only the two thresholds you set for the markers.
 

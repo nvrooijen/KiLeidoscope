@@ -173,6 +173,22 @@ def grounded_dive(gap_mm=0.1):
     return board.snapshot()
 
 
+def shorted():
+    """The matched pair with a P track across to N at x = 20."""
+    board = ends(Board())
+    board.path("D_P", (0, 0), (50, 0)).path("D_N", (0, 1), (50, 1)).path("D_P", (20, 0), (20, 1))
+    return board.snapshot()
+
+
+def looped():
+    """The matched pair with a second P path from x = 10 to 40, 3 mm out: an old route
+    left beside the new one, closing a loop."""
+    board = ends(Board())
+    board.path("D_P", (0, 0), (50, 0)).path("D_N", (0, 1), (50, 1))
+    board.path("D_P", (10, 0), (10, -3), (40, -3), (40, 0))
+    return board.snapshot()
+
+
 def two_channels():
     """The far-compensated pair D, and a pair E at y = 10 that dives to B.Cu at x = 20."""
     board = ends(Board())

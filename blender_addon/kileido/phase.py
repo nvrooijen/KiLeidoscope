@@ -47,7 +47,7 @@ MARKER_RADIUS_M = 0.3e-3
 LABEL_SIZE_M = 0.7e-3
 # Pure primaries at low emission stay pure in AgX; brighter bleaches them to pink and white.
 COLORS = {"p": (1.0, 0.0, 0.0), "n": (0.0, 0.1, 1.0), "start": (0.15, 0.85, 0.3), "end": (0.7, 0.3, 1.0),
-          "excursion": (1.0, 0.65, 0.0)}
+          "excursion": (1.0, 0.65, 0.0), "short": (1.0, 0.0, 0.45), "loop": (0.0, 0.85, 0.85)}
 TINT_GLOW = 1.0  # emission of the tint: brighter washes it pastel in AgX (as materials.HIGHLIGHT_GLOW found)
 FLASH_GLOW = 1.0  # extra emission of the trace at a pulse's peak, times the panel's pulse brightness
 IN_PHASE_ALPHA = 0.12  # a faint tint: which traces are measured, with their copper still seen
@@ -64,9 +64,9 @@ OLD_BLOOM = "KLS Bloom"  # a compositor group earlier versions set on the scene;
 SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase pulse width", "KLS phase pulses",
                                                    "KLS phase brightness")
 COLOUR_NODE = "KLS phase colours"  # 1: the tint shows; 0 (Colours off): only the pulses light the trace
-PULSES = 2  # per trace, evenly spaced over the loop
+PULSES = 4  # per trace, evenly spaced over the loop
 CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
-NODES_VERSION = 5  # materials built by an older add-on (a saved .blend) are rebuilt
+NODES_VERSION = 6  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
 SELECTED = "kls_selected"  # per trace copy (an object property the material reads): 1 for the selected pair
 _hidden = (set(), set())  # the last selection_split
@@ -295,7 +295,7 @@ def _trace_materials():
 
 
 def _material(role):
-    """A flat marker colour ("start", "end", "excursion")."""
+    """A flat marker colour ("start", "end", "excursion", "short", "loop")."""
     name = f"KLS Phase {role}"
     material = bpy.data.materials.get(name)
     if material is not None:
@@ -577,27 +577,52 @@ def _tube(xyz_nm, radius=GLOW_RADIUS_M, sides=GLOW_SIDES):
         if last < len(points) - 1 and along_board[last]:
             continue
         if last > start:
-            run_vertices, run_faces = _tube_run(points[start:last + 1], radius, sides)
+            run = start + _spaced(points[start:last + 1], radius)
+            run_vertices, run_faces = _tube_run(points[run], radius, sides)
             faces += [tuple(len(vertices) + corner for corner in face) for face in run_faces]
             vertices += list(run_vertices)
-            source += list(np.repeat(index[start:last + 1], sides))
+            source += list(np.repeat(index[run], sides))
         start = last + 1
     return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(source, np.int64)
+
+
+def _spaced(points, spacing):
+    """Indices of a run's points at least `spacing` apart, both ends kept. Each ring of a
+    tube leans with the path at a turn; two rings closer than the radius there cross,
+    and the tube between them turns inside out (a dark seam at a bend). The delay a ring
+    carries runs linearly along the copper, so the pulse loses nothing between them."""
+    kept = [0]
+    for k in range(1, len(points) - 1):
+        if np.linalg.norm(points[k] - points[kept[-1]]) >= spacing:
+            kept.append(k)
+    if len(points) > 1:
+        if len(kept) > 1 and np.linalg.norm(points[-1] - points[kept[-1]]) < spacing:
+            kept.pop()  # the end stays where it is; the point before it gives way
+        kept.append(len(points) - 1)
+    return np.asarray(kept, np.int64)
 
 
 def _tube_run(points, radius, sides):
     step = np.diff(points, axis=0)
     step /= np.linalg.norm(step, axis=1)[:, None]
-    tangent = np.vstack((step[:1], step[:-1] + step[1:], step[-1:]))
+    before, after = np.vstack((step[:1], step)), np.vstack((step, step[-1:]))  # each point's two steps
+    tangent = before + after
     tangent /= np.maximum(np.linalg.norm(tangent, axis=1), 1e-12)[:, None]
+    # At a turn the ring lies in the bisecting plane: wider by 1 / cos(half the turn) across
+    # the bend, as a mitred tube is, so a corner does not pinch (at most 2x, a near U-turn).
+    bend = after - before
+    length = np.linalg.norm(bend, axis=1)
+    bend = np.where(length[:, None] > 1e-9, bend / np.maximum(length, 1e-12)[:, None], 0.0)
+    stretch = 1 / np.maximum(np.sqrt(np.clip((1 + (before * after).sum(axis=1)) / 2, 0.0, 1.0)), 0.5) - 1
     normal = np.cross(tangent[0], (0.0, 0.0, 1.0) if abs(tangent[0][2]) < 0.9 else (1.0, 0.0, 0.0))
     angles = np.linspace(0.0, 2 * math.pi, sides, endpoint=False)
     rings = []
-    for point, along in zip(points, tangent):
+    for point, along, across, extra in zip(points, tangent, bend, stretch):
         normal = normal - np.dot(normal, along) * along
         normal /= np.linalg.norm(normal)
         binormal = np.cross(along, normal)
-        rings.append(point + radius * (np.outer(np.cos(angles), normal) + np.outer(np.sin(angles), binormal)))
+        offset = radius * (np.outer(np.cos(angles), normal) + np.outer(np.sin(angles), binormal))
+        rings.append(point + offset + extra * np.outer(offset @ across, across))
     faces = [(k * sides + a, k * sides + (a + 1) % sides, (k + 1) * sides + (a + 1) % sides, (k + 1) * sides + a)
              for k in range(len(points) - 1) for a in range(sides)]
     return np.vstack(rings), faces
@@ -697,7 +722,7 @@ def draw(key):
         write_attribute(trace.data, DELAY, "FLOAT", delay.astype(np.float32))
         trace.data.update()
         trace["kls_phase_trace"] = 1
-        trace[SELECTED] = 1.0 if shown and key in selected_pairs() else 0.0
+        trace[SELECTED] = 1.0 if shown and key in _highlighted() else 0.0
         set_visible(trace, _trace_shown(bpy.context.scene))
         active.add(trace.name)
         glow = _owned(f"{PREFIX}glow {side} {slot}", key, _glow_material(side), None)
@@ -719,6 +744,8 @@ def draw(key):
     path = data.get("p_xyz", np.zeros((1, 3)))
     line = transform.xy_m(path[:, :2], board.origin_nm).astype(np.float64)
     for role, ahead in (("start", line[:12]), ("end", line[::-1][:12])):
+        if role not in data:
+            continue  # a shorted pair: no route, so no terminals
         end = data[role]
         xy = transform.xy_m(np.array([[end["x"], end["y"]]]), board.origin_nm)[0]
         surface, up = _board_face(end.get("layer", "F.Cu"))
@@ -746,6 +773,16 @@ def draw(key):
                              1.3 * MARKER_RADIUS_M))
         set_visible(marker, shown)
         active.add(marker.name)
+    # Where P touches N (a short) and loops beside the route: larger markers on the nearer face.
+    for role, entries in (("short", data.get("shorts", ())), ("loop", data.get("loops", ()))):
+        for index, entry in enumerate(entries):
+            xy = transform.xy_m(np.array([[entry["x"], entry["y"]]]), board.origin_nm)[0]
+            surface, up = _board_face(entry.get("layer", "F.Cu"))
+            marker = _owned(f"{PREFIX}{role} {slot} {index}", key, _material(role), entry.get("ids", ()))
+            _mesh(marker, *_cone((float(xy[0]), float(xy[1]), surface + up * LIFT_M), up, MARKER_HEIGHT_M,
+                                 1.6 * MARKER_RADIUS_M))
+            set_visible(marker, shown)
+            active.add(marker.name)
     for obj in _objects(key):
         if obj.name not in active:
             _clear(obj)
@@ -760,6 +797,8 @@ def selection_split():
     if _shown():
         for key in selected_pairs():
             data = board.phase[key]
+            if data.get("shorts"):
+                continue  # its trace copies carry only the pulses: the selection keeps its highlight
             route = set(data.get("ids", ()))
             pads = {pad.get("id", "") for pad in data.get("pads", ())}
             taken |= set(data.get("net_ids", ())) | route | pads
@@ -772,7 +811,7 @@ def refresh_highlight(redraw=True):
     copies turn solid (white in phase, red and blue with the lead), and the selection's
     own highlight copies give way to them; `redraw` rebuilds those when that changed."""
     global _hidden
-    chosen = set(selected_pairs()) if _shown() else set()
+    chosen = set(_highlighted()) if _shown() else set()
     for obj in _objects():
         if obj.get("kls_phase_trace"):
             value = 1.0 if obj["kls_phase_key"] in chosen else 0.0
@@ -867,7 +906,9 @@ def sync_list():
         for row in rows:
             data = board.phase[row.key]
             row.name = short_name(data)
-            row.route = f"{data['start']['label']} → {data['end']['label']}"
+            row.route = "SHORT" if data.get("shorts") else f"{data['start']['label']} → {data['end']['label']}"
+            row.shorted = bool(data.get("shorts"))
+            row.loops = len(data.get("loops", ()))
             row.skew_ps = float(data.get("skew_ps", 0.0))
             row.max_ps = float(data.get("max_ps", 0.0))
             row.delay_ps = (float(data.get("delay_p_ps", 0.0)) + float(data.get("delay_n_ps", 0.0))) / 2
@@ -890,6 +931,12 @@ def selected_pairs():
     the selection names item ids, P's as "selected" and N's as "pair"."""
     ids = set(board.highlight.get("selected", ())) | set(board.highlight.get("pair", ()))
     return [key for key, data in board.phase.items() if ids and not ids.isdisjoint(data.get("ids", ()))]
+
+
+def _highlighted():
+    """Selected pairs whose trace copies take over their highlight: not a shorted pair,
+    whose copies only carry the pulses up to the short."""
+    return [key for key in selected_pairs() if not board.phase[key].get("shorts")]
 
 
 def flip_selected():

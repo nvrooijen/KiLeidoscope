@@ -315,6 +315,48 @@ def test_stackup_dielectric_constants_come_from_the_board_text():
     assert stackup_layers("(kicad_pcb)") == ()
 
 
+def test_a_shorted_pair_is_not_measured_and_says_where():
+    (result,), _ = phase.analyze_board(boards.shorted())
+    assert isinstance(result, phase.Shorted)
+    bridge = next(track.id for track in boards.shorted().tracks if track.start == (20 * MM, 0))
+    n_track = next(track.id for track in boards.shorted().tracks if track.net == "D_N")
+    assert [(contact.pos, contact.layer, contact.p_id, contact.n_id) for contact in result.contacts] == [
+        ((20 * MM, MM), "F.Cu", bridge, n_track)]
+    (header, arrays), = protocol.FrameDecoder().feed(phase.pair_frame(result, 1))
+    assert header["shorts"] == [{"x": 20 * MM, "y": MM, "layer": "F.Cu", "ids": [bridge, n_track]}]
+    assert header["warnings"] == ["P and N are shorted (1 place)"]
+    # No phase, but the pulses run from the start terminal (J1, at x = 50) up to the short.
+    assert header["start"]["label"] == "J1.1/2" and "end" not in header and "skew_ps" not in header
+    for side, y in (("p", 0), ("n", MM)):
+        xyz = arrays[f"{side}_xyz"]
+        assert tuple(xyz[0, :2]) == (50 * MM, y) and tuple(xyz[-1, :2]) == (20 * MM, y)
+        assert not arrays[f"{side}_lead"].any() and arrays[f"{side}_t"][-1] == pytest.approx(header[f"delay_{side}_ps"])
+    assert header["delay_p_ps"] == pytest.approx(header["delay_n_ps"]) and header["delay_p_ps"] > 0
+    listing = decoded(unhurried().update(boards.shorted(), revision=1))[0][0]
+    assert listing["keys"] == ["D_P"]  # still listed: the panel says SHORT
+
+
+def test_a_loop_beside_the_route_is_reported():
+    (result,), _ = phase.analyze_board(boards.looped())
+    assert result.p.length_nm == pytest.approx(50 * MM)  # the shortest path is measured
+    (loop,) = result.p.loops
+    detour = {track.id for track in boards.looped().tracks if track.net == "D_P" and track.start != (0, 0)}
+    assert set(loop.item_ids) == detour and loop.length_nm == pytest.approx(36 * MM)
+    assert loop.pos == (25 * MM, -3 * MM) and loop.layer == "F.Cu" and not result.n.loops
+    assert "P side has a loop: 36.0 mm of copper beside the route" in result.warnings
+    header = protocol.FrameDecoder().feed(phase.pair_frame(result, 1))[0][0]
+    assert [(entry["side"], entry["length_mm"]) for entry in header["loops"]] == [("P", 36.0)]
+
+
+@pytest.mark.parametrize("board", [boards.matched, boards.compensated_far, boards.compensated_locally,
+                                   boards.layer_change, boards.ac_coupled, boards.esd_stub, boards.multi_drop,
+                                   boards.pass_through, boards.grounded, boards.two_channels])
+def test_ordinary_pairs_have_no_loops_or_shorts(board):
+    results, _ = phase.analyze_board(board())
+    assert results and all(isinstance(result, phase.PairPhase) for result in results)
+    assert not any(route.loops for result in results for route in (result.p, result.n))
+
+
 # --- Live tracking and frames -------------------------------------------------------------
 
 def two_pairs(detour=False):

@@ -4,7 +4,7 @@ opened by its bookmark tab (columns.py). Sections: Dynamic phase."""
 import textwrap
 
 import bpy
-from bpy.props import FloatProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 
 from . import live, phase
 from .state import board
@@ -21,6 +21,8 @@ class KILEIDO_PG_phase_pair(bpy.types.PropertyGroup):
     skew_ps: FloatProperty()
     max_ps: FloatProperty()
     excursions: IntProperty()
+    shorted: BoolProperty()  # P touches N: no numbers
+    loops: IntProperty()
 
 
 def _phase_columns(layout):
@@ -44,9 +46,15 @@ class KILEIDO_UL_phase_pairs(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_property, index=0, flt_flag=0):
         row = layout.row(align=True)
         first, numbers = _phase_columns(row)
-        first.label(text=item.name, icon="ERROR" if item.excursions else "BLANK1")
-        for value in (f"{item.delay_ps:.1f}", _ps(item.skew_ps, True), _ps(item.max_ps)):
-            numbers.label(text=value)
+        if item.shorted:
+            row.alert = True
+            first.label(text=item.name, icon="CANCEL")
+            for value in ("SHORT", "", ""):
+                numbers.label(text=value)
+        else:
+            first.label(text=item.name, icon="ERROR" if item.excursions or item.loops else "BLANK1")
+            for value in (f"{item.delay_ps:.1f}", _ps(item.skew_ps, True), _ps(item.max_ps)):
+                numbers.label(text=value)
         row.operator(KILEIDO_OT_phase_flip.bl_idname, text="", icon="ARROW_LEFTRIGHT",
                      depress=item.key in phase.flipped()).key = item.key
 
@@ -216,14 +224,31 @@ def _draw_legend(column, context, wrap, swatch):
     right.label(text=f"{scale:.2f} ps  N")
     column.separator()
     for role, text in (("start", "Start of the pair"), ("end", "End of the pair"),
-                       ("excursion", "Out of phase beyond the markers' limits")):
+                       ("excursion", "Out of phase beyond the markers' limits"),
+                       ("short", "P and N shorted"), ("loop", "A loop beside the route")):
         column.label(text=text, icon_value=swatch("tile", phase.COLORS[role]))
     for line in wrap(context, "White: the selected pair where it is in phase. Pulses start together: "
                               "the one in front is ahead."):
         column.label(text=line)
 
 
+def _draw_shorted(context, box, data, wrap):
+    """A pair whose P copper touches its N copper: where, and nothing to measure."""
+    box.alert = True
+    box.label(text="P and N are shorted: not measured", icon="CANCEL")
+    for line in wrap(context, f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"):
+        box.label(text=line)
+    for short in data.get("shorts", ()):
+        line = box.row(align=True)
+        line.label(text=f"Touching on {short['layer']} at {short['x'] / 1e6:.2f}, {short['y'] / 1e6:.2f} mm")
+        line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
+                      icon="RESTRICT_SELECT_OFF").ids = "\n".join(short["ids"])
+
+
 def _draw_pair(context, box, data, wrap):
+    if data.get("shorts"):
+        _draw_shorted(context, box, data, wrap)
+        return
     row = box.row(align=True)
     row.label(text=f"{data['start']['label']} → {data['end']['label']}")
     row.operator(KILEIDO_OT_phase_flip.bl_idname, text="", icon="ARROW_LEFTRIGHT").key = data["key"]
@@ -257,8 +282,14 @@ def _draw_pair(context, box, data, wrap):
                         f"{branch['length_mm']:.1f} mm long")
         line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
                       icon="RESTRICT_SELECT_OFF").ids = branch["id"]
+    for loop in data.get("loops", ()):
+        line = box.row(align=True)
+        line.label(text=f"{loop['side']} loop: {loop['length_mm']:.1f} mm of copper beside the route", icon="ERROR")
+        line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
+                      icon="RESTRICT_SELECT_OFF").ids = "\n".join(loop["ids"])
     for warning in data.get("warnings", ()):
-        box.label(text=warning, icon="INFO")
+        if " loop: " not in warning:  # each loop has its own line above
+            box.label(text=warning, icon="INFO")
 
 
 CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip, KILEIDO_OT_phase_flip_selected,
