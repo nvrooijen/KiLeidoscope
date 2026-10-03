@@ -318,14 +318,18 @@ class BridgeRuntime:
         project = str(Path(self.board_path).with_suffix(".kicad_pro")) if self.board_path else ""
         self.phase.set_files(self._appearance_source(), project)
         board = getattr(self.reader, "board", None)
+
+        def read_netclasses(nets):
+            try:
+                return net_classes(board, nets)
+            except KiCadBusy:  # e.g. the router is active: the tracker asks again on a later poll
+                return None
+
         try:
-            frames = self.phase.update(self.snapshot, self.revision,
-                                       (lambda nets: net_classes(board, nets)) if board is not None else None)
+            frames = self.phase.update(self.snapshot, self.revision, read_netclasses if board is not None else None)
             return self.phase.snapshot_frames() if everything else frames
         except Exception as exc:  # the viewer keeps its board; the panel says why the pairs stopped
-            return [protocol.phase_list_message([], self.phase.settings.as_json(),
-                                                [f"Dynamic phase stopped: {type(exc).__name__}: {exc}"], 0,
-                                                self.revision)]
+            return self.phase.failed(exc, self.revision)
 
     # --- Live board copy (kicad-cli exports) --------------------------------------------
 

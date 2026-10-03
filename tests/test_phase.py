@@ -164,6 +164,9 @@ def test_the_pair_says_what_kind_of_line_it_is():
     assert lines[("F.Cu", "microstrip")] == pytest.approx(20, abs=0.5)
     grounded = {line["kind"] for line in only_pair(boards.grounded(0.1)).lines}
     assert grounded == {"grounded coplanar", "microstrip"}  # 40 of 50 mm beside the pour
+    # Between two F.Cu stretches beside a pour, 10 mm on B.Cu with no pour: not a pour borrowed from either end.
+    dive = {(line["layer"], line["kind"]): line["mm"] for line in only_pair(boards.grounded_dive(0.1)).lines}
+    assert dive[("B.Cu", "microstrip")] == pytest.approx(10, abs=0.5) and ("B.Cu", "grounded coplanar") not in dive
     ids = set(only_pair(boards.esd_stub()).net_ids)
     assert {"D1.1", "D1.2"} <= ids  # the stubs' pads too: Blender highlights them white
 
@@ -279,6 +282,9 @@ def test_a_pour_beside_the_pair_makes_it_faster():
     open_board, grounded = only_pair(boards.matched()), only_pair(boards.grounded(0.1))
     assert grounded.delay_p_ps < open_board.delay_p_ps * 0.995  # 40 of its 50 mm run beside the pour
     assert abs(grounded.skew_ps) < 1e-3  # both sides alike
+    # A pour distance holds only where samples have one: one sample near a pour lends it to no other.
+    at, ground = np.array([0.0, 1.0, 2.0, 3.0]), np.array([np.inf, 100.0, np.inf, np.inf])
+    assert list(phase._between_samples(np.array([0.9, 1.6, 2.5]), at, ground)) == [100.0, np.inf, np.inf]
     far = only_pair(boards.grounded(5.0))  # 5 mm away: 25 dielectric heights, no effect
     assert far.delay_p_ps == pytest.approx(open_board.delay_p_ps, rel=1e-6)
 
@@ -370,6 +376,63 @@ def test_the_tracker_spreads_work_over_polls():
     second = decoded(tracker.update(two_pairs(), revision=2))
     assert [header["type"] for header, _ in second] == ["phase_list", "phase_pair"]
     assert second[0][0]["pending"] == 0 and second[0][0]["keys"] == ["D_P", "E_P"]
+
+
+def test_a_pair_that_cannot_be_measured_leaves_the_others(monkeypatch):
+    measure = phase.analyze
+
+    def fails_on_e(channel, *args):
+        if channel.key == "E_P":
+            raise ValueError("odd geometry")
+        return measure(channel, *args)
+
+    monkeypatch.setattr(phase, "analyze", fails_on_e)
+    frames = decoded(unhurried().update(two_pairs(), revision=1))
+    assert [(header["type"], header.get("key")) for header, _ in frames] == [("phase_list", None),
+                                                                             ("phase_pair", "D_P")]
+    assert frames[0][0]["keys"] == ["D_P"]
+    assert frames[0][0]["warnings"] == ["E_P/N: not measured (ValueError: odd geometry)"]
+
+
+def test_after_a_failure_the_list_and_every_pair_come_back(monkeypatch):
+    tracker = unhurried()
+    tracker.update(two_pairs(), revision=1)
+    edited = two_pairs(detour=True)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(phase.channels, "find_channels", broken)
+    with pytest.raises(RuntimeError):
+        tracker.update(edited, revision=2)
+    stopped = decoded(tracker.failed(RuntimeError("boom"), revision=2))
+    assert stopped[0][0]["keys"] == [] and stopped[0][0]["warnings"] == ["Dynamic phase stopped: RuntimeError: boom"]
+    with pytest.raises(RuntimeError):
+        tracker.update(edited, revision=3)  # tried again on the next poll
+    assert tracker.failed(RuntimeError("boom"), revision=3) == []  # said once, not every poll
+    monkeypatch.undo()
+    back = decoded(tracker.update(edited, revision=4))
+    assert [(header["type"], header.get("key")) for header, _ in back] == [
+        ("phase_list", None), ("phase_pair", "D_P"), ("phase_pair", "E_P")]
+    assert back[0][0]["keys"] == ["D_P", "E_P"] and back[0][0]["warnings"] == []
+
+
+def test_netclasses_are_asked_again_after_kicad_was_busy():
+    tracker, asked = unhurried(), []
+
+    def busy(nets):
+        asked.append(set(nets))
+        return None
+
+    def ready(nets):
+        asked.append(set(nets))
+        return {net: ("HS", "") for net in nets}
+
+    tracker.update(two_pairs(), revision=1, read_netclasses=busy)
+    tracker.update(two_pairs(), revision=2, read_netclasses=ready)
+    assert len(asked) == 2 and tracker.netclasses["D_P"] == ("HS", "")
+    tracker.update(two_pairs(), revision=3, read_netclasses=ready)
+    assert len(asked) == 2  # answered: not asked again
 
 
 def test_a_merged_netclass_falls_back_to_the_project_patterns():

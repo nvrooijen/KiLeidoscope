@@ -234,6 +234,20 @@ def _ground_distance(points: np.ndarray, edges: np.ndarray) -> np.ndarray:
     return best
 
 
+def _between_samples(where: np.ndarray, at: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """`values` (one per sample, at `at` along the copper, inf: no pour within reach) at
+    `where`: linear between two finite samples, else the nearer sample's, so a stretch
+    without a pour stays without one rather than borrowing a pour from either end."""
+    right = np.clip(np.searchsorted(at, where), 1, len(at) - 1)
+    left = right - 1
+    a, b = values[left], values[right]
+    span = at[right] - at[left]
+    t = np.clip((where - at[left]) / np.where(span > 0, span, 1.0), 0.0, 1.0)
+    both = np.isfinite(a) & np.isfinite(b)
+    linear = np.where(both, a, 0.0) + t * (np.where(both, b, 0.0) - np.where(both, a, 0.0))
+    return np.where(both, linear, np.where(t < 0.5, a, b))
+
+
 def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.ndarray, model_: delays.DelayModel,
             heights: dict[str, int], grounds: dict | None = None, own_nets=()) -> _Walk:
     """The walk's delays again with the pair's coupling: along each track stretch, the
@@ -266,9 +280,7 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
     ratio = np.ones(len(middle))
     if track.any():
         gaps = np.interp(middle[track], at, nearest)
-        finite = np.isfinite(ground)
-        pours = (np.interp(middle[track], at[finite], ground[finite]) if finite.sum() > 1 else
-                 np.full(len(gaps), ground[finite][0] if finite.any() else np.inf))
+        pours = _between_samples(middle[track], at, ground)
         lone, cache = {}, {}
         for index, gap, pour in zip(np.flatnonzero(track), gaps, pours):
             v = vertex[index]
@@ -569,6 +581,7 @@ class PhaseTracker:
         self._model_key = ""
         self._heights = {}
         self._listed = None
+        self._error = ""  # the last `failed` message sent
 
     def reset(self):
         self.__init__(self.clock)
@@ -636,18 +649,20 @@ class PhaseTracker:
                  snapshot.stackup, snapshot.zones)
         stale = self._pending or self._parts is None or any(a is not b for a, b in zip(parts, self._parts))
         if stale:
-            self._parts = parts
             self._channels = channels.find_channels(snapshot, self.settings.follow_series)
             self._by_net = channels.items_by_net(snapshot)
             if self._grounds_of is not snapshot.zones:
                 self._grounds, self._grounds_of = ground_edges(snapshot), snapshot.zones
+            self._parts = parts  # only once its channels are known: a failure above is tried again
         missing = self.wanted_nets() - self.netclasses.keys()
         if missing and read_netclasses is not None and self._netclass_tries != missing:
-            self._netclass_tries = missing  # asked once per set of nets: KiCad may not know them all
             try:
-                self.netclasses.update(read_netclasses(missing))
+                found = read_netclasses(missing)
             except Exception:
-                pass  # KiCad busy or older: the project file's netclass patterns stand in
+                found = {}  # an older KiCad: the project file's netclass patterns stand in
+            if found is not None:  # None: KiCad busy, asked again on a later poll
+                self._netclass_tries = missing  # asked once per set of nets: KiCad may not know them all
+                self.netclasses.update(found)
         if not self._delay_model(snapshot) and not stale:
             return []
         references = {footprint.id: footprint.reference for footprint in snapshot.footprints}
@@ -663,15 +678,19 @@ class PhaseTracker:
                 pending += 1  # its old result (if any) stays until its turn
                 continue
             fingerprints[channel.key] = fingerprint
-            result, warnings[channel.key] = _analyze_channel(channel, self._by_net, self._heights, references,
-                                                             self._model, self.settings, self._grounds)
+            try:
+                result, warnings[channel.key] = _analyze_channel(channel, self._by_net, self._heights, references,
+                                                                 self._model, self.settings, self._grounds)
+                frame = pair_frame(result, revision) if result is not None else b""
+            except Exception as exc:  # this pair only: the others are still measured, it is tried again when it changes
+                result, warnings[channel.key] = None, f"{channel.name}: not measured ({type(exc).__name__}: {exc})"
             if result is None:
                 results.pop(channel.key, None)
                 encoded.pop(channel.key, None)
                 continue
             results[channel.key] = result
-            encoded[channel.key] = pair_frame(result, revision)
-            frames.append(encoded[channel.key])
+            encoded[channel.key] = frame
+            frames.append(frame)
         current = {channel.key for channel in self._channels}
         keys = [channel.key for channel in self._channels if channel.key in results]
         self.results = {key: results[key] for key in keys}
@@ -685,7 +704,20 @@ class PhaseTracker:
             self.list_frame = protocol.phase_list_message(keys, self.settings.as_json(), self.warnings, pending,
                                                           revision)
             frames.insert(0, self.list_frame)
+        self._error = ""
         return frames
+
+    def failed(self, exc: Exception, revision: int) -> list[bytes]:
+        """`update` raised outside any one pair: the viewer drops every pair and the panel
+        says why (sent once, not every poll). Every pair is measured again, and the list
+        resent, on the next update that gets that far."""
+        message = f"Dynamic phase stopped: {type(exc).__name__}: {exc}"
+        self.results, self.frames, self._fingerprints, self._listed = {}, {}, {}, None
+        if message == self._error:
+            return []
+        self._error = message
+        self.list_frame = protocol.phase_list_message([], self.settings.as_json(), [message], 0, revision)
+        return [self.list_frame]
 
     def _fingerprint(self, channel: channels.Channel, references) -> int:
         """Everything a channel's result depends on (a process-local hash)."""
