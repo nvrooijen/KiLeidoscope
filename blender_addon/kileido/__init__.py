@@ -21,8 +21,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, fold, ims, layers, lighting, live,
-               models, packages, pick, protection, render_depth, watcher)
+from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, ims, layers, lighting,
+               live, models, packages, pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -228,14 +228,32 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             self.layout.label(text="", icon_value=icon.icon_id)
 
     def draw(self, context):
+        """With a column open (its bookmark tab, columns.py), two: that column left, the rest right."""
+        global _share
         layout = self.layout
+        _share = 1.0
+        column = COLUMNS.get(context.scene.kileido_column)
+        if column is not None:
+            split = layout.split(factor=0.5)
+            left, layout = split.column(), split.column()
+            _share = 0.5
+            column(left, context.scene)
+        self._draw_main(context, layout)
+        for idname, title, section in (("KILEIDO_boards", "Boards", _Boards),
+                                       ("KILEIDO_status", "Status", _Status)):
+            header, body = layout.panel(idname, default_closed=False)
+            header.label(text=title)
+            if body is not None:
+                section(body).draw(context)
+
+    def _draw_main(self, context, layout):
         icon = _icons.get("logo") if _icons is not None else None
         if icon is not None:
             logo = layout.row()
             logo.alignment = "CENTER"
             logo.template_icon(icon_value=icon.icon_id, scale=LOGO_SCALE)
-        self._draw_link(context)
-        self._draw_outline_warnings(context)
+        self._draw_link(context, layout)
+        self._draw_outline_warnings(context, layout)
         row = layout.row(align=True)
         current = _viewport_mode(context)
         for mode, label in (("MATERIAL", "Preview"), ("RENDERED", "Cycles")):
@@ -250,7 +268,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         layout.prop(context.scene, "kileido_reflections", text="Reflections")
         layout.prop(context.scene, "kileido_mask_opacity", text="Solder mask opacity", slider=True)
         layout.prop(context.scene, "kileido_silk_opacity", text="Silkscreen opacity", slider=True)
-        self._draw_vias(context)
+        self._draw_vias(context, layout)
         for prop, label, icon in (("kileido_focus", "X-ray mode", "xray"),
                                   ("kileido_center_in_kicad", "Center KiCad on click", None),
                                   ("kileido_clip_silkscreen", "Clip silkscreen to board outline", "scissors")):
@@ -258,26 +276,25 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             row.prop(context.scene, prop, text=label)
             if _icons is not None and icon in _icons:
                 row.label(text="", icon_value=_icons[icon].icon_id)
-        self._draw_cut(context)
+        self._draw_cut(context, layout)
 
-    def _draw_vias(self, context):
+    def _draw_vias(self, context, layout):
         """Via protection comes from KiCad; only what KiCad does not store is set here."""
         scene = context.scene
-        row = self.layout.row(align=True)
+        row = layout.row(align=True)
         row.prop(scene, "kileido_via_fill_material", text="Via fill")
         if _icons is not None and "bucket" in _icons:
             row.label(text="", icon_value=_icons["bucket"].icon_id)
-        row = self.layout.row(align=True)
+        row = layout.row(align=True)
         row.prop(scene, "kileido_max_tent_mm", text="Max tent hole")
         row.prop(scene, "kileido_via_plating_um", text="Via wall")
         count = board.via_too_big
         if count:
-            self.layout.label(text=f"{count} via{'s' if count > 1 else ''} too large to tent: shown open",
-                              icon="ERROR")
+            layout.label(text=f"{count} via{'s' if count > 1 else ''} too large to tent: shown open", icon="ERROR")
 
-    def _draw_cut(self, context):
+    def _draw_cut(self, context, layout):
         scene = context.scene
-        box = self.layout.box()
+        box = layout.box()
         box.prop(scene, "kileido_cut", text="Cut plane")
         if not scene.kileido_cut:
             return
@@ -289,7 +306,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         if not cut.upright(scene):
             box.label(text="Turn the plane upright for a cross section", icon="INFO")
 
-    def _draw_outline_warnings(self, context):
+    def _draw_outline_warnings(self, context, layout):
         """KiCad's own words when a board has no usable Edge.Cuts outline, then where."""
         found = [(board.board_name, warning) for warning in packages.outline_warnings()]
         for root in packages.roots():
@@ -297,7 +314,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             found += [(root["kls_board_name"], warning) for warning in packages.outline_warnings(index)]
         if not found:
             return
-        box = self.layout.box()
+        box = layout.box()
         box.label(text="Board outline is missing or malformed.", icon="ERROR")
         box.label(text="Run DRC in KiCad for a full analysis.", icon="BLANK1")
         named = len({name for name, _ in found}) > 1 or bool(packages.roots())
@@ -306,24 +323,27 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             for line in _wrap(context, f"{name}: {detail}" if named else detail):
                 box.label(text=line, icon="BLANK1")
 
-    def _draw_link(self, context):
+    def _draw_link(self, context, layout):
         """A status LED: green live, amber waiting or KiCad editing, red lost, grey offline."""
         health = live.health()
         text = {"ok": "Live with KiCad",
                 "off": "Not live: use Open in Blender in KiCad"}.get(health, live.status_text())
-        self.layout.label(text=text, icon_value=_swatch("led", LED_COLORS[health]))
+        layout.label(text=text, icon_value=_swatch("led", LED_COLORS[health]))
         error = live.error_text()
         if error:  # e.g. a second KiCad on Windows: say why the scene is empty
-            box = self.layout.box()
+            box = layout.box()
             for index, line in enumerate(_wrap(context, error)):
                 box.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+
+
+_share = 1.0  # of the sidebar's width the column being drawn has (a column open: half)
 
 
 def _wrap(context, text):
     """Lines that fit the sidebar at its current width (Blender cuts a longer label in
     its middle): ~7 px per character and an icon and box margins, at the UI scale."""
     scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
-    width = context.region.width if context.region else 300 * scale
+    width = (context.region.width if context.region else 300 * scale) * _share
     return textwrap.wrap(text, max(16, int((width - 50 * scale) / (7 * scale))))
 
 
@@ -348,23 +368,35 @@ def _draw_thickness(layout, scene, copper_m):
             right.prop(scene, value, text=value_label)
 
 
+def _draw_wrapped(layout, text, icon="INFO"):
+    for index, line in enumerate(_wrap(bpy.context, text)):
+        layout.label(text=line, icon=icon if index == 0 else "BLANK1")
+
+
+def _draw_switched(layout, mode):
+    """Say so when switching this mode on turned the other one off."""
+    if _switched_off.get(mode):
+        _draw_wrapped(layout, f"{_switched_off[mode]} turned off: IMS and Flex cannot be on together")
+
+
 def _draw_ims(layout, scene):
-    """IMS mode, for a 2-layer live board: the base's metal and finish and the epoxy are set
-    here; the board keeps KiCad's thickness, and the base takes what the epoxy and copper leave."""
+    """The IMS column, for a 2-layer live board: switched on here, then the base's metal and
+    finish and the epoxy; the board keeps KiCad's thickness, and the base takes what the
+    epoxy and copper leave."""
+    layout.label(text="IMS (metal base)")
     box = layout.box()
     ok, why = ims.eligible(board.heights)
     if not ok:  # unticked whatever the setting: it waits for the next 2-layer board
         toggle = box.row()
         toggle.enabled = False
-        toggle.label(text="IMS (metal base)", icon="CHECKBOX_DEHLT")
-        for index, line in enumerate(_wrap(bpy.context, why)):
-            box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+        toggle.label(text="Enable", icon="CHECKBOX_DEHLT")
+        _draw_wrapped(box, why)
         return
-    box.prop(scene, "kileido_ims", text="IMS (metal base)")
+    box.prop(scene, "kileido_ims", text="Enable")
+    _draw_switched(box, "IMS")
     stack = board.ims
     if scene.kileido_ims != (stack is not None) and _ims_source() is None:  # nothing to rebuild it from
-        for index, line in enumerate(_wrap(bpy.context, "Connect KiCad or load the dump again to redraw the board")):
-            box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+        _draw_wrapped(box, "Connect KiCad or load the dump again to redraw the board")
     if not scene.kileido_ims:
         return
     box.row(align=True).prop(scene, "kileido_ims_metal", expand=True)
@@ -384,8 +416,44 @@ def _draw_ims(layout, scene):
         right.alignment = "RIGHT"
         right.label(text=f"{layers.format_thickness(metres) or '–'} {source}")
     for warning in board.ims_warnings:
-        for index, line in enumerate(_wrap(bpy.context, warning)):
-            box.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
+        _draw_wrapped(box, warning, "ERROR")
+
+
+FLEX_HOW = "KiCad marks flex with Polyimide in the board's stackup, or Flex, Bend and Stiffener user layers"
+
+
+def _draw_flex_column(layout, scene):
+    """The Flex column: switched on here when the board has flex, then the flex box."""
+    layout.label(text="Flex and rigid-flex")
+    box = layout.box()
+    if not board.flex:
+        toggle = box.row()
+        toggle.enabled = False
+        toggle.label(text="Enable", icon="CHECKBOX_DEHLT")
+        _draw_wrapped(box, "This board has no flex. " + FLEX_HOW)
+        return
+    box.prop(scene, "kileido_flex", text="Enable")
+    _draw_switched(box, "FLEX")
+    if not scene.kileido_flex:
+        _draw_wrapped(box, "Enable to fold the board, see its stiffeners and coverlay, and run the flex checks")
+        return
+    _draw_flex(layout, scene)
+
+
+def _ims_state():
+    if not ims.eligible(board.heights)[0]:
+        return "unavailable"
+    return "on" if bpy.context.scene.kileido_ims else "off"
+
+
+def _flex_state():
+    if not board.flex:
+        return "unavailable"
+    return "on" if bpy.context.scene.kileido_flex else "off"
+
+
+COLUMNS = {"IMS": _draw_ims, "FLEX": _draw_flex_column}  # columns.TABS keys -> what the column draws
+columns.STATES.update(IMS=_ims_state, FLEX=_flex_state)
 
 
 def _draw_flex(layout, scene):
@@ -398,7 +466,7 @@ def _draw_flex(layout, scene):
         return
     box = layout.box()
     title = box.split(factor=0.45)
-    title.label(text="Flex")
+    title.label(text="Use")
     title.row(align=True).prop(scene, "kileido_flex_use", expand=True)
     use = scene.kileido_flex_use.lower()
     total, need = found["total_nm"] * 1e-9, found["limits"][use]
@@ -425,14 +493,15 @@ def _draw_flex(layout, scene):
             said = f"{bend['angle_deg']:g}° {radius}"
         right = _value_row(column, f"{name} {index + 1}  {said}")
         right.label(text=f"{ratio:.1f}×", icon="CHECKMARK" if need is not None and ratio >= need else "ERROR")
-        _copy_button(right, bend["note"], f"beside bend {index + 1} on the Bend layer")
+        _copy_button(right, bend["note"], f"beside {name.lower()} {index + 1} on the Bend layer")
     if any(bend.get("kind", "bend") == "bend" for bend in found["bends"]):
         column.label(text=f"{use.capitalize()} flex needs {need}× or more" if need is not None
                      else "Dynamic flex: 1 or 2 copper layers only")
     _draw_stiffeners(box, found.get("stiffeners", ()))
-    if fold.available():
+    if fold.foldable():
         box.prop(scene, "kileido_fold", text="Fold", slider=True)
         _draw_steps(box, scene)
+        _draw_animation(box, scene)
     lines = [(problem["message"], (), "INFO" if problem.get("level") == "note" else "ERROR", "")
              for problem in found["problems"]]
     lines += [(message, (), "ERROR", _fold_group(message)) for message in board.fold_findings]
@@ -517,6 +586,47 @@ def _draw_steps(box, scene):
         operator = row.operator(KILEIDO_OT_fold_step.bl_idname, text=f"Step {number}: {names}", icon=icon,
                                 emboss=False)
         operator.progress = end
+
+
+def _draw_animation(box, scene):
+    """Key the fold on the timeline for rendering, or go back to live folding."""
+    row = box.row(align=True)
+    row.prop(scene, "kileido_fold_frames", text="Frames")
+    row.prop(scene, "kileido_fold_fps", text="fps")
+    row = box.row(align=True)
+    keyed = fold.keyed()
+    row.operator(KILEIDO_OT_fold_animation.bl_idname, text="Re-key fold animation" if keyed else "Key fold animation",
+                 icon="KEYFRAME_HLT" if keyed else "KEYFRAME").action = "KEY"
+    if keyed:
+        row.operator(KILEIDO_OT_fold_animation.bl_idname, text="", icon="X").action = "CLEAR"
+        box.label(text="Keyed: the Fold slider moves along the timeline", icon="INFO")
+
+
+class KILEIDO_OT_fold_animation(bpy.types.Operator):
+    bl_idname = "kileido.fold_animation"
+    bl_label = "Fold animation"
+    bl_description = ("Key the fold on the timeline for rendering: flat at frame 1, folded at the last frame, "
+                      "the steps one after another. Key it again after an edit in KiCad")
+
+    action: EnumProperty(items=(("KEY", "Key", "Key the fold on the timeline"),
+                                ("CLEAR", "Clear", "Remove the keys: back to live folding")))
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.action == "CLEAR":
+            return "Remove the fold's keys: back to live folding with the Fold slider"
+        return cls.bl_description
+
+    def execute(self, context):
+        if self.action == "CLEAR":
+            fold.clear_animation()
+            return {"FINISHED"}
+        scene = context.scene
+        if not fold.key_animation(scene.kileido_fold_frames, scene.kileido_fold_fps):
+            self.report({"WARNING"}, "Nothing to fold: no bends on this board")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Fold keyed over frames 1-{scene.kileido_fold_frames} at {scene.kileido_fold_fps} fps")
+        return {"FINISHED"}
 
 
 class KILEIDO_OT_fold_step(bpy.types.Operator):
@@ -699,16 +809,14 @@ class KILEIDO_OT_all_boards_row(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class KILEIDO_PT_boards(bpy.types.Panel):
-    """The live board (it follows KiCad) and the view-only boards beside it; then one
-    board's layers top to bottom, an eye each, like KiCad's layer list: the live
-    board's (layers.rows), a view-only board's as exported (layers.recorded), or all."""
-    bl_label = "Boards"
-    bl_idname = "KILEIDO_PT_boards"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "KiLeidoscope"
-    bl_parent_id = "KILEIDO_PT_panel"
+class _Boards:
+    """The Boards section: the live board (it follows KiCad) and the view-only boards
+    beside it; then one board's layers top to bottom, an eye each, like KiCad's layer
+    list: the live board's (layers.rows), a view-only board's as exported
+    (layers.recorded), or all."""
+
+    def __init__(self, layout):
+        self.layout = layout
 
     def draw(self, context):
         scene = context.scene
@@ -789,8 +897,6 @@ class KILEIDO_PT_boards(bpy.types.Panel):
 
         self._draw_rows(sections, board.thickness_m, layers.shown, eye, all_eye)
         _draw_thickness(self.layout, scene, board.layer_thickness.get("F.Cu"))
-        _draw_ims(self.layout, scene)
-        _draw_flex(self.layout, scene)
 
     def _draw_view_only(self, index):
         recorded = packages.layer_list(index)
@@ -865,14 +971,11 @@ class KILEIDO_PT_boards(bpy.types.Panel):
                     right.label(text=values)
 
 
-class KILEIDO_PT_status(bpy.types.Panel):
-    """Link, loading progress and warnings, below the Boards panel."""
-    bl_label = "Status"
-    bl_idname = "KILEIDO_PT_status"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "KiLeidoscope"
-    bl_parent_id = "KILEIDO_PT_panel"
+class _Status:
+    """The Status section: link, loading progress and warnings, below Boards."""
+
+    def __init__(self, layout):
+        self.layout = layout
 
     def draw(self, context):
         column = self.layout.column(align=True)
@@ -937,9 +1040,9 @@ def _swatch(kind, color):
 
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
-           KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel,
-           KILEIDO_PT_boards, KILEIDO_PT_status, KILEIDO_OT_flex_show, KILEIDO_OT_copy_note,
-           KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_flex_group)
+           KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
+           KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
+           KILEIDO_OT_flex_group, *columns.CLASSES, KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -967,6 +1070,31 @@ def _thickness_update(refresh_live):
 
 
 IMS_REBUILD_DELAY_S = 0.4  # after the last change: dragging the epoxy value rebuilds once
+
+
+_switched_off = {}  # mode switched on -> the other mode it turned off, for its column until it closes
+
+
+def _ims_switched(scene, _context):
+    """IMS on or off: Flex goes off when IMS comes on (never both), then the board rebuilds."""
+    _switched_off.clear()
+    if scene.kileido_ims and scene.kileido_flex:
+        scene.kileido_flex = False  # removes the folded copies
+        _switched_off["IMS"] = "Flex"
+    _ims_update(scene, _context)
+
+
+def _flex_switched(scene, _context):
+    """Flex on or off: IMS goes off when Flex comes on (never both); the folded copies are
+    baked again, or removed (fold._plan follows the setting)."""
+    _switched_off.clear()
+    if scene.kileido_flex and scene.kileido_ims:
+        scene.kileido_ims = False  # rebuilds the board without its base
+        _switched_off["FLEX"] = "IMS"
+    if not scene.kileido_flex:
+        fold.clear_animation()  # the keys turn handles that are about to go
+        scene.kileido_fold = 0.0  # back on, the handles start flat: so does the slider
+    fold.invalidate()
 
 
 def _ims_update(_scene, _context):
@@ -1077,8 +1205,17 @@ def _scene_properties():
             name="IMS", default=False,
             description="Insulated metal substrate: a 2-layer board on an aluminum or copper base. The board "
                         "keeps KiCad's thickness; the panel's epoxy sits under F.Cu and the base takes the rest, "
-                        "B.Cu's place included",
-            update=_ims_update),
+                        "B.Cu's place included. Not with Flex",
+            update=_ims_switched),
+        "kileido_flex": BoolProperty(
+            name="Flex", default=False,
+            description="Flex mode, for a board KiCad marks as flex: the board folds at its bends, with its "
+                        "stiffeners, coverlay and the flex checks. Not with IMS",
+            update=_flex_switched),
+        "kileido_column": EnumProperty(
+            name="Column", items=columns.column_items(), default=columns.NONE, options={"HIDDEN"},
+            description="The column open left of the KiLeidoscope panel (its bookmark tab)",
+            update=lambda self, context: _switched_off.clear()),  # its note was for the column then open
         "kileido_ims_metal": EnumProperty(
             name="Base metal", items=tuple((key, name, f"{name} base") for key, name in ims.METALS.items()),
             default="AL", description="The metal of the IMS base (KiCad stores none)",
@@ -1099,6 +1236,12 @@ def _scene_properties():
             description="Fold the flex at its bends: 0 flat, 1 every bend at its angle from KiCad's Bend layer; "
                         "bends numbered #1, #2, ... fold one step after another",
             update=lambda self, context: fold.set_progress(self.kileido_fold)),
+        "kileido_fold_frames": IntProperty(
+            name="Frames", default=72, min=2, max=10000,
+            description="How many frames the fold animation takes, from flat to folded"),
+        "kileido_fold_fps": IntProperty(
+            name="Frame rate", default=24, min=1, max=240,
+            description="The scene's frames per second for the fold animation"),
         "kileido_flex_open": StringProperty(
             name="Open flex checks", default="",
             description="The kinds of flex check shown in full in the panel, one per line"),
@@ -1172,6 +1315,10 @@ def register():
     keyconfig = bpy.context.window_manager.keyconfigs.addon
     if keyconfig is not None:  # None in background mode
         keymap = keyconfig.keymaps.new(name="3D View", space_type="VIEW_3D")
+        # A press on a bookmark tab opens its column: handled on the press, it never
+        # becomes the click that selects in KiCad below. Elsewhere it passes through.
+        _KEYMAPS.append((keymap, keymap.keymap_items.new(columns.KILEIDO_OT_column_tab.bl_idname,
+                                                         "LEFTMOUSE", "PRESS")))
         # A click (press and release without moving) selects in KiCad while connected;
         # dragging still box-selects or navigates. Not connected, the operator's poll
         # fails and the click falls through to Blender's own selection.
@@ -1180,6 +1327,7 @@ def register():
             entry.properties.extend = shift
             _KEYMAPS.append((keymap, entry))
     collisions.install()
+    columns.install()
     cut.install()
     fold.install()
     bpy.app.handlers.load_post.append(_file_loaded)
@@ -1199,6 +1347,7 @@ def unregister():
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
+    columns.uninstall()
     cut.uninstall()
     fold.uninstall()
     edge_plating.uninstall()

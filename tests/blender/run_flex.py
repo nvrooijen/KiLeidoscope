@@ -11,13 +11,15 @@ import sys
 from pathlib import Path
 
 import bpy
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
 import numpy as np  # noqa: E402
-from kileido import apply, fold, foldmath, state  # noqa: E402
+from kileido import apply, columns, fold, foldmath, state  # noqa: E402
 from kileido.objects import read_attribute, read_coordinates  # noqa: E402
 from kileido_bridge import flex_checks, model  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
@@ -70,6 +72,9 @@ def frames(flex=True):
         drawings += (model.Drawing(f"stiffener{k}", "User.3", "closed",
                                    ((x * mm, 2 * mm), ((x + 3) * mm, 2 * mm), ((x + 3) * mm, 6 * mm), (x * mm, 6 * mm))),
                      model.Drawing(f"stiffener{k} text", "User.3", "text", (((x + 1) * mm, 4 * mm),), text))
+    drawings += (model.Drawing("opening", "User.3", "closed",  # a window in the steel one
+                               ((31_500_000, 2_500_000), (32_500_000, 2_500_000), (32_500_000, 3_500_000),
+                                (31_500_000, 3_500_000))),)
     names = dict(snapshot.layer_display_names, **{"User.1": "Flex", "User.2": "Bend", "User.3": "Stiffener"})
     snapshot = model.BoardSnapshot(snapshot.board_name, names, snapshot.tracks, snapshot.arcs, snapshot.vias,
                                    snapshot.pads, snapshot.footprints, snapshot.zones, snapshot.outline,
@@ -112,6 +117,20 @@ def check_picking_and_highlight(plan, angles):
     assert np.abs(points.mean(axis=0) - on_board).max() < 3e-3, (points.mean(axis=0), on_board)  # folded with it
     highlight.apply_selection({"selected": [], "pair": []})
     assert not any("highlight" in o.name and not o.hide_get() and len(o.data.vertices) for o in folded.objects)
+    # A zone takes the highlight material: its copy is baked again from the original, which
+    # the fold hides (Blender evaluates no hidden object: baked hidden, the copy came out bare).
+    zone = next(o for o in state.board.collection.all_objects if (o.get("kls_copper") or ("", ""))[1] == "zones")
+    zone_id = list(zone["kls_ids"])[0]
+
+    def zone_copy():
+        return next(c for c in folded.objects if c.get("kls_folded_from") == zone.name)
+    faces = len(zone_copy().data.polygons)
+    highlight.apply_selection({"selected": [zone_id], "pair": []})
+    copy = zone_copy()
+    assert [m.name for m in copy.data.materials] == ["KLS Highlight selected"], copy.data.materials[:]
+    assert len(copy.data.polygons) == faces and zone.hide_viewport, (len(copy.data.polygons), faces)
+    highlight.apply_selection({"selected": [], "pair": []})
+    assert [m.name for m in zone_copy().data.materials] == ["KLS In1.Cu copper"], zone_copy().data.materials[:]
 
 
 def check_fold(scene):
@@ -142,6 +161,10 @@ def check_fold(scene):
             assert np.count_nonzero(zone >= 0) > 20, obj.name  # cut and tagged across the strip
     steel = folded.objects["KLS stiffener 1"]
     assert [m.name for m in steel.data.materials] == ["KLS Stiffener metal"], steel.data.materials[:]
+    tree = BVHTree.FromPolygons([v.co for v in steel.data.vertices], [p.vertices[:] for p in steel.data.polygons])
+    window, solid = foldmath.world_xy([(32_000_000, 3_000_000), (30_500_000, 5_000_000)], state.board.origin_nm)
+    assert tree.ray_cast(Vector((*window, 1.0)), Vector((0, 0, -1)))[0] is None, "the opening goes through"
+    assert tree.ray_cast(Vector((*solid, 1.0)), Vector((0, 0, -1)))[0] is not None, "the steel is solid beside it"
     assert [m.name for m in folded.objects["KLS stiffener 2"].data.materials] == ["KLS Board FR4 core"]
     parts = [obj for obj in fold._parts() if obj.get("kls_flat_matrix") is not None]
     assert parts, "parts folded with their regions"
@@ -284,10 +307,119 @@ def check_steps(scene):
     scene.kileido_fold = 0.0
     apply.load_frames(bends_frames((31, "180° R0.1")))  # folded flat back onto the board, too tight
     scene.kileido_fold = 1.0
-    assert state.board.fold_findings == ["Folded: the part past bend 1 runs into the board"],         state.board.fold_findings
+    assert state.board.fold_findings == ["Folded: the part past bend 1 runs into the board"], state.board.fold_findings
     texts = " ".join(text for _, text, _ in drawn(scene))  # the panel wraps long lines
     assert "Folded: the part past bend 1 runs into the board" in texts, texts
     scene.kileido_fold = 0.0
+    scene.kileido_flex = False  # flex mode off: the copies go once edits settle, and the findings with them
+    fold._settled()
+    assert fold._folded_collection() is None and state.board.fold_findings == [], state.board.fold_findings
+    scene.kileido_flex = True
+
+
+def places():
+    """Where every part stands, by name."""
+    return {obj.name: obj.matrix_world.copy() for obj in fold._parts()}
+
+
+def assert_places(found, expected, what):
+    assert found.keys() == expected.keys(), what
+    for name, matrix in expected.items():
+        off = max(abs(a - b) for row, other in zip(found[name], matrix) for a, b in zip(row, other))
+        assert off < 1e-6, (what, name, off)
+
+
+def check_uninstall(scene):
+    """The add-on switched off: the board as without flex mode (no copies, no handles, the
+    originals and parts back); on again, it folds as before."""
+    scene.kileido_fold = 0.0
+    flat = places()
+    scene.kileido_fold = 1.0
+    folded = places()
+    outline = state.board.collection.all_objects["KLS outline"]
+    assert outline.hide_viewport and fold._grips() and fold._folded_collection() is not None
+    assert any(obj.get("kls_flat_matrix") is not None for obj in fold._parts())
+    fold.uninstall()
+    assert fold._folded_collection() is None and not fold._grips() and bpy.data.collections.get(fold.GRIPS) is None
+    assert not outline.hide_viewport and not outline.hide_render
+    assert not any(obj.get("kls_hidden_by_fold") for obj in state.board.collection.all_objects)
+    assert not any(obj.get("kls_flat_matrix") is not None for obj in fold._parts())
+    assert_places(places(), flat, "parts flat after uninstall")
+    assert fold._on_depsgraph not in bpy.app.handlers.depsgraph_update_post
+    fold.install()
+    scene.kileido_fold = 1.0
+    assert outline.hide_viewport and fold._folded_collection() is not None
+    assert_places(places(), folded, "parts folded again after install")
+    scene.kileido_fold = 0.0
+
+
+def check_animation(scene):
+    """The panel's Key fold animation: the handles and parts keyed per frame (a render moves
+    nothing itself), the Fold slider scrubbing the timeline, and back to live folding."""
+    apply.load_frames(bends_frames((26, "90° R1 #1"), (33, "90° R1 #2")))
+    scene.kileido_fold = 0.0
+    flat = places()
+    scene.kileido_fold = 0.5
+    half = places()
+    scene.kileido_fold = 0.0
+    assert ("operator", "Key fold animation", "KEYFRAME") in drawn(scene), drawn(scene)
+    scene.render.fps, scene.render.fps_base, scene.frame_start, scene.frame_end = 30, 2.0, 10, 250
+    scene.render.use_lock_interface = False
+    before = (30, 2.0, 10, 250, False)
+    scene.kileido_fold_frames, scene.kileido_fold_fps = 72, 24
+    assert bpy.ops.kileido.fold_animation(action="KEY") == {"FINISHED"}
+    assert fold.keyed() and (scene.frame_start, scene.frame_end, scene.render.fps) == (1, 72, 24)
+    assert ("operator", "Re-key fold animation", "KEYFRAME_HLT") in drawn(scene), drawn(scene)
+    plan = fold._plan()
+    targets = foldmath.handle_targets(plan)
+    for frame, expected in ((1, [0.0, 0.0]), (72, targets)):
+        scene.frame_set(frame)
+        assert [g.rotation_euler.z for g in fold._grips()] == pytest_approx(expected), (frame, expected)
+    keyed_parts = [obj for obj in fold._parts() if obj.animation_data and obj.animation_data.action]
+    assert keyed_parts and len(keyed_parts) == len(fold._parts())
+    folded_at = {obj.name: obj.matrix_world.translation.copy() for obj in keyed_parts}
+    scene.frame_set(1)
+    assert any((obj.matrix_world.translation - folded_at[obj.name]).length > 1e-4 for obj in keyed_parts)  # with the board
+    scene.kileido_fold = 0.5  # the slider scrubs the timeline while keyed
+    assert scene.frame_current == 1 + round(0.5 * 71), scene.frame_current
+    assert fold._render_starts in bpy.app.handlers.render_init  # nothing moves while Blender renders
+    assert bpy.ops.kileido.fold_animation(action="CLEAR") == {"FINISHED"}
+    assert not fold.keyed() and not any(g.animation_data for g in fold._grips())
+    assert not any(obj.animation_data and obj.animation_data.action for obj in fold._parts())
+    # Cleared half way along the timeline: the parts fold live from their true flat places,
+    # not from where that frame left them; and the scene's frame settings are as before.
+    assert_places(places(), half, "parts after clearing at frame 36")
+    assert (scene.render.fps, scene.render.fps_base, scene.frame_start, scene.frame_end,
+            scene.render.use_lock_interface) == before
+    scene.kileido_fold = 0.0
+    assert_places(places(), flat, "parts flat after clearing at frame 36")
+    bpy.ops.kileido.fold_animation(action="KEY")  # keyed with the slider at 0, cleared at a middle frame: flat
+    scene.frame_set(36)
+    bpy.ops.kileido.fold_animation(action="CLEAR")
+    assert_places(places(), flat, "parts flat after clearing at frame 36 with the slider at 0")
+    bpy.ops.kileido.fold_animation(action="KEY")
+    scene.frame_set(50)
+    bpy.ops.kileido.fold_animation(action="KEY")  # keyed again from a middle frame: frame 1 is still flat
+    scene.frame_set(1)
+    assert_places(places(), flat, "parts flat at frame 1 after keying again")
+    bpy.ops.kileido.fold_animation(action="CLEAR")
+    scene.kileido_fold = 1.0  # live again: the slider turns the handles
+    assert [g.rotation_euler.z for g in fold._grips()] == pytest_approx(targets)
+    scene.kileido_fold = 0.0
+    bpy.ops.kileido.fold_animation(action="KEY")
+    scene.frame_set(36)
+    apply.load_frames(bends_frames((28, "90° R1")))  # the board changed: its keys no longer fit
+    scene.kileido_fold = 1.0
+    assert not fold.keyed() and not any(g.animation_data for g in fold._grips())
+    scene.kileido_fold = 0.0
+    assert not any(obj.get("kls_flat_matrix") is not None for obj in fold._parts())
+
+
+def pytest_approx(values, tolerance=1e-6):
+    class Near(list):
+        def __eq__(self, other):
+            return len(other) == len(self) and all(abs(a - b) <= tolerance for a, b in zip(other, self))
+    return Near(values)
 
 
 def check_twist(scene):
@@ -316,11 +448,64 @@ def check_twist(scene):
     scene.kileido_fold = 0.0
 
 
+def check_ribbon(scene):
+    """A bend whose curve runs into a twist along the same tail: one ribbon, folded by the
+    nodes as foldmath does, at either step and both."""
+    snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    mm = 1_000_000
+    drawings = (model.Drawing("zone", "User.1", "closed", ((23 * mm, -mm), (41 * mm, -mm), (41 * mm, 31 * mm),
+                                                           (23 * mm, 31 * mm))),
+                model.Drawing("bend", "User.2", "line", ((31 * mm, -mm), (31 * mm, 31 * mm))),
+                model.Drawing("bend text", "User.2", "text", ((31 * mm + 500_000, -2 * mm),), "90° R3 #1"),
+                model.Drawing("twist", "User.2", "line", ((32 * mm, 15 * mm), (40 * mm, 15 * mm))),
+                model.Drawing("twist text", "User.2", "text", ((33 * mm, 16 * mm),), "twist 60° #2"))
+    names = dict(snapshot.layer_display_names, **{"User.1": "Flex", "User.2": "Bend"})
+    snapshot = model.BoardSnapshot(snapshot.board_name, names, snapshot.tracks, snapshot.arcs, snapshot.vias,
+                                   snapshot.pads, snapshot.footprints, snapshot.zones, snapshot.outline,
+                                   snapshot.stackup, snapshot.warnings, snapshot.read_timings_ms,
+                                   snapshot.graphics, drawings)
+    apply.load_frames(b"".join(snapshot_frames(snapshot, flex=flex_checks.report(snapshot, STACK))))
+    assert state.board.flex["ribbons"] == [[0, 1]] and not state.board.flex["problems"], state.board.flex["problems"]
+    for progress in (0.5, 0.75, 1.0):
+        scene.kileido_fold = progress
+        compare_copies(lambda plan: foldmath.angles_at(plan, progress))
+    scene.kileido_fold = 0.0
+
+
+def check_switch(scene):
+    """Flex mode is off until its column's Enable: no folded copy, no handles, the tab unlit;
+    on, the tab lights and the board folds. IMS and Flex are never on together."""
+    assert not scene.kileido_flex and fold._plan() is None
+    assert columns.tab_state("FLEX") == "off"
+    column = Layout()
+    kileido._draw_flex_column(column, scene)
+    assert ("prop", "kileido_flex", "") in column.drawn, column.drawn
+    assert ("prop", "kileido_fold", "") not in column.drawn, column.drawn
+    scene.kileido_flex = True
+    assert fold._plan() is not None and columns.tab_state("FLEX") == "on"
+    column = Layout()
+    kileido._draw_flex_column(column, scene)
+    assert ("prop", "kileido_fold", "") in column.drawn, column.drawn
+    scene.kileido_ims = True  # IMS on turns Flex off, and says so in the IMS column
+    assert not scene.kileido_flex and fold._plan() is None
+    assert kileido._switched_off == {"IMS": "Flex"}, kileido._switched_off
+    scene.kileido_flex = True  # and the other way round
+    assert not scene.kileido_ims and kileido._switched_off == {"FLEX": "IMS"}, kileido._switched_off
+    scene.kileido_column = "IMS"  # the note goes with the column it was shown in
+    assert kileido._switched_off == {}
+    scene.kileido_fold = 1.0
+    scene.kileido_flex = False  # off and on again, the board comes back flat: the slider too
+    assert fold._plan() is None and scene.kileido_fold == 0.0
+    scene.kileido_column = "NONE"
+
+
 def main():
     kileido.register()
     try:
         scene = bpy.context.scene
         apply.load_frames(frames())
+        check_switch(scene)
+        scene.kileido_flex = True
         found = state.board.flex
         assert found["layers"] == ["In1.Cu", "In2.Cu"] and found["total_nm"] == 186_000, found
         assert [bend["radius_nm"] for bend in found["bends"]] == [500_000], found["bends"]
@@ -345,10 +530,17 @@ def main():
         assert "Dynamic flex needs 150× or more" in texts and any("dynamic flex needs" in t for t in texts), texts
         check_fold(scene)
         check_twist(scene)
+        check_ribbon(scene)
         check_cone(scene)
         check_steps(scene)
-        apply.load_frames(frames(flex=False))  # a board without flex: no box
+        check_animation(scene)
+        check_uninstall(scene)
+        apply.load_frames(frames(flex=False))  # a board without flex: no box, a greyed tab
         assert state.board.flex == {} and drawn(scene) == []
+        assert columns.tab_state("FLEX") == "unavailable"
+        column = Layout()
+        kileido._draw_flex_column(column, scene)
+        assert ("label", "Enable", "CHECKBOX_DEHLT") in column.drawn, column.drawn
         print("KLS_FLEX_OK")
     finally:
         kileido.unregister()

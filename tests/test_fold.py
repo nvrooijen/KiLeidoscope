@@ -55,6 +55,16 @@ def test_tags_mark_each_point_with_the_bends_it_hangs_off():
     assert list(mask) == [0, 0, 1, 1, 3]  # a strip point hangs off its parent side only
 
 
+def test_masks_hold_more_bends_than_an_int64_has_bits():
+    lines = [drawing for k in range(70) for drawing in bend(31 + k * 0.55, None)]
+    plan, _ = make_plan(*lines)
+    assert len(plan.bends) == 70
+    mask, zone_index, _ = foldmath.tags(np.array([world(69.9, 15)]), plan)
+    assert int(mask[0]) >= 1 << 63  # past what an int64 holds
+    folded = foldmath.fold(np.array([world(69.9, 15)]), mask, zone_index, [0.01] * 70, plan)
+    assert np.isfinite(folded).all()
+
+
 def test_a_quarter_fold_lifts_the_child_by_the_radius_plus_the_distance():
     plan, _ = make_plan(*bend(42, "90° R2"))
     folded = plan.bends[0]
@@ -128,6 +138,8 @@ def test_cut_planes_cross_each_strip_and_line_the_transitions():
     assert all(normal == pytest.approx(plan.bends[0].normal) for _, normal in across)
     assert across[0][0][0] == pytest.approx(world(42, 15)[0] - plan.bends[0].width / 2)
     assert across[-1][0][0] == pytest.approx(world(42, 15)[0] + plan.bends[0].width / 2)
+    wide, _ = make_plan(*bend(50, "90° R10"))  # 15.9 mm of strip: a cut every 1 mm at most, not every 10°
+    assert len(foldmath.cut_planes(wide)) == 17 + 2 * 3
 
 
 def test_board_past_the_rigid_edge_is_flex_even_outside_the_drawn_zone():
@@ -206,3 +218,88 @@ def test_steps_pieces_and_what_may_touch():
     assert foldmath.apart(plan, board_piece, far)
     assert [foldmath.piece_name(plan, piece) for piece in (board_piece, strip, far)] == [
         "the board", "bend 1", "the part past bend 2"]
+
+
+def test_a_face_is_a_strips_only_when_every_corner_is_in_it():
+    plan, _ = make_plan(*bend(42, "90° R2"))
+    half = plan.bends[0].width / 2
+    edge = world(42, 15) + plan.bends[0].normal * half  # on the cut between the strip and the far region
+    points = np.array([edge + (0, 1e-3, 0), edge + (0, -1e-3, 0), world(50, 14), world(50, 16),
+                       world(42, 14), world(42, 16)])
+    mask, zone_index, _ = foldmath.tags(points, plan)
+    assert list(zone_index) == [0, 0, -1, -1, 0, 0]  # the cut's own points carry the strip's tag
+    region_face, strip_face = (0, 1, 2, 3), (0, 1, 5, 4)
+    region_only, strip = foldmath.face_pieces(plan, points, zone_index, [region_face, strip_face])
+    assert region_only == ("region", plan.bends[0].child) and strip == ("strip", 0)
+    assert foldmath.pieces(plan, points, zone_index)[0] == ("strip", 0)  # per point it is the strip's
+    assert foldmath.face_pieces(plan, points, zone_index, []) == []
+
+
+def test_a_handle_whose_first_bend_has_no_angle_still_turns_the_others():
+    plan, _ = make_plan(*bend(42, "90° R2"), *bend(58, "-90° R2"))
+    plan.bends[0] = plan.bends[0]._replace(ratio=0.0)  # as a dome's finger of 0° would be
+    joined = plan._replace(bends=[plan.bends[0], plan.bends[1]._replace(handle=0)], handles=[[0, 1]])
+    assert foldmath.handle_targets(joined) == pytest.approx([-math.pi / 2])
+    assert foldmath.handle_angles_at(joined, 1.0) == pytest.approx([-math.pi / 2])
+    assert foldmath.bend_angles(joined, [math.pi / 2]) == pytest.approx([0.0, math.pi / 2])
+    alone = plan._replace(handles=[[0], [1]])
+    assert foldmath.handle_targets(alone) == pytest.approx([0.0, -math.pi / 2])  # no division by its ratio
+    assert foldmath.handle_angles_at(alone, 0.5) == pytest.approx([0.0, -math.pi / 4])
+
+
+RIBBON_BEND = (("User.2", "line", mm((40, 8), (40, 22))), ("User.2", "text", mm((40.5, 7)), "90° R3 #1"))
+RIBBON_TWIST = (("User.2", "line", mm((41, 15), (49, 15))), ("User.2", "text", mm((42, 16)), "twist 60° #2"))
+
+
+def _folded(plan, points, angles):
+    mask, zone_index, wrap = foldmath.tags(points, plan)
+    return foldmath.fold(points, mask, zone_index, angles, plan, wrap)
+
+
+def test_a_bend_and_a_twist_sharing_the_tail_fold_as_one_ribbon():
+    # The bend curves over x 37.6..42.4, the twist turns over x 41..49: they share 1.4 mm.
+    plan, report = make_plan(*RIBBON_BEND, *RIBBON_TWIST)
+    assert report["ribbons"] == [[0, 1]] and not report["problems"]
+    (ribbon,) = plan.ribbons.values()
+    assert (ribbon.first, ribbon.second, ribbon.bend, ribbon.twist) == (0, 1, 0, 1)
+    assert [(bending, twisting) for _, _, bending, twisting in ribbon.pieces] == [(True, False), (True, True),
+                                                                                (False, True)]
+    xs, ys = np.meshgrid(np.linspace(32, 68, 73), np.linspace(9, 21, 7))
+    points = np.array([world(x, y, z) for x, y in zip(xs.ravel(), ys.ravel()) for z in (0.62e-3, 0.69e-3)])
+    bend_only, _ = make_plan(*RIBBON_BEND)
+    twist_only, _ = make_plan(*RIBBON_TWIST)
+    # Either handle alone: just as that bend or twist folds by itself.
+    assert _folded(plan, points, [math.pi / 2, 0.0]) == pytest.approx(
+        _folded(bend_only, points, [math.pi / 2]), abs=1e-9)
+    assert _folded(plan, points, [0.0, math.pi / 3]) == pytest.approx(
+        _folded(twist_only, points, [math.pi / 3]), abs=1e-9)
+    # Both: the twist's line keeps its length, unbroken from the board through the far end.
+    line = np.array([world(x, 15) for x in np.linspace(32, 68, 3601)])
+    folded = _folded(plan, line, [math.pi / 2, math.pi / 3])
+    steps = np.linalg.norm(np.diff(folded, axis=0), axis=1)
+    assert steps == pytest.approx(np.full(len(steps), 0.01 * MM), rel=1e-6)
+    # ... and it bends and twists at once: the far end is neither the bend's nor the twist's alone.
+    far = folded[-1]
+    assert far != pytest.approx(_folded(bend_only, line[-1:], [math.pi / 2])[0], abs=1e-4)
+    assert far != pytest.approx(_folded(twist_only, line[-1:], [math.pi / 3])[0], abs=1e-4)
+
+
+def test_what_hangs_off_a_ribbon_turns_with_its_end():
+    plan, _ = make_plan(*RIBBON_BEND, *RIBBON_TWIST)
+    angles = [math.pi / 2, math.pi / 3]
+    # Across the far end of the twist (x = 49): the strip's last point and the board's first.
+    for y in (9.5, 15, 20.5):
+        inside, outside = _folded(plan, np.array([world(48.999, y), world(49.001, y)]), angles)
+        assert np.linalg.norm(inside - outside) < 1.2 * 0.002 * MM  # no step (off its line a twist stretches a little)
+    # A part sitting past it turns as the board there does.
+    matrix = foldmath.region_matrix(plan.bends[1].child, angles, plan)
+    point = world(60, 12)
+    assert (matrix @ np.append(point, 1.0))[:3] == pytest.approx(_folded(plan, point[None], angles)[0], abs=1e-9)
+
+
+def test_strips_that_share_board_otherwise_are_a_problem():
+    _, report = make_plan(*bend(40, "90° R3"), *bend(43, "90° R3"))
+    assert report["ribbons"] == []
+    assert [p["message"] for p in report["problems"]] == [
+        "Bend 1 and bend 2 share board: their curves overlap, and flex mode folds each on its own. Move them "
+        "apart or make the curves shorter; a bend and a twist across the same tail fold together"]

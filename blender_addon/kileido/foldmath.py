@@ -53,6 +53,7 @@ import numpy as np
 MIN_ANGLE = 1e-6  # radians: flatter is flat (the Geometry Nodes group keeps the radius finite with it)
 RAMP_M = 50e-6  # the slope from rigid board down to the thin flex, at their boundary
 TWIST_PITCH_M = 0.5e-3  # a twist's strip is also cut along the tail this far apart
+PIECE_M = 1e-3  # a bend's or twist's strip is cut at least this often, so a wide radius stays smooth
 NEAR_ZONE_M = 2e-3  # board this close outside a flex zone may still be flex (see `flexness`)
 UP = np.array((0.0, 0.0, 1.0))
 
@@ -96,6 +97,27 @@ class Plan(NamedTuple):
     joins: list = None  # per region: the bend joining it to its parent (None: a root)
     wrapped: dict = None  # region -> the wrap bending it or what it hangs off
     attach: dict = None  # region -> the bend it (or what it hangs off) joins a wrapped region by
+    ribbons: dict = None  # the first bend of a bend and twist sharing board -> their Ribbon
+
+
+class Ribbon(NamedTuple):
+    """A bend and a twist whose strips share a stretch of tail, folded as one (`ribbon`).
+
+    Along the tail (s, from `centre` along `along`: the twist's line) the stretch from
+    `start` to `end` is cut into `pieces` where either strip starts or stops. In each the
+    tail turns at steady rates, about the bend's axis (`along` x up) by the bend's angle over
+    its width and about `along` by the twist's angle over its length: a helix, a plain arc
+    or a plain twist. Both handles turn it; `first` hangs off the other's parent side."""
+    first: int  # the member nearer the root: its index stands for the whole ribbon
+    second: int  # the member hanging off it
+    bend: int
+    twist: int
+    centre: np.ndarray  # on the twist's line, on the flex's middle plane: s = 0
+    along: np.ndarray  # the twist's line, towards the child
+    start: float
+    end: float
+    join: float  # where `second` joins its parent: what lies on that parent (but off the strips) turns as there
+    pieces: tuple  # (s at its start, length, bend turns it, twist turns it)
 
 
 def world_xy(points_nm, origin_nm) -> np.ndarray:
@@ -146,7 +168,7 @@ def plan(report, origin_nm, heights, thickness):
     for index, bend in enumerate(bends):
         if bend.child is not None:
             joins[bend.child] = index
-    masks, depths = np.zeros(len(regions), dtype=np.int64), [0] * len(regions)
+    masks, depths = np.zeros(len(regions), dtype=mask_dtype(len(bends))), [0] * len(regions)
     for index in range(len(regions)):
         here = index
         while here is not None and parents[here] is not None and joins[here] is not None:
@@ -178,8 +200,39 @@ def plan(report, origin_nm, heights, thickness):
         return depths[bend.child] if bend.child is not None else 0
     order = sorted(range(len(bends)), key=lambda b: -depth(b))
     zones = [world_xy(zone, origin_nm) for zone in report.get("zones", ())]
+    ribbons = {}
+    for pair in report.get("ribbons", ()):
+        found = _ribbon(bends, [handles[handle][0] for handle in pair])
+        if found is not None:
+            ribbons[found.first] = found
     return Plan(bends, regions, masks, order, zones, _transitions(zones, regions), z_mid,
-                (bottom - coverlay, top + coverlay), handles, parents, joins, wrapped, attach)
+                (bottom - coverlay, top + coverlay), handles, parents, joins, wrapped, attach, ribbons)
+
+
+def mask_dtype(count):
+    """What holds a mask of `count` bends: int64 up to 62 (a dome's fingers count one each),
+    else Python ints (numpy object arrays), as wide as needed."""
+    return np.int64 if count <= 62 else object
+
+
+def _ribbon(bends, members):
+    """The Ribbon of a bend and a twist the bridge paired (`report["ribbons"]`), or None."""
+    first, second = members if bends[members[1]].parent == bends[members[0]].child else members[::-1]
+    bend, twist = (first, second) if bends[first].kind == "bend" else (second, first)
+    if bends[bend].kind != "bend" or bends[twist].kind != "twist":
+        return None
+    centre, along = bends[twist].pivot, bends[twist].normal
+
+    def span(index):
+        middle = float((bends[index].origin - centre) @ along)
+        return middle - bends[index].width / 2, middle + bends[index].width / 2
+    (b0, b1), (t0, t1) = span(bend), span(twist)
+    start, end = min(b0, t0), max(b1, t1)
+    cuts = sorted({start, end, b0, b1, t0, t1})
+    pieces = tuple((a, b - a, b0 <= (a + b) / 2 <= b1, t0 <= (a + b) / 2 <= t1)
+                   for a, b in zip(cuts, cuts[1:]) if b - a > 1e-9)
+    join = float((bends[second].hinge - centre) @ along)
+    return Ribbon(first, second, bend, twist, centre, along, start, end, join, pieces)
 
 
 UNDER_GAP_M = 20e-6  # between a wrap's overrun and the start it passes under
@@ -351,6 +404,10 @@ def tags(points, fold_plan):
         mask[strip] = fold_plan.masks[bend.parent]
         if bend.parent in wrapped:  # on a wrapped region, or hanging off one: turns as its joint does
             wrap[strip] = _joined_gamma(fold_plan, (fold_plan.attach or {}).get(bend.parent, index))
+    for first, ribbon in (fold_plan.ribbons or {}).items():  # either strip: the ribbon's, hanging off its root side
+        either = (zone == first) | (zone == ribbon.second)
+        zone[either] = first
+        mask[either] = fold_plan.masks[fold_plan.bends[first].parent]
     return mask, zone, wrap
 
 
@@ -409,7 +466,8 @@ def flexness(xy, fold_plan):
         nearest = np.argmin(reach, axis=1)
         rows = np.arange(len(points))
         # Signed distance to the nearest edge's line: positive on its flex side (its left).
-        side = (span[nearest, 0] * relative[rows, nearest, 1] - span[nearest, 1] * relative[rows, nearest, 0])             / lengths[nearest]
+        side = (span[nearest, 0] * relative[rows, nearest, 1]
+                - span[nearest, 1] * relative[rows, nearest, 0]) / lengths[nearest]
         share[near] = np.clip(side / RAMP_M, 0.0, 1.0)
     return share
 
@@ -434,7 +492,8 @@ def cut_planes(fold_plan, per_degree=10.0):
         twist = bend.kind == "twist"
         # A twisted strip is no cylinder: finer across it, and cut along it too (TWIST_PITCH_M).
         count = max(12 if twist else 6, math.ceil(abs(math.degrees(bend.target)) / (per_degree / 3 if twist
-                                                                                      else per_degree)))
+                                                                                      else per_degree)),
+                    math.ceil(bend.width / PIECE_M))
         limit = (fold_plan.regions[bend.child],) if bend.local else ()  # a dome's finger: only across it
         for k in range(count + 1):
             planes.append((bend.origin + bend.normal * (-bend.width / 2 + bend.width * k / count), bend.normal,
@@ -517,6 +576,35 @@ def rigid(bend, points, angle):
     return _world(bend, u, across, up)
 
 
+RIBBON_TURN = 1e-6  # radians a metre along its line: a ribbon piece always turns a little, so its axis is defined
+
+
+def ribbon(ribbon_, points, s, bend_angle, twist_angle, bends):
+    """Points of a Ribbon's stretch (from their flat positions) or hanging off it (wherever
+    earlier folds put them), each turned as the tail is at its `s`: the pieces after s left
+    as they are, the one it is in up to s, those before it whole, last to first. A piece
+    turns about `w` = its rates (rad/m) for its length d: a point first steps back along
+    the tail by d onto the piece's start, then turns about w through the start by |w| d,
+    and the start itself moves along the helix: the integral of the turning line over d."""
+    kappa = bend_angle / bends[ribbon_.bend].width
+    tau = twist_angle / bends[ribbon_.twist].width
+    across = np.cross(ribbon_.along, UP)  # turning the tail about it lifts it towards the top
+    out = np.array(points, dtype=np.float64)
+    s = np.asarray(s, dtype=np.float64)
+    for start, length, bending, twisting in reversed(ribbon_.pieces):
+        rates = across * (kappa if bending else 0.0) + ribbon_.along * ((tau if twisting else 0.0) + RIBBON_TURN)
+        speed = float(np.linalg.norm(rates))
+        axis = rates / speed
+        travel = np.clip(s - start, 0.0, length)
+        theta = speed * travel
+        parallel = (ribbon_.along @ axis) * axis
+        square = ribbon_.along - parallel
+        helix = (np.outer(travel, parallel) + np.outer(np.sin(theta) / speed, square)
+                 + np.outer((1 - np.cos(theta)) / speed, np.cross(axis, square)))
+        out = rotate(out - np.outer(travel, ribbon_.along), ribbon_.centre + start * ribbon_.along, axis, theta) + helix
+    return out
+
+
 def _cone(bend, angle):
     """(axis, psi, turn sign) of a cone at its handle's `angle` (see the module)."""
     psi = bend.alpha + abs(angle)
@@ -548,9 +636,26 @@ def fold(points, mask, zone, angles, fold_plan, wrap=None):
     """Folded positions of flat `points` (n, 3) with their `tags`, each bend at `angles`."""
     out = np.array(points, dtype=np.float64)
     wrap = np.zeros(len(out)) if wrap is None else np.asarray(wrap, dtype=np.float64)
+    ribbons = fold_plan.ribbons or {}
+    seconds = {ribbon.second for ribbon in ribbons.values()}
     for index in fold_plan.order:
         bend = fold_plan.bends[index]
         beyond = (mask >> index) & 1 == 1
+        if index in seconds:  # folded with its ribbon's first
+            continue
+        if index in ribbons:
+            ribbon_ = ribbons[index]
+            in_strip = zone == index
+            past = (mask >> ribbon_.second) & 1 == 1  # past both
+            flat = np.asarray(points, dtype=np.float64)
+            s = np.where(in_strip, np.clip((flat - ribbon_.centre) @ ribbon_.along, ribbon_.start, ribbon_.end),
+                         np.where(past, ribbon_.end, ribbon_.join))
+            moving = in_strip | beyond
+            if moving.any():
+                start = np.where(in_strip[:, None], flat, out)
+                out[moving] = ribbon(ribbon_, start[moving], s[moving], angles[ribbon_.bend], angles[ribbon_.twist],
+                                     fold_plan.bends)
+            continue
         if bend.closed:
             if beyond.any():
                 out[beyond] = wrapped(bend, out[beyond], wrap[beyond], angles[index])
@@ -629,15 +734,22 @@ def bend_angles(fold_plan, handle_angles):
 
 def handle_targets(fold_plan):
     """Each handle's angle when folded as KiCad says."""
-    return [fold_plan.bends[members[0]].target / fold_plan.bends[members[0]].ratio if members else 0.0
-            for members in fold_plan.handles]
+    return _handle_angles(fold_plan, [bend.target for bend in fold_plan.bends])
 
 
 def handle_angles_at(fold_plan, progress, steps=None):
     """Each handle's angle at `progress` (`angles_at`)."""
-    angles = angles_at(fold_plan, progress, steps)
-    return [angles[members[0]] / fold_plan.bends[members[0]].ratio if members else 0.0
-            for members in fold_plan.handles]
+    return _handle_angles(fold_plan, angles_at(fold_plan, progress, steps))
+
+
+def _handle_angles(fold_plan, angles):
+    """Each handle's angle from its bends' (`bend_angles` the other way). A bend of ratio 0
+    (a dome's finger with no angle) stays flat whatever its handle does, so it says nothing."""
+    out = []
+    for members in fold_plan.handles:
+        turning = next((k for k in members if fold_plan.bends[k].ratio), None)
+        out.append(angles[turning] / fold_plan.bends[turning].ratio if turning is not None else 0.0)
+    return out
 
 
 def steps(fold_plan):
@@ -660,6 +772,22 @@ def pieces(fold_plan, points, zone):
     return [("strip", int(z)) if z >= 0 else ("region", int(r)) for z, r in zip(zone, region)]
 
 
+def face_pieces(fold_plan, points, zone, faces):
+    """Per face (a tuple of point indices): ("strip", bend) when every corner is tagged
+    for that strip, else ("region", r) of its centre. A corner on the cut between a strip
+    and a region carries the strip's tag; the region's face beside it is still the region's."""
+    if not len(faces):
+        return []
+    centres = np.array([points[list(face), :2].mean(axis=0) for face in faces])
+    regions = regions_of(centres, fold_plan.regions)
+    out = []
+    for face, region in zip(faces, regions):
+        zones = zone[list(face)]
+        out.append(("strip", int(zones[0])) if zones[0] >= 0 and (zones == zones[0]).all()
+                   else ("region", int(region)))
+    return out
+
+
 def apart(fold_plan, first, second):
     """Two pieces that may not touch: not the same, nor a strip and a region it joins. The
     regions either side of a bend meet only through its strip: a flap folded back onto the
@@ -673,6 +801,8 @@ def apart(fold_plan, first, second):
         if not bend.closed and bend.parent in wrapped and wrapped[bend.parent] != index:
             wrap = ("strip", wrapped[bend.parent])  # its parent is all wrap: it joins that
             pairs += [(("strip", index), wrap), (("region", bend.child), wrap)]
+        if index in (fold_plan.ribbons or {}):  # its strips are one, and reach the far region too
+            pairs.append((("strip", index), ("region", fold_plan.bends[fold_plan.ribbons[index].second].child)))
         for a, b in pairs:
             joined |= {(a, b), (b, a)}
     return (first, second) not in joined

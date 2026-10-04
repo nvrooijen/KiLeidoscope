@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="578" viewBox="0 0 680 578" role="img">
+<title>KiLeidoscope flex mode</title>
+<desc>KiCad's live API gives the copper and the drawings and texts on the Flex, Bend and Stiffener layers; a copy of the board file gives the polyimide stack-up; KiCad's own Python computes hatched fills. The bridge builds the flex model, runs the flex checks and sends a flex frame with every snapshot. The Blender add-on plans the fold, makes folded copies of the board bent in Geometry Nodes by handles, places the parts and stiffeners, colours the coverlay and polyimide, lists the checks in the panel, and maps clicks and the cut plane back to the flat board.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; dominant-baseline: central; }
+.th { font-size: 14px; font-weight: 500; }
+.ts { font-size: 12px; font-weight: 400; }
+.lbl { fill: #B7BDC8; }
+.arr { stroke: #9198A1; stroke-width: 1.5; fill: none; }
+.group { stroke: #9198A1; stroke-width: 0.5; stroke-dasharray: 4 4; fill: none; }
+</style>
+</defs>
+<rect x="30" y="14" width="620" height="86" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="30">KiCad</text>
+<rect x="30" y="110" width="620" height="130" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="126">Bridge</text>
+<rect x="30" y="262" width="620" height="296" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="278">Blender add-on</text>
+<rect x="110" y="30" width="160" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="190" y="50" text-anchor="middle" fill="#FFFFFF">KiCad's Python</text>
+<text class="ts" x="190" y="68" text-anchor="middle" fill="#D6DDF5">hatched fills (pcbnew)</text>
+<rect x="290" y="30" width="160" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="370" y="50" text-anchor="middle" fill="#FFFFFF">KiCad, live</text>
+<text class="ts" x="370" y="68" text-anchor="middle" fill="#D6DDF5">copper, drawings, texts</text>
+<rect x="470" y="30" width="160" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="550" y="50" text-anchor="middle" fill="#FFFFFF">Board file copy</text>
+<text class="ts" x="550" y="68" text-anchor="middle" fill="#D6DDF5">polyimide stack-up</text>
+<rect x="45" y="140" width="132" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="111" y="160" text-anchor="middle" fill="#173404">Hatcher</text>
+<text class="ts" x="111" y="178" text-anchor="middle" fill="#3B6D11">hatch.py</text>
+<rect x="197" y="140" width="132" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="263" y="160" text-anchor="middle" fill="#173404">Flex model</text>
+<text class="ts" x="263" y="178" text-anchor="middle" fill="#3B6D11">flex.py</text>
+<rect x="349" y="140" width="132" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="415" y="160" text-anchor="middle" fill="#173404">Flex checks</text>
+<text class="ts" x="415" y="178" text-anchor="middle" fill="#3B6D11">flex_checks.py</text>
+<rect x="501" y="140" width="132" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="567" y="160" text-anchor="middle" fill="#173404">Frames</text>
+<text class="ts" x="567" y="178" text-anchor="middle" fill="#3B6D11">protocol.py</text>
+<rect x="60" y="292" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="145" y="312" text-anchor="middle" fill="#412402">Fold plan</text>
+<text class="ts" x="145" y="330" text-anchor="middle" fill="#633806">foldmath.py</text>
+<rect x="255" y="292" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="312" text-anchor="middle" fill="#412402">Folded copies</text>
+<text class="ts" x="340" y="330" text-anchor="middle" fill="#633806">fold.py</text>
+<rect x="450" y="292" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="535" y="312" text-anchor="middle" fill="#412402">Panel</text>
+<text class="ts" x="535" y="330" text-anchor="middle" fill="#633806">Flex column, checks</text>
+<rect x="45" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="111" y="420" text-anchor="middle" fill="#412402">Geometry Nodes</text>
+<text class="ts" x="111" y="438" text-anchor="middle" fill="#633806">KLS Fold modifier</text>
+<rect x="197" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="263" y="420" text-anchor="middle" fill="#412402">Handles</text>
+<text class="ts" x="263" y="438" text-anchor="middle" fill="#633806">KLS bend 1, 2, ...</text>
+<rect x="349" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="415" y="420" text-anchor="middle" fill="#412402">Parts, stiffeners</text>
+<text class="ts" x="415" y="438" text-anchor="middle" fill="#633806">fold.py</text>
+<rect x="501" y="400" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="567" y="420" text-anchor="middle" fill="#412402">Materials</text>
+<text class="ts" x="567" y="438" text-anchor="middle" fill="#633806">coverlay, polyimide</text>
+<rect x="45" y="486" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="111" y="506" text-anchor="middle" fill="#412402">Flat lookup</text>
+<text class="ts" x="111" y="524" text-anchor="middle" fill="#633806">clicks, cut plane</text>
+<rect x="197" y="486" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="263" y="506" text-anchor="middle" fill="#412402">Collision check</text>
+<text class="ts" x="263" y="524" text-anchor="middle" fill="#633806">per step</text>
+<line x1="190" y1="86" x2="115" y2="138" class="arr" marker-end="url(#arrow)"/>
+<line x1="370" y1="86" x2="255" y2="138" class="arr" marker-end="url(#arrow)"/>
+<line x1="550" y1="86" x2="285" y2="138" class="arr" marker-end="url(#arrow)"/>
+<line x1="329" y1="168" x2="347" y2="168" class="arr" marker-end="url(#arrow)"/>
+<line x1="481" y1="168" x2="499" y2="168" class="arr" marker-end="url(#arrow)"/>
+<path d="M111 196 V218 H567 V198" class="arr" marker-end="url(#arrow)"/>
+<path d="M600 196 V250 H145 V290" class="arr" marker-end="url(#arrow)"/>
+<line x1="230" y1="320" x2="253" y2="320" class="arr" marker-end="url(#arrow)"/>
+<line x1="450" y1="320" x2="427" y2="320" class="arr" marker-end="url(#arrow)"/>
+<line x1="145" y1="348" x2="115" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="330" y1="348" x2="268" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="345" y1="348" x2="410" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="360" y1="348" x2="560" y2="398" class="arr" marker-end="url(#arrow)"/>
+<line x1="111" y1="456" x2="111" y2="484" class="arr" marker-end="url(#arrow)"/>
+<line x1="263" y1="456" x2="263" y2="484" class="arr" marker-end="url(#arrow)"/>
+</svg>

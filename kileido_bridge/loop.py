@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import replace
 
-from . import flex_checks, protocol
+from . import flex_checks, hatch, protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
@@ -67,8 +67,13 @@ class BridgeRuntime:
         self.appearance = {}
         self.appearance_sig = None
         self.flex = None  # flex mode's panel content as Blender last received it
+        self.flex_error = ""  # why the flex model last failed, so it is said once
         self.copy = live_copy or LiveBoardCopy()
         self.copy_enabled = True
+        self.copy_text = ""  # the board text last written to the copy (before its hatches are baked in)
+        self.hatcher = hatch.Hatcher()  # KiCad's own hatches of hatched shapes, worked out in the background
+        self.hatch_version = 0  # the hatcher's result the snapshot and copy carry
+        self.hatch_error = ""  # the hatcher's error as the status frame last said it
         # Selection highlight
         self.highlight = ((), (), (), ())
         self.sticky_nets = frozenset()  # highlighted nets, kept through routing
@@ -86,9 +91,10 @@ class BridgeRuntime:
     # --- Connection state ---------------------------------------------------------------
 
     def _status_frame(self, **extra) -> bytes:
+        self.hatch_error = self.hatcher.error
         return protocol.encode_frame({"type": "status", "kicad": self.status, "revision": self.revision,
                                       **extra, "error": self.error, "new_kicad": self.new_kicad,
-                                      "outdated_pads": self.outdated_pads})
+                                      "outdated_pads": self.outdated_pads, "hatch_error": self.hatch_error})
 
     def _status(self, value, last_read_ms=None, error=""):
         if value == self.status and error == self.error:
@@ -150,6 +156,7 @@ class BridgeRuntime:
             self._disconnect_reader(error=f"{type(exc).__name__}: {exc}")
             return
         self.timeout_count = 0
+        result = self._with_hatches(result)
         snapshot = result.snapshot
         board_changed = self.snapshot is None or snapshot.board_name != self.snapshot.board_name
         if board_changed:
@@ -166,7 +173,7 @@ class BridgeRuntime:
             source = self._appearance_source()
             self.appearance_sig = appearance_signature(source)  # stamp before reading
             self.appearance = read_appearance(source)
-            self.flex = flex_checks.report(snapshot, self.appearance.get("flex_stack", {}))
+            self.flex = self._flex_report(snapshot)
         self.snapshot = snapshot
         frames = self._geometry_frames(result, full_snapshot)
         if not full_snapshot:
@@ -176,7 +183,7 @@ class BridgeRuntime:
             appearance = self._appearance_frames()
             frames += appearance + self._flex_frames(snapshot, bool(result.dirty or appearance))
         frames += self._selection_frames(snapshot, force=full_snapshot)
-        if result.outdated_pads != self.outdated_pads:
+        if result.outdated_pads != self.outdated_pads or self.hatcher.error != self.hatch_error:
             self.outdated_pads = result.outdated_pads
             frames.append(self._status_frame())
         self._send(frames, snapshot=full_snapshot)
@@ -189,6 +196,7 @@ class BridgeRuntime:
         self.board_path = saved_board_path(board)
         self.tools = kicad_tools(board) if board is not None else {}
         set_kicad_version(self.tools.get("kicad_version"))
+        self.hatcher.kicad_cli = self.tools.get("kicad_cli", "")
         self.copy.target(snapshot.board_name, self.board_path)
         self.copy_enabled = True
 
@@ -208,11 +216,26 @@ class BridgeRuntime:
                                         appearance=self.appearance,
                                         export=self._export(), flex=self.flex)
 
+    def _flex_report(self, snapshot) -> dict | None:
+        """Flex mode's report; one that says so (an error in its problems) when the model
+        fails on this board, so a flex bug never disconnects KiCad."""
+        stack = self.appearance.get("flex_stack", {})
+        try:
+            report = flex_checks.report(snapshot, stack)
+        except Exception as exc:
+            error = f"Flex mode could not read this board ({type(exc).__name__}: {exc}); please report it"
+            if error != self.flex_error:
+                self.flex_error = error
+                self._status(self.status, error=error)
+            return flex_checks.error_report(error, stack)
+        self.flex_error = ""
+        return report
+
     def _flex_frames(self, snapshot, changed: bool) -> list[bytes]:
         """Flex mode's checks again after an edit (or a stackup change in the board file)."""
         if not changed:
             return []
-        report = flex_checks.report(snapshot, self.appearance.get("flex_stack", {}))
+        report = self._flex_report(snapshot)
         if report == self.flex:
             return []
         self.flex = report
@@ -245,7 +268,7 @@ class BridgeRuntime:
         except Exception:
             return  # also busy for text (a modal dialog), or no board
         if self.copy_enabled and self.copy.path is not None:
-            self.copy.write(text, now, self.board_path)  # mask/silkscreen overlays follow too
+            self._write_copy(text, now)  # mask/silkscreen overlays follow too
         tracks, arcs, vias = copper_items(text)
         dirty = _copper_changes(self.snapshot, tracks, arcs, vias)
         frames = []
@@ -326,7 +349,31 @@ class BridgeRuntime:
             if not self.copy.path.is_file():
                 self.copy_enabled = False  # this KiCad cannot serialize boards; use the saved file
             return  # otherwise keep the last good copy and retry later
-        self.copy.write(text, now, self.board_path)
+        self._write_copy(text, now)
+
+    def _write_copy(self, text: str, now: float):
+        """The copy as KiCad gives it, with the hatches of its hatched shapes baked in
+        (kicad-cli plots them as their outlines alone; `hatch`)."""
+        self.copy_text = text
+        self.hatcher.want(text)
+        self.copy.write(hatch.bake(text, self.hatcher.shapes), now, self.board_path)
+
+    def _with_hatches(self, result: PollResult) -> PollResult:
+        """The reader's snapshot with the hatches in its copper graphics (IPC reports a
+        hatched shape as unfilled). New hatches from the background mark those layers
+        changed, and the copy takes them too."""
+        version, shapes = self.hatcher.result()
+        snapshot = result.snapshot
+        if shapes:
+            snapshot = replace(snapshot, graphics=hatch.apply(snapshot.graphics, shapes))
+        dirty = result.dirty
+        if version != self.hatch_version:
+            self.hatch_version = version
+            before = self.snapshot.graphics if self.snapshot is not None else ()
+            dirty = dirty | {(graphic.layer, "graphics") for graphic in (*before, *snapshot.graphics)}
+            if self.copy_text and self.copy_enabled and self.copy.path is not None:
+                self.copy.write(hatch.bake(self.copy_text, shapes), self.clock(), self.board_path)
+        return replace(result, snapshot=snapshot, dirty=dirty)
 
     def _appearance_source(self) -> str:
         if self.copy_enabled and self.copy.path is not None and self.copy.path.is_file():

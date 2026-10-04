@@ -20,10 +20,13 @@ KiLeidoscope is fully open source and in early development; feedback and contrib
 
 
 <p align="center">
-  <img src="assets/xray-wipe.gif" width="680" alt="A differential pair selected in KiCad, highlighted red and blue in Blender; a slider wipes between the normal render and X-ray mode, where everything but the pair turns see-through grey.">
+  <img src="assets/xray-wipe.gif" width="440" align="middle" alt="A differential pair selected in KiCad, highlighted red and blue in Blender; a slider wipes between the normal render and X-ray mode, where everything but the pair turns see-through grey.">
+  &nbsp;&nbsp;
+  <img src="assets/flex_sweep_kicad.gif" width="300" align="middle" alt="A flex LED ring. Left, in KiCad: the flat board with its wrap and dome marks on the Bend layer and a Coverlay white text. Right, in Blender: the same board wrapping into a cone and its LED fingers curling into a dome as the fold animation plays.">
 </p>
-<p align="center"><sub>A differential pair selected in KiCad, with and without X-ray mode.<br>
-Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2).</sub></p>
+<p align="center"><sub>Left: a differential pair selected in KiCad, with and without X-ray mode.
+Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2).<br>
+Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Bend layer, folding in Blender. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
 
 ## Features
 
@@ -34,6 +37,7 @@ Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> b
 - Per-layer visibility, X-ray mode and adjustable layer thickness.
 - View-only boards: save a board as a `.blend` package, place several side by side and check them for collisions. In a future update, Linux users will be able to control multiple boards simultaneously in the same Blender UI, allowing for true multi-PCB assemblies. 
 - IMS boards: a 2-layer board drawn on its aluminum or copper base, the thin epoxy under F.Cu, in 3D and in the cross section, with warnings for vias and plated holes that would short to the base. See the [IMS guide](docs/ims.md).
+- Flex and rigid-flex boards (beta): bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 
 <p align="center">
   <img src="assets/collisions.png" width="290" align="middle" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
@@ -47,12 +51,18 @@ Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> b
 Right: the cut plane opens the board and shows its cross section, with each via drawn as KiCad has it set. See the <a href="docs/cut-plane.md">cut plane guide</a>.</sub></p>
 
 <p align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/IMS_dark_web.png">
-  <img src="assets/IMS_light_web.png" width="680" alt="An LED board on a copper base: four large LED packages, copper pads and mounting holes on a white solder mask, the copper base showing along the board's edges and inside the holes. Labels point to the insulated metal substrate, the copper or aluminum base, the different metal finishes and a dashed cross-sectional view line.">
-</picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/IMS_dark_web.png">
+    <img src="assets/IMS_light_web.png" width="360" align="middle" alt="An LED board on a copper base: four large LED packages, copper pads and mounting holes on a white solder mask, the copper base showing along the board's edges and inside the holes. Labels point to the insulated metal substrate, the copper or aluminum base, the different metal finishes and a dashed cross-sectional view line.">
+  </picture>
+  &nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/FlexAnnotated_dark_web.png">
+    <img src="assets/FlexAnnotated_light_web.png" width="450" align="middle" alt="Two views of a folded flex board. Left: the flex template with amber coverlay, a body with mounting holes and a tail that bends and twists, ending in gold ZIF contacts. Right: the same board from below, its body on a steel stiffener with holes, its tail with a cross-hatched ground. Labels: KiCad synchronized design, Blender rendering and flexing; flex modes (bending, twisting, cones); coverlay (amber, black, white); stiffeners (steel, FR4, polyimide).">
+  </picture>
 </p>
-<p align="center"><sub>IMS mode: an LED board on a copper base in Realistic mode. In KiCad it is a plain 2-layer board; KiLeidoscope draws its metal base. See the <a href="docs/ims.md">IMS guide</a>.</sub></p>
+<p align="center"><sub>Left: IMS mode: an LED board on a copper base in Realistic mode. In KiCad it is a plain 2-layer board; KiLeidoscope draws its metal base. See the <a href="docs/ims.md">IMS guide</a>.<br>
+Right: flex mode (beta): the flex template folded in Blender from a few marks on its Bend and Stiffener layers in KiCad, with its coverlay and stiffeners. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
 
 ## Architecture
 

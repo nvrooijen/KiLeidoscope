@@ -58,11 +58,12 @@ from .model import BoardSnapshot, Drawing, Point, Ring
 
 LAYER_NAMES = frozenset({"flex", "bend", "stiffener"})  # casefolded
 SHORT_NM = 100_000  # a bend line may stop this short of the board edge
+JOIN_NM = 10_000  # lines whose ends are this close join into one shape (KiCad's Edge.Cuts tolerance)
 STRAIGHT_NM = 10_000  # how far a bend line's points may stray from straight
 LABEL_REACH_NM = 5_000_000  # a text further than this from a bend or stiffener labels neither
-SIDE_STEP_NM = 50_000
+SIDE_STEP_NM = 50_000  # off a bend's chord, to find the regions either side
 AREA_EDGE_NM = 500_000  # a bend area's side across the flex: its middle at least this far inside the board
-PARALLEL_DEG = 1.0  # a bend area's sides closer than this to parallel make a bend, not a cone  # off a bend's chord, to find the regions either side
+PARALLEL_DEG = 1.0  # a bend area's sides closer than this to parallel make a bend, not a cone
 
 COVERLAY_NM = 50_000  # per side: 25 um polyimide film and 25 um adhesive, the usual coverlay
 # Minimum bend radius over flex thickness by flex copper layers (IPC-2223's usual figures):
@@ -73,6 +74,7 @@ DYNAMIC_RATIO = {1: 100, 2: 150}
 DEFAULT_ANGLE = 90.0
 DEFAULT_STIFFENER = ("FR4", 200_000, "bottom")
 COVERLAYS = {"amber": "AMBER", "yellow": "AMBER", "orange": "AMBER", "black": "BLACK", "white": "WHITE"}
+NO_OUTLINE = "The board has no outline yet, so this mark is left flat"
 
 _NUMBER = r"([+-]?\d+(?:[.,]\d+)?)"
 _ANGLE = re.compile(rf"{_NUMBER}\s*(?:°|º|deg(?:rees?)?)", re.I)
@@ -85,7 +87,7 @@ DEFAULT_WRAP = 360.0
 DEFAULT_DOME = 90.0  # at the tips, for a dome text with neither radius nor angle
 _LONE = re.compile(rf"(?<![\w.,#]){_NUMBER}(?![\w.,])")
 _THICKNESS = re.compile(r"(\d+(?:[.,]\d+)?)\s*(mm|µm|um)\b", re.I)
-_BARE_THICKNESS = re.compile(r"(?<![\w.,#])(\d*[.,]\d+|\d+)(?![\w.,])")
+_BARE_THICKNESS = re.compile(r"(?<![\w.,#-])(\d*[.,]\d+|\d+)(?![\w.,])")  # not the 4 of FR-4
 _SIDE = re.compile(r"\b(top|bottom)\b", re.I)
 _STEP = re.compile(r"#\s*(\d+)")
 
@@ -161,6 +163,7 @@ class Stiffener:
     thickness_nm: int | None
     side: str  # "top" or "bottom"
     assumed: tuple[str, ...] = ()  # "material", "thickness", "side": what its text left out
+    holes: tuple[Ring, ...] = ()  # openings drawn inside it, and the board's holes through it
 
 
 @dataclass(frozen=True)
@@ -293,6 +296,7 @@ def build(snapshot: BoardSnapshot, stack: dict) -> FlexModel | None:
         name = snapshot.layer_display_names.get(drawing.layer, "").casefold()
         if name in found:
             found[name].append(drawing)
+    found = {name: _join_loops(drawings) for name, drawings in found.items()}
     if not stack and not any(found.values()):
         return None
     problems: list[Problem] = []
@@ -308,7 +312,7 @@ def build(snapshot: BoardSnapshot, stack: dict) -> FlexModel | None:
     if unknown is not None:
         problems.append(Problem(f'"{unknown}" names no coverlay colour KiLeidoscope knows (amber, black, white): '
                                 f'shown as amber', level="note"))
-    rings = [ring for polygon in snapshot.outline.polygons for ring in polygon[:1]]
+    rings, holes = _outline_rings(snapshot)
     copper = {entry.name for entry in snapshot.stackup.layers if entry.type == "copper"}
     if not zones and stack and copper and copper <= set(stack.get("layers", ())):
         # Pure flex (every copper layer in the flex stack): the whole board is flex.
@@ -316,19 +320,28 @@ def build(snapshot: BoardSnapshot, stack: dict) -> FlexModel | None:
     layers = tuple(stack.get("layers", ()))
     thickness = int(stack.get("thickness_nm", 0))
     radius = default_radius_nm(thickness + 2 * COVERLAY_NM, len(layers)) if layers else 1_000_000
-    bends = _bends(found["bend"], zones, rings, problems, radius, thickness)
+    bends = _bends(found["bend"], zones, rings, holes, problems, radius, thickness)
     regions = _regions(rings, bends)
     bends = [_dome_fingers(bend, index, bends, regions, problems, thickness) if bend.kind == "dome" else bend
              for index, bend in enumerate(bends)]
-    stiffeners = _stiffeners(found["stiffener"], problems)
+    stiffeners = _stiffeners(found["stiffener"], problems, snapshot, holes)
     return FlexModel(layers, thickness, tuple(zones), tuple(bends), tuple(regions), tuple(stiffeners),
                      tuple(problems), coverlay)
 
 
+def _outline_rings(snapshot: BoardSnapshot) -> tuple[list[Ring], list[Ring]]:
+    """The board's rings (each outline polygon's outer one: the reader lists a cutout as a
+    polygon of its own) and the holes among them: rings inside another, and polygons' holes."""
+    rings = [ring for polygon in snapshot.outline.polygons for ring in polygon[:1]]
+    holes = [ring for polygon in snapshot.outline.polygons for ring in polygon[1:]]
+    holes += [ring for ring in rings if sum(_inside(ring[0], other) for other in rings if other is not ring) % 2 == 1]
+    return rings, holes
+
+
 # --- Bends ----------------------------------------------------------------------------------
 
-def _bends(drawings: list[Drawing], zones: list[Ring], rings: list[Ring], problems: list[Problem],
-           default_radius: int, thickness_nm: int) -> list[Bend]:
+def _bends(drawings: list[Drawing], zones: list[Ring], rings: list[Ring], holes: list[Ring],
+           problems: list[Problem], default_radius: int, thickness_nm: int) -> list[Bend]:
     lines = [drawing for drawing in drawings if drawing.kind == "line"]
     texts = [drawing for drawing in drawings if drawing.kind == "text"]
     areas = [drawing for drawing in drawings if drawing.kind == "closed"]
@@ -354,7 +367,7 @@ def _bends(drawings: list[Drawing], zones: list[Ring], rings: list[Ring], proble
             if found is not None:
                 bends.append(found)
             continue
-        found = _area_bend(area, label, zones, rings, problems, thickness_nm)
+        found = _area_bend(area, label, zones, rings, holes, problems, thickness_nm)
         if found is not None:
             if any(_segments_cross((found.start, found.end), cut) for bend in bends for cut in bend.cuts):
                 problems.append(Problem("Two bends cross; this one is left flat", area.points[0]))
@@ -369,14 +382,16 @@ def _bends(drawings: list[Drawing], zones: list[Ring], rings: list[Ring], proble
         middle = _rounded(_lerp(start, end, 0.5))
         label = texts[labels[line_index]] if line_index in labels else None
         if label is not None and _DOME.search(label.text):
-            found = _dome(line, label, zones, rings, problems)
+            found = _dome(line, label, rings, holes, problems)
             if found is not None:
                 bends.append(found)
             continue
-        if start == end or any(_segment_distance(p, start, end) > STRAIGHT_NM for p in line.points):
+        if start == end:
+            problems.append(Problem("A bend line has no length", middle))
+            continue
+        if any(_segment_distance(p, start, end) > STRAIGHT_NM for p in line.points):
             problems.append(Problem("A bend must be one straight line", middle))
             continue
-        label = texts[labels[line_index]] if line_index in labels else None
         twist = label is not None and _TWIST.search(label.text) is not None
         if twist:
             angle, radius = parse_twist(label.text), 0
@@ -384,16 +399,19 @@ def _bends(drawings: list[Drawing], zones: list[Ring], rings: list[Ring], proble
             length = math.dist(start, end)
             across = (-(end[1] - start[1]) / length, (end[0] - start[0]) / length)  # square to the twist line
             far = 1e10  # 10 m: past any board, so the chord is wherever the board's edges are
-            chord = _chord(rings, zones, (middle[0] - across[0] * far, middle[1] - across[1] * far),
+            chord = _chord(rings, holes, (middle[0] - across[0] * far, middle[1] - across[1] * far),
                            (middle[0] + across[0] * far, middle[1] + across[1] * far), problems)
-            if chord is not None and not any(all(_inside(_lerp(start, end, f / 10), zone) for f in range(11))
-                                             for zone in zones):
-                problems.append(Problem("A twist must lie inside a flex zone; this one reaches rigid board", middle))
+            samples = [_lerp(start, end, f / 10) for f in range(1, 10)]  # not its ends: they may touch an edge
+            if chord is not None and not any(all(_inside(point, zone) for point in samples) for zone in zones):
+                off_board = any(not any(_inside(point, ring) for ring in rings) for point in samples)
+                problems.append(Problem("A twist must lie on the board; this one runs past its edge" if off_board
+                                        else "A twist must lie inside a flex zone; this one reaches rigid board",
+                                        middle))
                 continue
         else:
             angle, radius = (parse_bend(label.text) if label else None) or (None, None)
             assumed = tuple(part for part, value in (("angle", angle), ("radius", radius)) if value is None)
-            chord = _chord(rings, zones, start, end, problems)
+            chord = _chord(rings, holes, start, end, problems)
         angle = DEFAULT_ANGLE if angle is None else angle
         radius = default_radius if radius is None else radius
         if chord is None:
@@ -417,10 +435,13 @@ def _bends(drawings: list[Drawing], zones: list[Ring], rings: list[Ring], proble
     return bends
 
 
-def _area_bend(area: Drawing, label: Drawing | None, zones: list[Ring], rings: list[Ring],
+def _area_bend(area: Drawing, label: Drawing | None, zones: list[Ring], rings: list[Ring], holes: list[Ring],
                problems: list[Problem], thickness_nm: int) -> Bend | None:
     """A bend drawn as its area: a bend between parallel sides, else a cone (see the module)."""
     where = area.points[0]
+    if not rings:
+        problems.append(Problem(NO_OUTLINE, where))
+        return None
     sides = []
     for p, q in _edges(area.points):
         middle = _lerp(p, q, 0.5)
@@ -456,7 +477,7 @@ def _area_bend(area: Drawing, label: Drawing | None, zones: list[Ring], rings: l
         direction = (middle1[0] - middle0[0], middle1[1] - middle0[1])
         length = math.hypot(*direction)
         centre = _lerp(middle0, middle1, 0.5)
-        chord = _chord(rings, zones, (centre[0] - direction[0] / length * far, centre[1] - direction[1] / length * far),
+        chord = _chord(rings, holes, (centre[0] - direction[0] / length * far, centre[1] - direction[1] / length * far),
                        (centre[0] + direction[0] / length * far, centre[1] + direction[1] / length * far), problems)
         if chord is None:
             return None
@@ -476,7 +497,7 @@ def _area_bend(area: Drawing, label: Drawing | None, zones: list[Ring], rings: l
     centre = _lerp(_lerp(*sides[0], 0.5), _lerp(*sides[1], 0.5), 0.5)
     # The chord that splits the board: the middle generator, along the bisector, across the flex.
     along = (bisector[0] / size, bisector[1] / size)
-    chord = _chord(rings, zones, (centre[0] - along[0] * far, centre[1] - along[1] * far),
+    chord = _chord(rings, holes, (centre[0] - along[0] * far, centre[1] - along[1] * far),
                    (centre[0] + along[0] * far, centre[1] + along[1] * far), problems)
     if chord is None:
         return None
@@ -501,12 +522,18 @@ def _wrap(area: Drawing, label: Drawing, rings: list[Ring], problems: list[Probl
     where = ring[0]
     if count < 3:
         return None
+    if not rings:
+        problems.append(Problem(NO_OUTLINE, where))
+        return None
     lengths = [math.dist(ring[k], ring[(k + 1) % count]) for k in range(count)]
     tip_index = max(range(count), key=lambda k: min(lengths[k - 1], lengths[k]))
     tip = ring[tip_index]
     first, second = ring[tip_index - 1], ring[(tip_index + 1) % count]
     a = (first[0] - tip[0], first[1] - tip[1])
     b = (second[0] - tip[0], second[1] - tip[1])
+    if not (math.hypot(*a) and math.hypot(*b)):
+        problems.append(Problem("A wrap's wedge needs two sides from its tip", where))
+        return None
     opening = math.atan2(abs(a[0] * b[1] - a[1] * b[0]), a[0] * b[0] + a[1] * b[1])
     turn = (tip[0] - first[0]) * (second[1] - tip[1]) - (tip[1] - first[1]) * (second[0] - tip[0])
     convex = turn * _area(ring) > 0
@@ -532,7 +559,7 @@ def _wrap(area: Drawing, label: Drawing, rings: list[Ring], problems: list[Probl
                 ((tip, first), (tip, second)), tip, alpha, psi, wide, closed=True)
 
 
-def _dome(line: Drawing, label: Drawing, zones: list[Ring], rings: list[Ring],
+def _dome(line: Drawing, label: Drawing, rings: list[Ring], holes: list[Ring],
           problems: list[Problem]) -> Bend | None:
     """A dome (see the module): a finger wherever its line runs over the board, its chord
     square to the finger through the middle of where the line crosses it."""
@@ -566,7 +593,7 @@ def _dome(line: Drawing, label: Drawing, zones: list[Ring], rings: list[Ring],
         across = (-along[1] / size, along[0] / size)
         middle = _lerp(p, q, 0.5)
         reach = 3 * math.dist(p, q)
-        chord = _chord(rings, zones, (middle[0] - across[0] * reach, middle[1] - across[1] * reach),
+        chord = _chord(rings, holes, (middle[0] - across[0] * reach, middle[1] - across[1] * reach),
                        (middle[0] + across[0] * reach, middle[1] + across[1] * reach), problems)
         if chord is not None:
             fingers.append(Finger(*chord))
@@ -585,11 +612,7 @@ def _dome_fingers(dome: Bend, index: int, bends: list[Bend], regions: list[Regio
     half = (thickness_nm + 2 * COVERLAY_NM) / 2
     text_radius = dome.radius_nm or None
     text_angle = dome.angle_deg if dome.angle_deg or text_radius is None else None
-    wraps = [bend for bend in bends if bend.closed]
-    inward = math.copysign(1.0, wraps[0].angle_deg) if wraps else 1.0
-    if text_angle is not None and text_angle < 0:
-        inward = -inward
-    fingers = []
+    tips = []  # (finger, side, its tip's region)
     for finger in dome.fingers:
         probe = Bend("", finger.start, finger.end, 0.0, 0)
         at = {s: next((k for k, region in enumerate(regions) if _inside(_beside(probe, s), region.ring)), None)
@@ -600,7 +623,13 @@ def _dome_fingers(dome: Bend, index: int, bends: list[Bend], regions: list[Regio
             problems.append(Problem("A dome finger does not split off a tip",
                                     _rounded(_lerp(finger.start, finger.end, 0.5))))
             continue
-        child = regions[at[side]].ring
+        tips.append((finger, side, at[side]))
+    inward = _curl(bends, regions, regions[tips[0][2]].parent if tips else None)
+    if text_angle is not None and text_angle < 0:
+        inward = -inward
+    fingers = []
+    for finger, side, tip in tips:
+        child = regions[tip].ring
         dx, dy = finger.end[0] - finger.start[0], finger.end[1] - finger.start[1]
         size = math.hypot(dx, dy)
         normal = (-dy / size * side, dx / size * side)
@@ -624,9 +653,35 @@ def _dome_fingers(dome: Bend, index: int, bends: list[Bend], regions: list[Regio
                 dome.step, dome.assumed, "dome", fingers=tuple(fingers))
 
 
-def _chord(rings: list[Ring], zones: list[Ring], start: Point, end: Point,
+def _curl(bends: list[Bend], regions: list[Region], region: int | None) -> float:
+    """Which way a dome whose fingers hang off `region` curls: +1 towards the top, or the
+    way the wrap bending that region (or one it hangs off) wraps; the first wrap failing that."""
+    wraps = [bend for bend in bends if bend.closed]
+    bent = {wrap_region(regions, wrap): wrap for wrap in reversed(wraps)}  # the first wrap on a region
+    while region is not None:
+        if region in bent:
+            return math.copysign(1.0, bent[region].angle_deg)
+        region = regions[region].parent
+    return math.copysign(1.0, wraps[0].angle_deg) if wraps else 1.0
+
+
+def wrap_region(regions: list[Region] | tuple[Region, ...], wrap: Bend) -> int | None:
+    """The region a wrap bends: of those with board in its wedge, the nearest the root
+    (then the largest)."""
+    def depth(k):
+        count = 0
+        while regions[k].parent is not None:
+            k, count = regions[k].parent, count + 1
+        return count
+    inside = [k for k, region in enumerate(regions) if any(_inside(p, wrap.area) for p in region.ring)]
+    return min(inside, key=lambda k: (depth(k), -abs(_area(regions[k].ring))), default=None)
+
+
+def _chord(rings: list[Ring], holes: list[Ring], start: Point, end: Point,
            problems: list[Problem]) -> tuple[Point, Point] | None:
-    """Where the bend line's own line crosses the board's edges either side of its middle."""
+    """Where the bend line's own line crosses the board's edges either side of its middle;
+    None (with a problem) when its middle is off the board or it runs into a cutout (a gap
+    on the line inside one of the board's `holes`)."""
     direction = (end[0] - start[0], end[1] - start[1])
     length = math.hypot(*direction)
     crossings = sorted(t for ring in rings for t, _, _ in _crossings(ring, start, direction))
@@ -638,10 +693,10 @@ def _chord(rings: list[Ring], zones: list[Ring], start: Point, end: Point,
                                 _rounded(_lerp(start, end, 0.5))))
         return None
     a, b = spans[around]
-    # A gap to the next span that is still inside a flex zone is a cutout in the flex, not its edge.
+    # A gap to the next span inside one of the board's holes is a cutout, not the board's edge.
     for gap in ((spans[around - 1][1], a) if around else None, (b, spans[around + 1][0]) if around + 1 < len(spans)
                 else None):
-        if gap and any(_inside(_lerp(start, end, sum(gap) / 2), zone) for zone in zones):
+        if gap and any(_inside(_lerp(start, end, sum(gap) / 2), hole) for hole in holes):
             problems.append(Problem("A bend must not run into a cutout", _rounded(_lerp(start, end, gap[0]))))
             return None
     for t, short in ((a, -a), (b, b - 1)):
@@ -718,8 +773,18 @@ def _beside(bend: Bend, side: int) -> Point:
 
 # --- Stiffeners -----------------------------------------------------------------------------
 
-def _stiffeners(drawings: list[Drawing], problems: list[Problem]) -> list[Stiffener]:
-    shapes = [drawing for drawing in drawings if drawing.kind == "closed"]
+def _stiffeners(drawings: list[Drawing], problems: list[Problem], snapshot: BoardSnapshot | None = None,
+                cutouts: list[Ring] = ()) -> list[Stiffener]:
+    """Closed shapes on the Stiffener layer, each with its text. A shape inside another is
+    an opening in it; so is every hole of the board's (drills, `cutouts`) wholly inside it."""
+    closed = [drawing for drawing in drawings if drawing.kind == "closed"]
+
+    def container(shape):
+        around = [other for other in closed if other is not shape and abs(_area(other.points)) > abs(_area(shape.points))
+                  and all(_inside(point, other.points) for point in shape.points)]
+        return min(around, key=lambda other: abs(_area(other.points)), default=None)
+    openings = {shape.id: container(shape) for shape in closed}
+    shapes = [shape for shape in closed if openings[shape.id] is None]
     texts = [drawing for drawing in drawings if drawing.kind == "text"]
     for drawing in drawings:
         if drawing.kind == "line":
@@ -733,7 +798,10 @@ def _stiffeners(drawings: list[Drawing], problems: list[Problem]) -> list[Stiffe
         assumed = tuple(part for part, value in found.items() if value is None)
         material, thickness, side = (value if value is not None else default for value, default
                                      in zip(found.values(), DEFAULT_STIFFENER))
-        stiffeners.append(Stiffener(shape.id, shape.points, material, thickness, side, assumed))
+        holes = [other.points for other in closed if openings[other.id] is shape]
+        holes += [hole for hole in _board_holes(snapshot, side, cutouts)
+                  if all(_inside(point, shape.points) for point in hole)]
+        stiffeners.append(Stiffener(shape.id, shape.points, material, thickness, side, assumed, tuple(holes)))
         if assumed:
             problems.append(Problem(f"Stiffener {len(stiffeners)}: {', '.join(assumed)} not in its text, so "
                                     f'"{stiffener_note(material, thickness, side)}" is assumed. Copy its text to '
@@ -741,7 +809,66 @@ def _stiffeners(drawings: list[Drawing], problems: list[Problem]) -> list[Stiffe
     return stiffeners
 
 
+HOLE_SIDES = 32  # a round hole through a stiffener, as a polygon
+
+
+def _board_holes(snapshot: BoardSnapshot | None, side: str, cutouts: list[Ring] = ()) -> list[Ring]:
+    """The board's holes that pass through a stiffener on `side`: every drilled pad, the vias
+    that reach that side's outer copper, and the outline's `cutouts`."""
+    if snapshot is None:
+        return []
+    outer = "F.Cu" if side == "top" else "B.Cu"
+    holes = [_slot(via.pos, (via.drill, via.drill), 0.0) for via in snapshot.vias
+             if via.drill > 0 and outer in (via.layer_top, via.layer_bottom)]
+    holes += [_slot(pad.pos, pad.drill, pad.drill_angle_rad) for pad in snapshot.pads
+              if pad.drill and min(pad.drill) > 0]
+    return holes + list(cutouts)
+
+
+def _slot(centre: Point, size: Point, angle: float) -> Ring:
+    """A drill as a polygon: round, or an oval slot `size` long and wide, turned by `angle`."""
+    length, width = max(size), min(size)
+    radius, reach = width / 2, (length - width) / 2
+    along = angle + (0.0 if size[0] >= size[1] else math.pi / 2)  # KiCad's y down: turns clockwise on screen
+    ux, uy = math.cos(along), -math.sin(along)
+    points = []
+    for end, start in ((1, -math.pi / 2), (-1, math.pi / 2)):  # half a circle round each end
+        cx, cy = centre[0] + end * reach * ux, centre[1] + end * reach * uy
+        for k in range(HOLE_SIDES // 2 + 1):
+            turn = start + math.pi * k / (HOLE_SIDES // 2)
+            dx, dy = math.cos(turn), math.sin(turn)
+            points.append((cx + radius * (dx * ux - dy * uy), cy + radius * (dx * uy + dy * ux)))
+    return _clean(_rounded(point) for point in points)  # a round hole's two halves meet: no repeats
+
+
 # --- Geometry -------------------------------------------------------------------------------
+
+def _join_loops(drawings: list[Drawing]) -> list[Drawing]:
+    """Lines and arcs whose ends meet in a loop, as one closed shape (KiCad's fillet and
+    chamfer turn a rectangle into such pieces), with the first piece's id. Pieces that
+    close no loop stay as they are."""
+    lines = [drawing for drawing in drawings if drawing.kind == "line"]
+    joined, used = [], set()
+    for first in lines:
+        if first.id in used:
+            continue
+        chain, taken = list(first.points), [first.id]
+        while not (len(chain) >= 4 and math.dist(chain[0], chain[-1]) <= JOIN_NM):
+            nearest = min(((math.dist(chain[-1], end), flipped, line) for line in lines
+                           if line.id not in used and line.id not in taken
+                           for flipped, end in ((False, line.points[0]), (True, line.points[-1]))),
+                          default=None, key=lambda found: found[0])
+            if nearest is None or nearest[0] > JOIN_NM:
+                break
+            _, flipped, line = nearest
+            chain += list(reversed(line.points))[1:] if flipped else list(line.points[1:])
+            taken.append(line.id)
+        else:
+            if len(taken) > 1:
+                used.update(taken)
+                joined.append(Drawing(first.id, first.layer, "closed", _clean(chain[:-1])))
+    return [drawing for drawing in drawings if drawing.id not in used] + joined
+
 
 def _labels(texts: list[Drawing], targets: list[Drawing], distance) -> dict[int, int]:
     """target index -> text index, nearest pairs first, each text and target used once."""
@@ -756,18 +883,20 @@ def _labels(texts: list[Drawing], targets: list[Drawing], distance) -> dict[int,
 
 
 def _crossings(ring: Ring, origin: Point, direction) -> list[tuple[float, int, tuple[float, float]]]:
-    """(t, edge index, point) where the line origin + t * direction crosses the ring, by t."""
+    """(t, edge index, point) where the line origin + t * direction crosses the ring, by t.
+    An edge crosses when its ends lie on different sides of the line, a point on the line
+    counting as the right-hand side: so a vertex touching the line, or an edge along it (an
+    earlier bend's chord), never changes how often the line enters the ring."""
+    count = len(ring)
+    left = [direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0]) > 0 for p in ring]
     found = []
     for index, (p, q) in enumerate(_edges(ring)):
-        ex, ey = q[0] - p[0], q[1] - p[1]
-        denominator = direction[0] * ey - direction[1] * ex
-        if denominator == 0:
+        if left[index] == left[(index + 1) % count]:
             continue
+        ex, ey = q[0] - p[0], q[1] - p[1]
         wx, wy = p[0] - origin[0], p[1] - origin[1]
-        t = (wx * ey - wy * ex) / denominator
-        u = (wx * direction[1] - wy * direction[0]) / denominator
-        if 0 <= u < 1:
-            found.append((t, index, (origin[0] + t * direction[0], origin[1] + t * direction[1])))
+        t = (wx * ey - wy * ex) / (direction[0] * ey - direction[1] * ex)
+        found.append((t, index, (origin[0] + t * direction[0], origin[1] + t * direction[1])))
     return sorted(found)
 
 

@@ -33,19 +33,19 @@ Design the board the way it is ordered. A fab sells an IMS board by its metal an
 
 ## Using IMS mode
 
-All controls are in the **KiLeidoscope** tab of the 3D View sidebar (**N**), under **Boards**, below *Thickness (3D)*.
+IMS mode lives in its own column beside the **KiLeidoscope** tab of the 3D View sidebar (**N**). Two bookmark tabs hang off the sidebar's left edge, **IMS** and **Flex**; a click on **IMS** opens its column to the left of the panel, and a click on the open tab closes it again. A lit stripe on the tab shows the mode is on once the column is closed. IMS and [flex mode](flex.md) cannot be on together: switching one on turns the other off, and the column says so.
 
-1. Tick **IMS (metal base)**. The board is sent again and rebuilt with the base, which takes a brief moment.
+1. Tick **Enable**. The board is sent again and rebuilt with the base, which takes a brief moment.
 2. Pick **Aluminum** or **Copper**, and a **Finish**.
 3. Set the **Epoxy** to your fab's dielectric thickness, if you know it.
 
 The box below then shows the base's thickness, F.Cu's copper and the board's total, which remains synchronized to the value set in KiCad.
 
-IMS mode needs a 2-layer board, on any other board the switch is greyed out.
+IMS mode needs a 2-layer board; on any other board the tab and the switch are greyed out.
 
 | Control | What it does |
 | --- | --- |
-| **IMS (metal base)** | Draws the board on a metal base. Off: the board is KiCad's 2-layer board again. |
+| **Enable** | Draws the board on a metal base. Off: the board is KiCad's 2-layer board again. |
 | **Aluminum** / **Copper** | The base's metal, in 3D and in the cross-section. Aluminum is the usual choice; copper bases spread heat better. |
 | **Finish** | The base's outer faces in Realistic colours: **Mill finish** (as rolled, the usual base), **Brushed**, **Polished** or **Nickel plated**. The cross-section always shows a polished cut. |
 | **Epoxy (µm)** | The thermal dielectric under F.Cu, from 75 to 150 µm. Default 100 µm. |

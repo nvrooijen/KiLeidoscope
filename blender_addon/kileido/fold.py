@@ -35,10 +35,19 @@ SETTLE_S = 0.4  # after a live edit, before the copies are baked again
 LIMIT_MARGIN_M = 0.3e-3  # a cut limited to a dome's finger reaches this far past it
 MOVED_TOLERANCE = 1e-5  # a folded part's matrix changed more than this: moved by a live edit
 
-_baked = {"plan": None, "stale": False, "group": None, "planes": [], "body": (0.0, 0.0)}
-_state = {"busy": False, "angles": []}
-_variants = {}  # material name -> its flex variant, made once per bake
-_planned = {}  # the last fold plan, with the report and frame it was made for  # refresh's guard; the handles' angles it last showed
+_baked = {"plan": None, "stale": False, "planes": [], "body": (0.0, 0.0)}
+# keyed: the plan the fold animation was keyed for; render: the scene's frame settings before it was keyed
+_state = {"busy": False, "angles": [], "keyed": None, "render": None}
+_variants = {}  # material name -> its flex variant's name, made once per bake
+_planned = {}  # the last fold plan, with the report and frame it was made for
+
+
+def _forget():
+    """Start over: the Blender data remembered here is gone (a file loaded, the add-on off)."""
+    _baked.update(plan=None, stale=False, planes=[], body=(0.0, 0.0))
+    _state.update(busy=False, angles=[], keyed=None, render=None)
+    _variants.clear()
+    _planned.clear()
 
 
 # --- Entry points ---------------------------------------------------------------------------
@@ -47,16 +56,30 @@ def available() -> bool:
     return _plan() is not None
 
 
+def foldable() -> bool:
+    """The board has bends to fold (not only thin flex)."""
+    plan = _plan()
+    return plan is not None and bool(plan.bends)
+
+
 def set_progress(progress):
     """The panel's Fold slider: 0 the flat board, 1 every bend at KiCad's angle, the steps
     one after another in between. It turns the bends' handles; they fold the board."""
     plan = _plan()
     if plan is None:
         return
+    if keyed():  # the animation's keys turn the handles: move along the timeline instead
+        scene = bpy.context.scene
+        scene.frame_set(scene.frame_start + round(progress * (scene.frame_end - scene.frame_start)))
+        return
+    _turn_grips(plan, progress)
+    refresh()
+
+
+def _turn_grips(plan, progress):
     _ensure_grips(plan)
     for grip, angle in zip(_grips(), foldmath.handle_angles_at(plan, progress)):
         grip.rotation_euler.z = angle
-    refresh()
 
 
 def refresh():
@@ -67,18 +90,34 @@ def refresh():
         return
     _state["busy"] = True
     try:
-        _ensure_grips(plan)
+        if _state["keyed"] is not None and _state["keyed"] is not plan:  # keyed for a board that has changed since
+            clear_animation(refold=False)
+            _turn_grips(plan, bpy.context.scene.kileido_fold)
+        else:
+            _ensure_grips(plan)
         handles = [grip.rotation_euler.z for grip in _grips()]
         angles = foldmath.bend_angles(plan, handles)
         folded = any(abs(angle) > foldmath.MIN_ANGLE for angle in angles)
-        if _baked["plan"] is None or _baked["stale"]:
+        if _baked["plan"] is None or _baked["stale"] or not _alive():
             bake(plan)
-        _show_folded(True)  # thin flex, folded or not
+        _show_folded()  # thin flex, folded or not
         _place_parts(plan if folded else None, angles)
         _place_grips(plan, angles)
         _state["angles"] = handles
     finally:
         _state["busy"] = False
+
+
+def _alive() -> bool:
+    """The copies baked for `_baked["plan"]` are still in the scene (an undo step may have
+    taken them, or brought older ones back)."""
+    collection = _folded_collection()
+    return (collection is not None and bpy.data.node_groups.get(GROUP) is not None
+            and collection.get("kls_plan_id") == _plan_id(_baked["plan"]))
+
+
+def _plan_id(plan):
+    return "|".join((str(len(plan.regions)), *(_bend_id(plan, k) for k in range(len(plan.handles)))))
 
 
 def invalidate():
@@ -101,6 +140,7 @@ def clear():
         bpy.data.collections.remove(collection)
     _restore_originals()
     _baked["plan"] = None
+    board.fold_findings = []
 
 
 def _settled():
@@ -115,29 +155,183 @@ def _settled():
 
 @bpy.app.handlers.persistent
 def _on_depsgraph(scene, depsgraph):
-    """A handle turned in the viewport: fold to its new angle."""
-    if _state["busy"] or not _grips():
+    """A handle turned in the viewport: fold to its new angle. Copies out of date are baked
+    from the timer instead: Blender's data is not remade from inside its own update."""
+    if _state["busy"]:
         return
-    if [grip.rotation_euler.z for grip in _grips()] != _state["angles"]:
-        refresh()
+    grips = _grips()
+    if not grips or [grip.rotation_euler.z for grip in grips] == _state["angles"]:
+        return
+    if _baked["plan"] is None or _baked["stale"]:
+        invalidate()
+        return
+    refresh()
+
+
+def _handlers():
+    return ((bpy.app.handlers.render_init, _render_starts),
+            (bpy.app.handlers.render_complete, _render_ends),
+            (bpy.app.handlers.render_cancel, _render_ends),
+            (bpy.app.handlers.load_post, _file_loaded),
+            (bpy.app.handlers.undo_post, _undone),
+            (bpy.app.handlers.redo_post, _undone))
 
 
 def install():
+    _resume()
+    for handlers, function in _handlers():
+        if function not in handlers:
+            handlers.append(function)
+
+
+def uninstall():
+    """Flex mode off: the scene as without it (Blender may be quitting, its data gone)."""
+    _pause()
+    for handlers, function in _handlers():
+        if function in handlers:
+            handlers.remove(function)
+    if bpy.app.timers.is_registered(_settled):
+        bpy.app.timers.unregister(_settled)
+    for step in (lambda: clear_animation(refold=False), clear, _remove_grips, lambda: _place_parts(None, None)):
+        try:
+            step()
+        except (ReferenceError, RuntimeError, AttributeError):
+            pass
+    _forget()
+
+
+@bpy.app.handlers.persistent
+def _file_loaded(*_):
+    _forget()
+
+
+@bpy.app.handlers.persistent
+def _undone(*_):
+    """An undo or redo step: the handles may have turned back (fold to them again), and
+    the keys may have gone."""
+    _state.update(busy=False, angles=[])
+    if _state["keyed"] is not None and not any(grip.animation_data for grip in _grips()):
+        _state.update(keyed=None, render=None)
+
+
+def _resume():
     if _on_depsgraph not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
 
 
-def uninstall():
+def _pause():
     if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
-    if bpy.app.timers.is_registered(_settled):
-        bpy.app.timers.unregister(_settled)
+
+
+# Blender runs frame handlers on its render thread, and an object moved from there crashes
+# it: while it renders, nothing here moves anything (an animation is all keys).
+@bpy.app.handlers.persistent
+def _render_starts(*_):
+    _pause()
+
+
+@bpy.app.handlers.persistent
+def _render_ends(*_):
+    _resume()
+
+
+# --- The fold as an animation ---------------------------------------------------------------
+
+def keyed() -> bool:
+    """The fold is keyed on the timeline for the board as it is."""
+    return _state["keyed"] is not None and _state["keyed"] is _plan()
+
+
+def key_animation(frames=72, fps=24):
+    """Key the fold for rendering: frame 1 flat, folded at `frames`, the steps one after
+    another. Every handle is keyed per frame (the board folds by their drivers) and every
+    part's place per frame, worked out here once, so a render moves nothing itself."""
+    scene = bpy.context.scene
+    plan = _plan()
+    if plan is None or not plan.bends:
+        return False
+    clear_animation()
+    _state["render"] = (scene.render.fps, scene.render.fps_base, scene.frame_start, scene.frame_end,
+                        scene.render.use_lock_interface)
+    scene.render.fps, scene.render.fps_base = fps, 1.0
+    scene.frame_start, scene.frame_end = 1, frames
+    scene.render.use_lock_interface = True  # no edits from the interface while it renders
+    _ensure_grips(plan)
+    grips, parts = _grips(), _parts()
+    places = {obj.name: [] for obj in parts}
+    for frame in range(1, frames + 1):
+        for grip, angle in zip(grips, foldmath.handle_angles_at(plan, (frame - 1) / max(1, frames - 1))):
+            grip.rotation_euler.z = angle
+            grip.keyframe_insert("rotation_euler", index=2, frame=frame)
+        bpy.context.view_layer.update()
+        refresh()
+        bpy.context.view_layer.update()
+        for obj in parts:
+            places[obj.name].append((frame, tuple(obj.location), tuple(obj.rotation_euler), tuple(obj.scale)))
+    for obj in parts:
+        _key_places(obj, places[obj.name])
+    _state["keyed"] = plan
+    scene.frame_set(1)
+    return True
+
+
+def clear_animation(refold=True):
+    """Back to live folding: the keys gone, the scene's frame settings as before, the parts
+    on their flat places, and (`refold`) the board at the slider's place."""
+    was = _state["keyed"] is not None
+    _state["keyed"] = None
+    grips = _grips()
+    for obj in (*grips, *_parts()):
+        action = obj.animation_data.action if obj.animation_data else None
+        if action is not None and action.name.startswith(("KLS fold", "KLS sweep")) or obj in grips:
+            obj.animation_data_clear()
+            if action is not None and action.users == 0:
+                bpy.data.actions.remove(action)
+    _reset_parts()
+    if _state["render"] is not None:
+        scene = bpy.context.scene
+        (scene.render.fps, scene.render.fps_base, scene.frame_start, scene.frame_end,
+         scene.render.use_lock_interface) = _state["render"]
+        _state["render"] = None
+    if was and refold and _plan() is not None:
+        set_progress(bpy.context.scene.kileido_fold)
+
+
+def _reset_parts():
+    """Every part back on the flat place the fold recorded, the record dropped: once the
+    keys are gone a part stands where its frame left it, not where the fold put it."""
+    if board.collection is None:
+        return
+    for obj in _parts():
+        flat = obj.get("kls_flat_matrix")
+        if flat is not None and len(flat) == 16:
+            obj.matrix_world = Matrix(np.reshape(flat, (4, 4)).tolist())
+        for key in ("kls_flat_matrix", "kls_folded_matrix"):
+            if key in obj:
+                del obj[key]
+
+
+def _key_places(obj, places):
+    """Key a part's location, rotation and scale at every frame, in one go per channel."""
+    obj.rotation_mode = "XYZ"
+    action = bpy.data.actions.new(f"KLS fold {obj.name}")
+    obj.animation_data_create().action = action
+    for path, column in (("location", 1), ("rotation_euler", 2), ("scale", 3)):
+        for index in range(3):
+            curve = action.fcurve_ensure_for_datablock(obj, path, index=index)
+            curve.keyframe_points.add(len(places))
+            values = [value for place in places for value in (float(place[0]), place[column][index])]
+            curve.keyframe_points.foreach_set("co", values)
+            curve.keyframe_points.foreach_set("interpolation", [0] * len(places))  # CONSTANT: whole frames
+            curve.update()
 
 
 def _plan():
-    """The fold plan for the board's flex report, made again only when the report or the
-    board's frame changes (each handle turn asks for it)."""
-    if board.collection is None or not board.flex:
+    """The fold plan for the board's flex report while flex mode is on (the Flex column's
+    Enable), made again only when the report or the board's frame changes (each handle
+    turn asks for it)."""
+    if board.collection is None or not board.flex or not getattr(bpy.context.scene, "kileido_flex", False):
         return None
     key = (tuple(board.origin_nm), tuple(sorted(board.heights.items())), tuple(sorted(board.layer_thickness.items())))
     cached = _planned.get("plan")
@@ -207,10 +401,11 @@ def bake(plan):
     _variants.clear()
     collection = bpy.data.collections.new(COLLECTION)
     collection["kls_folded"] = 1
+    collection["kls_plan_id"] = _plan_id(plan)
     board.collection.children.link(collection)
     group = _fold_group(plan)
     planes = foldmath.cut_planes(plan)
-    _baked.update(group=group, planes=planes, body=_body_range())
+    _baked.update(planes=planes, body=_body_range())
     count = sum(_bake_object(original, plan, collection) for original in _originals())
     for index, stiffener in enumerate(board.flex.get("stiffeners", ())):
         mesh = _stiffener_mesh(stiffener, plan)
@@ -239,8 +434,7 @@ def check_steps(plan):
     wrap = read_attribute(mesh, "kls_fold_wrap", np.float32).astype(np.float64)
     zone = read_attribute(mesh, "kls_fold_zone", np.float32).astype(np.int64)
     polygons = [tuple(polygon.vertices) for polygon in mesh.polygons]
-    piece = foldmath.pieces(plan, flat, zone)
-    faces = [piece[polygon[0]] for polygon in polygons]
+    faces = foldmath.face_pieces(plan, flat, zone, polygons)
     sequence = foldmath.steps(plan)
     seen = set()
     for count, (number, _) in enumerate(sequence, start=1):
@@ -274,7 +468,7 @@ def _bake_object(original, plan, collection):
         return False
     flat = foldmath.thin(read_coordinates(mesh).astype(np.float64), plan, _baked["body"])
     mesh.vertices.foreach_set("co", flat.astype(np.float32).ravel())
-    copy = _link(collection, _baked["group"], _tagged(mesh, flat, plan),
+    copy = _link(collection, bpy.data.node_groups.get(GROUP), _tagged(mesh, flat, plan),
                  f"KLS folded {original.name.removeprefix('KLS ')}", original.name)
     for ray in ("camera", "diffuse", "glossy", "transmission", "volume_scatter", "shadow"):
         setattr(copy, f"visible_{ray}", getattr(original, f"visible_{ray}"))  # highlights: camera rays only
@@ -288,6 +482,9 @@ def refresh_highlights():
     plan, collection = _baked["plan"], _folded_collection()
     if plan is None or collection is None or _state["busy"]:
         return
+    if not _alive():  # an undo step took the copies' node group: baked again once things settle
+        invalidate()
+        return
     _state["busy"] = True
     try:
         _restore_highlight_originals()
@@ -295,13 +492,14 @@ def refresh_highlights():
             original = board.collection.all_objects.get(copy.get("kls_folded_from", ""))
             if original is not None and _stale_highlight(copy, original):
                 _remove_copy(copy)
+                _unhide(original)  # Blender evaluates no hidden object: baked hidden, a zone comes out bare
         baked = {copy.get("kls_folded_from") for copy in collection.objects}
         for original in _originals():
             if original.name not in baked and ("highlight" in original.name or original.get("kls_zone_highlight")
                                                is not None):
                 _bake_object(original, plan, collection)
         angles = foldmath.bend_angles(plan, [grip.rotation_euler.z for grip in _grips()])
-        _show_folded(True)
+        _show_folded()
         _place_parts(plan if any(abs(a) > foldmath.MIN_ANGLE for a in angles) else None, angles)
     finally:
         _state["busy"] = False
@@ -317,9 +515,15 @@ def _stale_highlight(copy, original):
 def _restore_highlight_originals():
     """Highlight objects hidden for an earlier copy show again until baked anew."""
     for obj in tuple(board.collection.all_objects):  # a snapshot: hiding rebuilds Blender's list
-        if "highlight" in obj.name and obj.get("kls_hidden_by_fold"):
-            del obj["kls_hidden_by_fold"]
-            obj.hide_viewport = obj.hide_render = False
+        if "highlight" in obj.name:
+            _unhide(obj)
+
+
+def _unhide(original):
+    """An original the fold hid behind its copy, shown again (until `_show_folded` hides it)."""
+    if original.get("kls_hidden_by_fold"):
+        del original["kls_hidden_by_fold"]
+        original.hide_viewport = original.hide_render = False
 
 
 def _remove_copy(copy):
@@ -467,9 +671,10 @@ def _mask_chunks(plan):
 
 
 def _read_mask(mesh, plan):
-    mask = np.zeros(len(mesh.vertices), dtype=np.int64)
+    kind = foldmath.mask_dtype(len(plan.bends))
+    mask = np.zeros(len(mesh.vertices), dtype=kind)
     for chunk in range(_mask_chunks(plan)):
-        mask |= read_attribute(mesh, _mask_name(chunk), np.float32).astype(np.int64) << (MASK_BITS * chunk)
+        mask |= read_attribute(mesh, _mask_name(chunk), np.float32).astype(np.int64).astype(kind) << (MASK_BITS * chunk)
     return mask
 
 
@@ -478,12 +683,13 @@ def _smooth_strips(mesh, zone):
     two meeting, as a dome's finger on its wrap): smooth."""
     if not len(mesh.polygons):
         return
-    normals = np.empty(len(mesh.polygons) * 3, np.float32)
+    count = len(mesh.polygons)
+    normals, starts = np.empty(count * 3, np.float32), np.empty(count, np.int32)
     mesh.polygons.foreach_get("normal", normals)
-    smooth = np.zeros(len(mesh.polygons), bool)
-    for index, polygon in enumerate(mesh.polygons):
-        corners = zone[list(polygon.vertices)]
-        smooth[index] = (corners >= 0).all()
+    mesh.polygons.foreach_get("loop_start", starts)
+    corners = np.empty(len(mesh.loops), np.int32)
+    mesh.loops.foreach_get("vertex_index", corners)
+    smooth = np.minimum.reduceat(zone[corners] >= 0, starts) if len(corners) else np.zeros(count, bool)
     smooth &= np.abs(normals.reshape(-1, 3)[:, 2]) > 0.7
     if smooth.any():
         current = np.empty(len(mesh.polygons), bool)
@@ -534,9 +740,10 @@ def _on_flex(mesh, plan, variant_of, only=None):
         faces = on_flex & (indices == slot)
         if not faces.any():
             continue
-        variant = _variants.get(material.name)
+        variant = bpy.data.materials.get(_variants.get(material.name, ""))
         if variant is None:
-            variant = _variants[material.name] = variant_of(material)
+            variant = variant_of(material)
+            _variants[material.name] = variant.name
         if variant.name not in [entry.name for entry in mesh.materials if entry is not None]:
             mesh.materials.append(variant)
         indices[faces] = [entry.name if entry is not None else "" for entry in mesh.materials].index(variant.name)
@@ -545,18 +752,28 @@ def _on_flex(mesh, plan, variant_of, only=None):
 
 def _stiffener_mesh(stiffener, plan):
     """A stiffener as a solid of its thickness against the flex's top or bottom, in a
-    material for what it is made of (polyimide, metal, else FR4)."""
+    material for what it is made of (polyimide, metal, else FR4), with its holes (openings
+    drawn in it, the board's drills and cutouts) cut through, walls and all."""
     thickness = (stiffener.get("thickness_nm") or 0) * 1e-9
     ring = foldmath.world_xy(stiffener["ring"], board.origin_nm)
     if thickness <= 0 or len(ring) < 3:
         return None
+    rings = [ring] + [hole for hole in (foldmath.world_xy(points, board.origin_nm)
+                                        for points in stiffener.get("holes", ())) if len(hole) >= 3]
     low, high = plan.z_range
     base = high if stiffener.get("side") == "top" else low - thickness
     work = bmesh.new()
-    face = work.faces.new([work.verts.new((float(x), float(y), base)) for x, y in ring])
-    extruded = bmesh.ops.extrude_face_region(work, geom=[face])["geom"]
-    bmesh.ops.translate(work, vec=(0.0, 0.0, thickness),
-                        verts=[item for item in extruded if isinstance(item, bmesh.types.BMVert)])
+    levels = []  # per ring: its bottom and top vertices
+    for points in rings:
+        levels.append([[work.verts.new((float(x), float(y), z)) for x, y in points] for z in (base, base + thickness)])
+    bottom = [vert for floor, _ in levels for vert in floor]
+    top = [vert for _, roof in levels for vert in roof]
+    for triangle in geometry.tessellate_polygon([[vert.co for vert in floor] for floor, _ in levels]):
+        work.faces.new([bottom[k] for k in triangle])
+        work.faces.new([top[k] for k in reversed(triangle)])
+    for floor, roof in levels:  # the outside wall, and each hole's
+        for k in range(len(floor)):
+            work.faces.new((floor[k - 1], floor[k], roof[k], roof[k - 1]))
     bmesh.ops.recalc_face_normals(work, faces=work.faces[:])
     mesh = bpy.data.meshes.new("KLS stiffener")
     work.to_mesh(mesh)
@@ -596,22 +813,18 @@ def _attribute(mesh, name, kind, field, values):
 
 # --- Showing it -----------------------------------------------------------------------------
 
-def _show_folded(folded):
+def _show_folded():
+    """The copies shown, their originals hidden behind them."""
     collection = _folded_collection()
     if collection is None:
         return
-    collection.hide_viewport = collection.hide_render = not folded
+    collection.hide_viewport = collection.hide_render = False
     _follow_layer_eyes(collection)
     for obj in tuple(collection.objects):
         original = board.collection.all_objects.get(obj.get("kls_folded_from", ""))
-        if original is None:
-            continue
-        if folded and not original.get("kls_hidden_by_fold"):
+        if original is not None and not original.get("kls_hidden_by_fold"):
             original["kls_hidden_by_fold"] = 1
             original.hide_viewport = original.hide_render = True
-        elif not folded and original.get("kls_hidden_by_fold"):
-            del original["kls_hidden_by_fold"]
-            original.hide_viewport = original.hide_render = False
 
 
 def follow_layers():
@@ -666,7 +879,7 @@ def _parts():
 def _place_parts(plan, angles):
     """Fold every part with the region it sits on (`plan` None: back to flat). A part moved
     by a live edit since it was folded takes its new place as its flat one."""
-    if board.collection is None:
+    if board.collection is None or keyed():  # keyed: the animation places them
         return
     placing = []
     for obj in _parts():
@@ -867,7 +1080,7 @@ class _Nodes:
             self._feed(socket, value)
         if scale is not None:
             self._feed(node.inputs["Scale"], scale)
-        return node.outputs["Value" if operation == "DOT_PRODUCT" else "Vector"]
+        return node.outputs["Value" if operation in ("DOT_PRODUCT", "LENGTH") else "Vector"]
 
     def attribute(self, name, kind):
         node = self.tree.nodes.new("GeometryNodeInputNamedAttribute")
@@ -911,10 +1124,20 @@ def _fold_group(plan):
     zone = build.attribute("kls_fold_zone", "FLOAT")
     wrap = build.attribute("kls_fold_wrap", "FLOAT")
     domes = set()
+    ribbons = plan.ribbons or {}
+    seconds = {ribbon.second for ribbon in ribbons.values()}
     for index in plan.order:
         bend = plan.bends[index]
         frame = (bend.origin, bend.axis, bend.normal)
         angle = source.outputs[bend.handle + 1]
+        if index in seconds:  # folded with its ribbon's first
+            continue
+        if index in ribbons:
+            ribbon = ribbons[index]
+            current = _ribbon_nodes(build, plan, ribbon, *(source.outputs[plan.bends[member].handle + 1]
+                                                          for member in (ribbon.bend, ribbon.twist)),
+                                    current, flat, masks, zone)
+            continue
         if bend.ratio != 1.0:
             angle = build.math("MULTIPLY", angle, bend.ratio)
         mask, bit = masks[index // MASK_BITS], index % MASK_BITS
@@ -985,6 +1208,52 @@ def _bend_nodes(build, frame, width, angle, hangs, in_strip, current, flat):
                     build.math("MULTIPLY", h, build.math("COSINE", phi)))
     rolled = build.frame(*frame, u, across, up)
     return build.blend(current, rolled, in_strip)
+
+
+def _ribbon_nodes(build, plan, ribbon, bend_angle, twist_angle, current, flat, masks, zone):
+    """foldmath.ribbon as nodes: in its strips from the flat position at the point's own s;
+    past both from where earlier folds put it, at the end; on the middle region at the join."""
+    def bit(index):
+        return build.math("FLOORED_MODULO", build.math("FLOOR", build.math(
+            "DIVIDE", masks[index // MASK_BITS], float(2 ** (index % MASK_BITS)))), 2.0)
+
+    along = _floats(ribbon.along)
+    in_strip = build.math("COMPARE", zone, float(ribbon.first), 0.5)
+    past = bit(ribbon.second)
+    s_flat = build.math("MINIMUM", build.math("MAXIMUM", build.vector(
+        "DOT_PRODUCT", build.vector("SUBTRACT", flat, _floats(ribbon.centre)), along), ribbon.start), ribbon.end)
+    s_rest = build.math("ADD", build.math("MULTIPLY", past, ribbon.end),
+                        build.math("MULTIPLY", build.math("SUBTRACT", 1.0, past), ribbon.join))
+    s = build.math("ADD", build.math("MULTIPLY", in_strip, s_flat),
+                   build.math("MULTIPLY", build.math("SUBTRACT", 1.0, in_strip), s_rest))
+    point = build.blend(current, flat, in_strip)
+    kappa = build.math("DIVIDE", bend_angle, plan.bends[ribbon.bend].width)
+    tau = build.math("DIVIDE", twist_angle, plan.bends[ribbon.twist].width)
+    across = _floats(np.cross(ribbon.along, foldmath.UP))
+    for start, length, bending, twisting in reversed(ribbon.pieces):
+        rates = build.vector("SCALE", along, scale=build.math("ADD", tau, foldmath.RIBBON_TURN) if twisting
+                             else foldmath.RIBBON_TURN)
+        if bending:
+            rates = build.vector("ADD", rates, build.vector("SCALE", across, scale=kappa))
+        speed = build.vector("LENGTH", rates)
+        axis = build.vector("SCALE", rates, scale=build.math("DIVIDE", 1.0, speed))
+        travel = build.math("MINIMUM", build.math("MAXIMUM", build.math("SUBTRACT", s, start), 0.0), length)
+        theta = build.math("MULTIPLY", speed, travel)
+        parallel = build.vector("SCALE", axis, scale=build.vector("DOT_PRODUCT", along, axis))
+        square = build.vector("SUBTRACT", along, parallel)
+        helix = build.vector("ADD", build.vector("SCALE", parallel, scale=travel), build.vector(
+            "SCALE", square, scale=build.math("DIVIDE", build.math("SINE", theta), speed)))
+        helix = build.vector("ADD", helix, build.vector("SCALE", build.vector("CROSS_PRODUCT", axis, square), scale=build.math(
+            "DIVIDE", build.math("SUBTRACT", 1.0, build.math("COSINE", theta)), speed)))
+        node = build.tree.nodes.new("ShaderNodeVectorRotate")
+        node.rotation_type = "AXIS_ANGLE"
+        build.tree.links.new(build.vector("SUBTRACT", point, build.vector("SCALE", along, scale=travel)),
+                             node.inputs["Vector"])
+        node.inputs["Center"].default_value = _floats(ribbon.centre + start * ribbon.along)
+        build._feed(node.inputs["Axis"], axis)
+        build._feed(node.inputs["Angle"], theta)
+        point = build.vector("ADD", node.outputs["Vector"], helix)
+    return build.blend(current, point, build.math("MAXIMUM", in_strip, bit(ribbon.first)))
 
 
 def _twist_nodes(build, bend, index, bit, angle, current, flat, mask, zone):

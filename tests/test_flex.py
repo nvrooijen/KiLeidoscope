@@ -76,6 +76,10 @@ def test_bend_and_stiffener_texts():
     assert flex.parse_stiffener("Polyimide 0.2 mm bottom") == ("Polyimide", 200_000, "bottom")
     assert flex.parse_stiffener("FR4, 300um, top") == ("FR4", 300_000, "top")
     assert flex.parse_stiffener("steel") == ("steel", None, None)
+    # A digit glued to a hyphen or letter names the material; a bare number of 5 or less is mm.
+    assert flex.parse_stiffener("FR-4 0.3 top") == ("FR-4", 300_000, "top")
+    assert flex.parse_stiffener("FR-4") == ("FR-4", None, None)
+    assert flex.parse_stiffener("steel 1") == ("steel", 1_000_000, None)
 
 
 def test_what_a_bend_text_leaves_out_is_assumed_and_said():
@@ -125,6 +129,7 @@ def test_bends_that_cannot_fold_are_left_out_with_a_reason():
                               ("User.2", "text", mm((42.5, 7)), "90° R1")),
         "Two bends cross": (zone(), *bend(42), ("User.2", "line", mm((35, 8), (55, 22))),
                             ("User.2", "text", mm((56, 23)), "90° R1")),
+        "has no length": (zone(), ("User.2", "line", mm((42, 15), (42, 15)))),
     }
     for reason, drawings in cases.items():
         result = flex.build(board(*drawings), STACK)
@@ -158,6 +163,43 @@ def test_stiffeners_take_the_text_inside_or_nearest():
     assert [(p.message, p.level) for p in result.problems] == [
         ('Stiffener 2: side not in its text, so "FR4 0.3 mm bottom" is assumed. Copy its text to keep it, '
          'or write your own', "note")]
+
+
+def test_lines_and_arcs_that_close_a_loop_are_one_shape():
+    # A filleted rectangle, x 60..70, y 8..22, as KiCad leaves it: 4 lines and 4 arcs (sampled), drawn
+    # in no order and some backwards, the arcs' ends 5 um off the lines'.
+    def arc(cx, cy, start_deg):
+        return mm(*((cx + math.cos(math.radians(start_deg + 90 * k / 8)),
+                     cy + math.sin(math.radians(start_deg + 90 * k / 8))) for k in range(9)))
+    pieces = [mm((61, 22), (69, 22)), arc(61, 9, 180), mm((60, 21), (60, 9)), arc(69, 21, 0),
+              mm((70, 9), (70, 21))[::-1], arc(69, 9, 270), mm((61, 8.005), (69, 8)), arc(61, 21, 90)]
+    lone = ("User.3", "line", mm((40, 10), (45, 10)))
+    result = flex.build(board(zone(), *(("User.3", "line", piece) for piece in pieces), lone,
+                              ("User.3", "text", mm((62, 15)), "Polyimide 0.2 mm bottom")), STACK)
+    (stiffener,) = result.stiffeners
+    assert stiffener.material == "Polyimide" and len(stiffener.ring) == 4 * 9  # the arcs' points: the lines run between them
+    assert abs(flex._area(stiffener.ring)) == pytest.approx((10 * 14 - (4 - math.pi)) * MM ** 2, rel=1e-3)
+    assert [p.message for p in result.problems] == ["A stiffener must be a closed shape (a rectangle or polygon)"]
+
+
+def test_a_stiffener_has_its_drawn_openings_and_the_boards_holes_through_it():
+    snapshot = board(zone(), ("User.3", "closed", rect(50, 8, 70, 22)),
+                     ("User.3", "closed", rect(60, 12, 64, 16)),  # an opening drawn in it
+                     ("User.3", "text", mm((51, 20)), "steel 0.2 mm bottom"))
+    vias = (model.Via("v1", "", mm((53, 10))[0], 600_000, 300_000, "F.Cu", "B.Cu"),  # through
+            model.Via("v2", "", mm((55, 10))[0], 450_000, 200_000, "F.Cu", "In1.Cu"),  # blind: not the bottom
+            model.Via("v3", "", mm((50, 15))[0], 600_000, 300_000, "F.Cu", "B.Cu"))  # on its edge: left out
+    pads = (model.Pad("p1", "J1", "1", "", mm((67, 18))[0], (2_000_000, 1_000_000), {}, "oval", 0.0),
+            model.Pad("p2", "J1", "2", "", mm((67, 10))[0], None, {}))  # SMD: no hole
+    snapshot = model.BoardSnapshot(snapshot.board_name, snapshot.layer_display_names, (), (), vias, pads, (), (),
+                                   snapshot.outline, snapshot.stackup, (), {}, drawings=snapshot.drawings)
+    (stiffener,) = flex.build(snapshot, STACK).stiffeners
+    assert stiffener.material == "steel" and len(stiffener.holes) == 3
+    opening, via, slot = stiffener.holes
+    assert opening == rect(60, 12, 64, 16)
+    assert abs(flex._area(via)) == pytest.approx(math.pi * 150_000 ** 2, rel=0.01)
+    xs, ys = [x for x, _ in slot], [y for _, y in slot]
+    assert (max(xs) - min(xs), max(ys) - min(ys)) == (pytest.approx(2_000_000, abs=10), pytest.approx(1_000_000, abs=10))
 
 
 def test_flex_stack_is_the_copper_either_side_of_the_polyimide():
@@ -343,6 +385,25 @@ def test_a_twist_is_a_line_along_the_tail_saying_twist():
     assert not rigid.bends and "reaches rigid board" in rigid.problems[0].message
 
 
+def test_a_twist_may_end_on_the_board_edge_but_not_run_past_it():
+    stackup = model.Stackup((model.StackupLayer("F.Cu", "copper", 18_000, None, None, None),
+                             model.StackupLayer("core", "dielectric", 50_000, None, None, None),
+                             model.StackupLayer("B.Cu", "copper", 18_000, None, None, None)))
+
+    def twist(x0, x1):  # on a pure flex tail, x 0..60: flex all over
+        snapshot = board(("User.2", "line", mm((x0, 4), (x1, 4))), ("User.2", "text", mm((x0, 5)), "twist 45 #2"),
+                         outline=rect(0, 0, 60, 8))
+        snapshot = model.BoardSnapshot(snapshot.board_name, snapshot.layer_display_names, (), (), (), (), (), (),
+                                       snapshot.outline, stackup, (), {}, drawings=snapshot.drawings)
+        return flex.build(snapshot, {"layers": ["F.Cu", "B.Cu"], "thickness_nm": 86_000})
+
+    on_edge = twist(40, 60)  # ends exactly on the tail's end
+    assert [bend.kind for bend in on_edge.bends] == ["twist"] and not on_edge.problems
+    past = twist(40, 70)
+    assert not past.bends and [p.message for p in past.problems] == [
+        "A twist must lie on the board; this one runs past its edge"]
+
+
 def test_a_bend_drawn_as_its_area_takes_its_radius_from_its_width():
     area = ("User.2", "closed", mm((40, 7), (44, 7), (44, 23), (40, 23)))  # past the board edges, y 8..22
     result = flex.build(board(zone(), area, ("User.2", "text", mm((41, 15)), "90° #1")), STACK)
@@ -375,3 +436,104 @@ def test_a_cone_turns_so_its_wedge_keeps_its_angle():
         psi, beta = flex.cone_turn(alpha, fold)
         assert psi * math.sin(beta) == pytest.approx(alpha)
         assert math.acos(math.cos(psi) + math.sin(beta) ** 2 * (1 - math.cos(psi))) == pytest.approx(fold)
+
+
+def test_a_mark_on_a_board_without_an_outline_is_a_problem_not_a_crash():
+    def bare(*drawings):
+        return model.BoardSnapshot("b", dict(NAMES), (), (), (), (), (), (), model.Outline(()), model.Stackup(()), (),
+                                   {}, drawings=tuple(model.Drawing(f"d{k}", *d) for k, d in enumerate(drawings)))
+    area = bare(("User.2", "closed", rect(40, 7, 44, 23)), ("User.2", "text", mm((41, 15)), "90°"))
+    wrap = bare(("User.2", "closed", mm((50, 15), (60, 10), (60, 20))), ("User.2", "text", mm((55, 15)), "wrap"))
+    for snapshot in (area, wrap):
+        result = flex.build(snapshot, STACK)
+        assert not result.bends and [p.message for p in result.problems] == [flex.NO_OUTLINE]
+    assert flex_checks.report(area, STACK)["bends"] == []
+    point = board(zone(), ("User.2", "closed", mm((50, 15), (50, 15), (50, 15))), ("User.2", "text", mm((50, 15)), "wrap"))
+    result = flex.build(point, STACK)
+    assert not result.bends and [p.message for p in result.problems] == ["A wrap's wedge needs two sides from its tip"]
+
+
+# Two tails, y 5..10 and y 20..25, off one body x 0..30; the flex x 30..70.
+TAILS = mm((0, 0), (30, 0), (30, 5), (70, 5), (70, 10), (30, 10), (30, 20), (70, 20), (70, 25), (30, 25), (30, 30),
+           (0, 30))
+
+
+def test_one_flex_zone_over_two_tails_leaves_both_bends_valid():
+    # The gap between the tails lies inside the zone, but it is the board's edge, not a cutout.
+    one_zone = [("User.1", "closed", rect(30, 4, 70, 26))]
+    two_zones = [("User.1", "closed", rect(30, 4, 70, 11)), ("User.1", "closed", rect(30, 19, 70, 26))]
+    for zones in (one_zone, two_zones):
+        result = flex.build(board(*zones, *bend(50, "90° R1", 5, 10), *bend(50, "90° R1", 20, 25), outline=TAILS), STACK)
+        assert len(result.bends) == 2 and not result.problems, result.problems
+    result = flex.build(board(*one_zone, *bend(50, y0=5, y1=25), outline=TAILS), STACK)
+    assert not result.bends and [p.message for p in result.problems] == ["A bend must not run into a cutout"]
+
+
+def test_bends_whose_chords_lie_on_one_line_each_split_their_tail():
+    # The first chord becomes an edge of the body; the second's line runs along it.
+    snapshot = board(("User.1", "closed", rect(30, 4, 70, 26)), *bend(50, "90° R1", 5, 10), *bend(50, "90° R1", 20, 25),
+                     outline=TAILS)
+    result = flex.build(snapshot, STACK)
+    body = result.region_at(mm((10, 15))[0])
+    assert len(result.regions) == 3 and result.regions[body].parent is None
+    assert sorted((r.parent, r.bend) for k, r in enumerate(result.regions) if k != body) == [(body, 0), (body, 1)]
+    frames = flex_checks.report(snapshot, STACK)["bends"]
+    assert [(f["parent"], f["side"]) for f in frames] == [(body, -1), (body, -1)]
+    assert None not in [f["child"] for f in frames]
+
+
+# A comb: a body x 0..40, y 0..10 with four fingers y 10..30 at x 2..6, 10..14, 18..22, 26..30.
+COMB = mm((0, 0), (40, 0), (40, 10), (30, 10), (30, 30), (26, 30), (26, 10), (22, 10), (22, 30), (18, 30), (18, 10),
+          (14, 10), (14, 30), (10, 30), (10, 10), (6, 10), (6, 30), (2, 30), (2, 10), (0, 10))
+PURE = model.Stackup((model.StackupLayer("F.Cu", "copper", 18_000, None, None, None),
+                      model.StackupLayer("B.Cu", "copper", 18_000, None, None, None)))
+PURE_STACK = {"layers": ["F.Cu", "B.Cu"], "thickness_nm": 50_000}
+
+
+def pure_flex(snapshot):
+    return model.BoardSnapshot(snapshot.board_name, snapshot.layer_display_names, (), (), (), (), (), (),
+                               snapshot.outline, PURE, (), {}, drawings=snapshot.drawings)
+
+
+def test_a_straight_dome_line_over_a_straight_comb_finds_every_finger():
+    dome = (("User.2", "line", mm((0, 20), (40, 20))), ("User.2", "text", mm((0, 19)), "dome R25"))
+    under_zone = flex.build(board(("User.1", "closed", rect(-1, -1, 41, 31)), *dome, outline=COMB), STACK)
+    pure = flex.build(pure_flex(board(*dome, outline=COMB)), PURE_STACK)
+    for result in (under_zone, pure):
+        (found,) = result.bends
+        assert found.kind == "dome" and len(found.fingers) == 4 and not result.problems, result.problems
+        assert len(result.regions) == 5 and [r.bend for r in result.regions].count(0) == 4  # chords on one line
+        assert all(f.angle_deg > 0 and f.radius_nm == 25_000_000 and f.length_nm == 10_000_000 for f in found.fingers)
+
+
+def test_a_dome_curls_the_way_of_the_wrap_its_own_region_hangs_off():
+    # A body (wrap 1, +) with a tail off a bend (wrap 2, -) ending in three fingers under a dome.
+    outline = mm((0, 0), (30, 0), (30, 10), (70, 10), (70, 12), (60, 12), (60, 14), (70, 14), (70, 16), (60, 16),
+                 (60, 18), (70, 18), (70, 20), (30, 20), (30, 30), (0, 30))
+    marks = [("User.2", "closed", mm((15, 15), (32, -2), (32, 32))), ("User.2", "text", mm((16, 15)), "wrap 360°"),
+             ("User.2", "closed", mm((45, 15), (62, -2), (62, 32))), ("User.2", "text", mm((46, 15)), "wrap -360°"),
+             *bend(40, "90° R1", 10, 20),
+             ("User.2", "line", mm((65, 9), (65, 21))), ("User.2", "text", mm((66, 8)), "dome R5")]
+    result = flex.build(pure_flex(board(*marks, outline=outline)), PURE_STACK)
+    assert not result.problems, result.problems
+    assert [b.name for b in result.bends] == ["Wrap", "Wrap", "Bend", "Dome"]
+    body, tail = result.region_at(mm((10, 15))[0]), result.region_at(mm((50, 15))[0])
+    assert [flex.wrap_region(result.regions, wrap) for wrap in result.bends[:2]] == [body, tail]
+    dome = result.bends[3]
+    assert len(dome.fingers) == 3 and all(f.angle_deg < 0 for f in dome.fingers) and dome.angle_deg < 0
+    tips = [result.region_at(flex._rounded(flex._beside(flex.Bend("", f.start, f.end, 0.0, 0), f.side)))
+            for f in dome.fingers]
+    assert all(result.regions[tip].parent == tail for tip in tips)
+
+
+def test_a_stiffener_reaching_into_a_bend_drawn_as_its_area():
+    area = (("User.2", "closed", rect(40, 7, 44, 23)), ("User.2", "text", mm((41, 15)), "90°"))
+
+    def stiffener(x0):  # past the board's edges, so no corner lies in the area
+        return (("User.3", "closed", rect(x0, 6, 60, 24)), ("User.3", "text", mm((50, 15)), "FR4 0.3 mm bottom"))
+    for x0, reaches in ((43, True), (45, False)):
+        snapshot = board(zone(), *area, *stiffener(x0))
+        result = flex.build(snapshot, STACK)
+        assert result.bends[0].area is not None and not result.problems
+        found = [f.message for f in flex_checks.check(snapshot, result) if "stiffener" in f.message]
+        assert found == (["A stiffener reaches into bend 1"] if reaches else []), x0

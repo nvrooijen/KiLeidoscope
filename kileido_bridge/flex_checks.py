@@ -15,12 +15,14 @@ Bends are numbered from 1 in `FlexModel.bends` order, as the panel lists them.
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 from . import flex
-from .flex import COVERLAY_NM, DYNAMIC_RATIO, STATIC_RATIO, STATIC_RATIO_MULTI  # noqa: F401 (shared with flex.py)
-from .model import BoardSnapshot, Point, Polygon, to_jsonable
+from .flex import COVERLAY_NM, DYNAMIC_RATIO, STATIC_RATIO, STATIC_RATIO_MULTI
+from .model import BoardSnapshot, Point, Polygon, Ring, to_jsonable
 
 BEND_MARGIN_NM = 500_000  # kept clear either side of a bend's curved area
 SQUARE_DEG = 10.0  # a trace may cross a bend this far off square
@@ -158,11 +160,20 @@ def _in_zone(point, model: flex.FlexModel) -> bool:
     return any(flex._inside(point, zone) for zone in model.zones)
 
 
+@lru_cache(maxsize=64)
+def _bounds(ring: Ring) -> tuple[int, int, int, int]:
+    xs, ys = [x for x, _ in ring], [y for _, y in ring]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _touches_zone(a, b, model: flex.FlexModel):
     """The first point of segment ab inside a flex zone, or None."""
     if _in_zone(a, model):
         return a
     for zone in model.zones:
+        left, top, right, bottom = _bounds(zone)
+        if max(a[0], b[0]) < left or min(a[0], b[0]) > right or max(a[1], b[1]) < top or min(a[1], b[1]) > bottom:
+            continue  # a zone the segment's box misses: nothing to cross
         for p, q in flex._edges(zone):
             if (where := _crossing(a, b, p, q)) is not None:
                 return where
@@ -317,33 +328,53 @@ def _stacked(snapshot, model) -> list[Finding]:
     if len(model.layers) < 2:
         return []
     order = {name: index for index, name in enumerate(model.layers)}
-    segments = [s for s in _segments(snapshot) if s[1] in order and s[3] != s[4]]
+    segments = [s for s in _segments(snapshot) if s[1] in order and s[3] != s[4]
+                and _touches_zone(s[3], s[4], model) is not None]
     found: dict[tuple, tuple] = {}
-    for i, (id_a, layer_a, net_a, a0, a1, width_a) in enumerate(segments):
+    for i, j in _near_pairs(segments):
+        id_a, layer_a, net_a, a0, a1, width_a = segments[i]
+        id_b, layer_b, net_b, b0, b1, width_b = segments[j]
+        if layer_b == layer_a:
+            continue
         length = math.dist(a0, a1)
         along = ((a1[0] - a0[0]) / length, (a1[1] - a0[1]) / length)
-        for id_b, layer_b, net_b, b0, b1, width_b in segments[i + 1:]:
-            if layer_b == layer_a:
-                continue
-            other = math.dist(b0, b1)
-            cosine = abs((b1[0] - b0[0]) * along[0] + (b1[1] - b0[1]) * along[1]) / other
-            if math.degrees(math.acos(min(1.0, cosine))) > PARALLEL_DEG:
-                continue
-            offsets = [(p[0] - a0[0]) * -along[1] + (p[1] - a0[1]) * along[0] for p in (b0, b1)]
-            if min(abs(v) for v in offsets) > (width_a + width_b) / 2:
-                continue
-            spans = sorted((p[0] - a0[0]) * along[0] + (p[1] - a0[1]) * along[1] for p in (b0, b1))
-            low, high = max(0.0, spans[0]), min(length, spans[1])
-            middle = (a0[0] + along[0] * (low + high) / 2, a0[1] + along[1] * (low + high) / 2)
-            if high - low < STACKED_NM or not _in_zone(middle, model):
-                continue
-            upper, lower = sorted(((layer_a, net_a, id_a), (layer_b, net_b, id_b)), key=lambda e: order[e[0]])
-            key = (upper[:2], lower[:2])
-            found.setdefault(key, (middle, []))[1].extend([upper[2], lower[2]])
+        other = math.dist(b0, b1)
+        cosine = abs((b1[0] - b0[0]) * along[0] + (b1[1] - b0[1]) * along[1]) / other
+        if math.degrees(math.acos(min(1.0, cosine))) > PARALLEL_DEG:
+            continue
+        offsets = [(p[0] - a0[0]) * -along[1] + (p[1] - a0[1]) * along[0] for p in (b0, b1)]
+        if min(abs(v) for v in offsets) > (width_a + width_b) / 2:
+            continue
+        spans = sorted((p[0] - a0[0]) * along[0] + (p[1] - a0[1]) * along[1] for p in (b0, b1))
+        low, high = max(0.0, spans[0]), min(length, spans[1])
+        middle = (a0[0] + along[0] * (low + high) / 2, a0[1] + along[1] * (low + high) / 2)
+        if high - low < STACKED_NM or not _in_zone(middle, model):
+            continue
+        upper, lower = sorted(((layer_a, net_a, id_a), (layer_b, net_b, id_b)), key=lambda e: order[e[0]])
+        key = (upper[:2], lower[:2])
+        found.setdefault(key, (middle, []))[1].extend([upper[2], lower[2]])
     return [Finding(f"{lower[1] or 'A trace'} ({lower[0]}) runs under {upper[1] or 'a trace'} ({upper[0]}) "
                     f"through the flex; stagger them", _point(middle), tuple(dict.fromkeys(ids)),
                     group="Traces stacked on two flex layers")
             for (upper, lower), (middle, ids) in found.items()]
+
+
+STACK_CELL_NM = 2_000_000  # the grid _near_pairs sorts segments into
+
+
+def _near_pairs(segments) -> list[tuple[int, int]]:
+    """(i, j), i < j in order, of segments whose boxes (widened by their widths) share a grid
+    cell: the only ones that can lie over each other. Not every pair: a flex full of traces
+    would take seconds per edit."""
+    cells: dict[tuple[int, int], list[int]] = {}
+    for index, (_, _, _, a, b, width) in enumerate(segments):
+        reach = width / 2
+        x0, x1 = sorted((a[0], b[0]))
+        y0, y1 = sorted((a[1], b[1]))
+        for cx in range(int((x0 - reach) // STACK_CELL_NM), int((x1 + reach) // STACK_CELL_NM) + 1):
+            for cy in range(int((y0 - reach) // STACK_CELL_NM), int((y1 + reach) // STACK_CELL_NM) + 1):
+                cells.setdefault((cx, cy), []).append(index)
+    return sorted({pair for members in cells.values() for pair in itertools.combinations(members, 2)})
 
 
 def _covers(point, polygons: tuple[Polygon, ...]) -> bool:
@@ -379,13 +410,83 @@ def _stiffeners(model, bands) -> list[Finding]:
     for stiffener in model.stiffeners:
         for index, band in bands:
             corners = stiffener.ring
-            if any(band.holds(p) for p in corners) or any(
-                    _crossing(band.point(0, side * (band.half + BEND_MARGIN_NM)),
-                              band.point(band.length, side * (band.half + BEND_MARGIN_NM)), p, q)
-                    for side in (-1, 1) for p, q in flex._edges(corners)):
+            if band.area is not None:  # drawn as its area: the area's own edges, not a strip round the chord
+                reaches = any(_crossing(a, b, p, q) for a, b in flex._edges(band.area) for p, q in flex._edges(corners)
+                              ) or any(flex._inside(p, corners) for p in band.area)
+            else:
+                reaches = any(_crossing(band.point(0, side * (band.half + BEND_MARGIN_NM)),
+                                        band.point(band.length, side * (band.half + BEND_MARGIN_NM)), p, q)
+                              for side in (-1, 1) for p, q in flex._edges(corners))
+            if reaches or any(band.holds(p) for p in corners):
                 findings.append(Finding(f"A stiffener reaches into {band.name.lower()} {index + 1}", corners[0],
                                         (stiffener.id,), group="Stiffeners reaching into bends"))
     return findings
+
+
+PARALLEL_SINE = math.sin(math.radians(2))  # a bend and a twist this close to square fold as one ribbon
+OVERLAP_NM = 1_000  # strips sharing less than this only touch
+
+
+def _overlaps(model: flex.FlexModel, frames: list[dict]) -> tuple[list[list[int]], list[flex.Problem]]:
+    """Bends whose curved strips share board. A bend and a twist across the same tail, one
+    hanging off the other, fold as one (a ribbon: foldmath bends and twists that stretch
+    at once); any other overlap is a problem: flex mode folds each strip on its own."""
+    strips = {index: _strip(bend, frames[index]) for index, bend in enumerate(model.bends)}
+    ribbons, problems, paired = [], [], set()
+    for first, second in itertools.combinations(sorted(index for index, ring in strips.items() if ring), 2):
+        if not _convex_overlap(strips[first], strips[second]):
+            continue
+        a, b = model.bends[first], model.bends[second]
+        joined = (frames[first]["child"] is not None and frames[second]["parent"] == frames[first]["child"]
+                  or frames[second]["child"] is not None and frames[first]["parent"] == frames[second]["child"])
+        if {a.kind, b.kind} == {"bend", "twist"} and joined and _parallel(a, b) and not paired & {first, second}:
+            ribbons.append([first, second])
+            paired |= {first, second}
+            continue
+        where = flex._rounded(flex._lerp(flex._lerp(a.start, a.end, 0.5), flex._lerp(b.start, b.end, 0.5), 0.5))
+        problems.append(flex.Problem(
+            f"{a.name} {first + 1} and {b.name.lower()} {second + 1} share board: their curves overlap, and flex "
+            f"mode folds each on its own. Move them apart or make the curves shorter; a bend and a twist "
+            f"across the same tail fold together", where))
+    return ribbons, problems
+
+
+def _strip(bend: flex.Bend, frame: dict):
+    """Where a bend curves, as a convex ring: its drawn area, or its chord widened by half its
+    width either way. None for what curves elsewhere (a wrap's region, a dome's fingers)."""
+    if bend.closed or bend.kind == "dome":
+        return None
+    if bend.area is not None:
+        return bend.area
+    if not frame.get("width_nm"):
+        return None
+    dx, dy = bend.end[0] - bend.start[0], bend.end[1] - bend.start[1]
+    length = math.hypot(dx, dy) or 1.0
+    half = frame["width_nm"] / 2
+    nx, ny = -dy / length * half, dx / length * half
+    return ((bend.start[0] - nx, bend.start[1] - ny), (bend.end[0] - nx, bend.end[1] - ny),
+            (bend.end[0] + nx, bend.end[1] + ny), (bend.start[0] + nx, bend.start[1] + ny))
+
+
+def _parallel(a: flex.Bend, b: flex.Bend) -> bool:
+    ax, ay = a.end[0] - a.start[0], a.end[1] - a.start[1]
+    bx, by = b.end[0] - b.start[0], b.end[1] - b.start[1]
+    return abs(ax * by - ay * bx) <= PARALLEL_SINE * math.hypot(ax, ay) * math.hypot(bx, by)
+
+
+def _convex_overlap(first, second) -> bool:
+    """Two convex rings share more than OVERLAP_NM across every separating direction."""
+    for ring in (first, second):
+        for p, q in flex._edges(ring):
+            nx, ny = p[1] - q[1], q[0] - p[0]
+            length = math.hypot(nx, ny)
+            if not length:
+                continue
+            a = [(x * nx + y * ny) / length for x, y in first]
+            b = [(x * nx + y * ny) / length for x, y in second]
+            if min(max(a), max(b)) - max(min(a), min(b)) <= OVERLAP_NM:
+                return False
+    return True
 
 
 def _fold_frame(model: flex.FlexModel, index: int, thickness_nm: int) -> dict:
@@ -419,15 +520,8 @@ def _fold_frame(model: flex.FlexModel, index: int, thickness_nm: int) -> dict:
 
 
 def _wrapped(model: flex.FlexModel, bend: flex.Bend) -> int | None:
-    """The region a wrap bends: of those with board in its wedge, the nearest the root
-    (then the largest)."""
-    def depth(k):
-        count = 0
-        while model.regions[k].parent is not None:
-            k, count = model.regions[k].parent, count + 1
-        return count
-    inside = [k for k, region in enumerate(model.regions) if any(flex._inside(p, bend.area) for p in region.ring)]
-    return min(inside, key=lambda k: (depth(k), -abs(flex._area(model.regions[k].ring))), default=None)
+    """The region a wrap bends (`flex.wrap_region`)."""
+    return flex.wrap_region(model.regions, bend)
 
 
 def _cone_sides(model: flex.FlexModel, index: int) -> dict:
@@ -443,6 +537,17 @@ def _cone_sides(model: flex.FlexModel, index: int) -> dict:
     return {"sides": [list(map(list, first)), list(map(list, second))]}
 
 
+def error_report(message: str, stack: dict) -> dict:
+    """A report in `report`'s shape for a board flex mode could not read: the flex stack,
+    nothing folded, and `message` as its one problem, so the panel still shows it."""
+    layers = list(stack.get("layers", ()))
+    thickness = int(stack.get("thickness_nm", 0))
+    return {"layers": layers, "thickness_nm": thickness, "coverlay_nm": COVERLAY_NM,
+            "total_nm": thickness + 2 * COVERLAY_NM, "limits": limits(len(layers)), "zones": [], "regions": [],
+            "bends": [], "coverlay": "AMBER", "stiffeners": [], "ribbons": [],
+            "problems": [to_jsonable(flex.Problem(message))], "findings": []}
+
+
 def report(snapshot: BoardSnapshot, stack: dict) -> dict | None:
     """What Blender's panel shows (JSON-ready): the flex stack, the bends with their ratio
     limits, the setup problems and the findings. None for a board without flex."""
@@ -451,11 +556,13 @@ def report(snapshot: BoardSnapshot, stack: dict) -> dict | None:
         return None
     thickness = total_thickness_nm(model)
     numbered = len({bend.step for bend in model.bends}) > 1  # steps matter only with more than one
+    frames = [_fold_frame(model, index, thickness) for index in range(len(model.bends))]
+    ribbons, overlaps = _overlaps(model, frames)
     return {"layers": list(model.layers), "thickness_nm": model.thickness_nm, "coverlay_nm": COVERLAY_NM,
             "total_nm": thickness, "limits": limits(len(model.layers)),
             "zones": [to_jsonable(zone) for zone in model.zones],
             "regions": [to_jsonable(region) for region in model.regions],
-            "bends": [dict(to_jsonable(bend), **_fold_frame(model, index, thickness),
+            "bends": [dict(to_jsonable(bend), **frames[index],
                            note=flex.bend_note(bend.angle_deg, bend.radius_nm, bend.step if numbered else None,
                                                bend.kind, bend.area is not None, bend.closed),
                            **_cone_sides(model, index))
@@ -463,5 +570,6 @@ def report(snapshot: BoardSnapshot, stack: dict) -> dict | None:
             "coverlay": model.coverlay,
             "stiffeners": [dict(to_jsonable(stiffener), note=flex.stiffener_note(
                 stiffener.material, stiffener.thickness_nm, stiffener.side)) for stiffener in model.stiffeners],
-            "problems": [to_jsonable(problem) for problem in model.problems],
+            "ribbons": ribbons,
+            "problems": [to_jsonable(problem) for problem in (*model.problems, *overlaps)],
             "findings": [to_jsonable(finding) for finding in check(snapshot, model)]}
