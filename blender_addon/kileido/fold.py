@@ -21,7 +21,7 @@ import numpy as np
 from mathutils import Matrix, Vector, geometry
 from mathutils.bvhtree import BVHTree
 
-from . import foldmath, materials
+from . import foldmath, materials, nodes
 from . import section as section_module
 from .objects import hide, read_attribute, read_coordinates
 from .state import board, log
@@ -702,8 +702,8 @@ def _link(collection, group, mesh, name, original):
     copy["kls_folded_from"] = original  # "" for what only flex mode draws (stiffeners)
     modifier = copy.modifiers.new("KLS Fold", "NODES")
     modifier.node_group = group
-    _drive(modifier, group)
     collection.objects.link(copy)
+    _drive(modifier, group)
     return copy
 
 
@@ -859,7 +859,8 @@ def _drive(modifier, group):
     sockets = [item.identifier for item in group.interface.items_tree
                if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name.startswith("Angle")]
     for identifier, grip in zip(sockets, _grips()):
-        driver = modifier.driver_add(f'["{identifier}"]').driver
+        owner, path = _angle_input(modifier, identifier)
+        driver = owner.driver_add(path).driver
         driver.type = "AVERAGE"  # no Python expression: works without auto-run scripts
         variable = driver.variables.new()
         variable.type = "TRANSFORMS"
@@ -867,6 +868,18 @@ def _drive(modifier, group):
         target.id = grip
         target.transform_type = "ROT_Z"
         target.transform_space = "LOCAL_SPACE"
+
+
+def _angle_input(modifier, identifier):
+    """What holds a node group input's value, and the path to drive: on Blender 5.2 and later
+    the modifier's own property for the socket, before that a custom property on the modifier
+    named by the socket's identifier (made here when missing)."""
+    slot = nodes._input_slot(modifier, identifier)
+    if slot is not None:
+        return slot, "value"
+    if modifier.get(identifier) is None:
+        modifier[identifier] = 0.0
+    return modifier, f'["{identifier}"]'
 
 
 def _parts():
