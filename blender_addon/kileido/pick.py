@@ -10,7 +10,7 @@ Only the live board picks: view-only boards are not in KiCad. With the board cut
 
 import numpy as np
 
-from . import cut
+from . import cut, fold
 from .objects import OUTLINE, read_attribute, read_coordinates, read_edges
 from .state import board
 
@@ -72,6 +72,15 @@ def _via_at(obj, point):
     return best if distance[best] <= diameters[best] / 2 + TOLERANCE_M else None
 
 
+def _item_on_copy(copy, depsgraph, location, face):
+    """A hit on a flex board's copy (fold.py): the item at the same place on the flat original."""
+    original = board.collection.all_objects.get(copy["kls_folded_from"])
+    if original is None:
+        return None, True  # a stiffener: in the way, but no KiCad item
+    flat = fold.flat_point(copy, depsgraph, location, face)
+    return _item(original, flat) if flat is not None else (None, True)
+
+
 def _item(obj, location):
     """(KiCad id or None, stop): stop=True ends the ray even without an item."""
     ids = list(obj.get("kls_ids", ()))
@@ -128,7 +137,8 @@ def item_at(scene, depsgraph, origin, direction, max_hits=32):
         if not hit:
             return None
         if obj.name in collection.all_objects and not obj.name.startswith(SKIP_PREFIXES) and "highlight" not in obj.name:
-            item, stop = _item(obj, location)
+            item, stop = _item_on_copy(obj, depsgraph, location, _index) if obj.get("kls_folded_from") is not None \
+                else _item(obj, location)
             if item is not None or stop:
                 return item
         reach -= (location - origin).length + STEP_M

@@ -10,6 +10,7 @@ bl_info = {
     "category": "3D View",
 }
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -20,8 +21,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, ims, layers, lighting, live, models,
-               packages, pick, protection, render_depth, watcher)
+from . import (apply, collisions, cosmetics, cut, dump, edge_plating, focus, fold, ims, layers, lighting, live,
+               models, packages, pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -146,6 +147,12 @@ class KILEIDO_OT_pick(bpy.types.Operator):
                                                                             point), coordinate):
             cut.select(self.extend)
             self.report({"INFO"}, "KiLeidoscope: cut plane selected (G moves it, R then Z turns it)")
+            return {"FINISHED"}
+        grip = fold.clicked(lambda point: view3d_utils.location_3d_to_region_2d(context.region, context.region_data,
+                                                                               point), coordinate)
+        if grip is not None:  # a bend's handle, to turn: the board folds with it
+            fold.select(grip, self.extend)
+            self.report({"INFO"}, f"KiLeidoscope: {grip.name} selected (R turns it, folding the board)")
             return {"FINISHED"}
         item = pick.item_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
         # Say what happened in the status bar: a click with no visible result is otherwise
@@ -381,6 +388,243 @@ def _draw_ims(layout, scene):
             box.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
 
 
+def _draw_flex(layout, scene):
+    """Flex mode, for a board with Polyimide in its stackup or Flex/Bend/Stiffener layers: the
+    flex stack, coverlay, bends and stiffeners as KiCad says them (nothing here overrides
+    KiCad: each has a button copying its text, to paste in KiCad), and the bridge's checks.
+    A check with items selects them in KiCad."""
+    found = board.flex
+    if not found:
+        return
+    box = layout.box()
+    title = box.split(factor=0.45)
+    title.label(text="Flex")
+    title.row(align=True).prop(scene, "kileido_flex_use", expand=True)
+    use = scene.kileido_flex_use.lower()
+    total, need = found["total_nm"] * 1e-9, found["limits"][use]
+    column = box.column(align=True)
+    for label, value in (("Flex layers", " + ".join(found["layers"]) or "–"),
+                         ("Flex + coverlay", f"{found['total_nm'] / 1000:.0f} µm")):  # in µm, as the checks say it
+        right = _value_row(column, label)
+        right.label(text=value)
+    _coverlay_row(column, found.get("coverlay", "AMBER"))
+    for index, bend in enumerate(found["bends"]):
+        if bend.get("kind") == "twist":
+            right = _value_row(column, f"Twist {index + 1}  {bend['angle_deg']:g}°")
+            right.label(text=f"over {bend['length_nm'] / 1e6:g} mm")
+            _copy_button(right, bend["note"], f"beside twist {index + 1} on the Bend layer")
+            continue
+        ratio = bend["radius_nm"] * 1e-9 / total  # a cone's: at its narrow end
+        radius = f"R{bend['radius_nm'] / 1e6:g}"
+        if bend.get("kind") == "cone":
+            radius += f"–{bend['radius_max_nm'] / 1e6:.3g}"
+        name = "Wrap" if bend.get("closed") else bend.get("kind", "bend").capitalize()
+        if bend.get("kind") == "dome":
+            said = f"{radius}, {len(bend.get('fingers', ()))} fingers"
+        else:
+            said = f"{bend['angle_deg']:g}° {radius}"
+        right = _value_row(column, f"{name} {index + 1}  {said}")
+        right.label(text=f"{ratio:.1f}×", icon="CHECKMARK" if need is not None and ratio >= need else "ERROR")
+        _copy_button(right, bend["note"], f"beside bend {index + 1} on the Bend layer")
+    if any(bend.get("kind", "bend") == "bend" for bend in found["bends"]):
+        column.label(text=f"{use.capitalize()} flex needs {need}× or more" if need is not None
+                     else "Dynamic flex: 1 or 2 copper layers only")
+    _draw_stiffeners(box, found.get("stiffeners", ()))
+    if fold.available():
+        box.prop(scene, "kileido_fold", text="Fold", slider=True)
+        _draw_steps(box, scene)
+    lines = [(problem["message"], (), "INFO" if problem.get("level") == "note" else "ERROR", "")
+             for problem in found["problems"]]
+    lines += [(message, (), "ERROR", _fold_group(message)) for message in board.fold_findings]
+    lines += [(finding["message"], tuple(finding["items"]), "ERROR", finding.get("group", ""))
+              for finding in found["findings"] if finding["use"] in ("", use)]
+    if not lines:
+        box.label(text="No flex problems found", icon="CHECKMARK")
+        return
+    box.label(text=f"Flex checks: {len(lines)} found")
+    clickable = live.connected()  # a check with items selects them in KiCad
+    groups = {}
+    for line in lines:  # one kind of check together, in the order they come
+        groups.setdefault(line[3] or line[0], []).append(line)
+    opened = set(scene.kileido_flex_open.split("\n"))
+    for name, members in groups.items():
+        if len(members) == 1:
+            _draw_check(box, *members[0][:3], clickable)
+            continue
+        shown = name in opened
+        operator = box.operator(KILEIDO_OT_flex_group.bl_idname, text=f"{name} ({len(members)})", emboss=False,
+                                icon="DISCLOSURE_TRI_DOWN" if shown else "DISCLOSURE_TRI_RIGHT")
+        operator.group = name
+        if shown:
+            indent = box.split(factor=0.06)
+            indent.label(text="")
+            column = indent.column()
+            for message, items, icon, _ in members:
+                _draw_check(column, message, items, icon, clickable)
+
+
+_FINGERS = re.compile(r"^(Step \d+|Folded): (\w+ \d+) \(finger \d+\) runs into \2 \(finger \d+\)$")
+
+
+def _fold_group(message):
+    """A collision's kind, for the checks list: a dome's fingers hitting each other are one."""
+    found = _FINGERS.match(message)
+    return f"{found.group(1)}: {found.group(2)}'s fingers run into each other" if found else ""
+
+
+def _draw_check(layout, message, items, icon, clickable):
+    """One check: its message wrapped, selecting its items in KiCad when live."""
+    wrapped = _wrap(bpy.context, message)
+    if items and clickable:
+        operator = layout.operator(KILEIDO_OT_flex_show.bl_idname, text=wrapped[0], icon=icon, emboss=False)
+        operator.ids = " ".join(items)  # KiCad ids: no spaces
+    else:
+        layout.label(text=wrapped[0], icon=icon)
+    for line in wrapped[1:]:
+        layout.label(text=line, icon="BLANK1")
+
+
+class KILEIDO_OT_flex_group(bpy.types.Operator):
+    bl_idname = "kileido.flex_group"
+    bl_label = "Show or hide"
+    bl_description = "Show or hide the checks of this kind"
+    bl_options = {"INTERNAL"}
+
+    group: StringProperty()
+
+    def execute(self, context):
+        opened = set(filter(None, context.scene.kileido_flex_open.split("\n")))
+        opened ^= {self.group}
+        context.scene.kileido_flex_open = "\n".join(sorted(opened))
+        return {"FINISHED"}
+
+
+def _draw_steps(box, scene):
+    """The folding sequence, one row per step (with two or more): what folds in it, where
+    the Fold slider is (done, folding, to come), and a button folding to its end."""
+    plan = fold._plan()
+    sequence = fold.foldmath.steps(plan) if plan is not None else []
+    if len(sequence) < 2:
+        return
+    progress = scene.kileido_fold
+    column = box.column(align=True)
+    for count, (number, members) in enumerate(sequence, start=1):
+        start, end = (count - 1) / len(sequence), count / len(sequence)
+        icon = "CHECKMARK" if progress >= end - 1e-6 else ("PLAY" if progress > start + 1e-6 else "BLANK1")
+        names = ", ".join(dict.fromkeys(fold.foldmath.handle_name(plan, plan.bends[k].handle) for k in members))
+        row = column.row(align=True)
+        row.alignment = "LEFT"  # as the rows above it read
+        operator = row.operator(KILEIDO_OT_fold_step.bl_idname, text=f"Step {number}: {names}", icon=icon,
+                                emboss=False)
+        operator.progress = end
+
+
+class KILEIDO_OT_fold_step(bpy.types.Operator):
+    bl_idname = "kileido.fold_step"
+    bl_label = "Fold to this step"
+    bl_description = "Fold the flex up to the end of this step of the folding sequence"
+
+    progress: FloatProperty()
+
+    def execute(self, context):
+        context.scene.kileido_fold = self.progress
+        return {"FINISHED"}
+
+
+def _value_row(column, label):
+    """A label on the left; returns the right-aligned row for its value."""
+    split = column.split(factor=0.55, align=True)
+    split.label(text=label)
+    right = split.row(align=True)
+    right.alignment = "RIGHT"
+    return right
+
+
+def _copy_button(row, text, where):
+    operator = row.operator(KILEIDO_OT_copy_note.bl_idname, text="", icon="COPYDOWN", emboss=False)
+    operator.text, operator.where = text, where
+
+
+COVERLAY_NAMES = {"AMBER": "Amber", "BLACK": "Black", "WHITE": "White"}
+
+
+def _coverlay_row(column, colour):
+    """The coverlay's colour from KiCad (a "Coverlay black" text on the Flex layer; amber
+    without one), with a menu copying the texts that set each colour."""
+    right = _value_row(column, "Coverlay")
+    right.label(text=COVERLAY_NAMES.get(colour, colour))
+    right.menu(KILEIDO_MT_coverlay_texts.bl_idname, text="", icon="COPYDOWN")
+
+
+class KILEIDO_MT_coverlay_texts(bpy.types.Menu):
+    bl_idname = "KILEIDO_MT_coverlay_texts"
+    bl_label = "Copy a coverlay text, to paste on the Flex layer in KiCad"
+
+    def draw(self, context):
+        for name in COVERLAY_NAMES.values():
+            operator = self.layout.operator(KILEIDO_OT_copy_note.bl_idname, text=f"Coverlay {name.lower()}")
+            operator.text, operator.where = f"Coverlay {name.lower()}", "on the Flex layer"
+
+
+def _draw_stiffeners(box, stiffeners):
+    """Each stiffener as its KiCad text says (the only source: nothing here overrides it); a
+    material KiLeidoscope does not know says what it is drawn as instead."""
+    clickable = live.connected()
+    for index, stiffener in enumerate(stiffeners):
+        row = box.row(align=True)
+        text = f"Stiffener {index + 1}"
+        if clickable:
+            operator = row.operator(KILEIDO_OT_flex_show.bl_idname, text=text, icon="MOD_SOLIDIFY", emboss=False)
+            operator.ids = stiffener["id"]
+        else:
+            row.label(text=text, icon="MOD_SOLIDIFY")
+        _copy_button(row, stiffener["note"], f"in or beside stiffener {index + 1} on the Stiffener layer")
+        for line in _wrap(bpy.context, stiffener["note"]):  # its own line: a long material reads in full
+            box.label(text=line, icon="BLANK1")
+        look, known = fold.foldmath.stiffener_look(stiffener.get("material") or "")
+        if not known:
+            note = (f'"{stiffener.get("material")}" is not a material KiLeidoscope knows: shown as '
+                    f'{fold.foldmath.STIFFENER_LOOKS[look]}')
+            for number, line in enumerate(_wrap(bpy.context, note)):
+                box.label(text=line, icon="INFO" if number == 0 else "BLANK1")
+
+
+class KILEIDO_OT_copy_note(bpy.types.Operator):
+    bl_idname = "kileido.copy_note"
+    bl_label = "Copy text for KiCad"
+
+    text: StringProperty()
+    where: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        return f'Copy "{properties.text}", to paste as a text {properties.where} in KiCad'
+
+    def execute(self, context):
+        context.window_manager.clipboard = self.text
+        self.report({"INFO"}, f'Copied "{self.text}": paste it as a text {self.where} in KiCad')
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_flex_show(bpy.types.Operator):
+    bl_idname = "kileido.flex_show"
+    bl_label = "Show in KiCad"
+    bl_description = "Select these items in KiCad (and centre KiCad on them)"
+
+    ids: StringProperty()
+
+    @classmethod
+    def poll(cls, context):
+        if not live.connected():
+            cls.poll_message_set("Not live with KiCad")
+            return False
+        return True
+
+    def execute(self, context):
+        live.request_select(self.ids.split(), False, context.scene.kileido_center_in_kicad)
+        return {"FINISHED"}
+
+
 def _layers_board(scene):
     """The board the Layers list shows: None for the live board, "ALL" for every board,
     else a view-only index."""
@@ -546,6 +790,7 @@ class KILEIDO_PT_boards(bpy.types.Panel):
         self._draw_rows(sections, board.thickness_m, layers.shown, eye, all_eye)
         _draw_thickness(self.layout, scene, board.layer_thickness.get("F.Cu"))
         _draw_ims(self.layout, scene)
+        _draw_flex(self.layout, scene)
 
     def _draw_view_only(self, index):
         recorded = packages.layer_list(index)
@@ -693,7 +938,8 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_PT_panel,
-           KILEIDO_PT_boards, KILEIDO_PT_status)
+           KILEIDO_PT_boards, KILEIDO_PT_status, KILEIDO_OT_flex_show, KILEIDO_OT_copy_note,
+           KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_flex_group)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -848,6 +1094,18 @@ def _scene_properties():
             description="The IMS's thermal dielectric under F.Cu, in µm (the fab's; KiCad's 2-layer stackup "
                         "holds the board's thickness). The metal base takes the rest of the board",
             update=_ims_update),
+        "kileido_fold": FloatProperty(
+            name="Fold", default=0.0, min=0.0, max=1.0, step=5, precision=2, subtype="FACTOR",
+            description="Fold the flex at its bends: 0 flat, 1 every bend at its angle from KiCad's Bend layer; "
+                        "bends numbered #1, #2, ... fold one step after another",
+            update=lambda self, context: fold.set_progress(self.kileido_fold)),
+        "kileido_flex_open": StringProperty(
+            name="Open flex checks", default="",
+            description="The kinds of flex check shown in full in the panel, one per line"),
+        "kileido_flex_use": EnumProperty(
+            name="Flex use", items=(("STATIC", "Static", "Bent once, at assembly"),
+                                    ("DYNAMIC", "Dynamic", "Flexing again and again in use")),
+            default="STATIC", description="How the flex is used: dynamic flex needs much larger bend radii"),
         "kileido_show_solder": BoolProperty(
             name="Solder paste", default=False,
             description="Stencil deposits on pads with a paste aperture (KiCad's F.Paste/B.Paste pad shapes)",
@@ -923,6 +1181,7 @@ def register():
             _KEYMAPS.append((keymap, entry))
     collisions.install()
     cut.install()
+    fold.install()
     bpy.app.handlers.load_post.append(_file_loaded)
 
 
@@ -941,6 +1200,7 @@ def unregister():
     render_depth.uninstall()
     collisions.uninstall()
     cut.uninstall()
+    fold.uninstall()
     edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)

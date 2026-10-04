@@ -129,6 +129,17 @@ class Outline:
 
 
 @dataclass(frozen=True)
+class Drawing:
+    """A drawing on one of flex mode's user layers (`flex.LAYER_NAMES`): a closed outline
+    ("closed"), an open line ("line", arcs sampled) or a text at `points[0]` ("text")."""
+    id: str
+    layer: str
+    kind: str
+    points: tuple[Point, ...]
+    text: str = ""
+
+
+@dataclass(frozen=True)
 class StackupLayer:
     name: str
     type: str
@@ -158,6 +169,7 @@ class BoardSnapshot:
     warnings: tuple[str, ...]
     read_timings_ms: dict[str, float]
     graphics: tuple[CopperGraphic, ...] = ()
+    drawings: tuple[Drawing, ...] = ()
 
 
 def to_jsonable(value: Any) -> Any:
@@ -207,4 +219,6 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
         tuple(data["warnings"]), dict(data["read_timings_ms"]),
         tuple(CopperGraphic(g["id"], g["net"], g["layer"], tuple(polygon(poly) for poly in g["polygons"]))
               for g in data.get("graphics", ())),  # dumps from before copper graphics have none
+        tuple(Drawing(d["id"], d["layer"], d["kind"], tuple(point(p) for p in d["points"]), d["text"])
+              for d in data.get("drawings", ())),  # dumps from before flex mode have none
     )

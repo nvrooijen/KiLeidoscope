@@ -322,11 +322,18 @@ def all_keys(snapshot: model.BoardSnapshot) -> frozenset[Key]:
     return frozenset(keys)
 
 
+def flex_message(report: dict | None, revision: int) -> bytes:
+    """Flex mode's panel content (`flex_checks.report`); None: the board has no flex."""
+    return encode_frame({"type": "flex", "revision": revision, "flex": report})
+
+
 def snapshot_frames(snapshot: model.BoardSnapshot, revision: int = 1,
                     origin_nm: tuple[int, int] | None = None, board_path: str = "",
-                    appearance: dict | None = None, export: dict | None = None) -> list[bytes]:
+                    appearance: dict | None = None, export: dict | None = None,
+                    flex: dict | None = None) -> list[bytes]:
     """Everything Blender needs to show a board from scratch, in apply order."""
     return [encode_frame({"type": "snapshot_begin", "revision": revision}),
             board_message(snapshot, revision, origin_nm, board_path, appearance, export),
             *messages_for(snapshot, all_keys(snapshot), revision),
+            flex_message(flex, revision),
             encode_frame({"type": "snapshot_end", "revision": revision})]

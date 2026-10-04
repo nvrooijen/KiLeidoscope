@@ -24,6 +24,8 @@ class BoardState:
         self.stackup = []  # KiCad's stackup top to bottom: {"name", "type", "thickness_nm", "material", ...}
         self.ims = None  # ims.Stack while IMS mode puts a metal base under the board (the heights above are its)
         self.ims_warnings = []  # what would short to the metal base (apply.refresh_ims_warnings)
+        self.flex = {}  # flex mode's panel content from the bridge (kileido_bridge.flex_checks.report)
+        self.fold_findings = []  # what runs into what at the end of a folding step (fold.check_steps)
 
         # Shared display resources.
         self.groups = {}  # Geometry Nodes groups by role (nodes.ensure_all)

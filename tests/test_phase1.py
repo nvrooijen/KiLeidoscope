@@ -38,6 +38,8 @@ class FakeBoard:
         self.footprints = []
         self.zones = []
         self.shapes = []
+        self.texts = []
+        self.layer_names = {}  # user layers: canonical -> the board's name for it
         self.stackup = NS(layers=[])
         self.pad_polygons = {}
         self.outdated = {}  # pad id -> the copy KiCad answers id lookups with (after an undo)
@@ -67,6 +69,9 @@ class FakeBoard:
     def get_shapes(self):
         return self.shapes
 
+    def get_text(self):
+        return self.texts
+
     def get_stackup(self):
         return self.stackup
 
@@ -75,7 +80,7 @@ class FakeBoard:
 
     def get_layer_name(self, layer):
         return {BoardLayer.BL_F_Cu: "F.Cu", BoardLayer.BL_B_Cu: "B.Cu",
-                BoardLayer.BL_Edge_Cuts: "Edge.Cuts"}[layer]
+                BoardLayer.BL_Edge_Cuts: "Edge.Cuts", **self.layer_names}[layer]
 
     def get_items_by_id(self, ids):
         by_id = {pad.id.value: pad for pad in self.pads} | self.outdated

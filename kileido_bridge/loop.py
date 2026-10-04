@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import replace
 
-from . import protocol
+from . import flex_checks, protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
@@ -66,6 +66,7 @@ class BridgeRuntime:
         self.tools = {}
         self.appearance = {}
         self.appearance_sig = None
+        self.flex = None  # flex mode's panel content as Blender last received it
         self.copy = live_copy or LiveBoardCopy()
         self.copy_enabled = True
         # Selection highlight
@@ -110,6 +111,7 @@ class BridgeRuntime:
             self.board_path = ""
             self.appearance = {}
             self.appearance_sig = None
+            self.flex = None
             self.tools = {}
             self.copy_enabled = True
             self.timeout_count = 0
@@ -164,13 +166,15 @@ class BridgeRuntime:
             source = self._appearance_source()
             self.appearance_sig = appearance_signature(source)  # stamp before reading
             self.appearance = read_appearance(source)
+            self.flex = flex_checks.report(snapshot, self.appearance.get("flex_stack", {}))
         self.snapshot = snapshot
         frames = self._geometry_frames(result, full_snapshot)
         if not full_snapshot:
             if result.dirty:
                 self.copy.changed(self.clock())
             self._refresh_copy()
-            frames += self._appearance_frames()
+            appearance = self._appearance_frames()
+            frames += appearance + self._flex_frames(snapshot, bool(result.dirty or appearance))
         frames += self._selection_frames(snapshot, force=full_snapshot)
         if result.outdated_pads != self.outdated_pads:
             self.outdated_pads = result.outdated_pads
@@ -202,7 +206,18 @@ class BridgeRuntime:
         return protocol.snapshot_frames(self.snapshot, self.revision, self.origin_nm,
                                         board_path=self.board_path,
                                         appearance=self.appearance,
-                                        export=self._export())
+                                        export=self._export(), flex=self.flex)
+
+    def _flex_frames(self, snapshot, changed: bool) -> list[bytes]:
+        """Flex mode's checks again after an edit (or a stackup change in the board file)."""
+        if not changed:
+            return []
+        report = flex_checks.report(snapshot, self.appearance.get("flex_stack", {}))
+        if report == self.flex:
+            return []
+        self.flex = report
+        self.revision += 1
+        return [protocol.flex_message(report, self.revision)]
 
     def _appearance_frames(self) -> list[bytes]:
         """IPC has no colours or finish. They come from the live board copy (so they
@@ -240,6 +255,7 @@ class BridgeRuntime:
             self.sent_from_text = True
             self.revision += 1
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
+            frames += self._flex_frames(snapshot, True)
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
         self._send(frames)
 

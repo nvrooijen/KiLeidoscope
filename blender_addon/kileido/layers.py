@@ -204,6 +204,10 @@ def switch(obj, visible):
         obj["kls_layer_hidden"] = False
         hide(obj, False)
         obj.hide_render = False
+    else:
+        return
+    from . import fold  # flex mode's copy of the object follows its row too
+    fold.follow_layers()
 
 
 def set_all(visible):

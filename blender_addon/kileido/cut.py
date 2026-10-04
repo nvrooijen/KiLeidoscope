@@ -544,7 +544,8 @@ def rectangles(scene=None):
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=via_plating(), land_lift=_land_lift(),
                                   cap_plating=CAP_PLATING_M, tents=_tents(), plug_color=_plug_ink())
-    return rects, (line, normal)
+    from . import fold  # fold imports materials, which imports this module
+    return fold.section(rects, line), (line, normal)
 
 
 def _plug_ink():

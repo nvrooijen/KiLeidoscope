@@ -213,11 +213,10 @@ def set_edges(material, realistic):
         stage = tree.nodes.new("ShaderNodeGroup")
         stage.name = EDGE_NODE
         stage.node_tree = group()
-        geometry = tree.nodes.new("ShaderNodeNewGeometry")
         position = tree.nodes.new("ShaderNodeSeparateXYZ")
-        tree.links.new(geometry.outputs["Position"], position.inputs[0])
+        tree.links.new(shading.flat_position(tree), position.inputs[0])
         normal = tree.nodes.new("ShaderNodeSeparateXYZ")
-        tree.links.new(geometry.outputs["Normal"], normal.inputs[0])
+        tree.links.new(shading.flat_normal(tree), normal.inputs[0])
         # Along a wall: position . (-ny, nx), the wall's horizontal tangent.
         along = shading.math_node(tree, "SUBTRACT", shading.math_node(tree, "MULTIPLY", position.outputs["Y"], normal.outputs["X"]),
                       shading.math_node(tree, "MULTIPLY", position.outputs["X"], normal.outputs["Y"]))

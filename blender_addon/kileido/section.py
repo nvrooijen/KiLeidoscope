@@ -20,7 +20,8 @@ CORE = (0.89, 0.83, 0.62)
 PREPREG = (0.80, 0.72, 0.46)
 RESIN = (0.88, 0.87, 0.80)  # epoxy filling a via (or a buried via's prepreg): milky, the barrel shows through
 LAMINATES = {"polyimide": (0.80, 0.50, 0.05), "ptfe": (0.94, 0.94, 0.90), "rogers": (0.92, 0.90, 0.84)}
-WOVEN = {CORE, PREPREG, *LAMINATES.values()}  # glass-reinforced: cut.py draws the weave in these
+POLYIMIDE = LAMINATES["polyimide"]  # flex film: no glass in it, so no weave
+WOVEN = {CORE, PREPREG, *(color for color in LAMINATES.values() if color != POLYIMIDE)}  # cut.py weaves these
 ALUMINUM = (0.80, 0.81, 0.83)  # polished aluminum in a micrograph: bright, a cool grey
 BASE_METALS = {"AL": ALUMINUM, "CU": COPPER}  # an IMS board's metal base (ims.METALS keys)
 METALS = {COPPER, ALUMINUM}  # cut.py polishes these

@@ -21,6 +21,7 @@ _LAYER = re.compile(r'\(layer\s+"([^"]+)"')
 _COLOR = re.compile(r'\(color\s+"([^"]+)"\)')
 _TYPE = re.compile(r'\(type\s+"([^"]*)"\)')
 _MATERIAL = re.compile(r'\(material\s+"([^"]*)"\)')
+_THICKNESS = re.compile(r"\(thickness\s+([\d.]+)")
 _STACKUP = re.compile(r"\(stackup\b")
 _COPPER_FINISH = re.compile(r'\(copper_finish\s+"([^"]*)"\)')
 _EDGE_PLATING = re.compile(r"\(edge_plating\s+yes\)")  # Board Setup > Board Finish: Plated board edge
@@ -166,6 +167,27 @@ def _saved_dielectrics(text: str) -> list[dict]:
         material = _MATERIAL.search(block)
         found.append({"type": kind.group(1).casefold(), "material": material.group(1) if material else ""})
     return found
+
+
+def flex_stack(text: str) -> dict:
+    """The flexible part of a rigid-flex stackup: its Polyimide dielectrics, the copper layers
+    either side of them and everything between. {"layers": copper names top first,
+    "thickness_nm": the part's thickness}, or {} for a board without Polyimide. The IPC
+    stackup has no materials, so only the board file can tell."""
+    layers = []
+    for name, block in _stackup_layers(text):
+        kind = _TYPE.search(block)
+        layers.append((name, kind.group(1).casefold() if kind else "", block))
+    flexible = [index for index, (_, kind, block) in enumerate(layers) if kind in ("core", "prepreg")
+                and any("polyimide" in material.casefold() for material in _MATERIAL.findall(block))]
+    if not flexible:
+        return {}
+    copper = [index for index, (_, kind, _) in enumerate(layers) if kind == "copper"]
+    top = max((index for index in copper if index < flexible[0]), default=flexible[0])
+    bottom = min((index for index in copper if index > flexible[-1]), default=flexible[-1])
+    span = layers[top:bottom + 1]
+    thickness = sum(float(value) for _, _, block in span for value in _THICKNESS.findall(block))
+    return {"layers": [name for name, kind, _ in span if kind == "copper"], "thickness_nm": round(thickness * 1e6)}
 
 
 def via_rules(text: str) -> list[int]:
@@ -317,6 +339,7 @@ def read_appearance(board_path: str = "") -> dict:
         "edge_plating": bool(_EDGE_PLATING.search(text)),
         "via_rules": via_rules(text),
         "dielectrics": _saved_dielectrics(text),
+        "flex_stack": flex_stack(text),
         "saved_colors": {name: color for name, value in saved.items()
                          if (color := _rgba(value)) is not None},
         # Final 3D-viewer colours, stackup names ("White", "FR4 natural") resolved.

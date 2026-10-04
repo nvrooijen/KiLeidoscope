@@ -221,8 +221,7 @@ def add_to(material):
         shader = surface.links[0].from_socket if surface.is_linked else None
         texture = nodes.new("ShaderNodeTexImage")
         texture.name, texture.extension = "KLS holes plot", "CLIP"
-        shading.project_plot(tree, nodes.new("ShaderNodeNewGeometry").outputs["Position"], texture,
-                             "KLS holes offset", "KLS holes scale")
+        shading.project_plot(tree, shading.flat_position(tree), texture, "KLS holes offset", "KLS holes scale")
         opening = shading.sharp_alpha(material, texture)
         solid = nodes.new("ShaderNodeMath")
         solid.operation = "SUBTRACT"
@@ -265,7 +264,7 @@ def _side_select(material, texture):
     channels = nodes.new("ShaderNodeSeparateColor")
     links.new(texture.outputs["Color"], channels.inputs["Color"])
     z = nodes.new("ShaderNodeSeparateXYZ")
-    links.new(nodes.new("ShaderNodeNewGeometry").outputs["Position"], z.inputs["Vector"])
+    links.new(shading.flat_position(tree), z.inputs["Vector"])
     picked = texture.outputs["Alpha"]
     for name, channel, operation in (("KLS holes bottom", "Green", "LESS_THAN"), ("KLS holes top", "Red",
                                                                                  "GREATER_THAN")):
