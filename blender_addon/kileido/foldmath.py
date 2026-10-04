@@ -700,10 +700,6 @@ def point_matrices(points, angles, fold_plan):
     return _frames(fold_plan, angles, points, mask, zone, wrap)
 
 
-def point_matrix(point, angles, fold_plan):
-    return point_matrices(point, angles, fold_plan)[0]
-
-
 def region_matrix(region, angles, fold_plan):
     """The 4x4 world transform that folds everything rigidly in `region` (components)."""
     basis = np.array(((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)), dtype=np.float64)

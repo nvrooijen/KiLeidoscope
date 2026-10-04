@@ -52,10 +52,6 @@ def _forget():
 
 # --- Entry points ---------------------------------------------------------------------------
 
-def available() -> bool:
-    return _plan() is not None
-
-
 def foldable() -> bool:
     """The board has bends to fold (not only thin flex)."""
     plan = _plan()
@@ -1358,9 +1354,3 @@ def _wrap_nodes(build, bend, bit, angle, current, mask, wrap):
                   build.math("MULTIPLY", sign, round_))
     hangs = build.math("FLOORED_MODULO", build.math("FLOOR", build.math("DIVIDE", mask, float(2 ** bit))), 2.0)
     return build.blend(current, turned, build.math("MULTIPLY", hangs, build.math("SUBTRACT", 1.0, flat)))
-
-
-def angle_degrees(index):
-    """A bend's angle now, in degrees (the panel's readout): its handle's."""
-    grips = _grips()
-    return math.degrees(grips[index].rotation_euler.z) if index < len(grips) else 0.0
