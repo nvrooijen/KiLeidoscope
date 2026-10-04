@@ -25,6 +25,7 @@ from kipy.util.board_layer import CANONICAL_LAYER_NAMES, is_copper_layer
 
 from . import model
 from .diff import Key, combine, fingerprint, item_bytes, item_digest
+from .flex import LAYER_NAMES as FLEX_LAYER_NAMES
 from .geometry import (circle_ring, outline_crossings, outline_warning, polyline_strokes, sample_arc,
                        sample_bezier, stroke)
 
@@ -34,6 +35,7 @@ FAST_SOURCES = {"tracks": "get_tracks", "vias": "get_vias"}
 SLOW_SOURCES = {
     "pads": "get_pads", "footprints": "get_footprints", "zones": "get_zones",
     "shapes": "get_shapes", "stackup": "get_stackup", "enabled_layers": "get_enabled_layers",
+    "texts": "get_text",
 }
 _DRILL_SHAPES = {DrillShape.DS_OBLONG: "oval", DrillShape.DS_CIRCLE: "round"}
 
@@ -405,6 +407,49 @@ def _copper_graphics(raw_shapes, raw_footprints) -> tuple[model.CopperGraphic, .
     return tuple(graphic for graphic in graphics if graphic is not None)
 
 
+def _drawing(shape, layer: str) -> model.Drawing | None:
+    """A shape on a flex mode layer: closed (polygon, rectangle, circle) or a line."""
+    uid = shape.id.value
+    if hasattr(shape, "polygons"):
+        rings = [_ring(polygon.outline) for polygon in shape.polygons]
+        return model.Drawing(uid, layer, "closed", rings[0]) if rings and len(rings[0]) >= 3 else None
+    if hasattr(shape, "top_left") and hasattr(shape, "bottom_right"):
+        (left, top), (right, bottom) = _point(shape.top_left), _point(shape.bottom_right)
+        return model.Drawing(uid, layer, "closed", ((left, top), (right, top), (right, bottom), (left, bottom)))
+    if hasattr(shape, "radius_point") and hasattr(shape, "center"):
+        center, edge = _point(shape.center), _point(shape.radius_point)
+        radius = math.hypot(edge[0] - center[0], edge[1] - center[1])
+        return model.Drawing(uid, layer, "closed", circle_ring(center, radius)) if radius else None
+    if hasattr(shape, "control1") and hasattr(shape, "control2"):
+        return model.Drawing(uid, layer, "line", sample_bezier(_point(shape.start), _point(shape.control1),
+                                                               _point(shape.control2), _point(shape.end)))
+    if hasattr(shape, "mid"):
+        return model.Drawing(uid, layer, "line", sample_arc(_point(shape.start), _point(shape.mid),
+                                                            _point(shape.end)))
+    if hasattr(shape, "start") and hasattr(shape, "end"):
+        return model.Drawing(uid, layer, "line", (_point(shape.start), _point(shape.end)))
+    return None
+
+
+def _drawings(raw_shapes, raw_texts, display: dict[str, str]) -> tuple[model.Drawing, ...]:
+    """Shapes and texts on the layers named for flex mode (`flex.LAYER_NAMES`)."""
+    wanted = {layer for layer, name in display.items() if name.casefold() in FLEX_LAYER_NAMES}
+    if not wanted:
+        return ()
+    drawings = [_drawing(shape, layer) for shape in raw_shapes if (layer := canonical_layer(shape.layer)) in wanted]
+    for text in raw_texts:
+        layer = canonical_layer(text.layer)
+        if layer not in wanted:
+            continue
+        if hasattr(text, "top_left"):  # a text box: its centre
+            (left, top), (right, bottom) = _point(text.top_left), _point(text.bottom_right)
+            where = ((left + right) // 2, (top + bottom) // 2)
+        else:
+            where = _point(text.position)
+        drawings.append(model.Drawing(text.id.value, layer, "text", (where,), text.value))
+    return tuple(drawing for drawing in drawings if drawing is not None)
+
+
 def _optional_float(wrapper, field: str) -> float | None:
     value = float(getattr(wrapper, field))
     proto = getattr(wrapper, "proto", None)
@@ -703,7 +748,7 @@ class BoardReader:
         self._parts: dict[str, object] = {
             "tracks": (), "arcs": (), "vias": (), "footprints": (), "pads": (), "zones": (),
             "outline": model.Outline(()), "stackup": model.Stackup(()), "display": {}, "graphics": (),
-            "footprint_by_pad": {},
+            "footprint_by_pad": {}, "drawings": (),
         }
         self._warnings: dict[str, list[str]] = {}
         self._timings: dict[str, float] = {}  # of the poll in progress, in ms
@@ -761,6 +806,7 @@ class BoardReader:
             digests[source] = self._digests(raw[source])
             hashes[source] = combine(digests[source])
         hashes["shapes"] = self._timed("hash", fingerprint, raw["shapes"])
+        hashes["texts"] = self._timed("hash", fingerprint, raw["texts"])
         hashes["stackup"] = self._timed("hash", fingerprint, [raw["stackup"]])
         hashes["enabled_layers"] = self._timed("hash", fingerprint, raw["enabled_layers"])
         return hashes
@@ -803,7 +849,7 @@ class BoardReader:
             self.board.name, dict(parts["display"]), parts["tracks"], parts["arcs"], parts["vias"],
             parts["pads"], parts["footprints"], parts["zones"], parts["outline"], parts["stackup"],
             tuple(w for group in warnings.values() for w in group), timings,
-            graphics=parts["graphics"],
+            graphics=parts["graphics"], drawings=parts["drawings"],
         )
         return PollResult(snapshot, frozenset(dirty), slow, len(self._outdated_pads))
 
@@ -843,6 +889,11 @@ class BoardReader:
             old = set(self._parts["graphics"])
             self._parts["graphics"] = self._timed("convert", _copper_graphics, raw["shapes"], raw["footprints"])
             dirty |= {(graphic.layer, "graphics") for graphic in old ^ set(self._parts["graphics"])}
+        if changed & {"shapes", "texts", "stackup", "enabled_layers"}:  # layer names come with the stackup
+            drawings = self._timed("convert", _drawings, raw["shapes"], raw["texts"], self._parts["display"])
+            if drawings != self._parts["drawings"]:
+                self._parts["drawings"] = drawings
+                dirty.add(("", "drawings"))
         return dirty
 
     def _convert_tracks(self, raw_tracks, digests: list[bytes]) -> None:

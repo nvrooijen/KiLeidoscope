@@ -53,6 +53,8 @@ def refresh(layer=None, kind=None):
         _refresh_pads(wanted, board.highlight_components["pads"], layer)
     if kind is None:
         _refresh_component_boxes(board.highlight_components["footprints"])
+    from . import fold  # a flex board shows its copy: the highlights there follow
+    fold.refresh_highlights()
 
 
 def refresh_components():

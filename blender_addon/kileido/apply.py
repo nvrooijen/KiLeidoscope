@@ -11,8 +11,8 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, cut, edge_plating, focus, footprints, highlight, holes, ims, laminate, layers, lighting,
-               materials, models, nodes, protection, render_depth, transform)
+from . import (cosmetics, cut, edge_plating, focus, fold, footprints, highlight, holes, ims, laminate, layers,
+               lighting, materials, models, nodes, protection, render_depth, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, view3d_spaces, write_attribute,
@@ -61,12 +61,16 @@ def apply_frame(header, arrays):
         _end_snapshot()
     elif message_type == "selection":
         highlight.apply_selection(header)
+    elif message_type == "flex":
+        board.flex = header.get("flex") or {}  # the panel's flex box: stack, bends, checks
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:
         raise ValueError(f"unknown message type: {message_type}")
     if message_type == "layer_data" and not board.in_snapshot:  # a live edit: what shorts may have changed
         refresh_ims_warnings()
+    if message_type in ("layer_data", "flex", "board") and not board.in_snapshot:
+        fold.invalidate()  # the folded copies follow the edit once it settles
     if message_type in SECTION_INPUTS:
         cut.invalidate()
         laminate.update_bands()
@@ -135,6 +139,7 @@ def _end_snapshot():
     refresh_ims_warnings()
     focus.refresh()
     cut.refresh()
+    fold.invalidate()
     edge_plating.refresh()
     frame_board()
     models.follow_board(board.board_path, board.export)

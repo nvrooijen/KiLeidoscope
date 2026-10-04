@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import cut, focus, highlight, kicad_cli
+from . import cut, focus, fold, highlight, kicad_cli
 from .objects import link_owned, set_visible
 from . import state
 from .state import board
@@ -346,6 +346,7 @@ def bind_root(root, asset_hash, saved_positions=None):
     board.drop_if_freed("model bind")
     if board.collection is None:
         raise ValueError("Load or connect a board before loading models")
+    fold.unfold_parts()  # models match and sit on the footprints' flat places; folded again below
     bpy.context.view_layer.update()
     matches = _matches(root, saved_positions)
     active = set()
@@ -409,6 +410,7 @@ def bind_root(root, asset_hash, saved_positions=None):
             visible = visible and bool(footprint.get("kls_model_paths")) and (not flags or any(flags))
             set_visible(obj, visible and footprint_id not in board.model_bound)
     unbound = [footprint_id for footprint_id in list(board.model_bound) if not board.model_objects_by_fp.get(footprint_id)]
+    fold.refold_parts()  # a folded board folds its new models with it
     state.log(f"models bound: {len(board.model_bound)} footprints, {len(active)} parts, "
               f"{len(matches)} GLB roots matched, {len(unbound)} without parts")
     return {"matched": len(board.model_bound),

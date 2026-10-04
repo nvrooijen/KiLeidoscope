@@ -340,7 +340,7 @@ def _print_on_mask(material, side):
         base.name = materials.BASE_COLOR
         emission = next(node for node in nodes if node.type == "EMISSION")
         base.outputs[0].default_value = emission.inputs["Color"].default_value[:]
-    coordinates = next(node for node in nodes if node.type == "TEX_COORD").outputs["Object"]
+    coordinates = shading.flat_position(material.node_tree)  # the mask plot's own (_mapping)
     materials.print_silk(material, (side,), base.outputs[0], shading.sharp_alpha(material, texture), coordinates)
 
 
@@ -529,8 +529,7 @@ def _mapping(material, bounds):
     texture = next(node for node in tree.nodes if node.type == "TEX_IMAGE")
     texture.extension = "CLIP"
     if tree.nodes.get("KLS plot offset") is None:
-        shading.project_plot(tree, tree.nodes.new("ShaderNodeTexCoord").outputs["Object"], texture,
-                             "KLS plot offset", "KLS plot scale")
+        shading.project_plot(tree, shading.flat_position(tree), texture, "KLS plot offset", "KLS plot scale")
     xmin, ymin, xmax, ymax = bounds
     shading.set_plot_rectangle(tree, "KLS plot offset", "KLS plot scale", xmin, ymin, xmax - xmin, ymax - ymin)
 

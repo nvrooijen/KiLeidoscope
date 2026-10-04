@@ -1,0 +1,33 @@
+<html>
+  <head>
+    <title>KiLeidoscope Rigid-Flex</title>
+  </head>
+  <body>
+    <h1>KiLeidoscope Rigid-Flex</h1>
+    <p>A rigid-flex board for KiLeidoscope's flex mode: 4 copper layers, FR4 outside and a 50 &micro;m polyimide core inside, so In1.Cu and In2.Cu run through the flex. Two rigid ends with mounting holes, joined by a flex zone with black coverlay; one bend (-180&deg; R5) folds one end under the other. The user layers Flex, Bend and Stiffener are named; the design rules are set for flex. A template only: not ready to fabricate.</p>
+    <p><img src="brd.png"></p>
+    <h2>Flex mode's marks</h2>
+    <p>Flex mode reads drawings on the user layers named Flex, Bend and Stiffener. The board
+      carries a cheat sheet of every mark on User.Comments; copy a text from it onto the right layer.</p>
+    <table cellpadding="3">
+      <tr><td colspan="2"><b>Bend layer: a line across the flex, its text beside it</b></td></tr>
+      <tr><td><tt>90&deg; R2 #1</tt></td><td>a bend: + folds towards F.Cu, inside radius in mm, step 1</td></tr>
+      <tr><td><tt>90&deg;</tt></td><td>no radius: the smallest safe one; no text at all: 90&deg;</td></tr>
+      <tr><td><tt>twist 90&deg;</tt></td><td>a line along a tail: the tail turns about it</td></tr>
+      <tr><td colspan="2"><b>Bend layer: a closed shape</b></td></tr>
+      <tr><td><tt>120&deg;</tt></td><td>its sides across the flex are where the bend starts and stops;
+        sides that converge make a cone</td></tr>
+      <tr><td><tt>wrap -360&deg;</tt></td><td>a wedge from a cone's tip: the board closes into a cone
+        (+ wraps F.Cu inside, - outside)</td></tr>
+      <tr><td colspan="2"><b>Bend layer: an arc across a row of fingers</b></td></tr>
+      <tr><td><tt>dome R25</tt></td><td>each finger curls from the arc to its tip (or <tt>dome 30&deg;</tt>)</td></tr>
+      <tr><td colspan="2"><b>Stiffener layer: a closed shape, its text inside or beside it</b></td></tr>
+      <tr><td><tt>Polyimide 0.2 mm bottom</tt></td><td>material, thickness, side; FR4 0.2 mm bottom without one</td></tr>
+      <tr><td><tt>steel 0.3 mm top</tt></td><td></td></tr>
+      <tr><td colspan="2"><b>Flex layer</b></td></tr>
+      <tr><td>a closed shape</td><td>a flex zone (rigid-flex; a pure flex board is flex all over)</td></tr>
+      <tr><td><tt>Coverlay black</tt></td><td>or white; amber without one</td></tr>
+    </table>
+    <p><a href="https://github.com/nvrooijen/KiLeidoscope/blob/main/docs/flex.md">Flex mode guide</a> &middot; <a href="https://github.com/nvrooijen/KiLeidoscope">KiLeidoscope</a></p>
+  </body>
+</html>

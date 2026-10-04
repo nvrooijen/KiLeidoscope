@@ -780,3 +780,78 @@ def test_routes_appear_while_kicad_is_busy_from_the_board_text():
     finally:
         client.close()
         runtime.close()
+
+
+def test_hatched_shapes_reach_blender_with_their_hatch(tmp_path, monkeypatch):
+    """KiCad's API reports a hatched shape as unfilled and kicad-cli plots only its outline:
+    the bridge adds KiCad's own hatch (worked out in the background) to the copper graphic
+    and bakes it into the live copy, then sends that layer again."""
+    import kileido_bridge.loop as loop_module
+    from kileido_bridge import hatch, model
+    from kileido_bridge.live_copy import LiveBoardCopy
+    saved = tmp_path / "board.kicad_pcb"
+    saved.write_text("(kicad_pcb)", encoding="utf-8")
+    ring = ((1_000_000, 1_000_000), (5_000_000, 1_000_000), (5_000_000, 2_000_000))
+
+    class FakeBoard:
+        contents = '(kicad_pcb\n\t(gr_rect\n\t\t(fill cross_hatch)\n\t\t(layer "B.Cu")\n\t\t(uuid "hatched")\n\t)\n)\n'
+
+        def get_as_string(self):
+            return self.contents
+
+    outline = model.CopperGraphic("hatched", "GND", "B.Cu", ((((0, 0), (6_000_000, 0), (6_000_000, 100_000)),),))
+    snapshot = replace(fixture(), graphics=(outline,))
+    reader = FakeReader(snapshot)
+    reader.board = FakeBoard()
+    monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(saved))
+    server = BridgeServer(port=0, token="t")
+    copy = LiveBoardCopy(tmp_path / "live", debounce_s=0.0, recheck_s=0.0)
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, live_copy=copy)
+    runtime.hatcher = hatch.Hatcher(compute_fn=lambda text: {"hatched": ("B.Cu", (ring,))})
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
+                          and runtime.hatch_version == 1, limit=2000)
+        if not any(h.get("kind") == "graphics" and h.get("layer") == "B.Cu" and h.get("revision", 0) > 1
+                   for h, _ in frames):  # the snapshot went out before the hatch: B.Cu's graphics follow
+            exchange(runtime, client, lambda f: any(h.get("kind") == "graphics" and h.get("layer") == "B.Cu"
+                                                    for h, _ in f))
+        (graphic,) = runtime.snapshot.graphics
+        assert graphic.polygons[-1] == (ring,)  # the outline, then the hatch
+        live = Path(runtime._export()["path"]).read_text(encoding="utf-8")
+        assert "(gr_poly" in live and "(xy 1.000000 1.000000)" in live and live.startswith(FakeBoard.contents[:-3])
+        assert saved.read_text(encoding="utf-8") == "(kicad_pcb)"  # the user's file is untouched
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_a_flex_model_failure_reaches_blender_as_a_problem_not_a_disconnect(monkeypatch):
+    """A bug in the flex model on some board must not take the KiCad connection down: the
+    panel gets a report whose one problem says so, and polling goes on."""
+    import kileido_bridge.loop as loop_module
+
+    def broken(snapshot, stack):
+        raise ZeroDivisionError("float division by zero")
+    monkeypatch.setattr(loop_module.flex_checks, "report", broken)
+    reader = FakeReader(fixture())
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        (flex,) = [h["flex"] for h, _ in frames if h["type"] == "flex"]
+        assert flex["bends"] == [] and flex["findings"] == [] and flex["limits"] == {"static": 20, "dynamic": None}
+        (problem,) = flex["problems"]
+        assert problem["message"].startswith("Flex mode could not read this board (ZeroDivisionError")
+        reader.events.append((fixture(), {("F.Cu", "tracks")}))  # an edit: the checks run again
+        for _ in range(3):
+            runtime.step()
+        assert runtime.reader is reader and not reader.closed and runtime.status == "connected"
+    finally:
+        client.close()
+        runtime.close()
