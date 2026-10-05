@@ -65,13 +65,8 @@ def main():
                     print("  ", label, "ok", probe(), flush=True)
                 except ReferenceError as exc:
                     print("  ", label, "DEAD:", exc, flush=True)
-            stage("the live timer's recovery: reset, then a full snapshot")
-            try:
-                apply.load_frames(frames)
-            except ReferenceError:
-                state.board.fail("Stale")  # as live.tick does
-            state.board.reset()  # fail() resets when the collection is gone
-            apply.load_frames(frames)
+            stage("a full snapshot recovers by itself: it notices the freed collection and starts over")
+            apply.load_frames(frames)  # no ReferenceError, and no reset from outside
             settle()
             # Recovered: the board is whole again, and still cut open with its section drawn.
             assert len(state.board.collection.all_objects) > 10 and state.board.collection.name
