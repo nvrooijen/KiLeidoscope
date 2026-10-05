@@ -7,7 +7,7 @@ import os
 import bpy
 from mathutils import Vector
 
-from . import materials, shading
+from . import cut, materials, shading
 from .objects import OUTLINE, hide, view3d_spaces
 from .state import board
 
@@ -66,6 +66,10 @@ MIN_EXPOSURE = 0.3
 REFLECTIONS = ("interior", "studio", "courtyard", "city", "forest", "sunrise", "sunset", "night")
 DEFAULT_REFLECTIONS = "interior"
 REFLECTION_STRENGTH = 1.0
+# Shaded flat colours (shading.lit_flat_group): the softboxes at their default power give
+# a face under them 1.86 times its colour as diffuse light (measured, Cycles and EEVEE);
+# scaled so that face shows its flat colour, with the ambient share.
+LIT_GAIN = (1 - shading.LIT_AMBIENT) / 1.86
 CAMERA_MIX = "KLS camera mix"
 
 
@@ -82,7 +86,10 @@ def apply_settings(_scene=None, _context=None):
         if collection.get("kls_studio_lights") == 1:
             for obj in collection.objects:
                 if obj.type == "LIGHT" and obj.get("kls_studio_side"):
-                    obj.data.energy = _energy(obj.get("kls_scale", 1.0))
+                    obj.data.energy = softbox_energy(obj.get("kls_scale", 1.0))
+    # Shaded flat colours as bright as flat under the default light, whatever the mask.
+    shading.set_lit_gain(LIT_GAIN / exposure())
+    cut.place_light(scene)  # the cut light follows the softboxes' strength
 
 
 def exposure():
@@ -96,7 +103,7 @@ def exposure():
     return min(1.0, max(MIN_EXPOSURE, EXPOSURE_ALBEDO / max(luminance, 1e-6)))
 
 
-def _energy(scale):
+def softbox_energy(scale):
     """A softbox's power: the panel's, for its size (`scale`), dimmed for light masks."""
     return float(_setting("kileido_light_power", SOFTBOX_POWER_W)) * scale ** 2 * exposure()
 
@@ -229,7 +236,7 @@ def fit_to_boards():
         obj.location = (center[0], center[1], z)
         obj["kls_scale"] = scale
         obj.data.size = SOFTBOX_SIZE_M * scale
-        obj.data.energy = _energy(scale)
+        obj.data.energy = softbox_energy(scale)
 
 
 def ensure_studio_lights():

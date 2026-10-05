@@ -10,7 +10,9 @@ Two parts, no booleans:
   like a micrograph.
 
 The plane is an ordinary mesh object ("KLS cut plane"; move it, or turn it about Z) and
-its arrow points to the removed side. A section needs the plane upright; tilted, only the
+its arrow points to the removed side. The face can be hidden (Section face) to look into
+the cut board itself, and a cut light ("KLS cut light") can shine into the cut from the
+removed side, along the plane's normal. A section needs the plane upright; tilted, only the
 removed side's transparency applies. The board's geometry is read once per change and
 kept, so moving the plane only redoes the crossing.
 """
@@ -29,6 +31,10 @@ from .state import board
 GROUP = "KLS_Clip_v1"
 NODE = focus.CUT_NODE
 PLANE = "KLS cut plane"
+LIGHT = "KLS cut light"
+# The cut light lights the cut as the softboxes light the board's faces (lighting.py):
+# a disk of the plane's length, as far off as a softbox of that size, at their irradiance.
+LIGHT_GAIN = 1.0
 FACE = focus.CUT_FACE  # the section's object and material
 FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
@@ -59,6 +65,15 @@ _look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
 def enabled(scene=None):
     return bool(getattr(scene or bpy.context.scene, "kileido_cut", False))
+
+
+def face_wanted(scene=None):
+    """The panel's Section face: draw the section, or leave the cut board open to look into."""
+    return bool(getattr(scene or bpy.context.scene, "kileido_cut_face", True))
+
+
+def light_wanted(scene=None):
+    return enabled(scene) and bool(getattr(scene or bpy.context.scene, "kileido_cut_light", False))
 
 
 # --- Removed side: transparent ------------------------------------------------------------
@@ -305,6 +320,7 @@ def push(scene=None):
         for name, vector in (("Origin", origin), ("Normal", normal)):
             for axis, value in zip("XYZ", vector):
                 group.nodes[name].inputs[axis].default_value = value
+    place_light(scene)
     rebuild(scene)
 
 
@@ -569,7 +585,7 @@ def rebuild(scene=None):
     face = _face_object(create=enabled(scene))
     if face is None:
         return
-    result = rectangles(scene)
+    result = rectangles(scene) if face_wanted(scene) else None
     mesh = face.data
     mesh.clear_geometry()
     if result is None:
@@ -616,6 +632,52 @@ def invalidate():
 def _rebuild_soon():
     rebuild()
     return None
+
+
+# --- The cut light --------------------------------------------------------------------------
+
+def _light_object(create):
+    light = bpy.data.objects.get(LIGHT)
+    if light is None and create:
+        data = bpy.data.lights.get(LIGHT) or bpy.data.lights.new(LIGHT, "AREA")
+        light = bpy.data.objects.new(LIGHT, data)
+        light["kileido_owned"] = 1
+        light.hide_select = True  # it follows the plane; a stray click must not move it
+        bpy.context.scene.collection.objects.link(light)
+    return light
+
+
+def place_light(scene=None):
+    """Put the cut light on the removed side, facing into the cut along the plane's normal,
+    over the middle of the board's section; hide it while it is off."""
+    scene = scene or bpy.context.scene
+    light = _light_object(create=light_wanted(scene))
+    if light is None:
+        return
+    on, origin, normal = _state(scene)
+    if not light_wanted(scene) or not on:
+        hide(light, True)
+        light.hide_render = True
+        return
+    from . import lighting  # lighting imports materials, which imports this module
+    width, depth, _, x, y = _extents()
+    size = math.hypot(width, depth) * SHEET_MARGIN
+    scale = size / lighting.SOFTBOX_SIZE_M
+    normal = Vector(normal)
+    flat = Vector((normal.x, normal.y, 0.0))
+    centre = Vector((x, y, origin[2]))
+    if flat.length > 1e-9:  # the point of the cut line nearest the board's middle
+        flat.normalize()
+        centre -= flat * (centre - Vector(origin)).dot(flat)
+    light.location = centre + normal * lighting.SOFTBOX_HEIGHT_M * scale
+    light.rotation_mode = "QUATERNION"
+    light.rotation_quaternion = normal.to_track_quat("Z", "Y")  # an area light shines along its -Z
+    data = light.data
+    data.type, data.shape, data.size = "AREA", "DISK", size
+    data.color = (1.0, 1.0, 1.0)
+    data.energy = lighting.softbox_energy(scale) * LIGHT_GAIN
+    hide(light, False)
+    light.hide_render = False
 
 
 # --- Switching ------------------------------------------------------------------------------
