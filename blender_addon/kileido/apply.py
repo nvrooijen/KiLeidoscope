@@ -106,6 +106,9 @@ def _hide_collection(hidden):
 
 def _begin_snapshot():
     """Hide the board while a full snapshot rebuilds it (no half-drawn frames)."""
+    # A collection freed since the last frame (undo, file load) is noticed here, before anything
+    # touches it: the state starts over and this snapshot builds the board anew.
+    board.drop_if_freed("snapshot begin", resync=False)
     board.in_snapshot = True
     board.footprint_state.clear()
     board.touched.clear()
