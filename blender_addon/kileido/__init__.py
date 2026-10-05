@@ -258,7 +258,10 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         current = _viewport_mode(context)
         for mode, label in (("MATERIAL", "Preview"), ("RENDERED", "Cycles")):
             row.operator(KILEIDO_OT_viewport.bl_idname, text=label, depress=current == mode).mode = mode
-        layout.prop(context.scene, "kileido_color_mode", text="Colors")
+        row = layout.row(align=True)
+        row.prop(context.scene, "kileido_color_mode", text="Colors")
+        if context.scene.kileido_color_mode != "REALISTIC":
+            row.prop(context.scene, "kileido_shaded", text="", icon="SHADING_SOLID")
         finish = board.appearance.get("copper_finish")
         if finish:
             layout.label(text="Board finish: " + ("Bare copper" if finish.casefold() == "none" else finish))
@@ -303,6 +306,9 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             row.operator(KILEIDO_OT_cut_plane.bl_idname, text=axis).axis = axis
         row.operator(KILEIDO_OT_cut_plane.bl_idname, text="Reset").axis = "RESET"
         row.prop(scene, "kileido_cut_flip", text="Flip", toggle=True)
+        row = box.row(align=True)
+        row.prop(scene, "kileido_cut_face", text="Section face", toggle=True)
+        row.prop(scene, "kileido_cut_light", text="Cut light", icon="LIGHT_AREA", toggle=True)
         if not cut.upright(scene):
             box.label(text="Turn the plane upright for a cross section", icon="INFO")
 
@@ -1143,6 +1149,11 @@ def _scene_properties():
                                   ("REALISTIC", "Realistic", "Lit board materials, solder mask and exposed metal"),
                                   ("EDITOR", "PCB Editor", "Active KiCad PCB Editor layer colors")),
             default="FAB", update=lambda self, context: apply.set_color_mode(self.kileido_color_mode)),
+        "kileido_shaded": BoolProperty(
+            name="Shaded", default=True,
+            description="Board stackup and PCB Editor colors lit by the studio lights (and the cut light), "
+                        "with shading and shadows, so depth shows. Off: flat colors, as KiCad draws them",
+            update=lambda self, context: apply.set_color_mode(self.kileido_color_mode)),
         "kileido_show_board": BoolProperty(
             name="Show board solid", default=True,
             update=lambda self, context: apply.set_board_visible(self.kileido_show_board)),
@@ -1177,6 +1188,17 @@ def _scene_properties():
         "kileido_cut_flip": BoolProperty(
             name="Flip", default=False, description="Remove the other side of the cut plane",
             update=lambda self, context: cut.push()),
+        "kileido_cut_face": BoolProperty(
+            name="Section face", default=True,
+            description="Draw the cross section on the plane (the \"KLS cut face\" object). Off: look into the "
+                        "cut board itself; hide Board under Layers to see its copper and vias",
+            update=lambda self, context: cut.rebuild()),
+        "kileido_cut_light": BoolProperty(
+            name="Cut light", default=False,
+            description="A light on the removed side shining into the cut along the plane's normal (the "
+                        "\"KLS cut light\" object, as strong as the Light setting). It lights Realistic and "
+                        "Shaded colors, and parts; flat colors ignore lights",
+            update=lambda self, context: cut.place_light()),
         "kileido_via_fill_material": EnumProperty(
             name="Via fill", items=(("RESIN", "Resin", "Epoxy-filled barrels (milky)"),
                                     ("COPPER", "Copper", "Copper-filled barrels")),

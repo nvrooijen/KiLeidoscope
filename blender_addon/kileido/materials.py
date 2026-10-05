@@ -1,7 +1,8 @@
 """KiLeidoscope's board materials and the three colour modes (board stackup, realistic, PCB Editor).
 
 Materials are emission shaders (flat colours) that gain a Principled BSDF in
-Realistic mode. Colours come from the bridge's appearance data (board_specs):
+Realistic mode. In the other two modes the panel's Shaded lights the flat colours
+(shading.lit_flat_group), so the studio lights, their shadows and the cut light show depth. Colours come from the bridge's appearance data (board_specs):
 KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 """
 
@@ -139,6 +140,8 @@ def paint(material, color):
             node.inputs["Color"].default_value = (*linear, 1.0)
         elif node.type == "BSDF_PRINCIPLED":
             node.inputs["Base Color"].default_value = (*linear, 1.0)
+        elif node.name == shading.LIT_FLAT:
+            node.inputs["Color"].default_value = (*linear, 1.0)
         elif node.name == BASE_COLOR:  # the colour under the silkscreen ink (`print_silk`)
             node.outputs[0].default_value = (*linear, 1.0)
 
@@ -200,8 +203,14 @@ def _print_on_tent(material, side):
     nodes[COAT_AMOUNT].inputs[1].default_value = covered_state(side)["coat"]
 
 
+def shaded():
+    """The panel's Shaded: Board stackup and PCB Editor colours lit, not flat."""
+    return bool(getattr(bpy.context.scene, "kileido_shaded", True))
+
+
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):
-    """Route the lit (Realistic) or flat (emission) shader to the material's surface."""
+    """Route the lit (Realistic), flat (emission) or, while Shaded is on, the flat colour
+    lit (shading.lit_flat_group) shader to the material's surface."""
     tree = material.node_tree
     emission = next(node for node in tree.nodes if node.type == "EMISSION")
     principled = next((node for node in tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
@@ -212,7 +221,19 @@ def set_surface(material, realistic, metallic=0.0, roughness=0.4):
     principled.inputs["Roughness"].default_value = roughness
     mix = next((node for node in tree.nodes if node.type == "MIX_SHADER"), None)
     target = mix.inputs[2] if mix else focus.surface_input(material)
-    tree.links.new((principled if realistic else emission).outputs[0], target)
+    if realistic or not shaded():
+        tree.links.new((principled if realistic else emission).outputs[0], target)
+        return
+    lit = tree.nodes.get(shading.LIT_FLAT)
+    if lit is None:
+        lit = tree.nodes.new("ShaderNodeGroup")
+        lit.name = shading.LIT_FLAT
+        lit.node_tree = shading.lit_flat_group()
+    color = emission.inputs["Color"]  # the flat colour, or what feeds it (finish, silkscreen)
+    lit.inputs["Color"].default_value = color.default_value
+    if color.is_linked:
+        tree.links.new(color.links[0].from_socket, lit.inputs["Color"])
+    tree.links.new(lit.outputs[0], target)
 
 
 # --- Colours --------------------------------------------------------------------------------
@@ -341,7 +362,7 @@ def finish_mask(material, key):
     rough.inputs["To Max"].default_value = COPPER_ROUGHNESS
     links = material.node_tree.links
     for node in nodes:
-        if node.type == "EMISSION":
+        if node.type == "EMISSION" or node.name == shading.LIT_FLAT:
             links.new(mix.outputs["Result"], node.inputs["Color"])
         elif node.type == "BSDF_PRINCIPLED":
             links.new(mix.outputs["Result"], node.inputs["Base Color"])
@@ -521,7 +542,7 @@ def print_silk(material, sides, base, opening, coordinates=None):
     links.new(relief.outputs["Normal"], nodes["KLS silk bump"].inputs["Normal"])
     links.new(base, mix.inputs["A"])
     for node in nodes:
-        if node.type == "EMISSION":
+        if node.type == "EMISSION" or node.name == shading.LIT_FLAT:
             links.new(mix.outputs["Result"], node.inputs["Color"])
         elif node.type == "BSDF_PRINCIPLED":
             links.new(mix.outputs["Result"], node.inputs["Base Color"])

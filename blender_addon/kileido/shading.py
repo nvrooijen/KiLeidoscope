@@ -1,5 +1,7 @@
 """Shader-node building blocks shared by KiLeidoscope's materials."""
 
+import bpy
+
 
 def srgb_to_linear(rgb):
     """KiCad stores sRGB bytes; Blender shader inputs are scene-linear."""
@@ -148,3 +150,46 @@ def centred_fract(tree, value):
 def typed_socket(sockets, name, kind="RGBA"):
     """A socket by name and type: a Mix node has an A, B and Result per data type."""
     return next(socket for socket in sockets if socket.name == name and socket.type == kind)
+
+
+# --- Shaded flat colours --------------------------------------------------------------------
+
+LIT_FLAT = "KLS lit flat"  # the node in a material, of the shared group LIT_FLAT_GROUP
+LIT_FLAT_GROUP = "KLS_LitFlat_v1"
+LIT_AMBIENT = 0.2  # of its colour a surface shows with no light on it (KiCad's 3D viewer has ambient too)
+
+
+def lit_flat_group():
+    """A flat colour lit (the panel's Shaded): plain diffuse, no gloss or metal, so the
+    mode's colours stay as they are, plus LIT_AMBIENT of it unlit, so shadows never go
+    black. The diffuse part's Gain (`set_lit_gain`) is set so a face the softboxes light
+    head-on shows its flat colour."""
+    group = bpy.data.node_groups.get(LIT_FLAT_GROUP)
+    if group is not None:
+        return group
+    group = bpy.data.node_groups.new(LIT_FLAT_GROUP, "ShaderNodeTree")
+    group.interface.new_socket(name="Color", in_out="INPUT", socket_type="NodeSocketColor")
+    group.interface.new_socket(name="Shader", in_out="OUTPUT", socket_type="NodeSocketShader")
+    nodes, links = group.nodes, group.links
+    source = nodes.new("NodeGroupInput")
+    gain = nodes.new("ShaderNodeValue")
+    gain.name = "Gain"
+    gain.outputs[0].default_value = 1.0
+    scaled = nodes.new("ShaderNodeVectorMath")
+    scaled.operation = "SCALE"
+    links.new(source.outputs["Color"], scaled.inputs[0])
+    links.new(gain.outputs[0], scaled.inputs["Scale"])
+    diffuse = nodes.new("ShaderNodeBsdfDiffuse")
+    links.new(scaled.outputs["Vector"], diffuse.inputs["Color"])
+    ambient = nodes.new("ShaderNodeEmission")
+    links.new(source.outputs["Color"], ambient.inputs["Color"])
+    ambient.inputs["Strength"].default_value = LIT_AMBIENT
+    both = nodes.new("ShaderNodeAddShader")
+    links.new(ambient.outputs[0], both.inputs[0])
+    links.new(diffuse.outputs[0], both.inputs[1])
+    links.new(both.outputs[0], nodes.new("NodeGroupOutput").inputs["Shader"])
+    return group
+
+
+def set_lit_gain(gain):
+    lit_flat_group().nodes["Gain"].outputs[0].default_value = gain
