@@ -47,6 +47,8 @@ class BoardState:
         # Component models bound to footprints (models.bind_root).
         self.model_bound = set()
         self.model_objects_by_fp = {}
+        self.component_names = {}  # components.key_of -> object name (components.find)
+        self.component_names_of = 0  # the collection (pointer) that index is of
 
         # KiCad's selection (protocol.selection_message).
         self.highlight = {"selected": set(), "pair": set()}

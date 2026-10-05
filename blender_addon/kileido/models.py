@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import cut, focus, fold, highlight, kicad_cli
+from . import components, cut, focus, fold, highlight, kicad_cli
 from .objects import link_owned, set_visible
 from . import state
 from .state import board
@@ -383,11 +383,11 @@ def bind_root(root, asset_hash, saved_positions=None):
                 mesh_source.data = geometry
                 if redundant.users == 0:
                     bpy.data.meshes.remove(redundant)
-            name = f"KLS model {footprint_id} {part}"
-            clone = board.collection.all_objects.get(name)
+            name = components.model_name(target.get("kls_reference", ""), target.get("kls_model_paths", ()), part)
+            clone = components.find(components.MODEL, footprint_id, part)
             if clone is None:
                 clone = bpy.data.objects.new(name, geometry)
-                link_owned(clone)
+                link_owned(clone, "components")
             clone.data = geometry  # linked geometry, including UVs and materials
             prior = clone.get("kls_model_local_matrix")
             if clone.get("kls_model_asset") == asset_hash and prior is not None and len(prior) == 16:
@@ -397,16 +397,18 @@ def bind_root(root, asset_hash, saved_positions=None):
                 local = saved_frame.inverted() @ rebase @ mesh_source.matrix_world
                 clone["kls_model_local_matrix"] = [local[row][col]
                                                    for row in range(4) for col in range(4)]
-            clone.matrix_world = target.matrix_world @ local
+            components.attach(clone, target, local)
             clone["kileido_owned"] = 1
             clone["kls_model_fp_id"] = footprint_id
             clone["kls_side"] = target.get("kls_side", "")
             clone["kls_model_asset"] = asset_hash
             clone["kls_model_index"] = model_index
             clone["kls_model_count"] = model_count
+            clone["kls_model_part"] = part
+            components.rename(clone, name)
             set_visible(clone, model_is_visible(target, clone))
-            names.append(name)
-            active.add(name)
+            names.append(clone.name)
+            active.add(clone.name)
         if not names:
             board.model_objects_by_fp.pop(footprint_id, None)
     for obj in tuple(board.collection.all_objects):
@@ -419,7 +421,7 @@ def bind_root(root, asset_hash, saved_positions=None):
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_footprint_placeholder") == 1:
             footprint_id = obj.get("kls_footprint_id")
-            footprint = board.collection.all_objects.get(f"KLS footprint {footprint_id}")
+            footprint = components.find(components.FRAME, footprint_id)
             set_visible(obj, placeholder_visible(footprint, footprint_id))
     unbound = [footprint_id for footprint_id in list(board.model_bound) if not board.model_objects_by_fp.get(footprint_id)]
     fold.refold_parts()  # a folded board folds its new models with it

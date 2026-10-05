@@ -357,7 +357,7 @@ def _on_depsgraph(scene, depsgraph):
         block = update.id
         if isinstance(block, bpy.types.Object) and not block.name.startswith("KiLeidoscope collision") and \
                 not block.get("kls_studio_side") and \
-                (block.name.startswith(("KLS ", "KV")) or block.get(packages.ROOT_TAG)):
+                (block.name.startswith(("KLS ", "KV")) or block.get("kileido_owned") or block.get(packages.ROOT_TAG)):
             schedule()
             return
 

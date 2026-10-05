@@ -350,7 +350,8 @@ def _originals():
     skip = set(folded.objects) if folded is not None else set()
     return [obj for obj in board.collection.all_objects
             if obj.type == "MESH" and obj not in skip and obj.get("kls_model_fp_id") is None
-            and not obj.name.startswith("KLS footprint ")  # parts: placeholders and boxes fold whole
+            and obj.get("kls_footprint_placeholder") != 1  # parts: placeholders and boxes fold whole
+            and not obj.name.startswith("KLS footprint ")
             and not obj.hide_get() and (not obj.hide_viewport or obj.get("kls_hidden_by_fold"))]
 
 
@@ -879,10 +880,12 @@ def _angle_input(modifier, identifier):
 
 
 def _parts():
-    """Component models, placeholders and footprint frames: each folds as one piece."""
+    """Footprint frames (their models and placeholders ride on them) and highlight boxes:
+    each folds as one piece."""
     return [obj for obj in board.collection.all_objects
-            if obj.get("kls_model_fp_id") is not None or obj.get("kls_footprint_placeholder") == 1
-            or obj.name.startswith("KLS footprint ")]  # frames, placeholders and their highlight boxes
+            if obj.get("kls_footprint") == 1 or obj.name.startswith("KLS footprint ")
+            or (obj.parent is None and (obj.get("kls_model_fp_id") is not None
+                                        or obj.get("kls_footprint_placeholder") == 1))]
 
 
 def _place_parts(plan, angles):

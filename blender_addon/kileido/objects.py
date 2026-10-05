@@ -90,9 +90,11 @@ def ensure_groups():
             board.collection.children.link(child)
 
 
-def link_owned(obj):
-    """Link a new KiLeidoscope object into its group of the board collection."""
-    group = next((child for child in board.collection.children if child.get("kls_group") == group_of(obj.name)),
+def link_owned(obj, key=None):
+    """Link a new KiLeidoscope object into its group of the board collection (`key`,
+    else picked from its name)."""
+    key = key or group_of(obj.name)
+    group = next((child for child in board.collection.children if child.get("kls_group") == key),
                  board.collection)
     group.objects.link(obj)
     lock_in_place(obj)
@@ -109,14 +111,19 @@ def find(name):
     return board.collection.all_objects.get(board.name_prefix + name)
 
 
-def owned_object(name, kind="MESH"):
+def owned_object(name, kind="MESH", group=None):
     """The board collection's object `name`, created (with empty mesh data) if missing."""
     obj = board.collection.all_objects.get(name)
     if obj is not None:
         return obj
+    return new_owned(name, kind, group)
+
+
+def new_owned(name, kind="MESH", group=None):
+    """A new object in the board collection (in `group`, else the one its name picks)."""
     obj = bpy.data.objects.new(name, bpy.data.meshes.new(name) if kind == "MESH" else None)
     obj["kileido_owned"] = 1
-    link_owned(obj)
+    link_owned(obj, group)
     return obj
 
 
