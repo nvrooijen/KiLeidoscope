@@ -33,6 +33,9 @@ _MODEL_PATH = re.compile(r'\(model\s+"((?:[^"\\]|\\.)*)"')
 _FOOTPRINT = re.compile(r'\(footprint\s+"')
 _UUID = re.compile(r'\(uuid\s+"([^"]+)"')
 MATCH_TOLERANCE_M = 0.0002  # a GLB root this close to a footprint origin belongs to it
+KICAD_MODEL_LIFT_M = 50e-6  # KiCad's 3D export lifts each model this far off the copper (BOARD_OFFSET)
+KICAD_COPPER_M = 35e-6  # the copper thickness KiCad assumes when the stackup gives none
+SEATED = "kls_model_seated"  # on a model part: its local frame puts it on the copper
 GLB_ASSET = "kls_glb_asset"  # on a GLB import's collection: its content's id (`load_glb`)
 
 
@@ -356,6 +359,17 @@ def _saved_footprint_matrix(target, saved_positions):
             Matrix.Diagonal((*scale, 1.0)))
 
 
+def _seat_shift(side):
+    """z (m) from KiCad's GLB to this board, so a model's seating plane is the copper.
+
+    KiCad's export has z = 0 at the dielectric's bottom face (here: under B.Cu, one
+    copper thickness lower) and lifts every model 50 um off the outer copper, up on
+    top and down underneath (measured, KiCad 10: a top 0402 13 um over its pad, a
+    bottom one 83 um under it)."""
+    shift = float(board.layer_thickness.get("B.Cu") or KICAD_COPPER_M)
+    return shift + KICAD_MODEL_LIFT_M if side == "bottom" else shift - KICAD_MODEL_LIFT_M
+
+
 def bind_root(root, asset_hash, saved_positions=None):
     """Link imported mesh data to existing footprint transforms, without file I/O."""
     board.drop_if_freed("model bind")
@@ -390,13 +404,16 @@ def bind_root(root, asset_hash, saved_positions=None):
                 link_owned(clone, "components")
             clone.data = geometry  # linked geometry, including UVs and materials
             prior = clone.get("kls_model_local_matrix")
-            if clone.get("kls_model_asset") == asset_hash and prior is not None and len(prior) == 16:
+            if (clone.get("kls_model_asset") == asset_hash and clone.get(SEATED) == 1
+                    and prior is not None and len(prior) == 16):
                 local = Matrix(tuple(prior[row * 4:row * 4 + 4] for row in range(4)))
             else:
                 saved_frame = _saved_footprint_matrix(target, saved_positions or [])
-                local = saved_frame.inverted() @ rebase @ mesh_source.matrix_world
+                seat = Matrix.Translation((0.0, 0.0, _seat_shift(target.get("kls_side"))))
+                local = saved_frame.inverted() @ seat @ rebase @ mesh_source.matrix_world
                 clone["kls_model_local_matrix"] = [local[row][col]
                                                    for row in range(4) for col in range(4)]
+                clone[SEATED] = 1  # frames saved before the seat fix are recomputed
             components.attach(clone, target, local)
             clone["kileido_owned"] = 1
             clone["kls_model_fp_id"] = footprint_id
