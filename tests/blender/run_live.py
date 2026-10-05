@@ -148,11 +148,28 @@ def main():
         bpy.context.view_layer.update()
         clone_before = clone.matrix_world.translation.copy()
         clone_pointer, clone_data_pointer = clone.as_pointer(), clone.data.as_pointer()
+        # The "DNP components" eye hides the model of a part KiCad marks Do not populate,
+        # and follows the flag live; pads are untouched.
+        def send_footprints(*records, revision):
+            client.frames.extend(decoded(messages_for(replace(snapshot, footprints=records),
+                                                      frozenset({("", "footprints")}), revision=revision)))
+            live.tick()
+
+        send_footprints(replace(shifted, dnp=True), *snapshot.footprints[1:], revision=4)
+        assert footprint_empty["kls_dnp"] == 1 and not clone.hide_get()  # shown by default
+        scene.kileido_show_dnp = False
+        assert clone.hide_get() and placeholder.hide_get()
+        scene.kileido_show_dnp = True
+        assert not clone.hide_get() and placeholder.hide_get()  # a bound model needs no box
+        scene.kileido_show_dnp = False
+        send_footprints(shifted, *snapshot.footprints[1:], revision=5)
+        assert footprint_empty["kls_dnp"] == 0 and not clone.hide_get()
+        scene.kileido_show_dnp = True
         second_shift = replace(shifted, pos=(shifted.pos[0] + 1_000_000, shifted.pos[1]),
                                bbox_nm=(10_000_000, 21_000_000, 8_000_000, 4_000_000))
         second_frame = decoded(messages_for(replace(snapshot, footprints=(second_shift,
                                                     *snapshot.footprints[1:])),
-                                            frozenset({("", "footprints")}), revision=4))
+                                            frozenset({("", "footprints")}), revision=6))
         client.frames.extend(second_frame)
         live.tick()
         bpy.context.view_layer.update()
@@ -161,10 +178,15 @@ def main():
         changed_path = replace(second_shift, model_paths=("new-model.glb",))
         path_frame = decoded(messages_for(replace(snapshot, footprints=(changed_path,
                                                   *snapshot.footprints[1:])),
-                                          frozenset({("", "footprints")}), revision=5))
+                                          frozenset({("", "footprints")}), revision=7))
         client.frames.extend(path_frame)
         live.tick()
         assert clone.hide_get() and not placeholder.hide_get()
+        send_footprints(replace(changed_path, dnp=True), *snapshot.footprints[1:], revision=8)
+        scene.kileido_show_dnp = False  # a DNP part's missing-model box goes too
+        assert placeholder.hide_get()
+        scene.kileido_show_dnp = True
+        assert not placeholder.hide_get()
         client.state = "disconnected"
         live.tick()
         assert not collection.hide_viewport

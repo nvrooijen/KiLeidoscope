@@ -212,7 +212,7 @@ def footprints_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
     return encode_frame({"type": "footprints", "revision": revision, "footprints": [
         {"id": f.id, "ref": f.reference, "x": f.pos[0], "y": f.pos[1], "rot": f.rotation_rad,
          "side": f.side, "bbox_nm": f.bbox_nm, "model_paths": f.model_paths,
-         "model_visible": f.model_visible}
+         "model_visible": f.model_visible, "dnp": f.dnp}
         for f in snapshot.footprints]})
 
 

@@ -297,6 +297,21 @@ def _model_index(source, target, matches):
     return siblings.index(source), len(siblings)
 
 
+def dnp_excluded(footprint):
+    """True for a footprint KiCad marks "Do not populate" while the panel hides them."""
+    return footprint.get("kls_dnp") == 1 and not getattr(bpy.context.scene, "kileido_show_dnp", True)
+
+
+def placeholder_visible(footprint, footprint_id):
+    """A footprint's missing-model box shows while it has a model file KiCad would show,
+    none of its models are bound, and it is not an excluded DNP part."""
+    if footprint is None or footprint.get("kls_active") != 1 or dnp_excluded(footprint):
+        return False
+    flags = list(footprint.get("kls_model_visible", ()))
+    return (bool(footprint.get("kls_model_paths")) and (not flags or any(flags)) and
+            footprint_id not in board.model_bound)
+
+
 def model_is_visible(footprint, model_obj):
     """Live KiCad 3D-model visibility for one imported model part.
 
@@ -304,7 +319,7 @@ def model_is_visible(footprint, model_obj):
     slot of the footprint. KiCad's GLB export omits models hidden at save time
     (measured), so the GLB roots map onto the slots that were visible then.
     """
-    if footprint is None or footprint.get("kls_active") != 1:
+    if footprint is None or footprint.get("kls_active") != 1 or dnp_excluded(footprint):
         return False
     flags = [bool(flag) for flag in footprint.get("kls_model_visible", ())]
     if not flags:
@@ -405,10 +420,7 @@ def bind_root(root, asset_hash, saved_positions=None):
         if obj.get("kls_footprint_placeholder") == 1:
             footprint_id = obj.get("kls_footprint_id")
             footprint = board.collection.all_objects.get(f"KLS footprint {footprint_id}")
-            visible = footprint is not None and footprint.get("kls_active") == 1
-            flags = list(footprint.get("kls_model_visible", ())) if footprint else []
-            visible = visible and bool(footprint.get("kls_model_paths")) and (not flags or any(flags))
-            set_visible(obj, visible and footprint_id not in board.model_bound)
+            set_visible(obj, placeholder_visible(footprint, footprint_id))
     unbound = [footprint_id for footprint_id in list(board.model_bound) if not board.model_objects_by_fp.get(footprint_id)]
     fold.refold_parts()  # a folded board folds its new models with it
     state.log(f"models bound: {len(board.model_bound)} footprints, {len(active)} parts, "

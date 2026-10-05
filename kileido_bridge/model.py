@@ -99,6 +99,7 @@ class Footprint:
     model_paths: tuple[str, ...]
     bbox_nm: tuple[int, int, int, int] | None = None  # KiCad board-space x, y, width, height
     model_visible: tuple[bool, ...] = ()
+    dnp: bool = False  # KiCad's "Do not populate"
 
 
 @dataclass(frozen=True)
@@ -208,7 +209,7 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
         tuple(Footprint(f["id"], f["reference"], point(f["pos"]), f["rotation_rad"], f["side"],
                         tuple(f["model_paths"]),
                         tuple(int(value) for value in f["bbox_nm"]) if f["bbox_nm"] is not None else None,
-                        tuple(f["model_visible"]))
+                        tuple(f["model_visible"]), bool(f.get("dnp", False)))  # older dumps: no dnp
               for f in data["footprints"]),
         tuple(ZoneFill(z["id"], z["net"], z["layer"], tuple(polygon(poly) for poly in z["polygons"]))
               for z in data["zones"]),

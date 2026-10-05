@@ -548,6 +548,7 @@ def _convert_footprint(item) -> tuple[model.Footprint, tuple[str, ...]]:
         "bottom" if item.layer == BoardLayer.BL_B_Cu else "top",
         tuple(model_item.filename for model_item in item.definition.models),
         model_visible=tuple(bool(model_item.visible) for model_item in item.definition.models),
+        dnp=bool(item.attributes.do_not_populate),
     ), tuple(child.id.value for child in item.definition.pads)
 
 
