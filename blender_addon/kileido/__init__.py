@@ -21,8 +21,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, ims, layers, lighting,
-               live, models, packages, pick, protection, render_depth, watcher)
+from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, ims, layers,
+               lighting, live, models, packages, pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -901,7 +901,17 @@ class _Boards:
             header.operator(KILEIDO_OT_all_layers.bl_idname, text="All layers",
                             icon="HIDE_OFF" if everything else "HIDE_ON", emboss=False)
 
-        self._draw_rows(sections, board.thickness_m, layers.shown, eye, all_eye)
+        def objects_end(title, column):
+            if title == "Objects":  # not a row of its own: DNP parts belong to Components
+                line = column.row(align=True)
+                on = scene.kileido_show_dnp
+                line.prop(scene, "kileido_show_dnp", text="", emboss=False, icon="HIDE_OFF" if on else "HIDE_ON")
+                name = line.row(align=True)
+                name.active = on
+                entry = layers.Entry(None, "DNP components", "components")
+                name.label(text=entry.label, icon_value=_swatch(entry.kind, layers.swatch_color(entry)))
+
+        self._draw_rows(sections, board.thickness_m, layers.shown, eye, all_eye, objects_end)
         _draw_thickness(self.layout, scene, board.layer_thickness.get("F.Cu"))
 
     def _draw_view_only(self, index):
@@ -949,7 +959,7 @@ class _Boards:
         self._draw_rows(sections, None, packages.shown_everywhere, eye, all_eye)
         _draw_thickness(self.layout, scene, None)  # copper: each board's own stackup
 
-    def _draw_rows(self, sections, thickness_m, shown, eye, all_eye):
+    def _draw_rows(self, sections, thickness_m, shown, eye, all_eye, section_end=None):
         everything = all(shown(entry.row) for _, entries in sections for entry, _ in entries)
         header = self.layout.row()
         all_eye(header, everything)
@@ -975,6 +985,8 @@ class _Boards:
                     right.alignment = "RIGHT"
                     right.active = False
                     right.label(text=values)
+            if section_end is not None:
+                section_end(title, column)
 
 
 class _Status:
@@ -1065,6 +1077,12 @@ def _row_update(row):
     def update(_scene, _context):
         layers.refresh(row)
     return update
+
+
+def _show_dnp_update():
+    footprints.refresh_dnp()
+    cut.invalidate()
+    collisions.schedule()
 
 
 def _thickness_update(refresh_live):
@@ -1216,6 +1234,11 @@ def _scene_properties():
             name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
             description="Plating thickness of a via's barrel, in 3D and in the cross section (KiCad stores none)",
             update=lambda self, context: apply.refresh_plating()),
+        "kileido_show_dnp": BoolProperty(
+            name="DNP components", default=True,
+            description="Show the 3D models of footprints KiCad marks \"Do not populate\". "
+                        "Off: hide them (their pads stay)",
+            update=lambda self, context: _show_dnp_update()),
         "kileido_center_in_kicad": BoolProperty(
             name="Center KiCad on click", default=True,
             description="Clicking an item here also pans KiCad's PCB editor to centre it, keeping its zoom"),

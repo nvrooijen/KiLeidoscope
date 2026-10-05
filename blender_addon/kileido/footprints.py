@@ -64,23 +64,21 @@ def _apply_record(record):
     box_name = placeholder_name(footprint_id) if bbox is not None else None
     paths = list(record.get("model_paths", ()))
     model_visible = list(record.get("model_visible", ()))
+    dnp = bool(record.get("dnp", False))
     existing = board.collection.all_objects.get(name)
     if (existing is not None and footprint_id in board.model_bound and
             list(existing.get("kls_model_paths", ())) != paths):
         _unbind_models(footprint_id)  # new model definitions: the next export rebinds
     signature = (record["x"], record["y"], record["rot"], record["side"],
-                 record["ref"], tuple(paths), tuple(model_visible),
+                 record["ref"], tuple(paths), tuple(model_visible), dnp,
                  tuple(bbox) if bbox is not None else None,
                  tuple(board.origin_nm), board.thickness_m)
     if board.footprint_state.get(footprint_id) == signature and _unchanged(existing, box_name):
         _keep(existing, box_name, footprint_id)
         return
-    footprint, world = _place_footprint(name, record, paths, model_visible)
+    footprint, world = _place_footprint(name, record, paths, model_visible, dnp)
     if bbox is not None:
-        # Like KiCad's 3D viewer: no box for a footprint without a declared model
-        # (fiducials, test points, logos) or with every model hidden.
-        all_hidden = not paths or (bool(model_visible) and not any(model_visible))
-        _place_placeholder(box_name, record, all_hidden)
+        _place_placeholder(box_name, record, footprint)
     if board.in_snapshot:
         board.touched.update(board.model_objects_by_fp.get(footprint_id, ()))
     _move_models(footprint_id, footprint, world)
@@ -111,7 +109,7 @@ def _unbind_models(footprint_id):
             set_visible(model_obj, False)
 
 
-def _place_footprint(name, record, paths, model_visible):
+def _place_footprint(name, record, paths, model_visible, dnp):
     """The footprint's hidden Empty, and its world matrix (valid before a depsgraph update)."""
     obj = owned_object(name, "EMPTY")
     xy = transform.xy_m([[record["x"], record["y"]]], board.origin_nm)[0]
@@ -130,6 +128,7 @@ def _place_footprint(name, record, paths, model_visible):
     obj["kls_side"] = record["side"]
     obj["kls_model_paths"] = paths
     obj["kls_model_visible"] = model_visible
+    obj["kls_dnp"] = int(dnp)
     obj["kls_footprint"] = 1
     obj["kls_active"] = 1
     # An Empty's default 1 m axes dwarf a millimetre-scale PCB and appear
@@ -140,7 +139,7 @@ def _place_footprint(name, record, paths, model_visible):
     return obj, world
 
 
-def _place_placeholder(name, record, all_hidden):
+def _place_placeholder(name, record, footprint):
     bbox = record["bbox_nm"]
     box = owned_object(name)
     box["kls_footprint_placeholder"] = 1
@@ -158,7 +157,9 @@ def _place_placeholder(name, record, all_hidden):
     box["kls_placeholder_height_m"] = height
     set_modifier(box, board.groups["footprint_placeholder"], "footprint_placeholder",
                  {"Width": width, "Height": height})
-    set_visible(box, not (all_hidden or record["id"] in board.model_bound))
+    # Like KiCad's 3D viewer: no box for a footprint without a declared model
+    # (fiducials, test points, logos) or with every model hidden.
+    set_visible(box, models.placeholder_visible(footprint, record["id"]))
     board.touched.add(name)
 
 
@@ -172,6 +173,25 @@ def _move_models(footprint_id, footprint, world):
         if values is not None and len(values) == 16:
             model_obj.matrix_world = world @ Matrix(tuple(values[row * 4:row * 4 + 4] for row in range(4)))
         set_visible(model_obj, models.model_is_visible(footprint, model_obj))
+
+
+def refresh_dnp():
+    """The "DNP components" eye changed: show or hide the models and
+    missing-model boxes of the footprints KiCad marks "Do not populate"."""
+    if board.collection is None:
+        return
+    objects = board.collection.all_objects
+    for footprint in tuple(objects):
+        if footprint.get("kls_footprint") != 1 or footprint.get("kls_dnp") != 1:
+            continue
+        footprint_id = footprint.get("kls_id")
+        for model_name in board.model_objects_by_fp.get(footprint_id, ()):
+            model_obj = objects.get(model_name)
+            if model_obj is not None:
+                set_visible(model_obj, models.model_is_visible(footprint, model_obj))
+        box = objects.get(placeholder_name(footprint_id))
+        if box is not None:
+            set_visible(box, models.placeholder_visible(footprint, footprint_id))
 
 
 def _retire_missing(active_ids, active_placeholders):

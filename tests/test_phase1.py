@@ -9,7 +9,8 @@ from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape
 
 from kileido_bridge.geometry import OUTLINE_PROBLEM, sample_arc, sample_bezier
 from kileido_bridge.kicad_reader import BoardReader, read_snapshot
-from kileido_bridge.model import to_jsonable
+from kileido_bridge.model import snapshot_from_jsonable, to_jsonable
+from kileido_bridge.protocol import FrameDecoder, footprints_message
 
 
 def point(x, y):
@@ -127,7 +128,8 @@ class FakePad:
 def footprint(uid="f1", pads=()):
     return NS(id=item_id(uid), reference_field=NS(text=NS(value="J1")),
               position=point(0, 0), orientation=NS(to_radians=lambda: 0.0),
-              layer=BoardLayer.BL_F_Cu, definition=NS(pads=pads, models=[]))
+              layer=BoardLayer.BL_F_Cu, definition=NS(pads=pads, models=[]),
+              attributes=NS(do_not_populate=False))
 
 
 def test_empty_board_and_missing_stackup():
@@ -277,6 +279,22 @@ def test_pad_polygon_and_footprint_link():
     assert snapshot.footprints[0].bbox_nm == (-1_000_000, -500_000, 2_000_000, 1_000_000)
     serial = to_jsonable(snapshot)
     assert isinstance(serial["pads"][0]["pos"][0], int)
+
+
+def test_do_not_populate_reaches_blender():
+    board = FakeBoard()
+    fitted, dnp = footprint("f1"), footprint("f2")
+    dnp.attributes.do_not_populate = True
+    board.footprints = [fitted, dnp]
+    snapshot = read_snapshot(board)
+    assert [item.dnp for item in snapshot.footprints] == [False, True]
+    assert snapshot_from_jsonable(to_jsonable(snapshot)) == snapshot
+    older = to_jsonable(snapshot)
+    for item in older["footprints"]:
+        del item["dnp"]  # a dump from before the flag
+    assert not any(item.dnp for item in snapshot_from_jsonable(older).footprints)
+    (header, _), = FrameDecoder().feed(footprints_message(snapshot, 1))
+    assert [record["dnp"] for record in header["footprints"]] == [False, True]
 
 
 def test_oval_drill_shape_and_padstack_angle_are_read():
