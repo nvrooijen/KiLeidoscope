@@ -15,7 +15,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import apply, cosmetics, cut, highlight, ims, layers, lighting, materials, nodes, render_depth, transform
+from . import apply, components, cosmetics, cut, highlight, ims, layers, lighting, materials, nodes, render_depth, transform
 from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
@@ -243,8 +243,8 @@ def import_board(filepath):
     index = max((obj[ROOT_TAG] for obj in roots()), default=0) + 1
     for kind in DATA_KINDS:
         for block in set(getattr(bpy.data, kind)) - before[kind]:
-            if block.name.startswith("KLS"):
-                block.name = f"KV{index} {_DUPLICATE.sub('', block.name)}"
+            if block.name.startswith("KLS") or (isinstance(block, bpy.types.Object) and components.key_of(block)):
+                block.name = f"KV{index} {_DUPLICATE.sub('', block.name)}"  # parts: "KV2 R12 · ..."
     name = collection.get("kls_board_name") or collection.name.removeprefix(PACKAGE_PREFIX)
     collection.name = f"KiLeidoscope view-only: {name}"
     for group in collection.children:  # "Copper.001" beside the live board's "Copper"

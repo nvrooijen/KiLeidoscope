@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import (apply, dump, focus, footprints, highlight, holes, materials, nodes,  # noqa: E402
+from kileido import (apply, components, dump, focus, footprints, highlight, holes, materials, nodes,  # noqa: E402
                      placement, state, transform)
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -89,7 +89,7 @@ def main():
     assert not collection.objects  # every object sits in a group
     assert top.name in groups["copper"].objects and "KLS outline" in groups["board"].objects
     assert "KLS vias" in groups["vias"].objects
-    assert all(obj.name.startswith(("KLS footprint", "KLS model ")) for obj in groups["components"].objects)
+    assert all(components.key_of(obj) for obj in groups["components"].objects)
     assert len(top.data.edges) > 3  # three straight segments and sampled arc segments
     assert len(bottom.data.edges) == 3
     assert math.isclose(top.data.vertices[0].co.x, -0.015, abs_tol=1e-8)
@@ -207,9 +207,10 @@ def main():
     assert tuple(state.board.materials["copper:F.Cu"].node_tree.nodes.get("Emission").inputs["Color"].default_value)[:3] != tuple(state.board.materials["copper:B.Cu"].node_tree.nodes.get("Emission").inputs["Color"].default_value)[:3]
     apply.set_color_mode("FAB")
 
-    back_fp = collection.all_objects["KLS footprint 77777777-7777-4777-8777-777777777777"]
+    back_fp = components.find(components.FRAME, "77777777-7777-4777-8777-777777777777")
+    assert back_fp.name == back_fp["kls_reference"]  # the Outliner shows the reference
     assert back_fp["kls_side"] == "bottom"
-    assert back_fp.hide_get() and back_fp.hide_render
+    assert not back_fp.hide_get()  # shown: its Outliner row holds the part
     assert back_fp.empty_display_size < 1.01e-4
     assert math.isclose(back_fp.location.z, 0, abs_tol=1e-10)
     assert tuple(back_fp.scale) == (1, -1, -1)  # mirrored in local Y, facing down
@@ -222,7 +223,7 @@ def main():
     origin = state.board.origin_nm
     for footprint_id, pad_mm in (("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", (29, 27)),
                                  ("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", (35, 18))):
-        empty = collection.all_objects[f"KLS footprint {footprint_id}"]
+        empty = components.find(components.FRAME, footprint_id)
         expected = transform.xy_m([[pad_mm[0] * 1_000_000, pad_mm[1] * 1_000_000]], origin)[0]
         assert np.allclose(world_xy(empty, (-2, -1)), expected, atol=1e-7), (footprint_id, world_xy(empty, (-2, -1)), expected)
 
@@ -242,7 +243,8 @@ def main():
     for record in records:
         if record["bbox_nm"] is None:
             continue
-        box = collection.all_objects[f"KLS footprint placeholder {record['id']}"]
+        box = components.find(components.PLACEHOLDER, record["id"])
+        assert box.name == components.placeholder_name(record["ref"], record["model_paths"])
         width = box["kls_placeholder_width_m"]
         height = box["kls_placeholder_height_m"]
         world_corners = [box.matrix_world @ Vector((x * width / 2, y * height / 2, 0))

@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 
 import kileido  # noqa: E402
-from kileido import layers, live, models, state  # noqa: E402
+from kileido import components, layers, live, models, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402
 from kileido_bridge.protocol import FrameDecoder, messages_for, snapshot_frames  # noqa: E402
 
@@ -78,15 +78,18 @@ def main():
         else:
             raise AssertionError("initial snapshot was not applied")
         collection = bpy.data.collections["KiLeidoscope: synthetic_rf_geometry.kicad_pcb"]
-        placeholder = collection.all_objects[f"KLS footprint placeholder {first.id}"]
-        footprint_empty = collection.all_objects[f"KLS footprint {first.id}"]
-        assert placeholder.parent is None and footprint_empty.parent is None
-        assert footprint_empty.hide_get() and footprint_empty["kls_active"] == 1
+        placeholder = components.find(components.PLACEHOLDER, first.id)
+        footprint_empty = components.find(components.FRAME, first.id)
+        assert footprint_empty.name == first.reference
+        assert placeholder.name == f"{first.reference} · body (box)"
+        assert placeholder.parent == footprint_empty and footprint_empty.parent is None  # one row per part
+        assert not footprint_empty.hide_get() and footprint_empty["kls_active"] == 1
         assert footprint_empty.empty_display_size < 1.01e-4
         assert placeholder["kls_footprint_id"] == first.id
         assert len(placeholder.data.vertices) == 1
         assert not placeholder.hide_get()
-        assert collection.all_objects[f"KLS footprint placeholder {bare.id}"].hide_get()
+        assert components.find(components.PLACEHOLDER, bare.id).hide_get()
+        assert components.find(components.PLACEHOLDER, bare.id).name == f"{bare.reference} (box)"
         # The Missing models row hides placeholder boxes; so does Components, which they stand in for.
         assert ("Placeholders", "Missing models") in layers.rows()
         scene = bpy.context.scene
@@ -127,7 +130,7 @@ def main():
             raise AssertionError("live footprint move was not applied")
         assert placeholder.as_pointer() == placeholder_pointer
         assert placeholder.data.as_pointer() == placeholder_data_pointer
-        assert placeholder.parent is None
+        assert placeholder.parent == footprint_empty
         source_mesh = bpy.data.meshes.new("KLS test model mesh")
         source_mesh.vertices.add(1)
         source_root = bpy.data.objects.new("KLS test GLB root", None)
@@ -141,8 +144,9 @@ def main():
         source_part.location.x = 0.0003
         bound = models.bind_root(source_root, "synthetic-test-hash")
         assert bound["matched"] == 1 and bound["parts"] == 1
-        clone = collection.all_objects[f"KLS model {first.id} 0"]
-        assert clone.parent is None and clone.data == source_mesh
+        clone = components.find(components.MODEL, first.id, 0)
+        assert clone.name == f"{first.reference} · body"
+        assert clone.parent == footprint_empty and clone.data == source_mesh
         assert len(clone["kls_model_local_matrix"]) == 16
         assert placeholder.hide_get()
         bpy.context.view_layer.update()
@@ -175,14 +179,20 @@ def main():
         bpy.context.view_layer.update()
         assert abs((clone.matrix_world.translation.x - clone_before.x) - 0.001) < 1e-7
         assert clone.as_pointer() == clone_pointer and clone.data.as_pointer() == clone_data_pointer
-        changed_path = replace(second_shift, model_paths=("new-model.glb",))
+        # A new reference in KiCad: the same objects, under names that follow it.
+        renamed = replace(second_shift, reference="R99")
+        send_footprints(renamed, *snapshot.footprints[1:], revision=7)
+        assert (footprint_empty.name, placeholder.name, clone.name) == ("R99", "R99 · body (box)", "R99 · body")
+        assert components.find(components.MODEL, first.id, 0) == clone and clone.as_pointer() == clone_pointer
+        changed_path = replace(renamed, model_paths=("new-model.glb",))
         path_frame = decoded(messages_for(replace(snapshot, footprints=(changed_path,
                                                   *snapshot.footprints[1:])),
-                                          frozenset({("", "footprints")}), revision=7))
+                                          frozenset({("", "footprints")}), revision=8))
         client.frames.extend(path_frame)
         live.tick()
         assert clone.hide_get() and not placeholder.hide_get()
-        send_footprints(replace(changed_path, dnp=True), *snapshot.footprints[1:], revision=8)
+        assert placeholder.name == "R99 · new-model (box)"
+        send_footprints(replace(changed_path, dnp=True), *snapshot.footprints[1:], revision=9)
         scene.kileido_show_dnp = False  # a DNP part's missing-model box goes too
         assert placeholder.hide_get()
         scene.kileido_show_dnp = True

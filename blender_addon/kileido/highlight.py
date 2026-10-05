@@ -10,7 +10,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from . import focus, materials, transform
+from . import components, focus, materials, transform
 from .objects import (camera_rays_only, hide, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, write_attribute)
 from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward, via_plating
@@ -276,14 +276,14 @@ def _component_extent(footprint_id, footprint):
     for name in board.model_objects_by_fp.get(footprint_id, ()):
         part = board.collection.all_objects.get(name)
         if part is not None and not part.hide_get():
-            corners += [to_local @ (part.matrix_world @ Vector(corner)) for corner in part.bound_box]
+            corners += [_in_frame(part, footprint, to_local) @ Vector(corner) for corner in part.bound_box]
     if corners:
         points = np.array([tuple(corner) for corner in corners])
         return points.min(axis=0), points.max(axis=0)
-    box = board.collection.all_objects.get(f"KLS footprint placeholder {footprint_id}")
+    box = components.find(components.PLACEHOLDER, footprint_id)
     if box is None or "kls_placeholder_width_m" not in box:
         return None
-    center = np.array(tuple(to_local @ box.matrix_world.translation))
+    center = np.array(tuple(_in_frame(box, footprint, to_local).translation))
     half = np.array((box["kls_placeholder_width_m"] / 2, box["kls_placeholder_height_m"] / 2,
                      PLACEHOLDER_HEIGHT_M))
     low, high = center - half, center + half
@@ -291,11 +291,17 @@ def _component_extent(footprint_id, footprint):
     return low, high
 
 
+def _in_frame(obj, footprint, to_local):
+    """`obj`'s matrix in its footprint's frame; on the frame itself, even before Blender
+    has evaluated a move."""
+    return obj.matrix_basis if obj.parent == footprint else to_local @ obj.matrix_world
+
+
 def _refresh_component_boxes(chosen):
     """Selected components: a translucent red-orange box around each one."""
     active = set()
     for footprint_id in chosen:
-        footprint = board.collection.all_objects.get(f"KLS footprint {footprint_id}")
+        footprint = components.find(components.FRAME, footprint_id)
         extent = _component_extent(footprint_id, footprint) if footprint is not None else None
         if extent is None:
             continue
