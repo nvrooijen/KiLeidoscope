@@ -4,6 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 from kipy.errors import ApiError
+from kipy.board import BoardStackup
+from kipy.proto.board import board_pb2
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
 from kipy.proto.board.board_types_pb2 import BoardLayer
 from kipy.proto.common import ApiStatusCode
@@ -90,6 +92,34 @@ def test_removed_track_layer_is_dirty():
     reader.poll()
     board.tracks = []
     assert reader.poll().dirty == {("B.Cu", "tracks")}
+
+
+def _stackup(dielectric_red, dielectric_nm=100_000):
+    """A real kipy stackup: F.Cu over a dielectric whose colour is `dielectric_red`."""
+    proto = board_pb2.BoardStackup()
+    copper = proto.layers.add(layer=BoardLayer.BL_F_Cu, enabled=True, type=BoardStackupLayerType.BSLT_COPPER)
+    copper.thickness.value_nm = 35_000
+    dielectric = proto.layers.add(layer=BoardLayer.BL_UNDEFINED, enabled=True,
+                                  type=BoardStackupLayerType.BSLT_DIELECTRIC)
+    dielectric.thickness.value_nm = dielectric_nm
+    dielectric.color.r = dielectric_red
+    return BoardStackup(proto)
+
+
+def test_dielectric_colour_noise_does_not_dirty_the_stackup():
+    """KiCad 10.0.6 sends a dielectric's colour uninitialised (1.27e-311, different on every
+    read): that alone must not resend the board; a real stackup change still does."""
+    board, clock = CountingBoard(), Clock()
+    board.stackup = _stackup(1.2667e-311)
+    reader = BoardReader(board, slow_interval_s=1.0, clock=clock)
+    reader.poll()
+    board.stackup = _stackup(9.3460e-307)
+    clock.now = 1.5
+    result = reader.poll()
+    assert result.full_read and ("", "stackup") not in result.dirty
+    board.stackup = _stackup(1.4241e-306, dielectric_nm=200_000)
+    clock.now = 3.0
+    assert ("", "stackup") in reader.poll().dirty
 
 
 def test_proto_polygon_path_with_arc_node():

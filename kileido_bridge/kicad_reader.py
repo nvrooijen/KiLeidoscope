@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import queue
@@ -463,6 +464,21 @@ def _optional_float(wrapper, field: str) -> float | None:
     return value if value != 0 else None
 
 
+def stackup_digest(stackup) -> bytes:
+    """The stackup's fingerprint without its layers' colours, which nothing here uses:
+    KiCad 10.0.6 sends a dielectric layer's colour uninitialised (measured: values like
+    1.27e-311 that differ between reads), so a fingerprint with them changed on every
+    read and the bridge sent the whole board again about once a second."""
+    proto = getattr(stackup, "proto", None)
+    if proto is None:  # a stand-in stackup (tests)
+        return fingerprint([stackup])
+    stable = type(proto)()
+    stable.CopyFrom(proto)
+    for layer in stable.layers:
+        layer.ClearField("color")
+    return hashlib.blake2b(stable.SerializeToString(deterministic=True), digest_size=16).digest()
+
+
 def _stackup(source, layer_name, warnings: list[str]) -> model.Stackup:
     if not source.layers:
         warnings.append("Board stackup is missing; physical properties are unavailable")
@@ -808,7 +824,7 @@ class BoardReader:
             hashes[source] = combine(digests[source])
         hashes["shapes"] = self._timed("hash", fingerprint, raw["shapes"])
         hashes["texts"] = self._timed("hash", fingerprint, raw["texts"])
-        hashes["stackup"] = self._timed("hash", fingerprint, [raw["stackup"]])
+        hashes["stackup"] = self._timed("hash", stackup_digest, raw["stackup"])
         hashes["enabled_layers"] = self._timed("hash", fingerprint, raw["enabled_layers"])
         return hashes
 
