@@ -11,6 +11,13 @@ the top side (every through hole and the blind vias from F.Cu), green the bottom
 alpha only the through holes. A material picks by height: at or above the top
 laminate face it is on the top side, at or below the bottom face on the bottom side,
 between (inner copper, a blind via's floor) only through holes reach it.
+
+Blue is the board's area (outline_mask): 1 inside the Edge.Cuts outline, 0 outside, and
+0 past the image too (it covers only the outline's box; the texture clips). Copper drawn
+past the edge (castellated pads, edge fingers) is milled away by the fab, so copper,
+via, plating, paste and highlight materials turn see-through outside it
+(`clip_to_board`). The board, its mask and the IMS base already have the outline's
+shape; the plated board edge stands outside it on purpose and keeps its own material.
 """
 
 import hashlib
@@ -18,22 +25,31 @@ import hashlib
 import bpy
 import numpy as np
 
-from . import focus, shading
+from . import focus, outline_mask, shading
 from .placement import laminate_faces
 from .state import board
 
 RESOLUTION = 2048  # long side; ~22 um per pixel on the reference board, edges sharpened in shading
 IMAGE = "KLS holes"
-HOLED = ("board", "board_bottom", "ims_base", "vias", "via_rings", "highlight_selected",
+HOLED = ("board", "board_bottom", "board_edge", "ims_base", "vias", "via_rings", "highlight_selected",
          "highlight_pair")  # + copper:<layer>
+CLIPPED = ("vias", "via_rings", "plating", "plating_bare", "solder", "highlight_selected", "highlight_pair",
+           "highlight_selected_barrel", "highlight_pair_barrel")  # + copper:<layer>
 
 THROUGH, TOP, BOTTOM = 0, 1, 2  # a via hole's side
 SIDE_MARGIN_M = 10e-6  # this far inside a laminate face still counts as that side (the board's own faces)
 CHANNELS = (("F", TOP), ("B", BOTTOM), ("through", THROUGH))  # red, green, alpha
 SIDE_NODE = "KLS holes side"  # a holed material's channel pick (`_side_select`)
+WALLS = ("plating", "plating_bare")  # drill walls: kept a little past the outline (`clip_to_board`)
+WALL_RAMP = (0.02, 0.12)  # their coverage ramp: about a pixel past the outline still shows
+CLIP_TEXTURE = "KLS board plot"  # a clipped material's sample of the mask (`clip_to_board`)
+CLIP_OFF = "KLS board clip off"
+CLIP_EDGE = "KLS board clip edge"  # the coverage ramp: crisp at 0.5, or `WALL_RAMP`  # 1: no outline to clip to, everything shows
 
 _sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
 _bounds = None
+_outline = (np.empty((0, 2)), np.empty((0, 2)))  # the board outline's edges a -> b, Blender metres
+_inside = None  # (key, coverage) of the last drawn board area
 _digest = None
 _drawn = None  # (bounds, {channel: (rows, alpha)}, pixels) of the last redraw, for partial redraws
 PARTIAL_MAX = 64  # more changed holes than this: redraw the whole mask
@@ -57,10 +73,28 @@ def set_pads(xy_m, size_m, angle, oval):
     rebuild()
 
 
-def set_bounds(bounds):
-    global _bounds
+def set_bounds(bounds, outline=None):
+    """The board outline's box (xmin, ymin, xmax, ymax, metres), and its edges (a, b),
+    each (n, 2): the board area copper is clipped to. No edges given: the last ones
+    stay; empty edges: nothing is clipped."""
+    global _bounds, _outline
     _bounds = tuple(float(value) for value in bounds)
+    if outline is not None:
+        _outline = tuple(np.asarray(part, np.float64).reshape(-1, 2) for part in outline)
     rebuild()
+
+
+def clipping():
+    """True when there is an outline to clip copper to."""
+    return len(_outline[0]) > 0
+
+
+def clear_outline():
+    """No closed outline: copper shows wherever it is drawn."""
+    global _outline
+    if clipping():
+        _outline = (np.empty((0, 2)), np.empty((0, 2)))
+        rebuild()
 
 
 def _distance_field(px, py, hole):
@@ -151,16 +185,30 @@ def _rows(channel_side):
     return np.concatenate((np.column_stack((vias[:, :3], vias[:, 2], np.zeros((len(vias), 2)))), _sources["pads"]))
 
 
+def _board_area(shape):
+    """Blue: the board area over `_bounds` (1 everywhere without an outline), redrawn
+    only when the bounds or the outline change."""
+    global _inside
+    if not clipping():
+        return np.ones(shape, np.float32)
+    key = hashlib.blake2b(np.asarray(_bounds).tobytes() + _outline[0].tobytes() + _outline[1].tobytes()
+                          + np.asarray(shape).tobytes(), digest_size=16).digest()
+    if _inside is None or _inside[0] != key:
+        pixel = _grid(_bounds)[0]
+        _inside = (key, outline_mask.coverage(_bounds, pixel, shape, *_outline))
+    return _inside[1]
+
+
 def rebuild():
-    """Redraw the mask when holes or the board bounds changed. A few moved holes
-    redraw only their own pixels; a new board or bounds redraws everything.
+    """Redraw the mask when holes, the board bounds or its outline changed. A few moved
+    holes redraw only their own pixels; a new board or bounds redraws everything.
     Inside a snapshot this waits for `snapshot_end`, which calls it once."""
     global _digest, _drawn
     if _bounds is None or board.in_snapshot:
         return
     rows = {name: _rows(side) for name, side in CHANNELS}
-    digest = hashlib.blake2b(np.asarray(_bounds).tobytes() + b"".join(r.tobytes() for r in rows.values()),
-                             digest_size=16).digest()
+    digest = hashlib.blake2b(np.asarray(_bounds).tobytes() + b"".join(r.tobytes() for r in rows.values())
+                             + _outline[0].tobytes() + _outline[1].tobytes(), digest_size=16).digest()
     if digest == _digest and bpy.data.images.get(IMAGE) is not None:
         refresh_sides()
         return
@@ -188,12 +236,15 @@ def rebuild():
     if pixels is None or pixels.shape[:2] != (height, width):
         pixels = np.ones((height, width, 4), np.float32)  # reused while the size holds
     pixels[..., 0], pixels[..., 1], pixels[..., 3] = alphas["F"], alphas["B"], alphas["through"]
+    pixels[..., 2] = _board_area((height, width))
     image.pixels.foreach_set(pixels.ravel())
     image.update()
     _drawn = (_bounds, {name: (rows[name], alphas[name]) for name in alphas}, pixels)
     for key, material in board.materials.items():
         if key in HOLED or key.startswith("copper:"):
             add_to(material)
+        if key in CLIPPED or key.startswith("copper:"):
+            clip_to_board(material)
     for material in mask_materials():
         add_to(material)
 
@@ -217,8 +268,6 @@ def add_to(material):
     nodes, links = tree.nodes, tree.links
     texture = nodes.get("KLS holes plot")
     if texture is None:
-        surface = focus.surface_input(material)  # before the focus node, if there is one
-        shader = surface.links[0].from_socket if surface.is_linked else None
         texture = nodes.new("ShaderNodeTexImage")
         texture.name, texture.extension = "KLS holes plot", "CLIP"
         shading.project_plot(tree, shading.flat_position(tree), texture, "KLS holes offset", "KLS holes scale")
@@ -227,25 +276,7 @@ def add_to(material):
         solid.operation = "SUBTRACT"
         solid.inputs[0].default_value = 1.0
         links.new(opening, solid.inputs[1])
-        mix = next((node for node in nodes if node.type == "MIX_SHADER"), None)
-        if mix is None:  # opaque material: add the see-through mix
-            mix = nodes.new("ShaderNodeMixShader")
-            mix.name = "KLS holes mix"
-            links.new(nodes.new("ShaderNodeBsdfTransparent").outputs[0], mix.inputs[1])
-            if shader is not None:
-                links.new(shader, mix.inputs[2])
-            links.new(mix.outputs[0], surface)
-            links.new(solid.outputs[0], mix.inputs[0])
-        else:  # already translucent: multiply its coverage by "not a hole"
-            both = nodes.new("ShaderNodeMath")
-            both.operation = "MULTIPLY"
-            if mix.inputs[0].is_linked:
-                links.new(mix.inputs[0].links[0].from_socket, both.inputs[0])
-            else:
-                both.inputs[0].default_value = mix.inputs[0].default_value
-            links.new(solid.outputs[0], both.inputs[1])
-            links.new(both.outputs[0], mix.inputs[0])
-        focus.set_render_method(material)
+        _multiply_coverage(material, solid.outputs[0], "KLS holes mix")  # "not a hole"
     if nodes.get(SIDE_NODE) is None:  # a new material, or one from before the side channels
         _side_select(material, texture)
     _set_side_heights(material)
@@ -254,6 +285,68 @@ def add_to(material):
     width, height = image.size
     pixel = max(xmax - xmin, ymax - ymin) / RESOLUTION
     shading.set_plot_rectangle(tree, "KLS holes offset", "KLS holes scale", xmin, ymin, width * pixel, height * pixel)
+
+
+def _multiply_coverage(material, coverage, name):
+    """Multiply the material's see-through by `coverage` (1 shown, 0 see-through): into
+    its first Mix Shader's factor, or, for an opaque material, a new Mix Shader `name`
+    before the output. `materials.set_surface` links the lit/flat shader into the first
+    Mix Shader's second input, so this survives colour-mode switches."""
+    tree = material.node_tree
+    nodes, links = tree.nodes, tree.links
+    mix = next((node for node in nodes if node.type == "MIX_SHADER"), None)
+    if mix is None:
+        surface = focus.surface_input(material)  # before the focus node, if there is one
+        shader = surface.links[0].from_socket if surface.is_linked else None
+        mix = nodes.new("ShaderNodeMixShader")
+        mix.name = name
+        links.new(nodes.new("ShaderNodeBsdfTransparent").outputs[0], mix.inputs[1])
+        if shader is not None:
+            links.new(shader, mix.inputs[2])
+        links.new(mix.outputs[0], surface)
+        links.new(coverage, mix.inputs[0])
+    else:
+        factor = mix.inputs[0]
+        before = factor.links[0].from_socket if factor.is_linked else factor.default_value
+        links.new(shading.math_node(tree, "MULTIPLY", before, coverage), factor)
+    focus.set_render_method(material)
+
+
+def clip_to_board(material):
+    """See-through outside the board outline (the mask's blue channel), as the fab mills
+    copper there away; built once per material. Drill walls (`WALLS`) reach a little
+    past the outline: one whose board edge follows the drill (a castellation drawn as a
+    notch in Edge.Cuts) stands right on it, where the fab leaves its plating. Without
+    an outline, `CLIP_OFF` keeps everything shown."""
+    image = bpy.data.images.get(IMAGE)
+    if image is None or _bounds is None or material.node_tree is None:
+        return
+    tree = material.node_tree
+    nodes, links = tree.nodes, tree.links
+    texture = nodes.get(CLIP_TEXTURE)
+    if texture is None:
+        texture = nodes.new("ShaderNodeTexImage")
+        texture.name, texture.extension = CLIP_TEXTURE, "CLIP"  # past the outline's box: 0, outside
+        shading.project_plot(tree, shading.flat_position(tree), texture, "KLS board offset", "KLS board scale")
+        channels = nodes.new("ShaderNodeSeparateColor")
+        links.new(texture.outputs["Color"], channels.inputs["Color"])
+        edge = nodes.new("ShaderNodeMapRange")  # crisp at the outline, as `shading.sharp_alpha`
+        edge.name, edge.clamp = CLIP_EDGE, True
+        links.new(channels.outputs["Blue"], edge.inputs["Value"])
+        off = nodes.new("ShaderNodeValue")
+        off.name = CLIP_OFF
+        inside = shading.math_node(tree, "MAXIMUM", edge.outputs["Result"], off.outputs[0])
+        _multiply_coverage(material, inside, "KLS board clip mix")  # "on the board"
+    texture.image = image
+    edge = nodes.get(CLIP_EDGE)
+    if edge is not None:
+        wall = any(board.materials.get(key) == material for key in WALLS)
+        edge.inputs["From Min"].default_value, edge.inputs["From Max"].default_value = WALL_RAMP if wall else (0.4, 0.6)
+    nodes[CLIP_OFF].outputs[0].default_value = 0.0 if clipping() else 1.0
+    xmin, ymin, xmax, ymax = _bounds
+    width, height = image.size
+    pixel = max(xmax - xmin, ymax - ymin) / RESOLUTION
+    shading.set_plot_rectangle(tree, "KLS board offset", "KLS board scale", xmin, ymin, width * pixel, height * pixel)
 
 
 def _side_select(material, texture):

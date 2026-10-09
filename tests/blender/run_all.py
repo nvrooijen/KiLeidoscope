@@ -185,7 +185,7 @@ def main():
             material_by_face.setdefault(key, set()).add(mesh.materials[face.material_index].name)
         assert material_by_face == {
             "top": {"KLS Board mask top"}, "bottom": {"KLS Board mask bottom"},
-            "side": {"KLS Board FR4 core"}}
+            "side": {"KLS Board edge"}}
     finally:
         bpy.data.meshes.remove(mesh)
     apply.set_board_visible(False)

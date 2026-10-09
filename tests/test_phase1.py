@@ -418,3 +418,19 @@ def test_copper_graphics_are_read_as_filled_copper():
     stadium = graphics["line"].polygons[0][0]  # 3 mm long, 0.25 mm wide, round ends
     assert abs(_area(stadium) / (3_000_000 * 250_000 + np.pi * 125_000 ** 2) - 1) < 0.01
     assert graphics["tie"].polygons == ((tuple(bridge),),)
+
+
+def test_a_drilled_pad_with_copper_only_on_b_cu_keeps_its_hole():
+    """Every pad drill rides on the F.Cu pads frame. A pad KiCad reports with copper only
+    on B.Cu (live, an SMD pad just turned through-hole) still goes there."""
+    from kileido_bridge.model import Pad
+    from kileido_bridge.protocol import fill_message
+    square = (((0, 0), (1_000_000, 0), (1_000_000, 1_000_000), (0, 1_000_000)),)
+    pad = Pad("p", "f", "1", "", (500_000, 500_000), (400_000, 400_000), {"B.Cu": (square,)}, "round", 0.0)
+    smd = Pad("s", "f", "2", "", (0, 0), None, {"B.Cu": (square,)})
+    assert pad.layers == ("F.Cu", "B.Cu") and smd.layers == ("B.Cu",)
+    snapshot = read_snapshot(FakeBoard())
+    snapshot = type(snapshot)(**{**snapshot.__dict__, "pads": (pad, smd)})
+    (header, arrays), = FrameDecoder().feed(fill_message(snapshot, "F.Cu", "pads", 1))
+    assert header["ids"] == ["p"] and len(arrays["drill"]) == 1
+    assert arrays["drill_plated"][0] == 1  # it has copper (on B.Cu): plated

@@ -58,7 +58,7 @@ REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
 _data = None  # the board's geometry for the section (`_gather`), until it changes
-_edges = None  # the plated board edge's stretches (`plated_edges`), until the board changes
+_edges = {}  # stretches along the outline until the board changes: "plated" (`plated_edges`), "milled" (`milled_edges`)
 # How the section's copper is lit (`set_look`): Realistic, its linear colour, metallic, roughness.
 _look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
@@ -533,15 +533,26 @@ def shapes():
 def plated_edges():
     """Stretches of a plated board edge (KiCad's Board Setup: Plated board edge), where
     copper on both outer layers reaches the edge; empty when the board has none."""
-    global _edges
     if not board.appearance.get("edge_plating") or board.collection is None or board.in_snapshot:
         return []
-    if _edges is None:
+    if "plated" not in _edges:
         data = shapes()
         copper = data["copper"]
-        _edges = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
-                  if data["outline"] is not None else [])
-    return _edges
+        _edges["plated"] = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
+                            if data["outline"] is not None else [])
+    return _edges["plated"]
+
+
+def milled_edges():
+    """{outer layer: stretches} where shown copper crosses the outline: the fab mills it
+    back to the edge, leaving a cut copper face there (section.milled_edges)."""
+    if board.collection is None or board.in_snapshot:
+        return {}
+    if "milled" not in _edges:
+        data = shapes()
+        _edges["milled"] = ({layer: section.milled_edges(data["outline"], data["copper"][layer], data["drills"])
+                             for layer in section.OUTER if layer in data["copper"]} if data["outline"] is not None else {})
+    return _edges["milled"]
 
 
 def rectangles(scene=None):
@@ -623,8 +634,9 @@ def rebuild(scene=None):
 
 def invalidate():
     """The board changed: read it again for the next section (soon, once per burst of edits)."""
-    global _data, _edges
-    _data = _edges = None
+    global _data
+    _data = None
+    _edges.clear()
     if enabled() and not bpy.app.timers.is_registered(_rebuild_soon):
         bpy.app.timers.register(_rebuild_soon, first_interval=REBUILD_DELAY_S)
 
@@ -684,8 +696,9 @@ def place_light(scene=None):
 
 def refresh():
     """The tick box, or a whole new board: bring materials, plane and face in line."""
-    global _pushed, _data, _edges
-    _data = _edges = None  # before ensure_plane: placing a new plane already draws the section
+    global _pushed, _data
+    _data = None  # before ensure_plane: placing a new plane already draws the section
+    _edges.clear()
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:
