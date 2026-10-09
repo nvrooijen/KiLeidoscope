@@ -22,7 +22,7 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, holes, ims,
-               layers, lighting, live, models, packages, pick, protection, render_depth, watcher)
+               layers, lighting, live, models, packages, pick, protection, render_depth, studio, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -265,10 +265,14 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         finish = board.appearance.get("copper_finish")
         if finish:
             layout.label(text="Board finish: " + ("Bare copper" if finish.casefold() == "none" else finish))
-        row = layout.row(align=True)
-        row.prop(context.scene, "kileido_light_power", text="Light")
-        row.prop(context.scene, "kileido_fill_color", text="")
-        layout.prop(context.scene, "kileido_reflections", text="Reflections")
+        owner = studio.lighting_owner(context.scene)
+        if owner:  # another add-on looks after the lights: these settings would do nothing
+            layout.label(text=f"Lighting: {owner}", icon="LIGHT")
+        else:
+            row = layout.row(align=True)
+            row.prop(context.scene, "kileido_light_power", text="Light")
+            row.prop(context.scene, "kileido_fill_color", text="")
+            layout.prop(context.scene, "kileido_reflections", text="Reflections")
         layout.prop(context.scene, "kileido_mask_opacity", text="Solder mask opacity", slider=True)
         layout.prop(context.scene, "kileido_silk_opacity", text="Silkscreen opacity", slider=True)
         self._draw_vias(context, layout)
@@ -1470,6 +1474,7 @@ def register():
     columns.install()
     cut.install()
     fold.install()
+    studio.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
@@ -1486,6 +1491,7 @@ def unregister():
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
     live.disconnect()
+    studio.uninstall()
     models.stop_following()
     cosmetics.stop_following()
     render_depth.uninstall()

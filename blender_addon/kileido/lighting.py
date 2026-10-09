@@ -12,9 +12,17 @@ from .objects import OUTLINE, hide, view3d_spaces
 from .state import board
 
 
+def claimed(scene=None):
+    """A studio add-on looks after this scene's lights and world (studio.claim_lighting):
+    KiLeidoscope leaves them alone."""
+    return bool((scene or bpy.context.scene).get("kls_lighting_owner"))
+
+
 def ensure_black_background():
     """Black camera background, retaining the world's lighting for other rays."""
     scene = bpy.context.scene
+    if claimed(scene):
+        return
     world = scene.world
     if world is None or not world.get("kls_black_background"):
         world = world.copy() if world else bpy.data.worlds.new("KiLeidoscope World")
@@ -80,6 +88,8 @@ def _setting(name, default):
 def apply_settings(_scene=None, _context=None):
     """Panel changed the light strength or fill colour: update in place."""
     scene = bpy.context.scene
+    if claimed(scene):
+        return
     if scene.world is not None and scene.world.get("kls_black_background"):
         _studio_environment(scene.world)
     for collection in scene.collection.children:
@@ -137,7 +147,7 @@ def refresh_reflections():
     copy (another OS or version) when its path is none of this install's, and has no
     data here; find this install's copy instead."""
     world = bpy.context.scene.world
-    if world is None or not world.get("kls_black_background") or world.node_tree is None:
+    if world is None or not world.get("kls_black_background") or world.node_tree is None or claimed():
         return
     def normal(path):  # saved paths may be relative to the .blend
         return os.path.normcase(os.path.normpath(bpy.path.abspath(path)))
@@ -213,7 +223,7 @@ def fit_to_boards():
     board is lit as one small board is (unchanged up to SOFTBOX_SIZE_M / COVER_FRACTION)."""
     scene = bpy.context.scene
     collection = next((child for child in scene.collection.children if child.get("kls_studio_lights") == 1), None)
-    if collection is None:
+    if collection is None or claimed(scene):
         return
     bpy.context.view_layer.update()
     bounds = _board_bounds()
@@ -240,7 +250,10 @@ def fit_to_boards():
 
 
 def ensure_studio_lights():
-    """One softbox above and one below the boards (created once, then fitted)."""
+    """One softbox above and one below the boards (created once, then fitted); None
+    while a studio add-on looks after the scene's lights."""
+    if claimed():
+        return None
     ensure_black_background()
     scene = bpy.context.scene
     collection = next((child for child in scene.collection.children
