@@ -249,6 +249,16 @@ def rebuild():
         add_to(material)
 
 
+@bpy.app.handlers.persistent
+def pack_for_save(*_):
+    """Before a save: pack the mask into the file. It is drawn in memory, so a plain save
+    keeps no pixels, and the file would reopen with the board and copper see-through.
+    Packed once, it is packed again only when redrawn since (8-bit PNG, exact enough)."""
+    image = bpy.data.images.get(IMAGE)
+    if image is not None and (image.packed_file is None or image.is_dirty):
+        image.pack()
+
+
 def mask_materials():
     """Solder mask and silkscreen: an open via goes through them as well."""
     return [material for layer in ("F.Mask", "B.Mask", "F.SilkS", "B.SilkS")
