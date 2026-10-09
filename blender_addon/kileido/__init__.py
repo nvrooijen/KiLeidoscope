@@ -817,7 +817,6 @@ def _sync_board_rows():
         for area in screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()
-    return None
 
 
 def _board_row_chosen(scene, _context):
@@ -837,28 +836,38 @@ def _layers_board_changed(scene, _context):
             scene.kileido_board_row = index
 
 
+def _hint(line, text):
+    """A dim note at the right end of a row."""
+    hint = line.row(align=True)
+    hint.alignment = "RIGHT"
+    hint.active = False
+    hint.label(text=text)
+
+
+def _live_board_cells(line):
+    """The live board's icon, name and source ("live" or "dump")."""
+    line.label(text="", icon="LINKED" if live.connected() else "FILE")
+    line.label(text=board.board_name)
+    _hint(line, "live" if live.connected() else "dump")
+
+
 class KILEIDO_UL_boards(bpy.types.UIList):
-    """The Boards list: a row per board in columns (select arrow, eye, name, hint, remove),
-    "All boards" first. A click on a row shows that board's layers below."""
+    """The Boards list: a row per board in columns (select arrow, eye or icon, name, hint,
+    remove), "All boards" first. A click on a row shows that board's layers below."""
     bl_idname = "KILEIDO_UL_boards"
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         line = layout.row(align=True)
         if item.value == "ALL":
             line.label(text="", icon="BLANK1")
-            line.label(text="", icon="BLANK1")
-            line.label(text=item.label, icon="OUTLINER_COLLECTION")
+            line.label(text="", icon="OUTLINER_COLLECTION")
+            line.label(text=item.label)
             return
         if item.value == "LIVE":
             arrow = line.row(align=True)
             arrow.enabled = False  # the live board stays where KiCad puts it
             arrow.operator(KILEIDO_OT_select_board.bl_idname, text="", emboss=False, icon="RESTRICT_SELECT_ON")
-            line.label(text="", icon="BLANK1")
-            line.label(text=item.label, icon="LINKED" if live.connected() else "FILE")
-            hint = line.row(align=True)
-            hint.alignment = "RIGHT"
-            hint.active = False
-            hint.label(text="live" if live.connected() else "dump")
+            _live_board_cells(line)
             return
         board_index = int(item.value)
         collection = packages.collection_of(board_index)
@@ -873,10 +882,7 @@ class KILEIDO_UL_boards(bpy.types.UIList):
         name = line.row(align=True)
         name.active = shown
         name.label(text=item.label)
-        hint = line.row(align=True)
-        hint.alignment = "RIGHT"
-        hint.active = False
-        hint.label(text="view-only")
+        _hint(line, "view-only")
         drop = line.operator(KILEIDO_OT_view_only_board.bl_idname, text="", emboss=False, icon="X")
         drop.index, drop.action = board_index, "REMOVE"
 
@@ -946,12 +952,7 @@ class _Boards:
         scene = context.scene
         if not packages.roots():
             if board.collection is not None:
-                line = layout.row(align=True)
-                line.label(text=board.board_name, icon="LINKED" if live.connected() else "FILE")
-                hint = line.row(align=True)
-                hint.alignment = "RIGHT"
-                hint.active = False
-                hint.label(text="live" if live.connected() else "dump")
+                _live_board_cells(layout.row(align=True))
         else:
             rows = scene.kileido_board_rows
             if [(row.value, row.label) for row in rows] != _board_rows_wanted() and not _rows_sync_pending:
