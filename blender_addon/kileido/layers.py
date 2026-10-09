@@ -18,7 +18,7 @@ from . import cut, edge_plating
 from .objects import hide
 from .state import board
 
-_COPPER = re.compile(r"^KLS ((?:F|B|In\d+)\.Cu) (?:tracks|pads|graphics|zone |highlight)")
+_COPPER = re.compile(r"^KLS ((?:F|B|In\d+)\.Cu) (?:tracks|pads|graphics|zone |highlight|milled edge)")
 EXTRA = {"Board": "kileido_show_board", "Vias": "kileido_show_vias", "Components": "kileido_show_components",
          "Placeholders": "kileido_show_placeholders"}
 LABELS = {"Placeholders": "Missing models"}  # boxes for components whose model file KiCad cannot find

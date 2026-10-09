@@ -21,8 +21,8 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
                        StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, ims, layers,
-               lighting, live, models, packages, pick, protection, render_depth, watcher)
+from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, holes, ims,
+               layers, lighting, live, models, packages, pick, protection, render_depth, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -1376,11 +1376,14 @@ def register():
     cut.install()
     fold.install()
     bpy.app.handlers.load_post.append(_file_loaded)
+    bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
 
 def unregister():
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
+    if holes.pack_for_save in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(holes.pack_for_save)
     for timer in (dump.drain, _ims_rebuild):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)

@@ -76,11 +76,16 @@ class Pad:
 
         A non-plated hole (np_thru_hole, e.g. Tag-Connect alignment holes) has no
         copper anywhere; it rides on the outer layers so its drill opening is drawn.
+        Any drilled pad rides on F.Cu, whose frame carries every pad drill: copper
+        only on other layers (a pad KiCad still answers for as the SMD pad it was,
+        see kicad_reader._pad_polygons) must not lose its hole.
         """
         copper = tuple(layer for layer in self.polygons if layer not in PASTE_LAYERS)
-        if copper:
+        if not (self.drill and min(self.drill) > 0):
             return copper
-        return ("F.Cu", "B.Cu") if self.drill and min(self.drill) > 0 else ()
+        if not copper:
+            return ("F.Cu", "B.Cu")
+        return copper if "F.Cu" in copper else ("F.Cu", *copper)
 
     @property
     def groups(self) -> frozenset[tuple[str, str]]:

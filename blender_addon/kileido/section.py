@@ -178,6 +178,7 @@ def copper_along(line, shapes):
 EDGE_INSET_M = 50e-6  # copper this close to the edge reaches it (edge plating is drawn there)
 EDGE_SHORTEST_M = 20e-6  # plated stretches shorter than this are noise
 EDGE_CORNER_SNAP_M = 0.2e-3  # copper stopping this close to a sharp corner of the outline reaches it
+EDGE_WALL_SLACK_M = 2e-6  # a drill wall this much past the outline is still on it (sampled arcs)
 EDGE_SMOOTH_TURN = np.cos(np.radians(30))  # as edge_plating.SMOOTH_TURN: a turn beyond this is a corner
 
 
@@ -212,6 +213,28 @@ def plated_edges(outline, front, back, inset=EDGE_INSET_M, snap=EDGE_CORNER_SNAP
     KiCad rounds a zone fill's corners, so copper filling a corner stops just short of it:
     a stretch ending within `snap` of a sharp corner of the outline runs on to the corner.
     """
+    return _edge_stretches(outline, lambda line, _: intersect(copper_along(line, front), copper_along(line, back)),
+                           inset, snap)
+
+
+def milled_edges(outline, copper, pad_drills=None, inset=EDGE_INSET_M):
+    """Stretches of the board outline that one layer's copper crosses, as
+    `plated_edges`: copper drawn past the edge (castellated pads, edge fingers) that the
+    fab mills back to it, leaving a cut copper face on the edge. Copper counts where it
+    lies both `inset` inside and `inset` outside the edge; drill openings (a half hole
+    on the edge) are left out."""
+    rows = np.asarray(pad_drills if pad_drills is not None else (), np.float64).reshape(-1, 6)
+
+    def reach(inner, outer):
+        found = intersect(copper_along(inner, copper), copper_along(outer, copper))
+        return subtract(found, merge(np.vstack((drills(inner, rows), drills(outer, rows))))) if len(rows) else found
+    return _edge_stretches(outline, reach, inset, 0.0)
+
+
+def _edge_stretches(outline, reach, inset, snap):
+    """Per outline segment, `reach(inner, outer)`'s intervals along two lines `inset`
+    inside and outside it (one s for both), as (start xy, end xy, outward unit normal)
+    in the outline's own direction; see `plated_edges` for `snap`."""
     a, b, item = (np.asarray(part) for part in outline)
     a, b = a.astype(np.float64).reshape(-1, 2), b.astype(np.float64).reshape(-1, 2)
     stretches = []
@@ -234,16 +257,16 @@ def plated_edges(outline, front, back, inset=EDGE_INSET_M, snap=EDGE_CORNER_SNAP
             continue
         line = Line(start + inward * inset, inward)
         span = np.sort(line.s(np.vstack((start + inward * inset, end + inward * inset))))
-        reach = intersect(intersect(copper_along(line, front), copper_along(line, back)), np.array([span]))
+        found = intersect(reach(line, Line(start - inward * inset, inward)), np.array([span]))
         forward = float(np.dot(line.along, unit)) > 0  # s grows as the outline runs
         low_sharp, high_sharp = (sharp_start, sharp_end) if forward else (sharp_end, sharp_start)
-        found = []
-        for s0, s1 in reach:
+        kept = []
+        for s0, s1 in found:
             s0 = span[0] if low_sharp and s0 - span[0] <= snap else s0
             s1 = span[1] if high_sharp and span[1] - s1 <= snap else s1
             if s1 - s0 >= EDGE_SHORTEST_M:
-                found.append((s0, s1) if forward else (s1, s0))
-        for first, last in found if forward else found[::-1]:  # stretches run as the outline does
+                kept.append((s0, s1) if forward else (s1, s0))
+        for first, last in kept if forward else kept[::-1]:  # stretches run as the outline does
             stretches.append((line.origin + first * line.along - inward * inset,
                               line.origin + last * line.along - inward * inset, -inward))
     return stretches
@@ -420,8 +443,12 @@ def _pad_holes(line, pad_drills, copper, plating):
     return holes
 
 
-def _slab(middle, inside, laminate_z, bands, layers, copper, lands, plated, holes):
-    """What the cut shows at height `middle`: [(intervals, colour)], none overlapping."""
+def _slab(middle, inside, laminate_z, bands, layers, copper, lands, plated, holes, area=None, wall_area=None):
+    """What the cut shows at height `middle`: [(intervals, colour)], none overlapping.
+    `area`: the board's own stretch of the cut; copper, walls and fills outside it are
+    left out (a fab mills them away: castellated pads, half holes). None: no clipping.
+    `wall_area`: the same, a wall's thickness wider: a drill wall standing on the outline
+    (the board edge follows the drill) keeps its plating."""
     level = [name for name, (c0, c1) in copper.items() if c0 <= middle < c1]
     metal = [layers.get(name, EMPTY) for name in level] + [lands[name] for name in level if name in lands]
     metal += [found for c0, c1, found in plated if c0 <= middle < c1]
@@ -434,6 +461,8 @@ def _slab(middle, inside, laminate_z, bands, layers, copper, lands, plated, hole
     walls = subtract(drilled, _union(hole.bore for hole in drilled_holes))
     cores = [hole for hole in drilled_holes if hole.core and hole.core[0] <= middle < hole.core[1]]
     filled = _union(hole.bore for hole in cores if hole.core[2] == COPPER)
+    if area is not None:
+        metal, walls, filled = intersect(metal, area), intersect(walls, wall_area), intersect(filled, area)
     laminate = inside if laminate_z[0] <= middle < laminate_z[1] else EMPTY
     band = next((color for b0, b1, color in bands if b0 <= middle < b1), CORE)
     parts = [(subtract(subtract(laminate, metal), drilled), band), (subtract(metal, drilled), COPPER),
@@ -445,6 +474,8 @@ def _slab(middle, inside, laminate_z, bands, layers, copper, lands, plated, hole
     taken = filled
     for color, found in plugs.items():
         plug = subtract(_union(found), taken)
+        if area is not None:
+            plug = intersect(plug, area)
         parts.append((plug, color))
         taken = merge(np.vstack([taken, plug]))
     return parts
@@ -512,6 +543,9 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     one, an `edge_plating` thick copper strip outside the edge, the copper's whole height.
     """
     inside = rings(line, *outline) if outline is not None else EMPTY
+    area = inside if outline is not None else None  # copper past the outline is milled away
+    reach = (plating or 0.0) + EDGE_WALL_SLACK_M
+    wall_area = merge(inside + np.array([-reach, reach])) if outline is not None and len(inside) else area
     laminate_z = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (0.0, 0.0)
     holes, lands, plated, films = _via_parts(line, vias, layers, copper, plating, cap_plating, tents or {},
                                              land_lift, plug_color)
@@ -521,7 +555,8 @@ def cross_section(line, outline, layers, copper, bands, vias=None, pad_drills=No
     for hole in holes:
         cuts |= {hole.z0, hole.z1, *(hole.core[:2] if hole.core else ())}
     cuts = sorted(cuts)
-    rects = _stack((z0, z1, _slab((z0 + z1) / 2, inside, laminate_z, bands, layers, copper, lands, plated, holes))
+    rects = _stack((z0, z1, _slab((z0 + z1) / 2, inside, laminate_z, bands, layers, copper, lands, plated, holes,
+                                  area, wall_area))
                    for z0, z1 in zip(cuts, cuts[1:]) if z1 - z0 >= 1e-12)
     rects += [(s0, s1, z0, z1, color) for z0, z1, intervals, color in films for s0, s1 in intervals]
     return rects + _edge_strips(line, plated_edges, copper, edge_plating)

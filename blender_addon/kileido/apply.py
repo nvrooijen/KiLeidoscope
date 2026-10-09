@@ -25,6 +25,8 @@ from .state import board
 MIN_TRANSPARENT_BOUNCES = 32
 VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
 SECTION_INPUTS = ("board", "layer_data", "appearance", "stackup")  # frames the cut plane's section reads
+PLATED_WALL_INSET_M = 5e-6  # a plated drill wall stands this far inside its drill: clear of a board edge
+                           # that follows the drill (a castellation drawn as a notch)
 
 
 def load_frames(data: bytes) -> float:
@@ -259,6 +261,13 @@ def frame_board(force=False):
 
 # --- Layer data -----------------------------------------------------------------------------
 
+def _ring_next(starts, count):
+    """Each ring point's next point: the following one, and each ring's last its first."""
+    following = np.arange(1, count + 1, dtype=np.int32)
+    following[starts[1:] - 1] = starts[:-1]
+    return following
+
+
 def _ring_edges(mesh, arrays):
     """Input contours only: Geometry Nodes creates the fill surfaces."""
     points = arrays["points"]
@@ -270,9 +279,7 @@ def _ring_edges(mesh, arrays):
     if count:
         coords = np.zeros((count, 3), dtype=np.float32)
         coords[:, :2] = transform.xy_m(points, board.origin_nm)
-        edges = np.column_stack((np.arange(count, dtype=np.int32),
-                                 np.arange(1, count + 1, dtype=np.int32)))
-        edges[starts[1:] - 1, 1] = starts[:-1]  # close each ring on its first point
+        edges = np.column_stack((np.arange(count, dtype=np.int32), _ring_next(starts, count)))
         mesh.vertices.foreach_set("co", coords.ravel())
         mesh.edges.foreach_set("vertices", edges.ravel())
     ring_sizes = np.diff(starts)
@@ -362,8 +369,9 @@ def _apply_drills(header, arrays):
         # Plated holes: copper wall with the finish; np_thru_hole: bare laminate, or on an IMS
         # board the metal base (all but its thin epoxy).
         bare = "ims_wall" if board.ims is not None else "board_core"
+        inset = 2 * PLATED_WALL_INSET_M if plated else 0.0  # off a board edge that follows the drill
         set_modifier(obj, board.groups["drills"], "plating" if plated else bare,
-                     {"Width": width, "Height": height, "Depth": board.thickness_m})
+                     {"Width": width - inset, "Height": height - inset, "Depth": board.thickness_m})
         _smooth_walls(obj, not plated and board.ims is not None)
         obj["kls_plated"] = bool(plated)
         hole_rows.append((x, y, width, height, float(angle), bool(oval)))
@@ -538,7 +546,9 @@ def _apply_outline(arrays):
     _place_board(obj)
     if len(arrays["points"]):
         xy = transform.xy_m(arrays["points"], board.origin_nm)
-        holes.set_bounds((*xy.min(axis=0), *xy.max(axis=0)))
+        holes.set_bounds((*xy.min(axis=0), *xy.max(axis=0)), (xy, xy[_ring_next(arrays["ring_start"], len(xy))]))
+    else:
+        holes.clear_outline()  # no closed outline: nothing to clip copper to
     set_board_visible(getattr(bpy.context.scene, "kileido_show_board", True))
     board.touched.add(obj.name)
     cosmetics.refresh_geometry()
@@ -590,7 +600,7 @@ def _place_board(obj):
     set_modifier(obj, board.groups["board"], "board",
                  {"Thickness": -(top - bottom - 2 * clearance),
                   "Bottom Material": board.materials["board_bottom"],
-                  "Core Material": board.materials["board_core"]})
+                  "Core Material": board.materials["board_edge"]})
     obj.update_tag()
     _place_ims_base(obj)
 

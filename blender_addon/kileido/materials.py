@@ -77,6 +77,10 @@ def create_all():
         "board": make("KLS Board mask top", FALLBACK_MASK),
         "board_bottom": make("KLS Board mask bottom", FALLBACK_MASK),
         "board_core": make("KLS Board FR4 core", FALLBACK_CORE),
+        # The board's outline walls: the core's look, but holed (holes.HOLED), so a drill on
+        # the edge (a castellated pad) opens the wall. Bare drill walls keep "board_core":
+        # they stand on a hole's rim and the hole mask would cut them in half.
+        "board_edge": make("KLS Board edge", FALLBACK_CORE),
         "ims_base": make("KLS IMS base", ims.COLORS["AL"]),
         "flex": make("KLS Flex polyimide", POLYIMIDE, POLYIMIDE_ALPHA),
         "stiffener_metal": make("KLS Stiffener metal", STIFFENER_METAL),
@@ -85,8 +89,14 @@ def create_all():
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
+        # The plated board edge: the hole plating's look, but it stands just outside the
+        # outline, so it is not clipped to the board as hole plating is (holes.CLIPPED).
+        "plating_edge": make("KLS Edge plating", (0.75, 0.61, 0.23)),
         # A via barrel the finish never reached (a tent, plug or fill closes it): bare copper.
         "plating_bare": make("KLS Hole plating bare", BARE_COPPER),
+        # Copper milled back to the board edge (castellated pads): the cut face is bare
+        # copper, and it stands on the outline, so it is not clipped to the board either.
+        "copper_cut": make("KLS Copper cut edge", BARE_COPPER),
         # A plugged via's plug: solder mask ink, in the board's mask colour.
         "via_plug": make("KLS Via plug ink", FALLBACK_MASK),
         # The solder mask spanning a tented via's hole, one per side; see-through while hidden.
@@ -304,6 +314,7 @@ def layer_material(layer):
     if key not in board.materials:
         board.materials[key] = make(f"KLS {layer} copper", FALLBACK_COPPER)
         holes.add_to(board.materials[key])
+        holes.clip_to_board(board.materials[key])  # copper past the board edge is milled away
         if cut.enabled():  # a layer's first copper while the board is cut open
             cut.add_to(board.materials[key])
     material = board.materials[key]
@@ -743,11 +754,13 @@ def set_color_mode(mode):
     # Its rings on inner copper: the via colour in the editor's theme, else as inner copper (no finish).
     paint(board.materials["via_rings"],
           (board.appearance.get("editor_via") if mode == "EDITOR" else _copper_color("inner")) or FALLBACK_COPPER)
-    # Hole walls: copper plated, then finished like the pads.
-    paint(board.materials["plating"], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
-    set_surface(board.materials["plating"], realistic, COPPER_METALLIC, 0.3)
-    paint(board.materials["plating_bare"], _lit_metal(BARE_COPPER))
-    set_surface(board.materials["plating_bare"], realistic, COPPER_METALLIC, 0.3)
+    # Hole walls: copper plated, then finished like the pads; the plated board edge alike.
+    for key in ("plating", "plating_edge"):
+        paint(board.materials[key], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
+        set_surface(board.materials[key], realistic, COPPER_METALLIC, 0.3)
+    for key in ("plating_bare", "copper_cut"):
+        paint(board.materials[key], _lit_metal(BARE_COPPER))
+        set_surface(board.materials[key], realistic, COPPER_METALLIC, 0.3)
     paint_tents()
     for key in ("ims_base", "ims_wall"):
         _paint_ims_base(board.materials[key], realistic)
@@ -763,14 +776,15 @@ def set_color_mode(mode):
     for key, material in board.materials.items():
         if key == "solder":
             set_surface(material, realistic, 0.9, 0.3)  # tin-silver-copper alloy
-        if key in {"board", "board_bottom", "board_core", "vias", "via_rings"} or key.startswith("copper:"):
+        if key in {"board", "board_bottom", "board_core", "board_edge", "vias", "via_rings"} or key.startswith("copper:"):
             metal = key in ("vias", "via_rings") or key.startswith("copper:")
             set_surface(material, realistic, COPPER_METALLIC if metal else 0.0,
                         COPPER_ROUGHNESS if metal else 0.42)
             if metal:
                 finish_mask(material, key)
     # Routed edges and bare drills show the layers; an IMS's thin epoxy has no glass weave.
-    laminate.set_edges(board.materials["board_core"], realistic and board.ims is None)
+    for key in ("board_core", "board_edge"):
+        laminate.set_edges(board.materials[key], realistic and board.ims is None)
     # Copper in the cut plane's section: bare (a cut never has the finish), lit like the rest.
     cut.set_look(realistic, shading.srgb_to_linear(metal_color(BARE_COPPER)), COPPER_METALLIC, COPPER_ROUGHNESS)
 
@@ -869,6 +883,7 @@ def _paint_board_faces(viewer):
         # substrate. Until then, paint the face with the mask colour.
         paint(board.materials[key], core if side in board.mask_images and not editor else mask)
     paint(board.materials["board_core"], core)
+    paint(board.materials["board_edge"], core)
 
 
 def _paint_highlights():

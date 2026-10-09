@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 from kipy import KiCad
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
-from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape
+from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape, PadStackShape, PadStackType
 from kipy.proto.common import ApiStatusCode, commands
 from kipy.proto.common.types import KIID
 from kipy.util.board_layer import CANONICAL_LAYER_NAMES, is_copper_layer
@@ -27,7 +27,7 @@ from kipy.util.board_layer import CANONICAL_LAYER_NAMES, is_copper_layer
 from . import model
 from .diff import Key, combine, fingerprint, item_bytes, item_digest
 from .flex import LAYER_NAMES as FLEX_LAYER_NAMES
-from .geometry import (circle_ring, outline_crossings, outline_warning, polyline_strokes, sample_arc,
+from .geometry import (arc_step, circle_ring, outline_crossings, outline_warning, polyline_strokes, sample_arc,
                        sample_bezier, stroke)
 
 # Tracks and vias are polled every cycle (~13 ms); the rest only on the slow
@@ -594,7 +594,10 @@ def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tu
     copy that is no longer on the board (measured: the pre-undo position, until the
     board is reopened). Every pad-shape call goes by id, so such a pad's shape is
     the copy's. A copy that differs only in placement (moved, rotated, flipped) is
-    mapped onto the pad as the board has it; any other difference is reported.
+    mapped onto the pad as the board has it. Any other difference (measured: an SMD pad
+    turned through-hole, still answered for as the SMD pad on B.Cu only) gets the shape
+    built from the pad's own, fresh padstack (`_standard_pad_polygons`) when it is a
+    standard one, and is reported otherwise.
     """
     polygons_by_pad: dict[str, dict[str, tuple[model.Polygon, ...]]] = defaultdict(dict)
     if not raw_pads or not layers:
@@ -610,12 +613,19 @@ def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tu
         mirrored = copy.padstack.drill.start_layer != pad.padstack.drill.start_layer  # a flip swaps them
         placements[pad.id.value] = (mirrored, _placement_map(copy, pad, mirrored))
         if _shape_bytes(copy, mirrored) != _shape_bytes(pad, mirrored):
-            outdated.add(pad.id.value)
+            built = _standard_pad_polygons(pad, layers)
+            if built is None:
+                outdated.add(pad.id.value)
+            else:
+                polygons_by_pad[pad.id.value] = built
+    asking = [pad for pad in raw_pads if pad.id.value not in polygons_by_pad]  # the rest: KiCad's own shapes
+    if not asking:
+        return polygons_by_pad, outdated
     asked = list(dict.fromkeys([*layers, *(flip.get(layer, layer) for layer in layers)]))
     presence = call("check_padstack_presence_on_layers",
-                    board.check_padstack_presence_on_layers, raw_pads, asked)
+                    board.check_padstack_presence_on_layers, asking, asked)
     wanted: dict[object, list] = defaultdict(list)  # layer KiCad is asked for -> [(pad, board layer)]
-    for pad in raw_pads:
+    for pad in asking:
         mirrored = placements.get(pad.id.value, (False, None))[0]
         for layer in layers:
             query = flip.get(layer, layer) if mirrored else layer
@@ -635,6 +645,75 @@ def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tu
                     polygon = _place_polygon(polygon, *placements[pad.id.value])
                 polygons_by_pad[pad.id.value][canonical_layer(layer)] = (polygon,)
     return polygons_by_pad, outdated
+
+
+_PASTE_SIDE = {BoardLayer.BL_F_Paste: BoardLayer.BL_F_Cu, BoardLayer.BL_B_Paste: BoardLayer.BL_B_Cu}
+
+
+def _standard_pad_polygons(pad, layers) -> dict[str, tuple[model.Polygon, ...]] | None:
+    """A pad's copper (and paste) shapes on `layers`, built from its padstack as
+    `get_pads` returns it (fresh, unlike the id-based shape calls); None when a shape is
+    not a plain circle, rectangle, rounded rectangle or oval. Paste takes the copper
+    shape of its side (KiCad's paste margin, usually 0, is left out)."""
+    stack = pad.proto.pad_stack
+    on = set(stack.layers)
+    entries = {entry.layer: entry for entry in stack.copper_layers}
+    built = {}
+    for layer in layers:
+        if layer not in on:
+            continue
+        copper = _PASTE_SIDE.get(layer, layer)
+        entry = entries.get(copper)
+        if entry is None and stack.copper_layers:
+            if stack.type == PadStackType.PST_NORMAL:
+                entry = stack.copper_layers[0]
+            elif stack.type == PadStackType.PST_FRONT_INNER_BACK and copper not in (BoardLayer.BL_F_Cu,
+                                                                                    BoardLayer.BL_B_Cu):
+                entry = next((e for e in stack.copper_layers if e.layer not in (BoardLayer.BL_F_Cu,
+                                                                                BoardLayer.BL_B_Cu)), None)
+        ring = _pad_ring(pad, entry) if entry is not None else None
+        if ring is None:
+            return None
+        built[canonical_layer(layer)] = ((ring,),)
+    return built
+
+
+def _pad_ring(pad, entry, tolerance_nm: int = 5_000) -> model.Ring | None:
+    """One padstack layer's outline in board coordinates: its rounded rectangle (a
+    circle and an oval are rounded all the way), offset, then turned by the pad's angle
+    as KiCad's RotatePoint does (y points down)."""
+    width, height = entry.size.x_nm, entry.size.y_nm
+    if width <= 0 or height <= 0:
+        return None
+    shape = entry.shape
+    if shape == PadStackShape.PSS_CIRCLE:
+        height = width
+        radius = width / 2
+    elif shape == PadStackShape.PSS_OVAL:
+        radius = min(width, height) / 2
+    elif shape == PadStackShape.PSS_ROUNDRECT:
+        radius = min(width, height) * min(max(entry.corner_rounding_ratio, 0.0), 0.5)
+    elif shape == PadStackShape.PSS_RECTANGLE:
+        radius = 0.0
+    else:
+        return None
+    hx, hy = width / 2 - radius, height / 2 - radius
+    steps = max(1, math.ceil((math.pi / 2) / arc_step(radius, tolerance_nm))) if radius > 0 else 0
+    local = []
+    for cx, cy, start in ((hx, hy, 0.0), (-hx, hy, 0.5), (-hx, -hy, 1.0), (hx, -hy, 1.5)):
+        for k in range(steps + 1):
+            angle = math.pi * (start + 0.5 * k / steps) if steps else 0.0
+            local.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    angle = pad.padstack.angle.to_radians()
+    c, s = math.cos(angle), math.sin(angle)
+    (px, py), (ox, oy) = _point(pad.position), (entry.offset.x_nm, entry.offset.y_nm)
+    ring = []
+    for x, y in local:
+        x, y = x + ox, y + oy
+        point = (round(px + x * c + y * s), round(py - x * s + y * c))
+        if not ring or point != ring[-1]:
+            ring.append(point)
+    return tuple(ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring)
 
 
 def _same_item(a, b) -> bool:

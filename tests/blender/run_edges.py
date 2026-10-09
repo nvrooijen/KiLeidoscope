@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, edge_plating, section, state  # noqa: E402
+from kileido import apply, cut, edge_plating, holes, section, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -52,7 +52,10 @@ def main():
         assert np.allclose([start[0], end[0]], -20 * MM, atol=1e-7)  # Blender x of KiCad x = 0
         assert np.isclose(abs(end[1] - start[1]), 30 * MM, atol=1e-6) and np.allclose(outward, (-1, 0))
         plating = board.collection.all_objects[edge_plating.OBJECT]
-        assert plating.data.materials[0] == board.materials["plating"] and not plating.hide_get()
+        assert plating.data.materials[0] == board.materials["plating_edge"] and not plating.hide_get()
+        # It stands outside the outline: never clipped to the board, unlike the hole plating.
+        assert holes.CLIP_TEXTURE not in board.materials["plating_edge"].node_tree.nodes
+        assert holes.CLIP_TEXTURE in board.materials["plating"].node_tree.nodes
         coordinates = np.array([v.co[:] for v in plating.data.vertices])
         assert np.isclose(coordinates[:, 0].min(), -20 * MM - edge_plating.THICKNESS_M, atol=1e-8)
         assert np.isclose(coordinates[:, 2].max(), board.thickness_m, atol=1e-9)
