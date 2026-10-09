@@ -65,6 +65,11 @@ def apply_frame(header, arrays):
         highlight.apply_selection(header)
     elif message_type == "flex":
         board.flex = header.get("flex") or {}  # the panel's flex box: stack, bends, checks
+    elif message_type == "export":
+        # The assembly variant selected in KiCad changed: kicad-cli exports the models
+        # for it (the footprints frame alongside carries the variant's DNP flags).
+        board.export = header.get("export") or {}
+        models.follow_board(board.board_path, board.export)
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:

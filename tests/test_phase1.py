@@ -463,3 +463,29 @@ def test_a_drilled_pad_with_copper_only_on_b_cu_keeps_its_hole():
     (header, arrays), = FrameDecoder().feed(fill_message(snapshot, "F.Cu", "pads", 1))
     assert header["ids"] == ["p"] and len(arrays["drill"]) == 1
     assert arrays["drill_plated"][0] == 1  # it has copper (on B.Cu): plated
+
+
+def test_selected_assembly_variant_is_read_every_poll():
+    """KiCad keeps the selected variant in memory only; `${VARIANT}` expands to its
+    name ("" for the default). KiCad 9 leaves the variable unexpanded: also default."""
+    board = FakeBoard()
+    board.variant = "5V Output"
+    board.expand_text_variables = lambda text: text.replace("${VARIANT}", board.variant)
+    reader = BoardReader(board)
+    snapshot = reader.poll().snapshot
+    assert snapshot.variant == "5V Output"
+    board.variant = ""
+    assert reader.poll().snapshot.variant == ""  # a fast poll sees the switch too
+    board.expand_text_variables = lambda text: text  # KiCad 9: no such variable
+    assert reader.poll().snapshot.variant == ""
+
+    def unsupported(text):
+        raise RuntimeError("unhandled message")  # a KiCad without the call keeps the link
+
+    board.expand_text_variables = unsupported
+    assert reader.poll().snapshot.variant == ""
+    assert read_snapshot(FakeBoard()).variant == ""  # no expand_text_variables at all
+    assert snapshot_from_jsonable(to_jsonable(snapshot)).variant == "5V Output"
+    older = to_jsonable(snapshot)
+    del older["variant"]  # a dump from before variants
+    assert snapshot_from_jsonable(older).variant == ""

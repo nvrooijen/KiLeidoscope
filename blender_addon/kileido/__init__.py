@@ -845,10 +845,12 @@ def _hint(line, text):
 
 
 def _live_board_cells(line):
-    """The live board's icon, name and source ("live" or "dump")."""
+    """The live board's icon, name and source: the assembly variant selected in
+    KiCad, else "live", or "dump"."""
     line.label(text="", icon="LINKED" if live.connected() else "FILE")
     line.label(text=board.board_name)
-    _hint(line, "live" if live.connected() else "dump")
+    variant = (board.export or {}).get("variant", "")
+    _hint(line, (variant or "live") if live.connected() else "dump")
 
 
 class KILEIDO_UL_boards(bpy.types.UIList):

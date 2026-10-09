@@ -8,7 +8,9 @@ again. Same records as `kicad_reader`: integer nm in KiCad's frame, canonical
 layer names, net names, KiCad UUIDs.
 """
 
+import bisect
 import re
+from dataclasses import replace
 
 from . import model
 
@@ -26,6 +28,10 @@ _SINGLE = re.compile(r"\((capping|filling)\s+(yes|no|none)\)")
 _SIDED_INDEX = {"tenting": 0, "covering": 2, "plugging": 4}
 _SINGLE_INDEX = {"capping": 6, "filling": 7}
 _RINGS = re.compile(r"\((remove_unused_layers|keep_end_layers|start_end_only)\s+yes\)")
+_FOOTPRINT = re.compile(r'\n\s*\(footprint\s+"')
+# A footprint's per-variant settings (KiCad 10) or the board's variant list: the name opens the block
+_VARIANT = re.compile(r'\(variant\s*\(name "((?:[^"\\]|\\.)*)"\)')
+_DNP = re.compile(r"\(dnp\s+(yes|no)\)")
 
 
 def via_rings(text: str) -> int:
@@ -97,3 +103,72 @@ def copper_items(text: str) -> tuple[tuple[model.Track, ...], tuple[model.Arc, .
             tracks.append(model.Track(uuid.group(1), layer.group(1), net, points["start"], points["end"],
                                       numbers.get("width", 0)))
     return tuple(tracks), tuple(arcs), tuple(vias)
+
+
+def _unescaped(value: str) -> str:
+    return re.sub(r"\\(.)", r"\1", value)
+
+
+def block(text: str, start: int) -> str:
+    """The balanced (...) expression starting at `start` (quotes respected)."""
+    depth = 0
+    quoted = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    raise ValueError("Unclosed KiCad board section")
+
+
+def variant_dnp(text: str) -> dict[str, dict[str, bool]]:
+    """Each assembly variant's DNP overrides, by footprint uuid, from the board text.
+
+    KiCad 10 writes a footprint's per-variant settings inside the footprint as
+    `(variant (name "X") (dnp yes))` (the API footprint message carries them only
+    from KiCad 10.0.7). A footprint without a block for a variant keeps its own
+    `(attr ... dnp)` in it. Each block belongs to the footprint opened last before
+    it (layout-independent); the board's own `(variants ...)` list has no `dnp`.
+    Runs on every live-copy write, so a board without variants costs one search.
+    """
+    found: dict[str, dict[str, bool]] = {}
+    if "(variant" not in text:
+        return found
+    starts = [match.start() for match in _FOOTPRINT.finditer(text)]
+    uuids: dict[int, str | None] = {}
+    for match in _VARIANT.finditer(text):
+        owner = bisect.bisect(starts, match.start()) - 1
+        if owner < 0:
+            continue  # the board's variant list comes before the footprints
+        dnp = _DNP.search(block(text, match.start()))
+        if dnp is None:
+            continue
+        if owner not in uuids:  # the footprint's own uuid: the first after its opening
+            uuid = _UUID.search(text, starts[owner])
+            uuids[owner] = uuid[1] if uuid is not None else None
+        if uuids[owner] is not None:
+            found.setdefault(_unescaped(match[1]), {})[uuids[owner]] = dnp[1] == "yes"
+    return found
+
+
+def with_variant_dnp(footprints: tuple[model.Footprint, ...], variant: str,
+                     overrides: dict[str, dict[str, bool]]) -> tuple[model.Footprint, ...]:
+    """The footprints with the selected variant's DNP flags in place of KiCad's defaults."""
+    flags = overrides.get(variant) if variant else None
+    if not flags:
+        return footprints
+    return tuple(replace(f, dnp=flags[f.id]) if f.id in flags and flags[f.id] != f.dnp else f
+                 for f in footprints)

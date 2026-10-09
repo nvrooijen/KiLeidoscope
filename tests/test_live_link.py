@@ -855,3 +855,75 @@ def test_a_flex_model_failure_reaches_blender_as_a_problem_not_a_disconnect(monk
     finally:
         client.close()
         runtime.close()
+
+
+def test_selected_variant_hides_its_dnp_parts_and_reaches_the_exports(tmp_path, monkeypatch):
+    """Switching the assembly variant in KiCad: the parts it marks DNP reach Blender
+    as DNP (the "DNP components" eye hides them), the kicad-cli exports learn the
+    variant, and an edit of a per-variant DNP flag follows through the board text."""
+    import kileido_bridge.loop as loop_module
+    from kileido_bridge.live_copy import LiveBoardCopy
+    snapshot = fixture()
+    first = snapshot.footprints[0].id
+    project = tmp_path / "project"
+    project.mkdir()
+    saved = project / "board.kicad_pcb"
+    saved.write_text("(kicad_pcb)", encoding="utf-8")
+
+    def text(dnp):
+        return ('(kicad_pcb\n\t(variants\n\t\t(variant\n\t\t\t(name "5V Output")\n\t\t)\n\t)\n'
+                f'\t(footprint "R"\n\t\t(layer "F.Cu")\n\t\t(uuid "{first}")\n'
+                f'\t\t(variant\n\t\t\t(name "5V Output")\n\t\t\t(dnp {dnp})\n\t\t)\n\t)\n)\n')
+
+    class FakeBoard:
+        contents = text("yes")
+
+        def get_as_string(self):
+            return self.contents
+
+    board = FakeBoard()
+    reader = FakeReader(snapshot)
+    reader.board = board
+    monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(saved))
+    server = BridgeServer(port=0, token="t")
+    copy = LiveBoardCopy(tmp_path / "live", debounce_s=0.0, recheck_s=0.0)
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, live_copy=copy)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+
+    def dnp_of(frames):
+        records = [h["footprints"] for h, _ in frames if h["type"] == "footprints"]
+        return {r["id"]: r["dnp"] for r in records[-1]} if records else None
+
+    try:
+        runtime.step()
+        client.connect()
+        initial = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        header = next(h for h, _ in initial if h["type"] == "board")
+        assert header["export"]["variant"] == ""
+        assert not any(dnp_of(initial).values())  # the default variant: KiCad's own flags
+
+        reader.events.append((replace(snapshot, variant="5V Output"), set()))
+        switched = exchange(runtime, client, lambda f: any(h["type"] == "export" for h, _ in f))
+        assert next(h for h, _ in switched if h["type"] == "export")["export"]["variant"] == "5V Output"
+        assert dnp_of(switched)[first] is True
+        assert sum(dnp_of(switched).values()) == 1
+        assert not any(h["type"] == "snapshot_begin" for h, _ in switched)  # no full resend
+
+        board.contents = text("no")  # the flag edited in KiCad's footprint properties
+        edited = exchange(runtime, client, lambda f: dnp_of(f) is not None)
+        assert dnp_of(edited)[first] is False
+
+        board.contents = text("yes")
+        exchange(runtime, client, lambda f: dnp_of(f) is not None)
+        client.request_resync()
+        again = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        assert next(h for h, _ in again if h["type"] == "board")["export"]["variant"] == "5V Output"
+        assert dnp_of(again)[first] is True
+
+        reader.events.append((replace(snapshot, variant=""), set()))
+        back = exchange(runtime, client, lambda f: any(h["type"] == "export" for h, _ in f))
+        assert next(h for h, _ in back if h["type"] == "export")["export"]["variant"] == ""
+        assert dnp_of(back)[first] is False
+    finally:
+        client.close()
+        runtime.close()

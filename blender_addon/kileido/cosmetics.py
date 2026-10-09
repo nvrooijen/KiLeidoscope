@@ -95,7 +95,9 @@ def status():
 
 
 def follow_board(board_path, export=None):
-    _watcher.follow(board_path, export)
+    """The overlays plot every footprint whatever the assembly variant, so a variant
+    switch (new export settings) does not restart this watch."""
+    _watcher.follow(board_path, {key: value for key, value in (export or {}).items() if key != "variant"})
 
 
 def stop_following():

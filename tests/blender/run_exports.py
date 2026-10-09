@@ -117,6 +117,57 @@ def check_missing_models_not_cached(scratch):
         kicad_cli.lookup, kicad_cli.store = real_lookup, real_store
 
 
+def check_variant_export(scratch):
+    """The assembly variant selected in KiCad (the bridge sends it with the export
+    settings) goes to the GLB and position exports as --variant, and the result is
+    cached apart from the default variant's; the default passes no flag. An export
+    frame with a new variant restarts the watch (`watcher.follow`)."""
+    source = scratch / "variant" / BOARD_FILE.name
+    source.parent.mkdir()
+    source.write_bytes(BOARD_FILE.read_bytes())
+    exported = []
+    real_run, real_lookup, real_store = kicad_cli.run, kicad_cli.lookup, kicad_cli.store
+    kicad_cli.lookup = lambda kind, key: None
+    kicad_cli.store = lambda kind, key, files: None
+
+    def run(arguments, timeout):
+        exported.append(list(arguments))
+        output = Path(arguments[arguments.index("--output") + 1])
+        output.write_text("ref,x,y\n" if output.suffix == ".csv" else "glb", encoding="utf-8")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    kicad_cli.run = run
+    try:
+        memory = {}
+        default = Job(source, str(source), {}, 0, threading.Event(), queue.SimpleQueue())
+        models._on_board_change(default, memory)
+        result = default.results.get_nowait()
+        assert result.error is None, result.error
+        watcher.remove_later(result.directory)
+        default_key = memory["key"]
+        assert not any("--variant" in arguments for arguments in exported), exported
+        exported.clear()
+        selected = Job(source, str(source), {"variant": "5V Output"}, 0, threading.Event(), queue.SimpleQueue())
+        models._on_board_change(selected, memory)
+        result = selected.results.get_nowait()
+        assert result.error is None, result.error
+        watcher.remove_later(result.directory)
+        assert memory["key"] != default_key, "a variant's export shares the default's cache entry"
+        flagged = [arguments for arguments in exported if "--variant" in arguments]
+        assert [arguments[arguments.index("export") + 1] for arguments in flagged] == ["glb", "pos"], exported
+        assert all(arguments[arguments.index("--variant") + 1] == "5V Output" for arguments in flagged)
+    finally:
+        kicad_cli.run, kicad_cli.lookup, kicad_cli.store = real_run, real_lookup, real_store
+    follow = models._watcher
+    follow.follow(str(source), {"path": str(source), "variant": ""})
+    generation = follow._generation
+    follow.follow(str(source), {"path": str(source), "variant": ""})
+    assert follow._generation == generation, "the same export settings restarted the watch"
+    follow.follow(str(source), {"path": str(source), "variant": "5V Output"})
+    assert follow._generation == generation + 1, "a new variant did not restart the watch"
+    follow.stop()
+
+
 def check_unsaved_board_follows_live_copy(scratch):
     """A board with no saved file (empty board path) still loads models from the bridge's
     live copy; only with neither copy nor saved board is the status the save-it hint."""
@@ -320,6 +371,7 @@ def main():
         check_model_retry(scratch)
         check_missing_models_not_cached(scratch)
         check_unsaved_board_follows_live_copy(scratch)
+        check_variant_export(scratch)
         snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))
         apply.load_frames(b"".join(snapshot_frames(snapshot, board_path=str(BOARD_FILE))))
         check_overlay_images()

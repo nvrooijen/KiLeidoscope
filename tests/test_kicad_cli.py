@@ -119,3 +119,12 @@ def test_run_never_fails_on_undecodable_output():
                             "import sys; sys.stdout.buffer.write(b'File not found: \\x90\\xff ok')"], 30)
     assert result.returncode == 0
     assert result.stdout.startswith("File not found:") and result.stdout.endswith("ok")
+
+
+def test_variant_arguments_name_the_selected_variant_only():
+    """`--variant` goes to the GLB and position exports for a selected variant; the
+    default variant passes no flag (older kicad-cli has none)."""
+    assert kicad_cli.variant_arguments({"variant": "5V Output"}) == ["--variant", "5V Output"]
+    assert kicad_cli.variant_arguments({"variant": ""}) == []
+    assert kicad_cli.variant_arguments({}) == []
+    assert kicad_cli.variant_arguments(None) == []

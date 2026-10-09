@@ -313,6 +313,11 @@ def board_message(snapshot: model.BoardSnapshot, revision: int, origin_nm: tuple
     })
 
 
+def export_message(export: dict, revision: int) -> bytes:
+    """The export settings alone: the selected assembly variant changed, nothing else."""
+    return encode_frame({"type": "export", "revision": revision, "export": export})
+
+
 def all_keys(snapshot: model.BoardSnapshot) -> frozenset[Key]:
     keys = {(t.layer, "tracks") for t in snapshot.tracks} | {(a.layer, "arcs") for a in snapshot.arcs}
     keys |= {group for pad in snapshot.pads for group in pad.groups}
