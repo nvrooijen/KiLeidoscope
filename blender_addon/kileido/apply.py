@@ -12,7 +12,7 @@ import bpy
 import numpy as np
 
 from . import (cosmetics, cut, edge_plating, focus, fold, footprints, highlight, holes, ims, laminate, layers,
-               lighting, materials, models, nodes, protection, render_depth, transform)
+               lighting, materials, models, nodes, protection, render_depth, studio, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, view3d_spaces, write_attribute,
@@ -82,6 +82,7 @@ def apply_frame(header, arrays):
         cut.invalidate()
         laminate.update_bands()
         edge_plating.invalidate()
+    studio.note_frame(message_type)  # studio add-ons: an update arrived
 
 
 def apply_layer_data(header, arrays):

@@ -5,7 +5,7 @@ from collections import deque
 
 import bpy
 
-from . import apply, dump
+from . import apply, dump, studio
 from .client import PROTOCOL, SocketClient
 from .state import board
 
@@ -93,6 +93,8 @@ class LiveLink:
         if not self.enabled:
             return None
         self._receive()
+        if studio.updates_held():  # a render or a studio add-on: received, applied afterwards
+            return TICK_S
         deadline = time.perf_counter() + APPLY_BUDGET_S
         while self.pending and time.perf_counter() < deadline:
             header, arrays = self.pending.popleft()

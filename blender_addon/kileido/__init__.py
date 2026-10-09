@@ -3,12 +3,13 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 4, 4),
+    "version": (0, 4, 5),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
     "category": "3D View",
 }
+VERSION = "{}.{}.{}".format(*bl_info["version"])
 
 import re
 import textwrap
@@ -21,8 +22,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, holes, ims,
-               layers, lighting, live, models, packages, pick, protection, render_depth, watcher)
+from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, holes,
+               ims, layers, lighting, live, models, packages, pick, protection, render_depth, studio, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -199,6 +200,45 @@ class KILEIDO_OT_cut_plane(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_frame_camera(bpy.types.Operator):
+    bl_idname = "kileido.frame_camera"
+    bl_label = "Frame camera"
+    bl_description = ("Put the KiLeidoscope camera where it sees every board, parts included, from this view's "
+                      "direction, make it the scene camera (F12 renders it) and look through it. It stays where "
+                      "it is put until pressed again")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        # Polled on every redraw: a cheap look for a board, not studio.has_board's bounds.
+        if board.collection is None and not any(c.get("kls_view_only") is not None for c in bpy.data.collections):
+            cls.poll_message_set("No board loaded")
+            return False
+        return True
+
+    def execute(self, context):
+        space = context.space_data
+        view = space.region_3d if space is not None and space.type == "VIEW_3D" else None
+        placed = camera.frame(rotation=camera.view_rotation(view))
+        if placed is None:
+            return {"CANCELLED"}
+        if view is not None:
+            view.view_perspective = "CAMERA"
+        self.report({"INFO"}, f"KiLeidoscope: {placed.name} frames the board")
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_reset_lights(bpy.types.Operator):
+    bl_idname = "kileido.reset_lights"
+    bl_label = "Reset lights"
+    bl_description = "Fit the softboxes to the boards again, those moved by hand included"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        lighting.reset_lights()
+        return {"FINISHED"}
+
+
 def _viewport_mode(context):
     space = context.space_data
     return getattr(getattr(space, "shading", None), "type", "")
@@ -226,6 +266,7 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         icon = _icons.get("logo") if _icons is not None else None
         if icon is not None:
             self.layout.label(text="", icon_value=icon.icon_id)
+        self.layout.label(text=VERSION)
 
     def draw(self, context):
         """With a column open (its bookmark tab, columns.py), two: that column left, the rest right."""
@@ -265,10 +306,6 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         finish = board.appearance.get("copper_finish")
         if finish:
             layout.label(text="Board finish: " + ("Bare copper" if finish.casefold() == "none" else finish))
-        row = layout.row(align=True)
-        row.prop(context.scene, "kileido_light_power", text="Light")
-        row.prop(context.scene, "kileido_fill_color", text="")
-        layout.prop(context.scene, "kileido_reflections", text="Reflections")
         layout.prop(context.scene, "kileido_mask_opacity", text="Solder mask opacity", slider=True)
         layout.prop(context.scene, "kileido_silk_opacity", text="Silkscreen opacity", slider=True)
         self._draw_vias(context, layout)
@@ -458,7 +495,43 @@ def _flex_state():
     return "on" if bpy.context.scene.kileido_flex else "off"
 
 
-COLUMNS = {"IMS": _draw_ims, "FLEX": _draw_flex_column}  # columns.TABS keys -> what the column draws
+def _draw_studio(layout, scene):
+    """The Studio column: how the picture looks, nothing about the board. The light and
+    what reflects in the board, the background the camera sees, a camera framing the
+    board, and the camera and lights shown to move by hand."""
+    layout.label(text="Studio")
+    box = layout.box()
+    owner = studio.lighting_owner(scene)
+    if owner:  # another add-on looks after the lights and world: the light settings would do nothing
+        box.label(text=f"Lighting: {owner}", icon="LIGHT")
+    lights = box.column()
+    lights.enabled = not owner  # the camera and the overlay below stay KiLeidoscope's whoever owns the lights
+    lights.label(text="Light strength")  # above the row: at the column's width the row's own label is dropped
+    row = lights.row(align=True)
+    row.prop(scene, "kileido_light_power", text="")
+    row.prop(scene, "kileido_fill_color", text="")
+    lights.prop(scene, "kileido_reflections", text="Reflections")
+    lights.separator()
+    lights.label(text="Background")
+    lights.row(align=True).prop(scene, "kileido_background", expand=True)
+    mode = scene.kileido_background
+    if mode == "TRANSPARENT":
+        _draw_wrapped(lights, "Renders come out without a background: save them as PNG")
+    else:
+        colors = lights.column(align=True)
+        colors.prop(scene, "kileido_background_color", text="Color" if mode == "SOLID" else "Bottom")
+        if mode == "GRADIENT":
+            colors.prop(scene, "kileido_background_top", text="Top")
+    box.separator()
+    box.operator(KILEIDO_OT_frame_camera.bl_idname, icon="CAMERA_DATA")
+    row = box.row(align=True)
+    row.prop(scene, "kileido_show_rig", text="Show camera and lights", toggle=True, icon="LIGHT_AREA")
+    reset = row.row(align=True)
+    reset.enabled = bool(lighting.user_placed_lights())
+    reset.operator(KILEIDO_OT_reset_lights.bl_idname, text="", icon="FILE_REFRESH")
+
+
+COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column}  # columns.TABS keys -> the column
 columns.STATES.update(IMS=_ims_state, FLEX=_flex_state)
 
 
@@ -1146,7 +1219,8 @@ def _swatch(kind, color):
     return preview.icon_id
 
 
-CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
+CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
+           KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
            KILEIDO_UL_boards, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
@@ -1278,8 +1352,28 @@ def _scene_properties():
             update=lighting.apply_settings),
         "kileido_fill_color": FloatVectorProperty(
             name="Fill color", subtype="COLOR", size=3, min=0.0, max=1.0, default=lighting.FILL_COLOR,
-            description="Surroundings seen in shadows and metal reflections (the background stays black)",
+            description="Surroundings seen in shadows and metal reflections (not the background: that is the "
+                        "Background setting)",
             update=lighting.apply_settings),
+        "kileido_background": EnumProperty(
+            name="Background",
+            items=(("SOLID", "Color", "One colour behind the board"),
+                   ("GRADIENT", "Gradient", "From the bottom colour at the bottom of the frame to the top colour"),
+                   ("TRANSPARENT", "None", "No background: renders come out transparent (save them as PNG)")),
+            default="SOLID",
+            description="What the camera sees behind the board. Lights and reflections are not affected",
+            update=lighting.apply_background),
+        "kileido_background_color": FloatVectorProperty(
+            name="Background color", subtype="COLOR", size=3, min=0.0, max=1.0, default=lighting.BACKGROUND_COLOR,
+            description="The colour behind the board (a gradient's bottom)", update=lighting.apply_background),
+        "kileido_background_top": FloatVectorProperty(
+            name="Background top", subtype="COLOR", size=3, min=0.0, max=1.0, default=lighting.BACKGROUND_TOP,
+            description="A gradient's colour at the top of the frame", update=lighting.apply_background),
+        "kileido_show_rig": BoolProperty(
+            name="Show camera and lights", default=False,
+            description="Draw the softboxes and the camera in the 3D views, to select and move them (G). A light "
+                        "moved by hand stays where it is put; Reset lights fits it to the boards again",
+            update=lighting.show_rig),
         "kileido_reflections": EnumProperty(
             name="Reflections",
             items=(("NONE", "None", "Reflections see the fill colour, as KiLeidoscope always looked"),
@@ -1470,6 +1564,7 @@ def register():
     columns.install()
     cut.install()
     fold.install()
+    studio.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
@@ -1486,6 +1581,7 @@ def unregister():
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
     live.disconnect()
+    studio.uninstall()
     models.stop_following()
     cosmetics.stop_following()
     render_depth.uninstall()
