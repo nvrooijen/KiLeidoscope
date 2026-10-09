@@ -43,8 +43,8 @@ SIDE_NODE = "KLS holes side"  # a holed material's channel pick (`_side_select`)
 WALLS = ("plating", "plating_bare")  # drill walls: kept a little past the outline (`clip_to_board`)
 WALL_RAMP = (0.02, 0.12)  # their coverage ramp: about a pixel past the outline still shows
 CLIP_TEXTURE = "KLS board plot"  # a clipped material's sample of the mask (`clip_to_board`)
-CLIP_OFF = "KLS board clip off"
-CLIP_EDGE = "KLS board clip edge"  # the coverage ramp: crisp at 0.5, or `WALL_RAMP`  # 1: no outline to clip to, everything shows
+CLIP_OFF = "KLS board clip off"  # 1: no outline to clip to, everything shows
+CLIP_EDGE = "KLS board clip edge"  # the coverage ramp: crisp at 0.5, or `WALL_RAMP`
 
 _sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
 _bounds = None

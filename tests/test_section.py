@@ -242,7 +242,6 @@ def test_copper_and_half_holes_past_the_outline_are_milled_away():
     assert color_at(loose, 21 * MM, pad_z) == section.COPPER
 
 
-
 def test_a_half_hole_in_a_notched_outline_keeps_its_wall():
     """The outline follows the drill: a 0.5 mm semicircle notch in the right edge, the
     plated 1 mm drill centred on it. The wall stands on the outline and keeps its plating."""
@@ -269,7 +268,6 @@ def test_a_plated_edge_stays_outside_while_copper_is_clipped():
     assert color_at(rects, -20 * MM - 10 * UM, 800 * UM) == section.COPPER  # the edge plating, outside
     assert color_at(rects, -20 * MM - 500 * UM, pad_z) is None  # the pour's overhang: milled away
     assert color_at(rects, -19 * MM, pad_z) == section.COPPER
-
 
 
 def test_milled_edges_find_copper_crossing_the_outline_and_skip_half_holes():
