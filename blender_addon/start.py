@@ -23,7 +23,7 @@ if (bpy.context.window is not None and not bpy.data.filepath and
     # cannot obscure the board.
     bpy.context.window.scene = bpy.data.scenes.new("KiLeidoscope Viewer")
 kileido.register()
-lighting.ensure_black_background()
+lighting.ensure_background()
 bpy.context.scene.kileido_color_mode = "REALISTIC"
 
 

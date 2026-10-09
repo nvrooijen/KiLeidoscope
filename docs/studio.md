@@ -67,5 +67,5 @@ both softboxes to the boards again.
 Add-ons that build on KiLeidoscope (turntables, camera rigs, lighting setups)
 use its studio hook, `kileido.studio`: the board's size, when edits from KiCad
 have settled, the same camera framing as Frame camera, and a way to take the
-lighting over. While one has, the Studio column says so in place of the light
-settings. See [docs/studio-hook.md](studio-hook.md).
+lighting over. While one has, the Studio column names it and disables the light
+settings; Frame camera still works. See [docs/studio-hook.md](studio-hook.md).

@@ -107,5 +107,6 @@ over:
 | `release_lighting(scene=None)` | KiLeidoscope sets its lighting up again |
 | `lighting_owner(scene=None)` | who claimed it, or `""` |
 
-The claim is saved with the scene. The panel shows `owner` in place of the
-light settings while it lasts.
+The claim is saved with the scene. While it lasts the Studio column names
+`owner` above the light, reflection and background settings, which are
+disabled; Frame camera and the camera-and-lights overlay stay usable.

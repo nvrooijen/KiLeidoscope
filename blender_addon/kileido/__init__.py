@@ -210,7 +210,8 @@ class KILEIDO_OT_frame_camera(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        if not studio.has_board():
+        # Polled on every redraw: a cheap look for a board, not studio.has_board's bounds.
+        if board.collection is None and not any(c.get("kls_view_only") is not None for c in bpy.data.collections):
             cls.poll_message_set("No board loaded")
             return False
         return True
@@ -501,28 +502,28 @@ def _draw_studio(layout, scene):
     layout.label(text="Studio")
     box = layout.box()
     owner = studio.lighting_owner(scene)
-    if owner:  # another add-on looks after the lights and world: these settings would do nothing
+    if owner:  # another add-on looks after the lights and world: the light settings would do nothing
         box.label(text=f"Lighting: {owner}", icon="LIGHT")
-    settings = box.column()
-    settings.enabled = not owner
-    row = settings.row(align=True)
+    lights = box.column()
+    lights.enabled = not owner  # the camera and the overlay below stay KiLeidoscope's whoever owns the lights
+    row = lights.row(align=True)
     row.prop(scene, "kileido_light_power", text="Light")
     row.prop(scene, "kileido_fill_color", text="")
-    settings.prop(scene, "kileido_reflections", text="Reflections")
-    settings.separator()
-    settings.label(text="Background")
-    settings.row(align=True).prop(scene, "kileido_background", expand=True)
+    lights.prop(scene, "kileido_reflections", text="Reflections")
+    lights.separator()
+    lights.label(text="Background")
+    lights.row(align=True).prop(scene, "kileido_background", expand=True)
     mode = scene.kileido_background
     if mode == "TRANSPARENT":
-        _draw_wrapped(settings, "Renders come out without a background: save them as PNG")
+        _draw_wrapped(lights, "Renders come out without a background: save them as PNG")
     else:
-        colors = settings.column(align=True)
+        colors = lights.column(align=True)
         colors.prop(scene, "kileido_background_color", text="Color" if mode == "SOLID" else "Bottom")
         if mode == "GRADIENT":
             colors.prop(scene, "kileido_background_top", text="Top")
-    settings.separator()
-    settings.operator(KILEIDO_OT_frame_camera.bl_idname, icon="CAMERA_DATA")
-    row = settings.row(align=True)
+    box.separator()
+    box.operator(KILEIDO_OT_frame_camera.bl_idname, icon="CAMERA_DATA")
+    row = box.row(align=True)
     row.prop(scene, "kileido_show_rig", text="Show camera and lights", toggle=True, icon="LIGHT_AREA")
     reset = row.row(align=True)
     reset.enabled = bool(lighting.user_placed_lights())
@@ -1360,13 +1361,13 @@ def _scene_properties():
                    ("TRANSPARENT", "None", "No background: renders come out transparent (save them as PNG)")),
             default="SOLID",
             description="What the camera sees behind the board. Lights and reflections are not affected",
-            update=lighting.apply_settings),
+            update=lighting.apply_background),
         "kileido_background_color": FloatVectorProperty(
             name="Background color", subtype="COLOR", size=3, min=0.0, max=1.0, default=lighting.BACKGROUND_COLOR,
-            description="The colour behind the board (a gradient's bottom)", update=lighting.apply_settings),
+            description="The colour behind the board (a gradient's bottom)", update=lighting.apply_background),
         "kileido_background_top": FloatVectorProperty(
             name="Background top", subtype="COLOR", size=3, min=0.0, max=1.0, default=lighting.BACKGROUND_TOP,
-            description="A gradient's colour at the top of the frame", update=lighting.apply_settings),
+            description="A gradient's colour at the top of the frame", update=lighting.apply_background),
         "kileido_show_rig": BoolProperty(
             name="Show camera and lights", default=False,
             description="Draw the softboxes and the camera in the 3D views, to select and move them (G). A light "

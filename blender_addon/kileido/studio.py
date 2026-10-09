@@ -29,6 +29,8 @@ _updates = 0  # board updates applied since the add-on started
 _last_update_at = None  # time.monotonic() of the latest
 _holds = 0
 _render_hold = False
+_render_seen_at = 0.0  # time.monotonic() when a render handler last ran
+STALE_RENDER_S = 2.0  # a render hold with no render job and no render handler for this long is over
 _listeners = []
 _UPDATE_FRAMES = ("layer_data", "footprints", "snapshot_end")  # what counts as a board update
 
@@ -201,7 +203,16 @@ def held_updates():
 
 
 def updates_held():
-    return _holds > 0 or _render_hold
+    """Within held_updates, or under a render. A render's hold counts while Blender runs a
+    render job, or a render handler ran within STALE_RENDER_S (a blocking render from a
+    script: Python only runs in its handlers); a render that ended without render_complete
+    or render_cancel (an error after render_init) does not hold the board for good."""
+    if _holds > 0:
+        return True
+    if not _render_hold:
+        return False
+    job_running = getattr(bpy.app, "is_job_running", lambda kind: False)
+    return job_running("RENDER") or time.monotonic() - _render_seen_at < STALE_RENDER_S
 
 
 # --- Lighting --------------------------------------------------------------------------------
@@ -264,6 +275,12 @@ def _settle_check():
 def _render_started(*_args):
     global _render_hold
     _render_hold = True
+    _render_seen()
+
+
+def _render_seen(*_args):
+    global _render_seen_at
+    _render_seen_at = time.monotonic()
 
 
 def _render_ended(*_args):
@@ -271,7 +288,8 @@ def _render_ended(*_args):
     _render_hold = False
 
 
-_RENDER_HANDLERS = (("render_init", _render_started), ("render_complete", _render_ended),
+_RENDER_HANDLERS = (("render_init", _render_started), ("render_pre", _render_seen), ("render_post", _render_seen),
+                    ("render_write", _render_seen), ("render_complete", _render_ended),
                     ("render_cancel", _render_ended))
 
 

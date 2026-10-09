@@ -94,21 +94,42 @@ def _setting(name, default):
 
 
 def apply_settings(_scene=None, _context=None):
-    """Panel changed the light strength or fill colour: update in place."""
+    """Panel changed the light strength or fill colour, or the mask colour changed: update in
+    place. With the lighting claimed, only what stays KiLeidoscope's whoever owns the lights:
+    the shaded colours' gain and the cut light."""
     scene = bpy.context.scene
-    if claimed(scene):
-        return
-    if scene.world is not None and scene.world.get("kls_black_background"):
-        _studio_environment(scene.world)
-        _apply_background(scene.world)
-    collection = _lights_collection(scene)
-    if collection is not None:
-        for obj in collection.objects:
-            if obj.type == "LIGHT" and obj.get("kls_studio_side"):
-                obj.data.energy = softbox_energy(obj.get("kls_scale", 1.0))
+    if not claimed(scene):
+        if scene.world is not None and scene.world.get("kls_black_background"):
+            _studio_environment(scene.world)
+            _apply_background(scene.world)
+        collection = _lights_collection(scene)
+        if collection is not None:
+            for obj in collection.objects:
+                if obj.type == "LIGHT" and obj.get("kls_studio_side"):
+                    obj.data.energy = softbox_energy(obj.get("kls_scale", 1.0))
     # Shaded flat colours as bright as flat under the default light, whatever the mask.
     shading.set_lit_gain(LIT_GAIN / exposure())
     cut.place_light(scene)  # the cut light follows the softboxes' strength
+
+
+def apply_background(_scene=None, _context=None):
+    """Panel changed the background: the world's camera side only."""
+    scene = bpy.context.scene
+    if claimed(scene) or scene.world is None or not scene.world.get("kls_black_background"):
+        return
+    _apply_background(scene.world)
+
+
+def _set_value(socket, value):
+    """Assign a socket's value only when it changes: an assignment tags the world for
+    update, restarting a rendered viewport, whether or not the value differed."""
+    current = socket.default_value
+    if isinstance(value, tuple):
+        same = len(current) == len(value) and all(abs(a - b) < 1e-6 for a, b in zip(current, value))
+    else:
+        same = abs(current - value) < 1e-6
+    if not same:
+        socket.default_value = value
 
 
 def exposure():
@@ -159,7 +180,8 @@ def _apply_background(world):
     side of the mix. One colour is the gradient with both its colours the same."""
     scene = bpy.context.scene
     mode = _setting("kileido_background", "SOLID")
-    scene.render.film_transparent = mode == "TRANSPARENT"
+    if scene.render.film_transparent != (mode == "TRANSPARENT"):
+        scene.render.film_transparent = mode == "TRANSPARENT"
     tree = world.node_tree
     background = _camera_background(tree)
     if background is None:
@@ -176,8 +198,8 @@ def _apply_background(world):
         gradient.data_type = "RGBA"
         tree.links.new(height.outputs["Y"], gradient.inputs[0])
         tree.links.new(shading.typed_socket(gradient.outputs, "Result"), background.inputs["Color"])
-    shading.typed_socket(gradient.inputs, "A").default_value = (*bottom, 1.0)
-    shading.typed_socket(gradient.inputs, "B").default_value = (*top, 1.0)
+    _set_value(shading.typed_socket(gradient.inputs, "A"), (*bottom, 1.0))
+    _set_value(shading.typed_socket(gradient.inputs, "B"), (*top, 1.0))
 
 
 def _studio_paths():
@@ -221,8 +243,8 @@ def _studio_environment(world):
     if environment is None:
         environment = nodes.new("ShaderNodeBackground")
         environment.name = "KLS studio environment"
-    environment.inputs["Color"].default_value = (*_setting("kileido_fill_color", FILL_COLOR)[:3], 1)
-    environment.inputs["Strength"].default_value = 1.0
+    _set_value(environment.inputs["Color"], (*_setting("kileido_fill_color", FILL_COLOR)[:3], 1.0))
+    _set_value(environment.inputs["Strength"], 1.0)
     choice = _setting("kileido_reflections", DEFAULT_REFLECTIONS)
     image = _reflection_image(choice) if choice in REFLECTIONS else None
     if image is None:
@@ -244,7 +266,7 @@ def _studio_environment(world):
     previous, texture.image = texture.image, image
     if previous is not None and previous != image and previous.users == 0:
         bpy.data.images.remove(previous)  # the last choice, or another install's copy
-    nodes["KLS reflections"].inputs["Strength"].default_value = REFLECTION_STRENGTH * exposure()  # as the softboxes
+    _set_value(nodes["KLS reflections"].inputs["Strength"], REFLECTION_STRENGTH * exposure())  # as the softboxes
     links.new(environment.outputs[0], pick.inputs[1])
     links.new(pick.outputs[0], mix.inputs[1])
 
@@ -331,7 +353,9 @@ def reset_lights():
 def show_rig(_scene=None, _context=None):
     """The Studio column's Show camera and lights: the softboxes and the camera drawn in
     the 3D views as the objects they are, to select and move (G). Off, they still light
-    and render. Blender draws lights and cameras as "extras", all of them or none."""
+    and render. Blender draws lights and cameras as "extras", all of them or none, so this
+    runs when the setting changes and once when the lights are made; after that the
+    Extras overlay is the user's."""
     show = bool(_setting("kileido_show_rig", False))
     collection = _lights_collection(bpy.context.scene)
     if collection is not None:
@@ -353,6 +377,7 @@ def ensure_studio_lights():
         collection["kileido_owned"] = 1
         collection["kls_studio_lights"] = 1
         scene.collection.children.link(collection)
+        show_rig()
     for side in ("top", "bottom"):
         obj = next((item for item in collection.objects
                     if item.get("kls_studio_side") == side and item.type == "LIGHT"), None)
@@ -371,6 +396,5 @@ def ensure_studio_lights():
     for space in view3d_spaces():
         space.shading.use_scene_lights = True
         space.shading.use_scene_lights_render = True
-    show_rig()
     fit_to_boards()
     return collection

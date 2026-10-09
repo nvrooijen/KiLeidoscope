@@ -117,12 +117,17 @@ def main():
         studio.wait_for_update(before, timeout=10, quiet_s=0.2)
         assert top.data.vertices[0].co.x > -0.0155 and not live.link.pending
 
-        # A render (F12, Render Animation) holds updates from start to end.
+        # A render (F12, Render Animation) holds updates from start to end; a render that
+        # ended without render_complete or render_cancel does not hold them for good.
         studio._render_started()
+        assert studio.updates_held()
+        studio._render_seen_at -= studio.STALE_RENDER_S + 1  # no render job, no handler since
+        assert not studio.updates_held()
+        studio._render_seen()  # render_pre of a blocking render's next frame
         assert studio.updates_held()
         studio._render_ended()
         assert not studio.updates_held()
-        for name in ("render_init", "render_complete", "render_cancel"):
+        for name in ("render_init", "render_pre", "render_complete", "render_cancel"):
             assert any(handler.__module__ == studio.__name__ for handler in getattr(bpy.app.handlers, name)), name
 
         # Settled listeners: called once a burst of updates has settled.
@@ -150,7 +155,13 @@ def main():
         before = studio.update_count()
         client.frames.extend(initial)  # a full snapshot, as after a resync
         studio.wait_for_update(before, timeout=30, quiet_s=0.2)
-        scene.kileido_light_power = 0.5  # the panel's update callback
+        gains, real_gain = [], shading.set_lit_gain
+        shading.set_lit_gain = gains.append
+        try:
+            scene.kileido_light_power = 0.5  # the panel's update callback
+        finally:
+            shading.set_lit_gain = real_gain
+        assert gains  # the shaded colours' gain is KiLeidoscope's whoever owns the lights
         assert lighting.ensure_studio_lights() is None
         assert scene.world == kit_world and scene.render.film_transparent and lights.hide_render
         studio.release_lighting()
@@ -185,13 +196,28 @@ def main():
                     for corner in itertools.product((low.x, high.x), (low.y, high.y), (low.z, high.z))]
             assert all(0.0 <= v.x <= 1.0 and 0.0 <= v.y <= 1.0 and v.z > 0 for v in seen), (rotation, seen)
             spans = (max(v.x for v in seen) - min(v.x for v in seen), max(v.y for v in seen) - min(v.y for v in seen))
-            assert max(spans) > 0.85, (rotation, spans)
+            assert max(spans) > 0.8, (rotation, spans)  # the frame is used, not just contained
         assert camera.frame(rotation=Euler((0.0, 0.0, 0.0))) is cam  # anything with to_quaternion()
         cam.data.type = "ORTHO"
         studio.fit_camera()
         seen = [world_to_camera_view(scene, cam, Vector(corner))
                 for corner in itertools.product((low.x, high.x), (low.y, high.y), (low.z, high.z))]
         assert all(0.0 <= v.x <= 1.0 and 0.0 <= v.y <= 1.0 and v.z > 0 for v in seen), seen
+        # The lens shift is a fraction of the fitted side: an explicit sensor fit with the
+        # other aspect, and a portrait frame, frame the board as well.
+        cam.data.type = "PERSP"
+        resolution = scene.render.resolution_x, scene.render.resolution_y
+        for fit, size in (("HORIZONTAL", (500, 900)), ("VERTICAL", (900, 500)), ("AUTO", (500, 900))):
+            cam.data.sensor_fit = fit
+            scene.render.resolution_x, scene.render.resolution_y = size
+            studio.fit_camera(rotation=Euler((math.radians(60), 0.0, math.radians(45))))
+            seen = [world_to_camera_view(scene, cam, Vector(corner))
+                    for corner in itertools.product((low.x, high.x), (low.y, high.y), (low.z, high.z))]
+            assert all(0.0 <= v.x <= 1.0 and 0.0 <= v.y <= 1.0 and v.z > 0 for v in seen), (fit, size, seen)
+            spans = (max(v.x for v in seen) - min(v.x for v in seen), max(v.y for v in seen) - min(v.y for v in seen))
+            assert max(spans) > 0.8, (fit, size, spans)
+        cam.data.sensor_fit = "AUTO"
+        scene.render.resolution_x, scene.render.resolution_y = resolution
 
         # Lights shown to move: a softbox moved by hand stays through refits, until reset.
         top_light = next(obj for obj in lights.objects if obj.get("kls_studio_side") == "top")

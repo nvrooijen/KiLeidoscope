@@ -74,25 +74,25 @@ def frame(rotation=None, parts=True, margin=MARGIN, camera=None):
 
 
 def _half_tangents(data, aspect):
-    """tan of the half angles of view across and down the frame. The sensor's width spans
-    the frame's larger side, unless the camera's sensor fit says which."""
+    """tan of the half angles of view across and down the frame, and of the side the
+    sensor is fitted to: its width spans the frame's larger side, unless the camera's
+    sensor fit says which. Blender's lens shift is a fraction of that side's width."""
     if data.sensor_fit == "VERTICAL":
         tan_y = data.sensor_height / (2 * data.lens)
-        return tan_y * aspect, tan_y
+        return tan_y * aspect, tan_y, tan_y
     if data.sensor_fit == "HORIZONTAL" or aspect >= 1:
         tan_x = data.sensor_width / (2 * data.lens)
-        return tan_x, tan_x / aspect
+        return tan_x, tan_x / aspect, tan_x
     tan_y = data.sensor_width / (2 * data.lens)
-    return tan_y * aspect, tan_y
+    return tan_y * aspect, tan_y, tan_y
 
 
-def _perspective_fit(corners, tan_x, tan_y, margin):
+def _perspective_fit(corners, tan_x, tan_y, tan_fit, margin):
     """How far back along its axis the camera stands from the bounds' centre so every
     corner is inside the frame with `margin`, and the lens shift that centres the corners
-    in it (Blender's shift: a fraction of the frame's larger side). Two passes: the shift
-    that centres the corners depends on the distance, and the distance on the shift."""
+    in it (a fraction of the fitted side's width, `tan_fit`). Two passes: the shift that
+    centres the corners depends on the distance, and the distance on the shift."""
     mid_x = mid_y = 0.0
-    larger = max(tan_x, tan_y)
     for _ in range(2):
         distance = 0.0
         for p in corners:
@@ -105,8 +105,8 @@ def _perspective_fit(corners, tan_x, tan_y, margin):
         xs = [p.x / ((distance - p.z) * tan_x) for p in corners]
         ys = [p.y / ((distance - p.z) * tan_y) for p in corners]
         mid_x, mid_y = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-    # mid_x is in half-widths across; a shift of 1 is the larger side's whole width.
-    return distance, mid_x * tan_x / (2 * larger), mid_y * tan_y / (2 * larger)
+    # mid_x is in half-widths across; a shift of 1 is the fitted side's whole width.
+    return distance, mid_x * tan_x / (2 * tan_fit), mid_y * tan_y / (2 * tan_fit)
 
 
 def _camera(scene):
