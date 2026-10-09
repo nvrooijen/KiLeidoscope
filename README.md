@@ -145,7 +145,7 @@ Components without a model file show an envelope of KiCad's footprint bounds, th
 
 ### View-only boards
 
-**Export…** saves the live board, as it looks now, to a `.blend` package. **Import…** adds such a package beside the others in any KiLeidoscope session, with or without KiCad. View-only boards can be moved, rotated and scaled (the select button next to the board chooser picks one), shown per layer, or all boards together. **Collision check** marks where boards overlap (components and board solids) with red boxes. Future version will enable multi-board editing on KiCad for linux. 
+**Export…** saves the live board, as it looks now, to a `.blend` package. **Import…** adds such a package beside the others in any KiLeidoscope session, with or without KiCad. Imported boards join the live one in a list: click a board for its layers below (or **All boards**), and the select arrow in front of a view-only board picks it to move, rotate or scale. **Collision check** marks where boards overlap (components and board solids) with red boxes. Future version will enable multi-board editing on KiCad for linux. 
 
 ## Known limitations
 
