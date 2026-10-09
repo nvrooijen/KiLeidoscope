@@ -506,8 +506,9 @@ def _draw_studio(layout, scene):
         box.label(text=f"Lighting: {owner}", icon="LIGHT")
     lights = box.column()
     lights.enabled = not owner  # the camera and the overlay below stay KiLeidoscope's whoever owns the lights
+    lights.label(text="Light strength")  # above the row: at the column's width the row's own label is dropped
     row = lights.row(align=True)
-    row.prop(scene, "kileido_light_power", text="Light")
+    row.prop(scene, "kileido_light_power", text="")
     row.prop(scene, "kileido_fill_color", text="")
     lights.prop(scene, "kileido_reflections", text="Reflections")
     lights.separator()
