@@ -99,7 +99,8 @@ def _on_board_change(job, memory):
     cli = kicad_cli.executable(job.export)
     project = kicad_cli.project_dir(job.export, job.source)
     variables = kicad_cli.path_variables(_MODEL_PATH.findall(text), job.export.get("kicad_settings", ""))
-    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables)
+    variant = kicad_cli.variant_arguments(job.export)  # a variant's export is cached on its own
+    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables, *variant)
     if key == memory.get("key"):
         return
     if _export(job, cli, key, data, project):
@@ -124,7 +125,7 @@ def _export(job, cli, key, data, project):
         output = directory / "models.glb"
         result = kicad_cli.run(
             [cli, "pcb", "export", "glb", "--no-board-body", *kicad_cli.defines(project),
-             "--output", output, board_file], 120)
+             *kicad_cli.variant_arguments(job.export), "--output", output, board_file], 120)
         messages = (result.stdout + result.stderr).strip()
         problems = kicad_cli.model_problems(messages)
         if result.returncode != 0 or problems:
@@ -134,8 +135,9 @@ def _export(job, cli, key, data, project):
         missing = len(problems)
         positions_file = directory / "positions.csv"
         positions_result = kicad_cli.run(
-            [cli, "pcb", "export", "pos", "--format", "csv", "--units", "mm",
-             "--side", "both", "--output", positions_file, board_file], 30)  # takes no --define-var
+            [cli, "pcb", "export", "pos", "--format", "csv", "--units", "mm", "--side", "both",
+             *kicad_cli.variant_arguments(job.export), "--output", positions_file, board_file],
+            30)  # takes no --define-var
         if positions_result.returncode != 0 or not positions_file.is_file():
             raise RuntimeError("KiCad could not export footprint positions: " +
                                (positions_result.stderr or positions_result.stdout).strip()[-300:])

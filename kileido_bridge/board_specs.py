@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from .board_text import via_protection
+from .board_text import block as _block, via_protection
 
 _RGB = re.compile(r"rgba?\(([^)]+)\)")
 _LAYER = re.compile(r'\(layer\s+"([^"]+)"')
@@ -81,30 +81,6 @@ def set_kicad_version(version: str | None) -> None:
     global _kicad_version
     if version:
         _kicad_version = version
-
-
-def _block(text: str, start: int) -> str:
-    depth = 0
-    quoted = False
-    escaped = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if quoted:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                quoted = False
-        elif char == '"':
-            quoted = True
-        elif char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0:
-                return text[start:index + 1]
-    raise ValueError("Unclosed KiCad board section")
 
 
 def _rgba(value: str | None):

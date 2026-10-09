@@ -176,6 +176,7 @@ class BoardSnapshot:
     read_timings_ms: dict[str, float]
     graphics: tuple[CopperGraphic, ...] = ()
     drawings: tuple[Drawing, ...] = ()
+    variant: str = ""  # KiCad's selected assembly variant; "" is the default
 
 
 def to_jsonable(value: Any) -> Any:
@@ -227,4 +228,5 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
               for g in data.get("graphics", ())),  # dumps from before copper graphics have none
         tuple(Drawing(d["id"], d["layer"], d["kind"], tuple(point(p) for p in d["points"]), d["text"])
               for d in data.get("drawings", ())),  # dumps from before flex mode have none
+        variant=data.get("variant", ""),  # dumps from before variants have none
     )

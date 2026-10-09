@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from . import flex_checks, hatch, protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
-from .board_text import copper_items
+from .board_text import copper_items, variant_dnp, with_variant_dnp
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
                            follow_new_kicad, kicad_tools, saved_board_path, select_in_kicad, selected_ids)
 from .live_copy import LiveBoardCopy
@@ -71,6 +71,7 @@ class BridgeRuntime:
         self.copy = live_copy or LiveBoardCopy()
         self.copy_enabled = True
         self.copy_text = ""  # the board text last written to the copy (before its hatches are baked in)
+        self.variant_dnp = {}  # each assembly variant's DNP overrides by footprint id, from the board text
         self.hatcher = hatch.Hatcher()  # KiCad's own hatches of hatched shapes, worked out in the background
         self.hatch_version = 0  # the hatcher's result the snapshot and copy carry
         self.hatch_error = ""  # the hatcher's error as the status frame last said it
@@ -167,17 +168,24 @@ class BridgeRuntime:
             changes = _copper_changes(self.snapshot, snapshot.tracks, snapshot.arcs, snapshot.vias)
             result = replace(result, dirty=result.dirty | changes)
         self.sent_from_text = False
+        variant_changed = not board_changed and snapshot.variant != self.snapshot.variant
         full_snapshot = board_changed or ("", "stackup") in result.dirty
+        if full_snapshot or variant_changed:
+            self._refresh_copy(force=True)  # the variant's DNP flags come from the board text
         if full_snapshot:
-            self._refresh_copy(force=True)
             source = self._appearance_source()
             self.appearance_sig = appearance_signature(source)  # stamp before reading
             self.appearance = read_appearance(source)
             self.flex = self._flex_report(snapshot)
+        edited = bool(result.dirty)  # the variant overlay below changes no board text
+        result = self._with_variant(result)
+        snapshot = result.snapshot
         self.snapshot = snapshot
         frames = self._geometry_frames(result, full_snapshot)
         if not full_snapshot:
-            if result.dirty:
+            if variant_changed:
+                frames.append(protocol.export_message(self._export(), self.revision))
+            if edited:
                 self.copy.changed(self.clock())
             self._refresh_copy()
             appearance = self._appearance_frames()
@@ -199,6 +207,7 @@ class BridgeRuntime:
         self.hatcher.kicad_cli = self.tools.get("kicad_cli", "")
         self.copy.target(snapshot.board_name, self.board_path)
         self.copy_enabled = True
+        self.variant_dnp = {}  # the new board's come with its text
 
     def _geometry_frames(self, result: PollResult, full_snapshot: bool) -> list[bytes]:
         """A complete snapshot after a board or stackup change, else one frame per dirty group."""
@@ -355,6 +364,7 @@ class BridgeRuntime:
         """The copy as KiCad gives it, with the hatches of its hatched shapes baked in
         (kicad-cli plots them as their outlines alone; `hatch`)."""
         self.copy_text = text
+        self.variant_dnp = variant_dnp(text)
         self.hatcher.want(text)
         self.copy.write(hatch.bake(text, self.hatcher.shapes), now, self.board_path)
 
@@ -375,6 +385,19 @@ class BridgeRuntime:
                 self.copy.write(hatch.bake(self.copy_text, shapes), self.clock(), self.board_path)
         return replace(result, snapshot=snapshot, dirty=dirty)
 
+    def _with_variant(self, result: PollResult) -> PollResult:
+        """The reader's footprints with the selected variant's DNP flags (KiCad's API
+        gives the default variant's). A change marks the footprints dirty: the "DNP
+        components" eye in Blender follows the variant."""
+        snapshot = result.snapshot
+        footprints = with_variant_dnp(snapshot.footprints, snapshot.variant, self.variant_dnp)
+        dirty = result.dirty
+        if footprints != snapshot.footprints:
+            snapshot = replace(snapshot, footprints=footprints)
+        if self.snapshot is not None and footprints != self.snapshot.footprints:
+            dirty = dirty | {("", "footprints")}
+        return replace(result, snapshot=snapshot, dirty=dirty)
+
     def _appearance_source(self) -> str:
         if self.copy_enabled and self.copy.path is not None and self.copy.path.is_file():
             return str(self.copy.path)
@@ -386,7 +409,8 @@ class BridgeRuntime:
                 "live": live,
                 "project_dir": self.copy.project_dir if live else "",
                 "kicad_cli": self.tools.get("kicad_cli", ""),
-                "kicad_settings": str(settings_dir())}  # its kicad_common.json: Configure Paths
+                "kicad_settings": str(settings_dir()),  # its kicad_common.json: Configure Paths
+                "variant": self.snapshot.variant if self.snapshot is not None else ""}
 
     # --- Blender requests and the main loop ---------------------------------------------
 

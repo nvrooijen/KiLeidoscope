@@ -852,7 +852,8 @@ class _Boards:
             hint = line.row(align=True)
             hint.alignment = "RIGHT"
             hint.active = False
-            hint.label(text="live" if live.connected() else "dump")
+            variant = (board.export or {}).get("variant", "")
+            hint.label(text=(variant or "live") if live.connected() else "dump")
         for root in packages.roots():
             index = root[packages.ROOT_TAG]
             collection = packages.collection_of(index)

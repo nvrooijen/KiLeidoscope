@@ -55,6 +55,13 @@ def project_dir(export, source):
     return (export or {}).get("project_dir") or str(Path(source).parent)
 
 
+def variant_arguments(export):
+    """`--variant NAME` for the assembly variant selected in KiCad (the bridge sends
+    it); the default variant needs no flag, and older kicad-cli has none."""
+    variant = (export or {}).get("variant", "")
+    return ["--variant", variant] if variant else []
+
+
 def defines(project):
     """kicad-cli resolves ${KIPRJMOD} to the folder of the file it reads, a scratch
     copy (`board_copy`), so point it back at the real project (measured: same models

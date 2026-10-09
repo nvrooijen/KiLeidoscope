@@ -221,6 +221,26 @@ def kicad_tools(board) -> dict:
     return tools
 
 
+def active_variant(board) -> str:
+    """The assembly variant selected in KiCad's PCB editor, "" for the default.
+
+    KiCad keeps the selection in memory only (no file or API field holds it), but
+    `${VARIANT}` expands to its name (KiCad 10; measured with kipy 0.7.1). KiCad 9
+    has no such variable and returns the text unexpanded: the default variant.
+    """
+    expand = getattr(board, "expand_text_variables", None)
+    if expand is None:
+        return ""
+    try:
+        with _busy_aware():
+            expanded = expand("${VARIANT}")
+    except KiCadBusy:
+        raise
+    except Exception:  # a KiCad without the call: the default variant, not a lost link
+        return ""
+    return "" if expanded in ("${VARIANT}", None) else str(expanded).strip()
+
+
 def _point(value) -> model.Point:
     return int(value.x), int(value.y)
 
@@ -925,6 +945,7 @@ class BoardReader:
         started = time.perf_counter_ns()
         self._timings = timings = {}
         slow = full or self._slow_due()
+        variant = self._call("expand_text_variables", active_variant, self.board)  # cheap; every poll
         raw = self._read(FAST_SOURCES if not slow else {**FAST_SOURCES, **SLOW_SOURCES})
         digests = {source: self._digests(raw[source]) for source in ("tracks", "vias")}
         hashes: dict[object, bytes] = {key: combine(group)
@@ -950,7 +971,7 @@ class BoardReader:
             self.board.name, dict(parts["display"]), parts["tracks"], parts["arcs"], parts["vias"],
             parts["pads"], parts["footprints"], parts["zones"], parts["outline"], parts["stackup"],
             tuple(w for group in warnings.values() for w in group), timings,
-            graphics=parts["graphics"], drawings=parts["drawings"],
+            graphics=parts["graphics"], drawings=parts["drawings"], variant=variant,
         )
         return PollResult(snapshot, frozenset(dirty), slow, len(self._outdated_pads))
 
