@@ -17,8 +17,8 @@ from pathlib import Path
 import bpy
 import bpy.utils.previews
 from bpy.app.handlers import persistent
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty,
-                       StringProperty)
+from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty,
+                       IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, holes, ims,
@@ -783,10 +783,111 @@ class KILEIDO_OT_view_only_row(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_board_row(bpy.types.PropertyGroup):
+    """A row of the Boards list: "ALL", "LIVE" or a view-only board's index, and its label."""
+    value: StringProperty()
+    label: StringProperty()
+
+
+def _board_rows_wanted():
+    """(value, label) per row of the Boards list, as the boards are now."""
+    rows = [("ALL", "All boards"), ("LIVE", board.board_name or "Live board")]
+    rows.extend((str(root[packages.ROOT_TAG]), root["kls_board_name"]) for root in packages.roots())
+    return rows
+
+
+_rows_sync_pending = False
+
+
+def _sync_board_rows():
+    """Rebuild the Boards list's rows (a timer: a panel cannot write scene properties while
+    drawing) and point its highlight at the chosen board; redraw the 3D Views."""
+    global _rows_sync_pending
+    _rows_sync_pending = False
+    scene = bpy.context.scene
+    wanted = _board_rows_wanted()
+    rows = scene.kileido_board_rows
+    if [(row.value, row.label) for row in rows] != wanted:
+        rows.clear()
+        for value, label in wanted:
+            row = rows.add()
+            row.value, row.label = value, label
+    _layers_board_changed(scene, None)
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+    return None
+
+
+def _board_row_chosen(scene, _context):
+    """The Boards list's highlight moved (a click on a row): show that board's layers."""
+    rows = scene.kileido_board_rows
+    if 0 <= scene.kileido_board_row < len(rows):
+        value = rows[scene.kileido_board_row].value
+        if scene.kileido_layers_board != value:
+            scene.kileido_layers_board = value
+
+
+def _layers_board_changed(scene, _context):
+    """The chosen board changed (a click, a test, a removed board): move the highlight."""
+    value = getattr(scene, "kileido_layers_board", "LIVE")
+    for index, row in enumerate(scene.kileido_board_rows):
+        if row.value == value and scene.kileido_board_row != index:
+            scene.kileido_board_row = index
+
+
+class KILEIDO_UL_boards(bpy.types.UIList):
+    """The Boards list: a row per board in columns (select arrow, eye, name, hint, remove),
+    "All boards" first. A click on a row shows that board's layers below."""
+    bl_idname = "KILEIDO_UL_boards"
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        line = layout.row(align=True)
+        if item.value == "ALL":
+            line.label(text="", icon="BLANK1")
+            line.label(text="", icon="BLANK1")
+            line.label(text=item.label, icon="OUTLINER_COLLECTION")
+            return
+        if item.value == "LIVE":
+            arrow = line.row(align=True)
+            arrow.enabled = False  # the live board stays where KiCad puts it
+            arrow.operator(KILEIDO_OT_select_board.bl_idname, text="", emboss=False, icon="RESTRICT_SELECT_ON")
+            line.label(text="", icon="BLANK1")
+            line.label(text=item.label, icon="LINKED" if live.connected() else "FILE")
+            hint = line.row(align=True)
+            hint.alignment = "RIGHT"
+            hint.active = False
+            hint.label(text="live" if live.connected() else "dump")
+            return
+        board_index = int(item.value)
+        collection = packages.collection_of(board_index)
+        shown = collection is not None and not collection.hide_viewport
+        arrow = line.row(align=True)
+        arrow.enabled = shown  # select needs its objects visible
+        arrow.operator(KILEIDO_OT_select_board.bl_idname, text="", emboss=False,
+                       icon="RESTRICT_SELECT_OFF").index = board_index
+        toggle = line.operator(KILEIDO_OT_view_only_board.bl_idname, text="", emboss=False,
+                               icon="HIDE_OFF" if shown else "HIDE_ON")
+        toggle.index, toggle.action = board_index, "TOGGLE"
+        name = line.row(align=True)
+        name.active = shown
+        name.label(text=item.label)
+        hint = line.row(align=True)
+        hint.alignment = "RIGHT"
+        hint.active = False
+        hint.label(text="view-only")
+        drop = line.operator(KILEIDO_OT_view_only_board.bl_idname, text="", emboss=False, icon="X")
+        drop.index, drop.action = board_index, "REMOVE"
+
+    def draw_filter(self, context, layout):
+        pass  # a few rows: nothing to filter or sort
+
+
 class KILEIDO_OT_select_board(bpy.types.Operator):
     bl_idname = "kileido.select_board"
     bl_label = "Select board"
-    bl_description = ("Select the chosen view-only board to move (G), rotate (R) or scale (S) it. "
+    bl_description = ("Select this view-only board to move (G), rotate (R) or scale (S) it. "
                       "The live board stays where KiCad puts it")
     bl_options = {"REGISTER", "UNDO"}
 
@@ -830,12 +931,6 @@ class _Boards:
         index = _layers_board(scene)
         if packages.roots():
             self.layout.separator()
-            row = self.layout.row(align=True)
-            row.prop(scene, "kileido_layers_board", text="")
-            pick = row.row(align=True)
-            pick.enabled = isinstance(index, int)  # the live board stays where KiCad puts it
-            button = pick.operator(KILEIDO_OT_select_board.bl_idname, text="", icon="RESTRICT_SELECT_OFF")
-            button.index = index if isinstance(index, int) else 0
         if index == "ALL":
             self._draw_all_boards(scene)
         elif index is None:
@@ -844,34 +939,26 @@ class _Boards:
             self._draw_view_only(index)
 
     def _draw_boards(self, context):
+        """The live board alone: its name. With view-only boards: the Boards list
+        (KILEIDO_UL_boards), its rows refreshed by a timer when the boards changed."""
+        global _rows_sync_pending
         layout = self.layout
-        column = layout.column(align=True)
-        if board.collection is not None:
-            line = column.row(align=True)
-            line.label(text=board.board_name, icon="LINKED" if live.connected() else "FILE")
-            hint = line.row(align=True)
-            hint.alignment = "RIGHT"
-            hint.active = False
-            hint.label(text="live" if live.connected() else "dump")
-        for root in packages.roots():
-            index = root[packages.ROOT_TAG]
-            collection = packages.collection_of(index)
-            if collection is None:
-                continue
-            line = column.row(align=True)
-            shown = not collection.hide_viewport
-            toggle = line.operator(KILEIDO_OT_view_only_board.bl_idname, text="", emboss=False,
-                                   icon="HIDE_OFF" if shown else "HIDE_ON")
-            toggle.index, toggle.action = index, "TOGGLE"
-            name = line.row(align=True)
-            name.active = shown
-            name.label(text=root["kls_board_name"])
-            hint = line.row(align=True)
-            hint.alignment = "RIGHT"
-            hint.active = False
-            hint.label(text="view-only")
-            drop = line.operator(KILEIDO_OT_view_only_board.bl_idname, text="", emboss=False, icon="X")
-            drop.index, drop.action = index, "REMOVE"
+        scene = context.scene
+        if not packages.roots():
+            if board.collection is not None:
+                line = layout.row(align=True)
+                line.label(text=board.board_name, icon="LINKED" if live.connected() else "FILE")
+                hint = line.row(align=True)
+                hint.alignment = "RIGHT"
+                hint.active = False
+                hint.label(text="live" if live.connected() else "dump")
+        else:
+            rows = scene.kileido_board_rows
+            if [(row.value, row.label) for row in rows] != _board_rows_wanted() and not _rows_sync_pending:
+                _rows_sync_pending = True
+                bpy.app.timers.register(_sync_board_rows)
+            layout.template_list(KILEIDO_UL_boards.bl_idname, "", scene, "kileido_board_rows",
+                                 scene, "kileido_board_row", rows=len(rows), maxrows=len(rows))
         if packages.roots():
             row = layout.row(align=True)
             row.prop(context.scene, "kileido_collisions", text="Collision check")
@@ -1057,7 +1144,8 @@ def _swatch(kind, color):
 
 
 CLASSES = (KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
-           KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_OT_resync,
+           KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
+           KILEIDO_UL_boards, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
            KILEIDO_OT_flex_group, *columns.CLASSES, KILEIDO_PT_panel)
@@ -1157,7 +1245,11 @@ def _scene_properties():
     properties = {
         "kileido_layers_board": EnumProperty(
             name="Board", description="Whose layers the list below shows and switches",
-            items=_layers_board_items),
+            items=_layers_board_items, update=_layers_board_changed),
+        "kileido_board_rows": CollectionProperty(type=KILEIDO_board_row),
+        "kileido_board_row": IntProperty(
+            name="Board", description="The highlighted row of the Boards list: whose layers show below",
+            update=_board_row_chosen),
         "kileido_collisions": BoolProperty(
             name="Collision check", default=True,
             description="Mark where the live board and the view-only boards overlap, with a red box",
