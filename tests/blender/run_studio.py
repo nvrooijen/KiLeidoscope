@@ -1,20 +1,24 @@
 """Headless Blender check of the studio hook (kileido.studio): board size, updates and
 settling, holding updates under a render, and lighting claimed by another add-on."""
 
+import itertools
 import json
+import math
 import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 
 import bpy
+from bpy_extras.object_utils import world_to_camera_view
+from mathutils import Euler, Vector
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 
 import kileido  # noqa: E402
-from kileido import lighting, live, state, studio  # noqa: E402
+from kileido import camera, lighting, live, shading, state, studio  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402
 from kileido_bridge.protocol import FrameDecoder, messages_for, snapshot_frames  # noqa: E402
 
@@ -23,6 +27,10 @@ BOARD = "KiLeidoscope: synthetic_rf_geometry.kicad_pcb"
 
 def decoded(frames):
     return FrameDecoder().feed(b"".join(frames))
+
+
+def near(color, expected):
+    return all(abs(a - b) < 1e-6 for a, b in zip(color, expected))
 
 
 def main():
@@ -81,7 +89,8 @@ def main():
 
         # The parts selected in KiCad: their models or placeholder boxes.
         assert studio.selected_parts() == []
-        box = bpy.data.collections[BOARD].all_objects[f"KLS footprint placeholder {first.id}"]
+        box = next(obj for obj in bpy.data.collections[BOARD].all_objects
+                   if obj.get("kls_footprint_placeholder") == 1 and obj.get("kls_footprint_id") == first.id)
         state.board.highlight_components = {"footprints": {first.id}, "pads": set()}
         assert studio.selected_parts() == [box]
         state.board.highlight_components = {"footprints": set(), "pads": set()}
@@ -148,6 +157,54 @@ def main():
         assert studio.lighting_owner() == "" and not lighting.claimed()
         assert scene.world.get("kls_black_background") and not lights.hide_render
         assert not scene.render.film_transparent
+
+        # Studio column: the background the camera sees (one colour, a gradient, none).
+        tree = scene.world.node_tree
+        scene.kileido_background = "GRADIENT"
+        scene.kileido_background_color = (0.1, 0.2, 0.3)
+        scene.kileido_background_top = (0.4, 0.5, 0.6)
+        gradient = tree.nodes[lighting.GRADIENT]
+        assert tree.nodes[lighting.CAMERA_BACKGROUND].inputs["Color"].is_linked
+        assert near(shading.typed_socket(gradient.inputs, "A").default_value, (0.1, 0.2, 0.3))
+        assert near(shading.typed_socket(gradient.inputs, "B").default_value, (0.4, 0.5, 0.6))
+        assert not scene.render.film_transparent
+        scene.kileido_background = "TRANSPARENT"
+        assert scene.render.film_transparent
+        scene.kileido_background = "SOLID"
+        assert not scene.render.film_transparent
+        assert near(shading.typed_socket(gradient.inputs, "B").default_value, (0.1, 0.2, 0.3))  # one colour
+
+        # Frame camera: every corner of the board, parts included, inside the frame from
+        # any direction, the frame used, the camera the scene's.
+        for rotation in (None, Euler((math.radians(90), 0.0, 0.0)).to_quaternion(),
+                         Euler((0.0, 0.0, math.radians(30))).to_quaternion()):
+            cam = studio.fit_camera(rotation=rotation)
+            assert cam is not None and scene.camera == cam and cam.name == "KLS Camera"
+            low, high = studio.board_bounds()
+            seen = [world_to_camera_view(scene, cam, Vector(corner))
+                    for corner in itertools.product((low.x, high.x), (low.y, high.y), (low.z, high.z))]
+            assert all(0.0 <= v.x <= 1.0 and 0.0 <= v.y <= 1.0 and v.z > 0 for v in seen), (rotation, seen)
+            spans = (max(v.x for v in seen) - min(v.x for v in seen), max(v.y for v in seen) - min(v.y for v in seen))
+            assert max(spans) > 0.85, (rotation, spans)
+        assert camera.frame(rotation=Euler((0.0, 0.0, 0.0))) is cam  # anything with to_quaternion()
+        cam.data.type = "ORTHO"
+        studio.fit_camera()
+        seen = [world_to_camera_view(scene, cam, Vector(corner))
+                for corner in itertools.product((low.x, high.x), (low.y, high.y), (low.z, high.z))]
+        assert all(0.0 <= v.x <= 1.0 and 0.0 <= v.y <= 1.0 and v.z > 0 for v in seen), seen
+
+        # Lights shown to move: a softbox moved by hand stays through refits, until reset.
+        top_light = next(obj for obj in lights.objects if obj.get("kls_studio_side") == "top")
+        fitted = top_light.location.copy()
+        scene.kileido_show_rig = True
+        assert not lights.hide_select and lighting.user_placed_lights() == []
+        top_light.location.x += 0.05
+        lighting.fit_to_boards()
+        assert abs(top_light.location.x - fitted.x - 0.05) < 1e-9 and lighting.user_placed_lights() == [top_light]
+        lighting.reset_lights()
+        assert (top_light.location - fitted).length < 1e-9 and lighting.user_placed_lights() == []
+        scene.kileido_show_rig = False
+        assert lights.hide_select
     finally:
         live.disconnect()
         live.SocketClient = real_socket_client

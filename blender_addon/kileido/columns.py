@@ -24,7 +24,8 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 
 # (key, label, colour): the order they hang from the top.
-TABS = (("IMS", "IMS", (0.38, 0.56, 0.78)),  # aluminium blue
+TABS = (("STUDIO", "Studio", (0.36, 0.60, 0.56)),  # a teal, neither board colour
+        ("IMS", "IMS", (0.38, 0.56, 0.78)),  # aluminium blue
         ("FLEX", "Flex", (0.82, 0.52, 0.14)))  # polyimide amber
 NONE = "NONE"
 GREY = (0.42, 0.42, 0.42)  # a tab whose mode this board cannot have

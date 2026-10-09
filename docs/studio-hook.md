@@ -81,10 +81,24 @@ with studio.held_updates():
 `is_settled()` is `False` while held frames wait, so don't wait for settling
 inside the block.
 
+## Camera
+
+| Call | Does |
+|---|---|
+| `fit_camera(camera=None, rotation=None, parts=True, margin=1.08)` | puts the camera where every board fills its frame, and makes it the scene camera |
+
+Without `camera` it is KiLeidoscope's own, "KLS Camera", made when missing.
+`rotation` is the direction to look from, a Quaternion (or anything with
+`to_quaternion()`); without it, the direction the 3D view looks from. The
+camera's lens, sensor and type (perspective or orthographic) are kept; its lens
+shift centres the board. The board takes `1/margin` of the frame's limiting
+side. Returns the camera, or `None` before any board. It is the same framing
+the Studio column's Frame camera does.
+
 ## Lighting
 
-KiLeidoscope sets up two softboxes and a black world of its own, and refits
-them after every board update. An add-on with its own lights takes the scene
+KiLeidoscope sets up two softboxes and a world of its own (the Studio column's
+background, seen by camera rays only), and refits them after every board update. An add-on with its own lights takes the scene
 over:
 
 | Call | Does |

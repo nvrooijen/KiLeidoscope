@@ -97,6 +97,20 @@ def selected_parts():
     return [obj for fp_id in sorted(chosen) for obj in models.get(fp_id) or boxes.get(fp_id) or ()]
 
 
+# --- Camera ------------------------------------------------------------------------------------
+
+def fit_camera(camera=None, rotation=None, parts=True, margin=None):
+    """Put `camera` (default: KiLeidoscope's own, "KLS Camera", made when missing) where
+    every board fills its frame, with `margin` around (1.08: the board takes 1/1.08 of the
+    frame's limiting side), looking along `rotation` (a Quaternion, or anything with
+    `to_quaternion()`; default: the direction the 3D view looks from), and make it the
+    scene camera. The camera's lens, sensor and type (perspective or orthographic) are
+    kept; its lens shift centres the board. Returns the camera, or None before any board."""
+    from . import camera as framing
+    return framing.frame(rotation=rotation, parts=parts, margin=framing.MARGIN if margin is None else margin,
+                         camera=camera)
+
+
 # --- Updates from KiCad ------------------------------------------------------------------------
 
 def update_count():
