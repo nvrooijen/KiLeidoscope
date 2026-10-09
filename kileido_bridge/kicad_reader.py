@@ -400,10 +400,15 @@ def _copper_graphic(shape) -> model.CopperGraphic | None:
     return model.CopperGraphic(shape.id.value, net, canonical_layer(shape.layer), polygons)
 
 
+def _with_footprint_shapes(raw_shapes, raw_footprints) -> list:
+    """Board shapes plus every footprint's shapes (already placed on the board)."""
+    return list(raw_shapes) + [item for footprint in raw_footprints
+                               for item in getattr(footprint.definition, "shapes", ())]
+
+
 def _copper_graphics(raw_shapes, raw_footprints) -> tuple[model.CopperGraphic, ...]:
     """Copper drawn as graphics: board shapes and footprint shapes on copper layers."""
-    shapes = list(raw_shapes) + [item for footprint in raw_footprints
-                                 for item in getattr(footprint.definition, "shapes", ())]
+    shapes = _with_footprint_shapes(raw_shapes, raw_footprints)
     graphics = (_copper_graphic(shape) for shape in shapes if canonical_layer(shape.layer).endswith(".Cu"))
     return tuple(graphic for graphic in graphics if graphic is not None)
 
@@ -977,11 +982,15 @@ class BoardReader:
                                                   digests["zones"], _convert_zone)
             self._parts["zones"] = tuple(fill for fills in records for fill in fills)
             dirty |= {(fill.layer, "zones") for fills in added + removed for fill in fills}
-        if "shapes" in changed:
-            self._warnings["outline"] = []
-            self._parts["outline"] = self._timed("convert", _outline, raw["shapes"], self._warnings["outline"])
-            dirty.add(("", "outline"))
         if changed & {"shapes", "footprints"}:
+            # KiCad's outline includes Edge.Cuts drawn inside footprints (multi-board alignment)
+            warnings: list[str] = []
+            outline = self._timed("convert", _outline, _with_footprint_shapes(raw["shapes"], raw["footprints"]),
+                                  warnings)
+            self._warnings["outline"] = warnings
+            if outline != self._parts["outline"]:
+                self._parts["outline"] = outline
+                dirty.add(("", "outline"))
             old = set(self._parts["graphics"])
             self._parts["graphics"] = self._timed("convert", _copper_graphics, raw["shapes"], raw["footprints"])
             dirty |= {(graphic.layer, "graphics") for graphic in old ^ set(self._parts["graphics"])}
