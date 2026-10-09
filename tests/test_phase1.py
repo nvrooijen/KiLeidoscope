@@ -381,6 +381,35 @@ def test_outline_warnings_name_the_problem_and_where():
     assert len(warnings) == 1 and "Edge.Cuts outlines cross each other near (10.00, " in warnings[0]
 
 
+def test_outline_drawn_inside_a_footprint():
+    """Edge.Cuts kept in a footprint (multi-board alignment) is part of the outline, as in
+    KiCad; moving that footprint moves the outline, moving another part does not resend it."""
+    square = [(0, 0), (10_000_000, 0), (10_000_000, 10_000_000), (0, 10_000_000)]
+    frame = footprint("frame")
+    frame.definition.shapes = _edges(*square)
+    part = footprint("part")
+    board = FakeBoard()
+    board.footprints = [frame, part]
+    reader = BoardReader(board)
+    first = reader.poll(full=True)
+    assert [w for w in first.snapshot.warnings if w.startswith(OUTLINE_PROBLEM)] == []
+    assert set(first.snapshot.outline.polygons[0][0]) == set(square)
+
+    part.position = point(2_000_000, 0)
+    assert ("", "outline") not in reader.poll(full=True).dirty
+
+    frame.definition.shapes = _edges(*[(x + 1_000_000, y) for x, y in square])
+    moved = reader.poll(full=True)
+    assert ("", "outline") in moved.dirty
+    assert min(x for x, _ in moved.snapshot.outline.polygons[0][0]) == 1_000_000
+
+    # Half the outline on the board, half in the footprint: one closed ring.
+    sides = _edges(*square)
+    board.shapes, frame.definition.shapes = sides[:2], sides[2:]
+    assert len(read_snapshot(board).outline.polygons) == 1
+    assert _outline_warnings(board) == []
+
+
 def _copper_shape(layer=BoardLayer.BL_F_Cu, width=0, filled=False, shape_id="g", **geometry):
     return NS(id=item_id(shape_id), layer=layer, net=NS(name="GND"),
               attributes=NS(stroke=NS(width=width), fill=NS(filled=filled)), **geometry)
