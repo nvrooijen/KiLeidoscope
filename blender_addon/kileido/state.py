@@ -26,6 +26,10 @@ class BoardState:
         self.ims_warnings = []  # what would short to the metal base (apply.refresh_ims_warnings)
         self.flex = {}  # flex mode's panel content from the bridge (kileido_bridge.flex_checks.report)
         self.fold_findings = []  # what runs into what at the end of a folding step (fold.check_steps)
+        # The DRC column (findings.py): the bridge's `findings` payload, and the one finding drawn.
+        self.findings = {}  # {"status", "folder", "drc", "sources": {"drc": ..., "file": ...}}
+        self.findings_shown = ("", "")  # (source, key) of the finding drawn, ("", "") for none
+        self.finding_severity = "error"  # its colour (materials.FINDING_COLORS)
 
         # Shared display resources.
         self.groups = {}  # Geometry Nodes groups by role (nodes.ensure_all)
@@ -51,7 +55,7 @@ class BoardState:
         self.component_names_of = 0  # the collection (pointer) that index is of
 
         # KiCad's selection (protocol.selection_message).
-        self.highlight = {"selected": set(), "pair": set()}
+        self.highlight = {"selected": set(), "pair": set(), "finding": set()}  # finding: findings_draw
         self.highlight_components = {"footprints": set(), "pads": set()}
         self.outline_problem = False  # a malformed outline is drawn red (apply._apply_outline_problem)
         self.xray_for_outline = False  # X-ray mode was ticked for it (and is unticked once fixed)

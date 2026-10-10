@@ -1,5 +1,5 @@
 """Bookmark tabs on the KiLeidoscope sidebar's left edge. Each opens its column left of
-the KiLeidoscope panel (IMS, Flex), one at a time, and the sidebar widens to make room;
+the KiLeidoscope panel (Studio, IMS, Flex, DRC), one at a time, and the sidebar widens to make room;
 clicking the open tab again closes it. A mode switched on in its column keeps its tab lit
 (a bright stripe on its outer edge) once the column is closed; one the board cannot have
 is greyed.
@@ -26,7 +26,8 @@ from gpu_extras.batch import batch_for_shader
 # (key, label, colour): the order they hang from the top.
 TABS = (("STUDIO", "Studio", (0.36, 0.60, 0.56)),  # a teal, neither board colour
         ("IMS", "IMS", (0.38, 0.56, 0.78)),  # aluminium blue
-        ("FLEX", "Flex", (0.82, 0.52, 0.14)))  # polyimide amber
+        ("FLEX", "Flex", (0.82, 0.52, 0.14)),  # polyimide amber
+        ("DRC", "DRC", (0.80, 0.24, 0.24)))  # DRC red
 NONE = "NONE"
 GREY = (0.42, 0.42, 0.42)  # a tab whose mode this board cannot have
 # key -> a function telling the tab's mode: "on", "off" or "unavailable" (set by the add-on).

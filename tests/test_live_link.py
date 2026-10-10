@@ -927,3 +927,30 @@ def test_selected_variant_hides_its_dnp_parts_and_reaches_the_exports(tmp_path, 
     finally:
         client.close()
         runtime.close()
+
+
+def test_a_finding_selection_highlights_its_items_not_their_nets():
+    """Shown from the DRC column, a finding is selected in KiCad as a click would be,
+    but Blender lights its items alone: a GND via must not light the whole ground net."""
+    snapshot = fixture()
+    via, pad = snapshot.vias[0], snapshot.pads[0]
+    same_net = [track.id for track in snapshot.tracks if track.net == via.net]
+    assert same_net  # the fixture's via shares its net with tracks
+    reader = FakeReader(snapshot)
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        client.request_select([via.id, pad.id], exact=True)
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "selection" and h["selected"] for h, _ in f))
+        header = next(h for h, _ in frames if h["type"] == "selection" and h["selected"])
+        assert header["selected"] == [via.id] and not set(same_net) & set(header["selected"])
+        client.request_select([via.id])  # a plain click on the same via: its whole net again
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "selection" and set(same_net) <= set(h["selected"])
+                                                         for h, _ in f))
+    finally:
+        client.close()
+        runtime.close()

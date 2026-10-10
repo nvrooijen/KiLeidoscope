@@ -1,5 +1,6 @@
-"""X-ray mode (panel name; "focus" in code): with a KiCad selection highlighted, or a
-malformed board outline drawn red, everything else fades.
+"""X-ray mode (panel name; "focus" in code): with a KiCad selection highlighted, a
+finding shown from the DRC column, or a malformed board outline drawn red, everything
+else fades.
 
 One shared shader group ("KLS_Focus_v2") sits between each material's surface and
 its output. Its "Amount" value is set once for all materials: 0 passes the
@@ -115,7 +116,7 @@ def shown_materials():
 def refresh():
     """Apply the tick box: focused only while something is highlighted."""
     global _active
-    highlighted = (any(board.highlight.get(kind) for kind in ("selected", "pair")) or
+    highlighted = (any(board.highlight.get(kind) for kind in ("selected", "pair", "finding")) or
                    bool(board.highlight_components.get("footprints")) or board.outline_problem)
     _active = bool(getattr(bpy.context.scene, "kileido_focus", False) and highlighted)
     for material in shown_materials():

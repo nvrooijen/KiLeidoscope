@@ -114,12 +114,20 @@ class SocketClient:
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "resync", "adopt": True} if adopt else {"type": "resync"}))
 
-    def request_select(self, ids, extend=False, center=False):
+    def request_select(self, ids, extend=False, center=False, exact=False):
         """Ask the bridge to select these KiCad items (a click in Blender), and with
-        `center` to pan KiCad's PCB editor to them."""
+        `center` to pan KiCad's PCB editor to them; `exact` (a finding) highlights the
+        items alone, not their whole nets."""
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend),
-                                               "center": bool(center)}))
+                                               "center": bool(center), "exact": bool(exact)}))
+
+    def request_findings(self, action, key="", source="drc"):
+        """Ask the bridge to act on its findings: "confirm", "dismiss" or "reset" the finding
+        `key`, or "run_drc"; `source` is the file ("drc" or "file")."""
+        if self.state == "connected":
+            self.outgoing.extend(encode_frame({"type": "findings", "action": str(action), "key": str(key),
+                                               "source": str(source)}))
 
     def poll_io(self) -> list[tuple[dict, dict[str, np.ndarray]]]:
         sock = self.socket

@@ -35,6 +35,10 @@ COVERLAYS = {"AMBER": ("Amber", POLYIMIDE, POLYIMIDE_ALPHA, FILM_TINT),
              "WHITE": ("White", (0.93, 0.93, 0.90), 0.9, 0.3)}
 
 HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0)}  # red-orange / blue (sRGB)
+# A finding's colour by its severity (sRGB): magenta-red, amber, cyan; its distance past a limit: red.
+FINDING_COLORS = {"error": (1.0, 0.05, 0.35), "warning": (1.0, 0.70, 0.0), "info": (0.0, 0.75, 1.0)}
+FINDING_OVER_COLOR = (1.0, 0.0, 0.0)
+FINDING_PASS_COLOR = (0.1, 0.8, 0.3)  # a measurement that meets its limit
 PLACEHOLDER_COLOR = (0.36, 0.43, 0.52)  # a component whose model file is missing: a grey-blue box
 OUTLINE_PROBLEM_COLOR = (1.0, 0.0, 0.0)  # a malformed board outline: bright red
 OUTLINE_PROBLEM_GLOW = 0.8  # higher reads orange in AgX
@@ -112,6 +116,11 @@ def create_all():
         "highlight_pair_barrel": make("KLS Highlight pair barrel", HIGHLIGHT_COLORS["pair"]),
         # A glow shell, not a surface: flat translucent red-orange in every mode.
         "highlight_box": make("KLS Highlight component", HIGHLIGHT_COLORS["selected"], HIGHLIGHT_BOX_ALPHA),
+        # The finding shown from the DRC column (findings_draw): recoloured by its severity.
+        "highlight_finding": make("KLS Highlight finding", FINDING_COLORS["error"]),
+        "highlight_finding_barrel": make("KLS Highlight finding barrel", FINDING_COLORS["error"]),
+        "highlight_finding_box": make("KLS Highlight finding component", FINDING_COLORS["error"],
+                                      HIGHLIGHT_BOX_ALPHA),
         "highlight_outline": make("KLS Highlight outline", OUTLINE_PROBLEM_COLOR),
     }
 
@@ -886,18 +895,30 @@ def _paint_board_faces(viewer):
     paint(board.materials["board_edge"], core)
 
 
+def _paint_highlight(material, color):
+    # Metallic and glowing in every mode: lit metal alone washed out to pink
+    # under the 0.2 W softboxes and AgX (compared on the reference board).
+    paint(material, color)
+    set_surface(material, True, HIGHLIGHT_METALLIC, HIGHLIGHT_ROUGHNESS)
+    principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
+    principled.inputs["Emission Color"].default_value = principled.inputs["Base Color"].default_value
+    principled.inputs["Emission Strength"].default_value = HIGHLIGHT_GLOW
+
+
+def paint_finding():
+    """The shown finding's highlight in its severity's colour (`board.finding_severity`)."""
+    color = FINDING_COLORS.get(board.finding_severity, FINDING_COLORS["warning"])
+    for key in ("highlight_finding", "highlight_finding_barrel"):
+        _paint_highlight(board.materials[key], color)
+    paint(board.materials["highlight_finding_box"], color)
+
+
 def _paint_highlights():
     painted = [(f"highlight_{kind}{part}", color) for kind, color in HIGHLIGHT_COLORS.items()
                for part in ("", "_barrel")] + [("highlight_outline", OUTLINE_PROBLEM_COLOR)]
     for key, color in painted:
-        # Metallic and glowing in every mode: lit metal alone washed out to pink
-        # under the 0.2 W softboxes and AgX (compared on the reference board).
-        material = board.materials[key]
-        paint(material, color)
-        set_surface(material, True, HIGHLIGHT_METALLIC, HIGHLIGHT_ROUGHNESS)
-        principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
-        principled.inputs["Emission Color"].default_value = principled.inputs["Base Color"].default_value
-        principled.inputs["Emission Strength"].default_value = HIGHLIGHT_GLOW
+        _paint_highlight(board.materials[key], color)
+    paint_finding()
     # A malformed outline must read as pure red from every side and under any light:
     # only its glow (lit red, metal and softbox reflections read as salmon in AgX).
     outline = board.materials["highlight_outline"]

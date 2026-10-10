@@ -58,6 +58,16 @@ def foldable() -> bool:
     return plan is not None and bool(plan.bends)
 
 
+def folded() -> bool:
+    """A bend's handle is turned: the board shows folded, not where KiCad's flat frame puts it."""
+    plan = _plan()
+    grips = _grips()
+    if plan is None or not plan.bends or len(grips) < len(plan.handles):  # no handles yet: flat
+        return False
+    angles = foldmath.bend_angles(plan, [grip.rotation_euler.z for grip in grips])
+    return any(abs(angle) > foldmath.MIN_ANGLE for angle in angles)
+
+
 def set_progress(progress):
     """The panel's Fold slider: 0 the flat board, 1 every bend at KiCad's angle, the steps
     one after another in between. It turns the bends' handles; they fold the board."""
@@ -352,6 +362,7 @@ def _originals():
             if obj.type == "MESH" and obj not in skip and obj.get("kls_model_fp_id") is None
             and obj.get("kls_footprint_placeholder") != 1  # parts: placeholders and boxes fold whole
             and not obj.name.startswith("KLS footprint ")
+            and obj.get("kls_finding") is None  # drawn on the flat board only (findings_draw)
             and not obj.hide_get() and (not obj.hide_viewport or obj.get("kls_hidden_by_fold"))]
 
 

@@ -126,9 +126,9 @@ class FakePad:
 
 
 def footprint(uid="f1", pads=()):
-    return NS(id=item_id(uid), reference_field=NS(text=NS(value="J1")),
-              position=point(0, 0), orientation=NS(to_radians=lambda: 0.0),
-              layer=BoardLayer.BL_F_Cu, definition=NS(pads=pads, models=[]),
+    return NS(id=item_id(uid), reference_field=NS(text=NS(value="J1")), value_field=NS(text=NS(value="SMA")),
+              position=point(0, 0), orientation=NS(to_radians=lambda: 0.0), layer=BoardLayer.BL_F_Cu,
+              definition=NS(pads=pads, models=[], id=NS(library="Connector_Coaxial", name="SMA_Edge")),
               attributes=NS(do_not_populate=False))
 
 
