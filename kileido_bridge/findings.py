@@ -8,7 +8,8 @@ into the `findings` payload Blender draws: item ids, anchor points and measured 
 in nm, KiCad's board frame (y down).
 
 The draw tools (`TOOLS`) mark and annotate: `highlight`, `isolate`, `label`, `arrow`,
-`distance`, `ghost` (a suggested via, cap, track or pad, checked for fit), `area` (copper
+`distance`, `ghost` (a suggested via, cap or pad, a part moved, a route, a row of vias:
+each checked for fit where the file puts it, never moved), `area` (copper
 items or a polygon on one layer), `layers`, and `bars` (the file's own numbers as a
 chart). The measured ones: `clearance` and `edge_gap` (closest copper points), `width`
 (every track segment with its width), `routed_length` (the copper path between two pads,
@@ -37,9 +38,12 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+import numpy as np
+
 from . import mentions, model, planes
-from .board_index import BoardIndex, Gap, centre, copper_rank, on_layer, point_gap, shape_of, top_layer
+from .board_index import BoardIndex, Gap, _bbox_gap, _inside, centre, copper_rank, on_layer, point_gap, shape_of
 from .board_index import gap as shapes_gap
+from .board_index import top_layer, union
 from .geometry import sample_arc
 from .targets import SNAP_NM, Resolved, copper_layer, resolve
 from .targets import kind as kind_of
@@ -69,6 +73,11 @@ GHOST_CLEAR_NM = 100_000  # a suggested via or pad this close to another net's c
 GHOST_VIA_NM = 600_000  # a suggested via without a size
 GHOST_NEAR_NM = 10_000_000  # copper whose centre is further than this from a suggested via is never near it
 CAP_GHOST_NM = 1_000_000  # a cap without a size: an 0402's body (1.0 x 0.5 mm), as Blender draws it
+GHOST_TRACK_NM = 200_000  # a suggested track's width when its net has no tracks to take one from
+MAX_GHOST_WIDTH_MM = 50.0  # a suggested track wider than this is not a track
+MAX_GHOST_PATH = 50  # points of a suggested track
+MAX_GHOST_PADS = 200  # pads of a moved part drawn; past it only its body
+MAX_ROW_VIAS = 100  # vias of one suggested row; more is refused, never cut
 MAX_LINE_POINTS = 2_000  # stitching: points of the line followed
 STITCH_REACH_NM = 2_000_000  # stitching: a via this close to the line (centre) stitches along it
 MAX_SPOTS = 20  # discontinuity: points
@@ -99,10 +108,13 @@ UNTARGETED = ("plane_islands", "stitching")  # measure the board with no target 
 CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change")), ("width_mm", ("width",)),
           ("length_mm", ("routed_length", "return_path")), ("gap_mm", ("plane_gap",)), ("stub_mm", ("stub",)))
 ROUTE_LIMIT = "tracks, arcs and vias are followed, zones are not"
-ROLES = ("at", "from", "to", "a", "b", "target", "via", "pad", "crossing", "signal")  # draw fields with targets
+ROLES = ("at", "from", "to", "a", "b", "target", "via", "pad", "crossing", "signal", "part",
+         "path")  # draw fields with targets
 SEVERITIES = ("error", "warning", "info")
 CONFIDENCES = ("high", "medium", "low")
-GHOSTS = ("via", "cap", "track", "pad")
+GHOSTS = ("via", "cap", "track", "pad", "part", "via_row")
+GHOST_SPOTS = ("at", "from", "to", "path")  # a ghost's roles whose `pt:` is that point, never snapped
+FIXED = (model.Track, model.Arc, model.Via, model.Pad)  # copper a suggestion must keep clear of (zones refill)
 GROUPS = frozenset({"drc", "plane", "decap", "power", "dc", "hs", "dp", "emc", "analog", "thermal", "fab"})
 STATES = ("confirmed", "dismissed")
 NOT_CONNECTED = "KiCad not connected"
@@ -326,6 +338,46 @@ def _polygon(value) -> tuple[tuple[float, float], ...]:
     return tuple(points)
 
 
+def _ghost_fields(raw: dict) -> dict:
+    """A ghost's fields by kind: a via, cap or pad `at` a spot; a `part` moved `at` a spot
+    (`rotation` None: it keeps its own); a track along a `path` of 2 to MAX_GHOST_PATH
+    spots on one `layer` (None: the layer its points name) for a `net`, `width` None for
+    the net's usual one; a via_row `from` one spot `to` another, vias at most `pitch` apart."""
+    ghost = raw.get("kind")
+    if ghost not in GHOSTS:
+        raise _Bad(f"kind is not one of {', '.join(GHOSTS)}")
+    size = _mm(raw["size"], "size", positive=True) if raw.get("size") is not None else None
+    net = raw.get("net")
+    if net is not None and (not isinstance(net, str) or not net.strip()):
+        raise _Bad("net is not a net name")
+    rotation = _number(raw["rotation"]) if raw.get("rotation") is not None else None
+    if raw.get("rotation") is not None and rotation is None:
+        raise _Bad("rotation is not a number of degrees")
+    fields = {"kind": ghost, "size": size, "net": net.strip().removeprefix("net:").strip() if net else "",
+              "rotation": rotation % 360 if rotation is not None else None if ghost == "part" else 0.0}
+    if ghost == "part":
+        return {**fields, "part": _target(_need(raw, "part"), "part"), "at": _target(_need(raw, "at"), "at")}
+    if ghost == "track":
+        path = raw.get("path")
+        if path is None:
+            raise _Bad(f"a track needs path: 2 to {MAX_GHOST_PATH} points or targets along it (at is for a via, "
+                       "cap or pad)")
+        if not isinstance(path, list) or not 2 <= len(path) <= MAX_GHOST_PATH:
+            raise _Bad(f"path is not a list of 2 to {MAX_GHOST_PATH} points or targets")
+        if not fields["net"]:
+            raise _Bad("net missing: the net the track would carry")
+        width = _mm(raw["width"], "width", positive=True) if raw.get("width") is not None else None
+        if width is not None and width > MAX_GHOST_WIDTH_MM:
+            raise _Bad(f"width is over {MAX_GHOST_WIDTH_MM:g} mm")
+        layer = _layer(raw["layer"], "layer") if raw.get("layer") is not None else None
+        return {**fields, "path": tuple(_spot(spot, f"path[{i}]") for i, spot in enumerate(path)), "layer": layer,
+                "width": width}
+    if ghost == "via_row":
+        return {**fields, "from": _spot(_need(raw, "from"), "from"), "to": _spot(_need(raw, "to"), "to"),
+                "pitch": _mm(_need(raw, "pitch"), "pitch", positive=True)}
+    return {**fields, "at": _target(_need(raw, "at"), "at")}
+
+
 def _fields(tool: str, raw: dict, problems: list) -> dict:
     """The validated fields of one tool; raises _Bad for a missing or bad field."""
     if tool in ("highlight", "isolate"):
@@ -367,18 +419,7 @@ def _fields(tool: str, raw: dict, problems: list) -> dict:
         at = _target(raw["at"], "at") if raw.get("at") is not None else None
         return {"items": _bars(_need(raw, "items"), problems), "unit": unit, "at": at}
     if tool == "ghost":
-        ghost = raw.get("kind")
-        if ghost not in GHOSTS:
-            raise _Bad(f"kind is not one of {', '.join(GHOSTS)}")
-        size = _mm(raw["size"], "size", positive=True) if raw.get("size") is not None else None
-        net = raw.get("net")
-        if net is not None and (not isinstance(net, str) or not net.strip()):
-            raise _Bad("net is not a net name")
-        rotation = _number(raw["rotation"]) if raw.get("rotation") is not None else 0.0
-        if rotation is None:
-            raise _Bad("rotation is not a number of degrees")
-        return {"kind": ghost, "at": _target(_need(raw, "at"), "at"), "size": size,
-                "net": net.strip().removeprefix("net:").strip() if net else "", "rotation": rotation % 360}
+        return _ghost_fields(raw)
     if tool == "area":
         layer = _layer(_need(raw, "layer"), "layer")
         has_targets, has_polygon = raw.get("targets") is not None, raw.get("polygon") is not None
@@ -662,11 +703,11 @@ class _Board:
         return found
 
     def target(self, tool: str, role: str, text: str) -> Resolved:
-        """A draw's target in its role. A ghost's `at` given as `pt:` is that point, used
-        as given: the ghost shows what is missing there, so it never snaps to the copper
-        nearby, lights it up or notes it."""
+        """A draw's target in its role. A ghost's spot (`GHOST_SPOTS`: its `at`, a row's
+        ends, a track's points) given as `pt:` is that point, used as given: the ghost shows
+        what is missing there, so it never snaps to the copper nearby, lights it up or notes it."""
         found = self.resolve(text)
-        if tool == "ghost" and role == "at" and found.point is not None and text.strip()[:3].lower() == "pt:":
+        if tool == "ghost" and role in GHOST_SPOTS and found.point is not None and text.strip()[:3].lower() == "pt:":
             return Resolved(found.target, (), found.layer, found.point)
         return found
 
@@ -796,7 +837,9 @@ def _empty_draw(draw: Draw) -> dict:
             "polygon_nm": [], "layer": "", "layers": [], "kind": "", "size_nm": 0,
             "what": "", "segments_nm": [], "narrow": [], "min_nm": None, "path_nm": [], "bars": [], "unit": "",
             "planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,
-            "islands": [], "barrel": {}, "marks": [], "rotation_deg": 0.0}
+            "islands": [], "barrel": {}, "marks": [], "rotation_deg": 0.0,
+            "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],
+            "pitch_nm": 0}
 
 
 def _measured(out: dict, measured: float, limit_mm: float | None, limit_is: str) -> None:
@@ -1283,9 +1326,17 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
         elif tool == "ghost":
             out["kind"] = fields["kind"]
             out["size_nm"] = round(fields["size"] * 1e6) if fields["size"] else 0
-            out["points"] = [_anchor(by_role["at"], "at")]
-            out["rotation_deg"] = fields["rotation"]
-            _fit_ghost(board, out, fields["net"])
+            if fields["kind"] == "part":
+                _ghost_part(board, out, by_role["part"], by_role["at"], fields["rotation"])
+            elif fields["kind"] == "track":
+                _ghost_track(board, out, [found for (role, _), found in zip(roles, resolved) if role == "path"],
+                             fields)
+            elif fields["kind"] == "via_row":
+                _via_row(board, out, by_role["from"], by_role["to"], fields)
+            else:
+                out["points"] = [_anchor(by_role["at"], "at")]
+                out["rotation_deg"] = fields["rotation"]
+                _fit_ghost(board, out, fields["net"])
         elif tool == "arrow":
             out["points"] = _anchor_pair(board.index, by_role["from"], by_role["to"])
         elif tool == "distance":
@@ -1366,7 +1417,8 @@ def _bbox(board: _Board, drawn: list[tuple[dict, list[Resolved]]]) -> list[int] 
                     (zones if isinstance(record, model.ZoneFill) else boxes).append(box)
     for draw, _ in drawn:
         points += [(x, y) for x, y, *_ in (*draw["points"], *draw["polygon_nm"], *draw["path_nm"],
-                                           *draw["returns"])]
+                                           *draw["returns"], *draw["row"], *([draw["from"]] if draw["from"] else ()))]
+        points += [(x, y) for pad in draw["pads_nm"] for x, y in pad["polygon_nm"]]
         points += [end for x0, y0, x1, y1, *_ in draw["spans_nm"] for end in ((x0, y0), (x1, y1))]
         points += [(x, y) for line in draw["edges_nm"] for x, y in line]
         loose = [island for island in draw["islands"] if not island["tied"]] or draw["islands"]
@@ -1406,30 +1458,254 @@ def _passes(draws: list[dict]) -> bool:
     return bool(judged) and not any(draw["over"] for draw in judged)
 
 
+def _clash_text(record, gap: float) -> tuple[str, str]:
+    """("GND track", "0.05 mm from its copper, 0.10 mm needed"): what a suggestion clashes with, and how near."""
+    return (f"{record.net or 'unconnected'} {kind_of(record)}",
+            f"{gap / 1e6:.2f} mm from its copper, {GHOST_CLEAR_NM / 1e6:.2f} mm needed")
+
+
 def _fit_ghost(board: _Board, out: dict, net: str) -> None:
     """Does a suggested via or pad fit where the LLM put it: `fits` False, and why in
     `problem`, when its copper comes within GHOST_CLEAR_NM of fixed copper (tracks, arcs,
     vias, pads) of another net, or of any net when it names none. A via spans every
-    layer; a pad its own. Zones refill around it and never clash. A cap: `_fit_cap`.
-    Tracks: unchecked."""
+    layer; a pad its own. Zones refill around it and never clash. A cap: `_fit_cap`. A
+    part moved, a track, a row of vias: `_ghost_part`, `_ghost_track`, `_via_row`."""
     if out["kind"] == "cap" and board.index is not None:
         _fit_cap(board.index, out)
     if out["kind"] not in ("via", "pad") or board.index is None:
         return
     x, y, layer = out["points"][0]
     radius = (out["size_nm"] or GHOST_VIA_NM) / 2
-    reach = radius + GHOST_CLEAR_NM
-    fixed = (model.Track, model.Arc, model.Via, model.Pad)
-    candidates = [record for record in board.index.copper
-                  if isinstance(record, fixed) and record.net != net
-                  and (out["kind"] == "via" or on_layer(record, layer))
-                  and math.dist(centre(record), (x, y)) < reach + GHOST_NEAR_NM]
-    near = board.index.nearest((x, y), candidates, None if out["kind"] == "via" else layer, reach)
+    near = _via_near(board.index, (x, y), layer, radius, net, out["kind"], board.index.copper)
     out["fits"] = near is None
     if near is not None:
-        gap = max(0.0, near.gap.distance - radius)
-        out["problem"] = (f"clashes with {near.record.net or 'unconnected'} {kind_of(near.record)} "
-                          f"({gap / 1e6:.2f} mm from its copper, {GHOST_CLEAR_NM / 1e6:.2f} mm needed)")
+        what, how = _clash_text(near.record, max(0.0, near.gap.distance - radius))
+        out["problem"] = f"clashes with {what} ({how})"
+
+
+def _via_near(index: BoardIndex, point, layer: str, radius: float, net: str, kind: str, copper):
+    """The fixed copper among `copper` of a net other than `net` nearest a suggested via
+    (every layer) or pad (its `layer`) of `radius` at `point`, within GHOST_CLEAR_NM of its
+    edge (`Near`, measured from the point), or None. Copper whose centre is further than
+    GHOST_NEAR_NM past that is never measured."""
+    reach = radius + GHOST_CLEAR_NM
+    candidates = [record for record in copper
+                  if isinstance(record, FIXED) and record.net != net
+                  and (kind == "via" or on_layer(record, layer))
+                  and math.dist(centre(record), point) < reach + GHOST_NEAR_NM]
+    return index.nearest(point, candidates, None if kind == "via" else layer, reach)
+
+
+def _near_box(index: BoardIndex, box, reach: float) -> list:
+    """The fixed copper whose box comes within `reach` of `box`: a track's and a via's from
+    their ends, an arc's from its shape, a pad's as GHOST_NEAR_NM around its position."""
+    found = []
+    for record in index.copper:
+        if isinstance(record, model.Track):
+            half = record.width / 2
+            (x0, y0), (x1, y1) = record.start, record.end
+            other = (min(x0, x1) - half, min(y0, y1) - half, max(x0, x1) + half, max(y0, y1) + half)
+        elif isinstance(record, model.Via):
+            half = record.diameter / 2
+            other = (record.pos[0] - half, record.pos[1] - half, record.pos[0] + half, record.pos[1] + half)
+        elif isinstance(record, model.Pad):
+            x, y = record.pos
+            other = (x - GHOST_NEAR_NM, y - GHOST_NEAR_NM, x + GHOST_NEAR_NM, y + GHOST_NEAR_NM)
+        elif isinstance(record, model.Arc):
+            other = index.shape(record).bbox
+        else:
+            continue
+        if _bbox_gap(box, other) < reach:
+            found.append(record)
+    return found
+
+
+def _clash(index: BoardIndex, shape, layer: str, net: str, candidates, skip: str = ""):
+    """(gap, record) of the fixed copper among `candidates` on `layer`, of a net other than
+    `net` (and of no part `skip`), nearest `shape` within GHOST_CLEAR_NM; None when clear."""
+    best = None
+    for record in candidates:
+        if record.net == net or not on_layer(record, layer) or (skip and getattr(record, "footprint_id", "") == skip):
+            continue
+        other = index.shape(record, layer)
+        if not len(other.segments) or _bbox_gap(shape.bbox, other.bbox) >= GHOST_CLEAR_NM:
+            continue
+        found = shapes_gap(shape, other).distance
+        if found < GHOST_CLEAR_NM and (best is None or found < best[0]):
+            best = (found, record)
+    return best
+
+
+def _off_board(index: BoardIndex, shape) -> str:
+    """Why `shape` is not inside the board outline ("crosses the board edge", "outside the
+    board"), or "" when it is, or when the board has no closed outline to tell by. Rings
+    count even-odd: KiCad may hand a cutout over as a polygon of its own."""
+    outline = index.snapshot.outline
+    rings = [np.asarray(ring, dtype=float) for polygon in outline.polygons for ring in polygon if len(ring) >= 3]
+    if not rings or not len(shape.probes):
+        return ""
+    if shapes_gap(shape, index.shape(outline)).distance <= 0:
+        return "crosses the board edge"
+    inside = sum(_inside(shape.probes, (ring,)).astype(int) for ring in rings) % 2  # no crossing: one probe a piece
+    return "" if inside.all() else "outside the board"
+
+
+def _turner(origin, to, degrees: float):
+    """A function moving board points (nm) as a part is moved from `origin` to `to` and
+    turned `degrees` counter-clockwise about it as seen from the top (KiCad's sense)."""
+    a = math.radians(degrees)
+    cos, sin = math.cos(a), math.sin(a)
+
+    def move(point):
+        dx, dy = point[0] - origin[0], point[1] - origin[1]
+        return (int(round(to[0] + dx * cos + dy * sin)), int(round(to[1] - dx * sin + dy * cos)))
+    return move
+
+
+def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotation: float | None) -> None:
+    """A part moved to `at` (its anchor, KiCad's footprint position) and turned to
+    `rotation` (None: as it is): its pads' copper and its body (`_body`) moved with it. It
+    does not fit (`fits` False, why in `problem`) where it is not inside the board outline,
+    where a pad comes within GHOST_CLEAR_NM of fixed copper of another net on that pad's
+    layer (its own pads aside), or where its body lands on another part's on its side.
+    Sent: the moved pads per layer (outer copper, else their first layer; none past
+    MAX_GHOST_PADS, which is noted), the body as `polygon_nm`, `from` its place now,
+    `moved_nm` how far."""
+    index = board.index
+    if not target.found:
+        raise _Bad(f"part: {target.note or 'not found on board'}")
+    parts = [record for record in target.items if isinstance(record, model.Footprint)]
+    if not parts:
+        raise _Bad(f"part: {target.target.strip()} is not a part (give its reference, e.g. C12)")
+    if len(parts) > 1:
+        raise _Bad(f"part: {len(parts)} parts share reference {target.target.strip()}")
+    part = parts[0]
+    x, y, _ = _anchor(at, "at")
+    layer = top_layer(part)
+    now = math.degrees(part.rotation_rad) % 360
+    turned = now if rotation is None else rotation
+    move = _turner(part.pos, (x, y), turned - now)
+    pads = list(index.part_pads(part.id))
+    moved = [(pad, {name: tuple(tuple(tuple(map(move, ring)) for ring in polygon) for polygon in polygons)
+                    for name, polygons in pad.polygons.items() if copper_rank(name) is not None})
+             for pad in pads]
+    body = _body(part, pads)
+    body = tuple(map(move, body)) if body is not None else None
+    shapes = [(pad, name, shape_of(model.CopperGraphic("ghost", pad.net, name, polygons)))
+              for pad, by_layer in moved for name, polygons in by_layer.items() if polygons]
+    body_shape = shape_of(model.CopperGraphic("body", "", layer, ((body,),))) if body is not None else None
+    whole = union([shape for _, _, shape in shapes] + ([body_shape] if body_shape is not None else []))
+    out.update(part=part.reference or part.id, layer=layer, points=[[x, y, layer]], rotation_deg=turned,
+               moved_nm=int(round(math.dist(part.pos, (x, y)))), polygon_nm=[list(point) for point in body or ()])
+    out["from"] = [int(part.pos[0]), int(part.pos[1]), layer]
+    if len(pads) > MAX_GHOST_PADS:
+        out["problem"] = f"{len(pads):,} pads; only the body drawn"
+    else:
+        out["pads_nm"] = [{"layer": name, "polygon_nm": [list(point) for point in polygon[0]]}
+                          for pad, by_layer in moved for name in _shown_layers(by_layer)
+                          for polygon in by_layer[name]]
+    reasons = [_off_board(index, whole)] if len(whole.segments) else []
+    candidates = _near_box(index, whole.bbox, GHOST_CLEAR_NM) if len(whole.segments) else []
+    for pad, name, shape in shapes:
+        found = _clash(index, shape, name, pad.net, candidates, skip=part.id)
+        if found is not None:
+            what, how = _clash_text(found[1], found[0])
+            reasons.append(f"{part.reference}.{pad.number} clashes with {what} ({how})")
+            break
+    if body_shape is not None:
+        under = _part_under(index, body_shape, layer, _pads_near(index, body_shape.bbox), skip=part.id)
+        if under is not None:
+            reasons.append(f"lands on {under.reference or 'a part'}")
+    reasons = [reason for reason in reasons if reason]
+    out["fits"] = not reasons
+    if reasons:
+        out["problem"] = "; ".join(filter(None, (*reasons, out["problem"])))
+
+
+def _shown_layers(by_layer: dict) -> list[str]:
+    """The layers a moved pad is drawn on: its outer copper, else its first copper layer."""
+    outer = [name for name in ("F.Cu", "B.Cu") if by_layer.get(name)]
+    return outer or [name for name in by_layer if by_layer[name]][:1]
+
+
+def _usual_width(index: BoardIndex, net: str) -> int:
+    """The width most of a net's tracks and arcs have (the wider on a tie), else GHOST_TRACK_NM."""
+    counts: dict[int, int] = {}
+    for record in index.net_items(net):
+        if isinstance(record, (model.Track, model.Arc)):
+            counts[record.width] = counts.get(record.width, 0) + 1
+    return max(counts, key=lambda width: (counts[width], width)) if counts else GHOST_TRACK_NM
+
+
+def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict) -> None:
+    """A suggested route for `net`: straight segments through the path's points on one
+    copper layer (the draw's, else the one every point names), `width` (else the net's
+    usual one, `_usual_width`). It does not fit (`fits` False, why in `problem`) where it
+    comes within GHOST_CLEAR_NM of fixed copper of another net on that layer, or leaves the
+    board outline. Zones refill and never clash. Sent: `path_nm`, `width_nm`, `length_nm`."""
+    index = board.index
+    net = fields["net"]
+    if net not in index.nets:
+        raise _Bad(f"net {_show(net, 80)} not found on board")
+    spots = [_anchor(found, f"path[{i}]") for i, found in enumerate(path)]
+    named_layers = [found.layer for found in path]
+    layer = fields["layer"]
+    if layer is None:
+        if None in named_layers or len(set(named_layers)) != 1:
+            raise _Bad("layer missing: give layer, or the same @layer on every point of path")
+        layer = named_layers[0]
+        if copper_rank(layer) is None:
+            raise _Bad(f"{_show(layer)} is not a copper layer")
+    else:
+        other = next((i for i, name in enumerate(named_layers) if name and name != layer), None)
+        if other is not None:
+            raise _Bad(f"path[{other}] is on {_show(named_layers[other])}, the track on {layer}")
+    width = int(round(fields["width"] * 1e6)) if fields["width"] else _usual_width(index, net)
+    ends = [(x, y) for x, y, _ in spots]
+    shape = union(shape_of(model.Track("ghost", layer, net, a, b, width)) for a, b in zip(ends, ends[1:]))
+    out.update(layer=layer, path_nm=[[x, y, layer] for x, y in ends], points=[[*ends[0], layer], [*ends[-1], layer]],
+               width_nm=width, length_nm=int(round(sum(math.dist(a, b) for a, b in zip(ends, ends[1:])))))
+    reasons = []
+    found = _clash(index, shape, layer, net, _near_box(index, shape.bbox, GHOST_CLEAR_NM))
+    if found is not None:
+        what, how = _clash_text(found[1], found[0])
+        reasons.append(f"clashes with {what} ({how})")
+    reasons.append(_off_board(index, shape))
+    reasons = [reason for reason in reasons if reason]
+    out["fits"] = not reasons
+    out["problem"] = "; ".join(reasons)
+
+
+def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: dict) -> None:
+    """A row of suggested vias from `start` to `end`, both ends included, spaced evenly and
+    no further apart than `pitch`; each checked as a via ghost is (`_via_near`). More than
+    MAX_ROW_VIAS refuses the draw. Sent: `row` [x, y, fits] per via, `pitch_nm` the spacing
+    used; `fits` False when any via clashes, `problem` how many and the first."""
+    index = board.index
+    a, b = _anchor(start, "from"), _anchor(end, "to")
+    length = math.dist(a[:2], b[:2])
+    gaps = math.ceil(length / (fields["pitch"] * 1e6) - 1e-9) if length > 0 else 0
+    if gaps + 1 > MAX_ROW_VIAS:
+        raise _Bad(f"{gaps + 1:,} vias at {fields['pitch']:g} mm pitch over {length / 1e6:.2f} mm; at most "
+                   f"{MAX_ROW_VIAS} in one row")
+    spots = [(a[0] + (b[0] - a[0]) * i / gaps, a[1] + (b[1] - a[1]) * i / gaps) for i in range(gaps + 1)] \
+        if gaps else [(a[0], a[1])]
+    radius = (out["size_nm"] or GHOST_VIA_NM) / 2
+    row_box = (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+    copper = [record for record in index.copper
+              if isinstance(record, FIXED) and _bbox_gap(row_box, (*centre(record), *centre(record)))
+              < radius + GHOST_CLEAR_NM + GHOST_NEAR_NM]
+    row, first, clashing = [], None, 0
+    for x, y in spots:
+        near = _via_near(index, (x, y), a[2], radius, fields["net"], "via", copper)
+        row.append([int(round(x)), int(round(y)), near is None])
+        if near is not None:
+            clashing += 1
+            first = first or _clash_text(near.record, max(0.0, near.gap.distance - radius))
+    out.update(row=row, points=[a, b], layer=a[2], pitch_nm=int(round(length / gaps)) if gaps else 0,
+               fits=not clashing)
+    if clashing:
+        out["problem"] = f"{clashing} of {len(row)} vias clash (first: {first[0]} {first[1]})"
 
 
 def _box(centre_nm, length: float, width: float, degrees: float, frame: tuple[float, float] = (1.0, 0.0)) -> tuple:
@@ -1471,28 +1747,42 @@ def _fit_cap(index: BoardIndex, out: dict) -> None:
     ghost = model.CopperGraphic("ghost", "", layer, ((_box((x, y), length, length / 2, out["rotation_deg"]),),))
     shape = shape_of(ghost)
     near = [pad for pad in index.snapshot.pads if math.dist(pad.pos, (x, y)) < GHOST_NEAR_NM]
-    owners = {footprint.id: footprint for footprint in index.snapshot.footprints}
     for pad in near:
         if on_layer(pad, layer) and len(index.shape(pad, layer).segments) and \
                 shapes_gap(shape, index.shape(pad, layer)).distance < GHOST_CLEAR_NM:
-            owner = owners.get(pad.footprint_id)
+            owner = index.footprint_of(pad)
             name = f"{owner.reference}.{pad.number}" if owner else f"pad {pad.number}"
             out["fits"], out["problem"] = False, f"lands on {name}" + (f" ({pad.net})" if pad.net else "")
             return
+    under = _part_under(index, shape, layer, near)
+    if under is not None:
+        out["fits"], out["problem"] = False, f"lands on {under.reference or 'a part'}"
+        return
+    out["fits"] = True
+
+
+def _pads_near(index: BoardIndex, box) -> list:
+    """The pads whose position lies within GHOST_NEAR_NM of `box`."""
+    return [pad for pad in index.snapshot.pads if _bbox_gap(box, (*pad.pos, *pad.pos)) < GHOST_NEAR_NM]
+
+
+def _part_under(index: BoardIndex, shape, layer: str, near: list, skip: str = ""):
+    """The first part (but `skip`) on `layer`'s side whose body, the box of its pads among
+    `near` (`_body`), `shape` lands on; None when it lands on none."""
     side = "bottom" if layer == "B.Cu" else "top" if layer == "F.Cu" else None
     by_part: dict[str, list] = {}
     for pad in near:
-        by_part.setdefault(pad.footprint_id, []).append(pad)
-    for footprint_id, pads in by_part.items():
-        footprint = owners.get(footprint_id)
+        if pad.footprint_id != skip:
+            by_part.setdefault(pad.footprint_id, []).append(pad)
+    for pads in by_part.values():
+        footprint = index.footprint_of(pads[0])
         if footprint is None or (side is not None and footprint.side != side):
             continue
         body = _body(footprint, pads)
         if body is not None and shapes_gap(shape, shape_of(model.CopperGraphic("body", "", layer, ((body,),)))
                                            ).distance == 0:
-            out["fits"], out["problem"] = False, f"lands on {footprint.reference or 'a part'}"
-            return
-    out["fits"] = True
+            return footprint
+    return None
 
 
 def _ghosts_in_reach(drawn: list[tuple[dict, list[Resolved]]]) -> None:

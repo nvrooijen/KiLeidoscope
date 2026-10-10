@@ -50,9 +50,19 @@ def test_quick_is_the_three_v1_checks():
     assert QUICK == ("plane.gap_crossing", "plane.layer_change_no_return", "decap.distance")
     assert [check.id for check in CATALOGUE if check.v1] == list(QUICK)
     # Stage 3 tools first, then how the v1 checks draw with Stage 1 alone (spec §6.1)
-    assert by_id(["plane.gap_crossing"])[0].draws == ("plane_gap", "return_path", "highlight", "area", "label")
+    assert by_id(["plane.gap_crossing"])[0].draws == ("plane_gap", "return_path", "highlight", "area", "label",
+                                                      "ghost")
     assert by_id(["plane.layer_change_no_return"])[0].draws == ("layer_change", "highlight", "distance", "ghost")
-    assert set(by_id(["decap.distance"])[0].draws) == {"distance", "highlight"}
+    assert set(by_id(["decap.distance"])[0].draws) == {"distance", "highlight", "ghost"}
+
+
+def test_checks_offer_the_ghost_kinds_that_fit_them():
+    """A route over the plane, a cap or resistor moved nearer its pin, a row of stitching vias."""
+    for check_id, kind in (("plane.gap_crossing", "ghost track"), ("decap.distance", "ghost part"),
+                           ("power.boot_cap_far", "ghost part"), ("hs.termination_far", "ghost part"),
+                           ("plane.stitching_sparse", "ghost via_row"), ("plane.edge_unstitched", "ghost via_row")):
+        (check,) = by_id([check_id])
+        assert "ghost" in check.draws and kind in check.instruction, check_id
 
 
 def test_checks_draw_with_their_stage2_tool_first():

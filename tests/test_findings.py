@@ -12,7 +12,7 @@ from kileido_bridge import findings, model
 from kileido_bridge.board_index import BoardIndex
 from kileido_bridge.findings import Context, FindingsError, finding_key, named, parse, resolve_file
 from kileido_bridge.targets import resolve
-from test_board_index import MM, board
+from test_board_index import MM, board, square
 
 TRACK = "aaaa0000-0000-4000-8000-00000000t001"
 VIA = "00000000-0000-0000-0000-00005a222dbd"
@@ -1074,3 +1074,237 @@ def test_stage3_wave2_payload_is_json_and_framed(stitched):
     assert x0 <= 5 * MM <= x1 and y0 <= 2 * MM <= y1 and x1 - x0 < MM  # the via
     spots = payload(stitched, finding({"tool": "discontinuity", "net": "USB_D+", "at": [[50, 10], "uuid:usb-0"]}))
     assert spots["findings"][0]["key"] == finding_key("test.check", ["net:USB_D+@F.Cu~50,10"])  # each point keyed
+
+
+
+# ghosts: a part moved, a route, a row of vias (on the board of test_board_index)
+
+GHOST_KEYS = {"part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],
+              "pitch_nm": 0}
+
+
+def ghost(index, **fields):
+    return only_draw(payload(index, finding({"tool": "ghost", **fields})))
+
+
+def with_parts(*extra_pads, side="top"):
+    """The board with C7: two small GND pads 10 mm apart around (30, 10) mm, its body between them."""
+    snapshot = board()
+    c7 = model.Footprint("f-c7", "C7", (30 * MM, 10 * MM), 0.0, side, ())
+    pads = tuple(model.Pad(f"p-c7-{n}", "f-c7", str(n), "GND", (30 * MM, y), None,
+                           {"B.Cu" if side == "bottom" else "F.Cu": (square(29.9 * MM, y - 100_000, 30.1 * MM,
+                                                                              y + 100_000),)})
+                 for n, y in ((1, 5 * MM), (2, 15 * MM)))
+    return BoardIndex(replace(snapshot, footprints=(*snapshot.footprints, c7), pads=(*snapshot.pads, *pads, *extra_pads)))
+
+
+def test_every_draw_carries_the_ghost_keys_empty(index):
+    empty = findings._empty_draw(findings.Draw("highlight", {}))
+    assert {key: empty[key] for key in GHOST_KEYS} == GHOST_KEYS
+    draw = only_draw(payload(index, finding({"tool": "highlight", "targets": ["U3"]})))
+    assert all(draw[key] == value for key, value in GHOST_KEYS.items())
+
+
+def test_ghost_kind_fields_are_checked():
+    bad = [({"kind": "part", "at": "pt:1,1@F.Cu"}, "part missing"),
+           ({"kind": "part", "part": "C12"}, "at missing"),
+           ({"kind": "part", "part": 5, "at": "pt:1,1@F.Cu"}, "part is not a target"),
+           ({"kind": "part", "part": "C12", "at": "pt:1,1@F.Cu", "rotation": "90"}, "rotation is not a number"),
+           ({"kind": "track", "at": "pt:1,1@F.Cu", "net": "SIG"}, "a track needs path: 2 to 50 points or targets"),
+           ({"kind": "track", "path": "pt:1,1", "net": "SIG"}, "path is not a list of 2 to 50"),
+           ({"kind": "track", "path": ["pt:1,1"], "net": "SIG"}, "path is not a list of 2 to 50"),
+           ({"kind": "track", "path": ["pt:1,1"] * 51, "net": "SIG"}, "path is not a list of 2 to 50"),
+           ({"kind": "track", "path": ["pt:1,1", 5], "net": "SIG"}, "path[1] is not a target"),
+           ({"kind": "track", "path": ["pt:1,1", [1, 2, 3]], "net": "SIG"}, "path[1] is not [x, y]"),
+           ({"kind": "track", "path": ["pt:1,1", "pt:2,2"]}, "net missing"),
+           ({"kind": "track", "path": ["pt:1,1", "pt:2,2"], "net": "SIG", "width": 0}, "width is not a positive"),
+           ({"kind": "track", "path": ["pt:1,1", "pt:2,2"], "net": "SIG", "width": 51}, "width is over 50 mm"),
+           ({"kind": "track", "path": ["pt:1,1", "pt:2,2"], "net": "SIG", "layer": "F.SilkS"},
+            "layer is not a copper layer"),
+           ({"kind": "via_row", "from": "pt:1,1", "to": "pt:2,2"}, "pitch missing"),
+           ({"kind": "via_row", "from": "pt:1,1", "to": "pt:2,2", "pitch": 0}, "pitch is not a positive"),
+           ({"kind": "via_row", "from": "pt:1,1", "to": "pt:2,2", "pitch": True}, "pitch is not a positive"),
+           ({"kind": "via_row", "to": "pt:2,2", "pitch": 1}, "from missing"),
+           ({"kind": "via_row", "from": "pt:1,1", "to": [2], "pitch": 1}, "to is not [x, y]"),
+           ({"kind": "via_row", "from": "pt:1,1", "to": "pt:2,2", "pitch": 1, "net": ""}, "net is not a net name")]
+    item = parse(raw(finding(*({"tool": "ghost", **fields} for fields, _ in bad)))).findings[0]
+    assert not item.draws and len(item.problems) == len(bad)
+    for problem, (_, reason) in zip(item.problems, bad):
+        assert "skipped: " + reason in problem, (problem, reason)
+    good = [{"kind": "part", "part": "C12", "at": "pt:1,1@F.Cu"},
+            {"kind": "part", "part": "C12", "at": "U3", "rotation": -270},
+            {"kind": "track", "path": ["U3.4", [22, 8], "pt:26,8@F.Cu"], "net": "net:SIG", "layer": "f.cu",
+             "width": 0.25},
+            {"kind": "via_row", "from": [2, 2], "to": "pt:2,12@F.Cu", "pitch": 1.5, "size": 0.4, "net": "GND"},
+            {"kind": "via", "at": "pt:1,1@F.Cu"}]
+    part, turned, track, row, via = (draw.fields for draw in parse(raw(finding(
+        *({"tool": "ghost", **fields} for fields in good)))).findings[0].draws)
+    assert part["part"] == "C12" and part["rotation"] is None  # a part keeps its own rotation unless given
+    assert turned["rotation"] == 90 and turned["at"] == "U3"
+    assert track["path"] == ("U3.4", "pt:22,8", "pt:26,8@F.Cu") and track["layer"] == "F.Cu"
+    assert track["net"] == "SIG" and track["width"] == 0.25
+    assert row["from"] == "pt:2,2" and row["pitch"] == 1.5 and row["size"] == 0.4 and row["net"] == "GND"
+    assert via["rotation"] == 0.0 and via["at"] == "pt:1,1@F.Cu"  # as before
+
+
+def test_a_moved_part_carries_its_pads_and_fits(index):
+    draw = ghost(index, kind="part", part="C12", at="pt:25,10@F.Cu")
+    assert draw["ok"] and draw["fits"] is True and draw["problem"] == ""
+    assert (draw["part"], draw["from"], draw["moved_nm"]) == ("C12", [20 * MM, 10 * MM, "F.Cu"], 5 * MM)
+    assert draw["points"] == [[25 * MM, 10 * MM, "F.Cu"]] and draw["rotation_deg"] == 0.0 and draw["layer"] == "F.Cu"
+    assert draw["pads_nm"] == [{"layer": "F.Cu", "polygon_nm": [[24.5 * MM, 9.5 * MM], [25.5 * MM, 9.5 * MM],
+                                                                [25.5 * MM, 10.5 * MM], [24.5 * MM, 10.5 * MM]]}]
+    assert draw["polygon_nm"] == []  # one pad: no body
+    assert draw["ids"] == ["f-c12"] and draw["targets"][0] == {"text": "pt:25,10@F.Cu", "found": True, "note": "",
+                                                              "kind": "point"}
+    same_net = ghost(index, kind="part", part="C12", at="pt:15,10.6@F.Cu")  # its pad on its own net's track
+    assert same_net["fits"] is True
+
+
+def test_a_moved_part_turns_about_its_anchor(index):
+    draw = ghost(index, kind="part", part="U3", at="pt:30,25@F.Cu", rotation=90)
+    assert draw["fits"] is True and draw["rotation_deg"] == 90 and draw["moved_nm"] == round(math.hypot(20, 15) * MM)
+    centres = sorted((sum(x for x, _ in pad["polygon_nm"]) // 4, sum(y for _, y in pad["polygon_nm"]) // 4)
+                     for pad in draw["pads_nm"])
+    assert centres == [(29 * MM, 25 * MM), (30 * MM, 25 * MM), (31 * MM, 25 * MM)]  # EP above the anchor: now left
+    xs, ys = [x for x, _ in draw["polygon_nm"]], [y for _, y in draw["polygon_nm"]]
+    assert (min(xs), max(xs), min(ys), max(ys)) == (28_900_000, 31_100_000, 24_800_000, 25_200_000)  # the body turned
+
+
+@pytest.mark.parametrize("at, problem", [
+    ("pt:5,20@F.Cu", "C12.1 clashes with /~{RST} track (0.00 mm from its copper, 0.10 mm needed)"),
+    ("pt:5,20.65@F.Cu", "C12.1 clashes with /~{RST} track (0.05 mm from its copper, 0.10 mm needed)"),
+    ("pt:44.6,10@F.Cu", "crosses the board edge"),
+    ("pt:60,10@F.Cu", "outside the board"),
+    ("pt:10,9@F.Cu", "C12.1 clashes with GND pad (0.00 mm from its copper, 0.10 mm needed)"),
+])
+def test_a_moved_part_that_does_not_fit_says_why(index, at, problem):
+    draw = ghost(index, kind="part", part="C12", at=at)
+    assert draw["ok"] and draw["fits"] is False and draw["problem"] == problem
+
+
+def test_a_moved_part_must_not_land_on_another_parts_body():
+    draw = ghost(with_parts(), kind="part", part="U3", at="pt:30,10@F.Cu")  # between C7's pads, clear of them
+    assert draw["fits"] is False and draw["problem"] == "lands on C7"
+    beneath = ghost(with_parts(side="bottom"), kind="part", part="U3", at="pt:30,10@F.Cu")
+    assert beneath["fits"] is True  # C7 is on the other side
+    own = ghost(with_parts(), kind="part", part="C7", at="pt:30,11@F.Cu")  # over where it is now: its own body
+    assert own["fits"] is True
+
+
+def test_moved_part_problems(index, monkeypatch):
+    for part, problem in (("U3.4", "part: U3.4 is not a part (give its reference, e.g. C12)"),
+                          ("R1", "part: 2 parts share reference R1"), ("U99", "part: U99 not found on board")):
+        draw = ghost(index, kind="part", part=part, at="pt:25,10@F.Cu")
+        assert not draw["ok"] and draw["problem"] == problem
+    missing = ghost(index, kind="part", part="C12", at="U99")
+    assert not missing["ok"] and missing["problem"] == "at: U99 not found on board"
+    monkeypatch.setattr(findings, "MAX_GHOST_PADS", 2)
+    many = ghost(index, kind="part", part="U3", at="pt:30,25@F.Cu")
+    assert many["fits"] is True and many["pads_nm"] == [] and len(many["polygon_nm"]) == 4
+    assert many["problem"] == "3 pads; only the body drawn"
+
+
+def test_a_suggested_route_is_checked_along_its_path(index):
+    draw = ghost(index, kind="track", net="SIG", path=["pt:22,5@F.Cu", "pt:22,8@F.Cu", "pt:26,8@F.Cu"])
+    assert draw["ok"] and draw["fits"] is True and draw["problem"] == "" and draw["layer"] == "F.Cu"
+    assert draw["path_nm"] == [[22 * MM, 5 * MM, "F.Cu"], [22 * MM, 8 * MM, "F.Cu"], [26 * MM, 8 * MM, "F.Cu"]]
+    assert draw["points"] == [[22 * MM, 5 * MM, "F.Cu"], [26 * MM, 8 * MM, "F.Cu"]]
+    assert (draw["width_nm"], draw["length_nm"]) == (200_000, 7 * MM)
+    near = ghost(index, kind="track", net="SIG", path=["pt:15,10.05@F.Cu", "pt:15,12@F.Cu"])
+    assert near["targets"][0]["note"] == "" and near["ids"] == []  # a point as given: not snapped to the track
+    inner = ghost(index, kind="track", net="SIG", layer="In1.Cu", path=[[2, 5], [30, 5]])
+    assert inner["fits"] is True  # over the GND plane: zones refill around a track
+
+
+@pytest.mark.parametrize("path, width, problem", [
+    (["pt:5,18@F.Cu", "pt:5,22@F.Cu"], None, "clashes with /~{RST} track (0.00 mm from its copper, 0.10 mm needed)"),
+    (["pt:2,20.25@F.Cu", "pt:8,20.25@F.Cu"], None,
+     "clashes with /~{RST} track (0.05 mm from its copper, 0.10 mm needed)"),
+    (["pt:2,20.40@F.Cu", "pt:8,20.40@F.Cu"], 0.5, "clashes with /~{RST} track (0.05 mm from its copper, "
+                                                  "0.10 mm needed)"),
+    (["pt:40,30@F.Cu", "pt:50,30@F.Cu"], None, "crosses the board edge"),
+    (["pt:50,30@F.Cu", "pt:60,30@F.Cu"], None, "outside the board"),
+    (["pt:5,18@F.Cu", "pt:5,22@F.Cu", "pt:50,22@F.Cu"], None,
+     "clashes with /~{RST} track (0.00 mm from its copper, 0.10 mm needed); crosses the board edge"),
+])
+def test_a_route_that_does_not_fit_says_why(index, path, width, problem):
+    draw = ghost(index, kind="track", net="SIG", path=path, **({"width": width} if width else {}))
+    assert draw["ok"] and draw["fits"] is False and draw["problem"] == problem
+
+
+def test_a_route_without_a_width_takes_its_nets_usual_one(index):
+    snapshot = board()
+    wide = tuple(model.Track(f"t-wide-{n}", "B.Cu", "SIG", (n * MM, 35 * MM), (n * MM, 38 * MM), 300_000)
+                 for n in (1, 2))
+    busy = BoardIndex(replace(snapshot, tracks=(*snapshot.tracks, *wide)))
+    path = ["pt:22,5@F.Cu", "pt:26,5@F.Cu"]
+    assert ghost(busy, kind="track", net="SIG", path=path)["width_nm"] == 300_000  # two of 0.3, one of 0.2
+    assert ghost(index, kind="track", net="SIG", path=path)["width_nm"] == 200_000  # 0.2 and 0.1 once each: the wider
+    assert ghost(index, kind="track", net="GND", path=path)["width_nm"] == findings.GHOST_TRACK_NM  # no tracks
+    assert ghost(index, kind="track", net="GND", path=path, width=0.5)["width_nm"] == 500_000
+
+
+@pytest.mark.parametrize("fields, problem", [
+    ({"path": ["U3.4", "pt:22,8@F.Cu"]}, "layer missing: give layer, or the same @layer on every point of path"),
+    ({"path": ["pt:1,1@F.Cu", "pt:2,2@B.Cu"]}, "layer missing: give layer, or the same @layer on every point of path"),
+    ({"path": ["pt:1,1@F.Cu", "pt:2,2@B.Cu"], "layer": "F.Cu"}, "path[1] is on B.Cu, the track on F.Cu"),
+    ({"path": ["pt:1,1@F.SilkS", "pt:2,2@F.SilkS"]}, "F.SilkS is not a copper layer"),
+    ({"path": ["pt:1,1@F.Cu", "U99"]}, "path[1]: U99 not found on board"),
+    ({"path": ["pt:1,1@F.Cu", "pt:2,2@F.Cu"], "net": "NOPE"}, "net NOPE not found on board"),
+])
+def test_route_problems(index, fields, problem):
+    draw = ghost(index, kind="track", **{"net": "SIG", **fields})
+    assert not draw["ok"] and draw["problem"] == problem
+
+
+def test_a_route_on_a_pad_takes_the_pads_place_and_layer_given(index):
+    draw = ghost(index, kind="track", net="SIG", layer="F.Cu", path=["C12.1", "pt:25,10"])
+    assert draw["ok"] and draw["path_nm"][0] == [20 * MM, 10 * MM, "F.Cu"] and draw["fits"] is True
+
+
+def test_a_row_of_vias_is_spread_evenly_no_further_apart_than_its_pitch(index):
+    def row(pitch, **fields):
+        return ghost(index, kind="via_row", **{"from": "pt:2,2@F.Cu", "to": "pt:2,12@F.Cu", "pitch": pitch, **fields})
+    spread = row(3)
+    assert spread["ok"] and spread["fits"] is True and spread["problem"] == ""
+    assert spread["row"] == [[2 * MM, round(y * MM), True] for y in (2, 4.5, 7, 9.5, 12)]
+    assert spread["pitch_nm"] == 2.5 * MM and spread["points"] == [[2 * MM, 2 * MM, "F.Cu"], [2 * MM, 12 * MM, "F.Cu"]]
+    assert len(row(2.5)["row"]) == 5 and len(row(2)["row"]) == 6  # both ends included, never one too many
+    sized = row(3, size=0.4)
+    assert sized["size_nm"] == 400_000
+    one = ghost(index, kind="via_row", **{"from": [2, 2], "to": "pt:2,2@F.Cu", "pitch": 1})
+    assert one["row"] == [[2 * MM, 2 * MM, True]] and one["pitch_nm"] == 0
+
+
+def test_a_row_says_how_many_of_its_vias_clash(index):
+    def row(**fields):
+        return ghost(index, kind="via_row", **{"from": "pt:5,18@F.Cu", "to": "pt:5,22@F.Cu", "pitch": 1, **fields})
+    clashing = row(net="GND")
+    assert clashing["ok"] and clashing["fits"] is False
+    assert [fits for _, _, fits in clashing["row"]] == [True, True, False, True, True]
+    assert clashing["problem"] == "1 of 5 vias clash (first: /~{RST} track 0.00 mm from its copper, 0.10 mm needed)"
+    assert row(net="/~{RST}")["fits"] is True  # its own net's track
+    assert clashing["targets"][0]["note"] == "" and clashing["ids"] == []  # its ends as given
+
+
+def test_a_row_past_its_cap_is_refused_not_cut(index, monkeypatch):
+    draw = ghost(index, kind="via_row", **{"from": "pt:0,0@F.Cu", "to": "pt:40,0@F.Cu", "pitch": 0.1})
+    assert not draw["ok"] and draw["problem"] == "401 vias at 0.1 mm pitch over 40.00 mm; at most 100 in one row"
+    monkeypatch.setattr(findings, "MAX_ROW_VIAS", 4)
+    draw = ghost(index, kind="via_row", **{"from": "pt:2,2@F.Cu", "to": "pt:2,12@F.Cu", "pitch": 3})
+    assert not draw["ok"] and draw["problem"].startswith("5 vias at 3 mm pitch")
+
+
+def test_ghost_kinds_payload_is_json_and_framed(index):
+    result = payload(index, finding({"tool": "ghost", "kind": "part", "part": "C12", "at": "pt:25,30@F.Cu"},
+                                    {"tool": "ghost", "kind": "track", "net": "SIG", "path": [[22, 5], [26, 8]],
+                                     "layer": "F.Cu"},
+                                    {"tool": "ghost", "kind": "via_row", "from": "pt:2,2@F.Cu", "to": "pt:2,12@F.Cu",
+                                     "pitch": 3}))
+    assert json.loads(json.dumps(result, allow_nan=False)) == result
+    keys = set(findings._empty_draw(findings.Draw("highlight", {})))
+    assert all(set(draw) == keys and draw["ok"] for draw in result["findings"][0]["draws"])
+    x0, y0, x1, y1 = result["findings"][0]["bbox_nm"]
+    assert (x0, y0) == (2 * MM, 2 * MM) and (x1, y1) == (26 * MM, 30.5 * MM)  # the row, the route, both places of C12
+    assert not result["findings"][0]["passes"] and result["findings"][0]["disagree"] == []

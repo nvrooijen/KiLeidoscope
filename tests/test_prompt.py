@@ -35,8 +35,8 @@ def test_request_names_run_stamp_rules_and_every_chosen_check():
     others = [check.id for check in CATALOGUE if check not in chosen]
     assert not any(f"- {check_id}:" in text for check_id in others)
     assert "Draw with: nothing" in text  # fab.copper_balance is board-wide
-    assert "  Values: gap_mm, coverage_pct, length_mm\n  Draw with: plane_gap, return_path, highlight, area, label\n" \
-        in text
+    assert "  Values: gap_mm, coverage_pct, length_mm\n  Draw with: plane_gap, return_path, highlight, area, label, " \
+        "ghost\n" in text
     assert "  Values: stub_mm, length_mm\n  Draw with: stub, highlight, label\n" in text  # hs.stub
     assert "_cm2" in text and 'under\n  "Values"' in text
 
@@ -60,10 +60,13 @@ def test_request_offers_only_drawn_tools_with_their_fields():
 
 def test_every_drawn_tool_has_a_line_and_its_example_parses():
     assert findings.TOOLS <= set(prompt._TOOLS)
-    for tool, (_, _, example) in prompt._TOOLS.items():
-        parsed = findings.parse(json.dumps({"format": findings.FORMAT, "findings": [
-            {"check": "x.y", "severity": "info", "title": "t", "draw": [json.loads(example)]}]}).encode())
-        assert parsed.findings[0].draws[0].tool == tool and not parsed.findings[0].problems, tool
+    for tool in prompt._TOOLS:
+        for example in prompt.examples(tool):
+            parsed = findings.parse(json.dumps({"format": findings.FORMAT, "findings": [
+                {"check": "x.y", "severity": "info", "title": "t", "draw": [json.loads(example)]}]}).encode())
+            assert parsed.findings[0].draws[0].tool == tool and not parsed.findings[0].problems, (tool, example)
+    kinds = [json.loads(example)["kind"] for example in prompt.examples("ghost")]
+    assert kinds == ["via", "part", "track", "via_row"]  # one example per kind beyond cap and pad
     assert prompt.drawing_tools_short(["layers", "nope"]) == ""
 
 
@@ -86,8 +89,10 @@ def test_stage2_tools_are_offered_with_the_checks_that_use_them():
 
 def test_stage3_tools_are_offered_with_the_checks_that_use_them():
     text = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.gap_crossing", "plane.fragmented"]))
-    assert tools_offered(text) == {"highlight", "label", "area", "plane_gap", "return_path", "plane_islands"}
+    assert tools_offered(text) == {"highlight", "label", "area", "plane_gap", "return_path", "plane_islands",
+                                   "ghost"}  # a ghost track: a route that stays over the plane
     assert '"tool": "plane_gap", "plane": "GND@In1.Cu"' in text and "plane: net@layer" in text
+    assert '"kind": "track"' in text and "ghost track (path, layer, net)" in text
     assert ("KiLeidoscope measures return_path, plane_gap on the board itself" in text
             and "(length_mm, gap_mm)" in text)
     vias = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.layer_change_no_return"]))
@@ -99,6 +104,7 @@ def test_stage3_wave2_tools_are_offered_with_the_checks_that_use_them():
     text = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.stitching_sparse", "plane.edge_unstitched"]))
     assert {"stitching", "ghost", "distance", "edge_gap"} <= tools_offered(text)
     assert '"tool": "stitching", "along": "GND@In1.Cu", "spacing_mm": 5' in text and "or edge" in text
+    assert '"kind": "via_row"' in text and f"at most {findings.MAX_ROW_VIAS} vias" in text
     stub = prompt.request_md("1", "00000000", ANSWER, by_id(["hs.stub"]))
     assert tools_offered(stub) == {"stub", "highlight", "label"} and '"tool": "stub", "via": "uuid:5a222dbd"' in stub
     assert "KiLeidoscope measures stub on the board itself" in stub and "(stub_mm)" in stub

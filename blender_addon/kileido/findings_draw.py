@@ -17,8 +17,12 @@ the copper thickness toggle), so it always sits on the copper as drawn now.
   beside the finding, above the surface the eye sees, a thin leader to what it names
   (laid out again as the eye moves); on a hole finding's cut face, flat on it.
 - distance: a thin tube with a tick at each end and the bridge's measured value, red
-  past its limit; arrow: a tube with a cone head; ghost: a translucent via, capacitor,
-  pad or track where one should be.
+  past its limit; arrow: a tube with a cone head.
+- ghost, the LLM's suggestion where it put it: a translucent via, capacitor or pad; a part
+  moved (translucent copies of its pads, a thin outline of its body, a thin arrow from
+  where it is); a route (a flat translucent ribbon at its width on its layer's copper); a
+  row of vias (each as a via ghost). One that does not fit is in the "over" red and its
+  label says so ("does not fit"); a row's clashing vias alone are red.
 - layers: listed in the column only.
 - clearance, edge_gap: as distance, between the two closest points the bridge measured;
   an edge gap's outline end has a longer tick, along the edge.
@@ -119,8 +123,10 @@ GHOST_ALPHA = 0.35
 VIA_GHOST_M = 0.6e-3
 CAP_GHOST_M = 1.0e-3  # an 0402: 1.0 x 0.5 x 0.5 mm
 PAD_GHOST_M = 0.6e-3
-TRACK_GHOST_M = (2.0e-3, 0.2e-3)  # a 2 mm ribbon, as wide as `size`
+TRACK_GHOST_NM = 200_000  # a route the bridge sent without a width
 GHOST_COPPER_M = 35e-6
+GHOST_HEAD = 4.0  # of a thin line's radius: a moved part's arrow head, its width
+GHOST_NAMES = {"part": "part move", "track": "route", "via_row": "via row"}  # in the column, by kind
 RING = 1.5  # of a return via's radius: its ring's
 RING_SEGMENTS = 24
 SPAN_TICK = 1.6  # of a span's half width: its end ticks either side
@@ -173,7 +179,7 @@ def highlighted(finding):
 def confirmed(finding):
     """False when KiLeidoscope could not confirm a finding: its items gone from the board,
     a target or a draw not found, a value the bridge measured differently, a problem whose
-    every measurement meets its limit, or a suggested via or pad that does not fit."""
+    every measurement meets its limit, or a suggestion (a ghost) that does not fit."""
     if finding.get("faded") or finding.get("disagree") or refuted(finding):
         return False
     if any(draw.get("fits") is False for draw in finding.get("draws") or ()):
@@ -501,9 +507,12 @@ def _material(kind, alpha=1.0):
 
 def _draw_points(draw):
     """Every [x_nm, y_nm] a draw names: its points, a path's, segment and stretch ends,
-    plane edges, return vias, island outlines, a stub's barrel, the marks."""
-    for key in ("points", "path_nm", "returns"):
+    plane edges, return vias, island outlines, a stub's barrel, the marks, a ghost row's
+    vias and where a moved part is now."""
+    for key in ("points", "path_nm", "returns", "row"):
         yield from (point[:2] for point in draw.get(key) or ())
+    if len(draw.get("from") or ()) >= 2:
+        yield draw["from"][:2]
     for segment in _segments(draw):
         if len(segment) >= 4:
             yield from (segment[0:2], segment[2:4])
@@ -1010,6 +1019,65 @@ def mark_text(mark):
     return ": ".join(text for text in (mark.get("kind") or "", mark.get("text") or "") if text)
 
 
+def ghost_name(draw):
+    """What a ghost suggests, in the column: "via", "part move", "route", "via row"."""
+    kind = draw.get("kind") or "item"
+    return GHOST_NAMES.get(kind, kind)
+
+
+def ghost_measure(draw):
+    """What the bridge measured of a ghost: how far a part moves ("3.20 mm"), a route's
+    length, a row's vias and their spacing ("12 vias, 1.50 mm pitch"); "" for the rest."""
+    kind = draw.get("kind")
+    if kind == "part" and draw.get("moved_nm") is not None:
+        return f"{_mm(draw['moved_nm'])} mm"
+    if kind == "track" and draw.get("length_nm") is not None:
+        return f"{_mm(draw['length_nm'])} mm"
+    if kind == "via_row" and draw.get("row"):
+        count = len(draw["row"])
+        return f"{count} via{'' if count == 1 else 's'}" + \
+            (f", {_mm(draw['pitch_nm'])} mm pitch" if draw.get("pitch_nm") else "")
+    return ""
+
+
+def ghost_clashing(draw):
+    """How many vias of a row clash (their own `fits` False)."""
+    return sum(1 for spot in draw.get("row") or () if len(spot) > 2 and spot[2] is False)
+
+
+def ghost_label(draw):
+    """A ghost's label: the LLM's label, else what it suggests ("Move C12", "Suggested
+    route", a row's "12 vias, 1.50 mm pitch"), over what the bridge measured; "does not
+    fit" in its place when it does not (never colour alone)."""
+    kind, measure = draw.get("kind"), ghost_measure(draw)
+    title = draw.get("label") or (f"Move {draw.get('part') or 'part'}" if kind == "part" else
+                                  "Suggested route" if kind == "track" else
+                                  measure if kind == "via_row" and measure else f"Suggested {kind or 'item'}")
+    if draw.get("fits") is False:
+        clashing = ghost_clashing(draw)
+        second = "does not fit" + (f": {clashing} clash" if clashing else "")
+    elif measure and measure != title:
+        second = measure
+    else:
+        second = "" if draw.get("label") else "by the LLM"
+    return f"{title}\n{second}" if second else title
+
+
+def ghost_line(draw):
+    """A ghost's measured line in the column: "Move C12: 3.20 mm", "Route: 14.20 mm long,
+    0.20 mm wide", "Via row: 12 vias, 1.50 mm pitch"; "" for the rest."""
+    measure = ghost_measure(draw)
+    if not measure:
+        return ""
+    kind = draw.get("kind")
+    if kind == "part":
+        return f"Move {draw.get('part') or 'part'}: {measure}"
+    if kind == "track":
+        width = f", {_mm(draw['width_nm'])} mm wide" if draw.get("width_nm") else ""
+        return f"Route: {measure} long{width}"
+    return f"Via row: {measure}"
+
+
 # --- The tools ------------------------------------------------------------------------------
 
 def _draw_label(draw, unit, name, finding):
@@ -1084,11 +1152,22 @@ def _draw_arrow(draw, unit, name, finding):
         _label(draw["label"], a, unit, name + " label", finding, material, draw.get("emphasis") == "strong")
 
 
+def _ghost_look(draw, finding):
+    """(translucent material, its line and label material) of a ghost: the "over" red when it does not fit."""
+    kind = "over" if draw.get("fits") is False else finding.get("severity")
+    return _material(kind, GHOST_ALPHA), _material(kind)
+
+
 def _draw_ghost(draw, unit, name, finding):
+    """A via through the board, a cap's box, a pad's square; a part moved, a route, a row
+    of vias by their own builders."""
+    builder = {"part": _ghost_part, "track": _ghost_route, "via_row": _ghost_row}.get(draw.get("kind"))
+    if builder is not None:
+        builder(draw, unit, name, finding)
+        return
     at, up = _point(draw["points"][0])
     size = (draw.get("size_nm") or 0) * 1e-9
     kind = draw.get("kind")
-    material = _material(finding.get("severity"), GHOST_ALPHA)
     if kind == "via":
         top, bottom = board.heights.get("F.Cu", board.thickness_m), board.heights.get("B.Cu", 0.0)
         build = _cylinder((size or VIA_GHOST_M) / 2, max(top - bottom, 1e-5))
@@ -1097,21 +1176,103 @@ def _draw_ghost(draw, unit, name, finding):
         length = size or CAP_GHOST_M
         build = _box((length, length / 2, length / 2))
         middle = at + Vector((0.0, 0.0, up * length / 4))
-    elif kind == "pad":
+    else:  # pad
         side = size or PAD_GHOST_M
         build = _box((side, side, GHOST_COPPER_M))
         middle = at + Vector((0.0, 0.0, up * GHOST_COPPER_M / 2))
-    else:  # track
-        length, width = TRACK_GHOST_M
-        build = _box((length, size or width, GHOST_COPPER_M))
-        middle = at + Vector((0.0, 0.0, up * GHOST_COPPER_M / 2))
-    if draw.get("fits") is False:
-        material = _material("over", GHOST_ALPHA)
+    material, line = _ghost_look(draw, finding)
     turn = Matrix.Rotation(math.radians(draw.get("rotation_deg") or 0.0), 4, "Z")  # KiCad's sense, seen from the top
     _mesh(name, build, Matrix.Translation(middle) @ turn, finding, material)
-    suggested = f"Suggested {kind or 'item'}\n" + ("does not fit" if draw.get("fits") is False else "by the LLM")
-    _label(draw.get("label") or suggested, at, unit, name + " label", finding,
-           _material("over" if draw.get("fits") is False else finding.get("severity")),
+    _label(ghost_label(draw), at, unit, name + " label", finding, line, draw.get("emphasis") == "strong")
+
+
+def _ghost_part(draw, unit, name, finding):
+    """A part moved: translucent copies of its pads a hair out from their layers' copper,
+    a thin outline of its body and a thin arrow from where it is to where it would go, on
+    its side; one label at the new place."""
+    points = [point for point in draw.get("points") or () if len(point) >= 2]
+    if not points:
+        return
+    material, line = _ghost_look(draw, finding)
+    layer = draw.get("layer") or (points[0][2] if len(points[0]) > 2 else "")
+    faces = [(pad.get("layer") or layer, _ring(pad.get("polygon_nm"))) for pad in draw.get("pads_nm") or ()]
+    faces = [face for face in faces if len(face[1]) >= 3]
+
+    def pads(bm):
+        for pad_layer, ring in faces:
+            z, _ = _surface(pad_layer, AREA_LIFT_M)
+            bm.faces.new([bm.verts.new((x, y, z)) for x, y in ring])
+    if faces:
+        try:
+            _mesh(name, pads, Matrix.Identity(4), finding, material).show_in_front = True  # over the mask
+        except ValueError:  # a pad bmesh cannot make one face of
+            pass
+    thin = _hairline(unit)
+    body = _ring(draw.get("polygon_nm"))
+    if len(body) >= 3:
+        z, _ = _surface(layer, AREA_LIFT_M + thin)
+        _tube(name + " body", [[Vector((x, y, z)) for x, y in (*body, body[0])]], thin, finding, line)
+    at = _point([*points[0][:2], layer], thin)[0]
+    start = draw.get("from") or ()
+    if len(start) >= 2:
+        _thin_arrow(name + " arrow", _point([*start[:2], layer], thin)[0], at, thin, unit, finding, line)
+    _label(ghost_label(draw), at, unit, name + " label", finding, line, draw.get("emphasis") == "strong")
+
+
+def _thin_arrow(name, a, b, thin, unit, finding, material):
+    """A thin line from `a` to `b` with a small cone at `b` (none when they meet)."""
+    along = b - a
+    length = along.length
+    if length < 1e-9:
+        return
+    direction = along / length
+    head = min(unit * 0.5, length * 0.3)
+    base = b - direction * head
+    _tube(name, [[a, base]], thin, finding, material)
+    matrix = Matrix.Translation(base + direction * head / 2) @ direction.to_track_quat("Z", "Y").to_matrix().to_4x4()
+    _mesh(name + " head", _cylinder(thin * GHOST_HEAD, head, tip=0.0), matrix, finding, material).show_in_front = True
+
+
+def _ghost_route(draw, unit, name, finding):
+    """A suggested route: a flat translucent ribbon at its width a hair out from its layer's
+    copper, round at its ends as KiCad's tracks are (copper, not a tube); its label at the
+    route's middle."""
+    points = [point for point in draw.get("path_nm") or () if len(point) >= 2]
+    if len(points) < 2:
+        return
+    layer = draw.get("layer") or (points[0][2] if len(points[0]) > 2 else "")
+    width = draw.get("width_nm") or TRACK_GHOST_NM
+    material, line = _ghost_look(draw, finding)
+    segments = [[*a[:2], *b[:2], layer, width] for a, b in zip(points, points[1:])]
+    _mesh(name, _ribbons(segments, AREA_LIFT_M), Matrix.Identity(4), finding, material).show_in_front = True
+    middle = _along([_point([*point[:2], layer], AREA_LIFT_M)[0] for point in points], 0.5)
+    _label(ghost_label(draw), middle, unit, name + " label", finding, line, draw.get("emphasis") == "strong")
+
+
+def _ghost_row(draw, unit, name, finding):
+    """A row of suggested vias, each through the board as a via ghost is: those that fit in
+    one object, those that clash in another in the "over" red; one label for the row at
+    its middle."""
+    spots = [spot for spot in draw.get("row") or () if len(spot) >= 2]
+    if not spots:
+        return
+    top, bottom = board.heights.get("F.Cu", board.thickness_m), board.heights.get("B.Cu", 0.0)
+    radius, depth = ((draw.get("size_nm") or 0) * 1e-9 or VIA_GHOST_M) / 2, max(top - bottom, 1e-5)
+    for clash in (False, True):
+        members = [spot[:2] for spot in spots if (len(spot) > 2 and spot[2] is False) == clash]
+        if not members:
+            continue
+
+        def vias(bm, centres=transform.xy_m(members, board.origin_nm)):
+            for x, y in centres:
+                bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=radius, radius2=radius, depth=depth,
+                                      matrix=Matrix.Translation((float(x), float(y), 0.0)))
+        _mesh(name + (" over" if clash else ""), vias, Matrix.Translation((0.0, 0.0, (top + bottom) / 2)), finding,
+              _material("over" if clash else finding.get("severity"), GHOST_ALPHA))
+    layer = next((point[2] for point in draw.get("points") or () if len(point) > 2 and point[2]), "F.Cu")
+    ends = (spots[0], spots[-1])
+    middle = _point([(ends[0][0] + ends[1][0]) / 2, (ends[0][1] + ends[1][1]) / 2, layer])[0]
+    _label(ghost_label(draw), middle, unit, name + " label", finding, _ghost_look(draw, finding)[1],
            draw.get("emphasis") == "strong")
 
 

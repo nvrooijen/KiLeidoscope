@@ -55,10 +55,11 @@ CATALOGUE: tuple[Check, ...] = (
           "on the next layer). Draw plane_gap with the plane as net@layer and the track as crossing "
           "(net@layer~x,y at the crossing itself); KiLeidoscope finds where it has no plane under it. "
           "If you only know how much of the track has plane under it, not where it crosses, give "
-          "coverage_pct and length_mm in values and draw return_path for the net and plane.",
+          "coverage_pct and length_mm in values and draw return_path for the net and plane. To suggest a "
+          "route that stays over the plane, add a ghost track (path, layer, net); KiLeidoscope checks it fits.",
           "net, track as net@layer~x,y at the crossing, plane as net@layer, gap_mm, or coverage_pct and "
           "length_mm",
-          ("plane_gap", "return_path", "highlight", "area", "label"), v1=True,
+          ("plane_gap", "return_path", "highlight", "area", "label", "ghost"), v1=True,
           values=("gap_mm", "coverage_pct", "length_mm")),
     Check("plane.layer_change_no_return", "plane", "Layer change without return via",
           "Find signal vias that move a signal to a layer with a different reference plane and have no "
@@ -116,7 +117,8 @@ CATALOGUE: tuple[Check, ...] = (
           "want and the largest you accept as max_mm; KiLeidoscope finds the vias along its outline "
           "and marks every stretch wider than that. Inside a pour, draw the gap between two "
           "neighbouring vias as a distance (limit_is max). Suggest new vias as ghost vias with "
-          "their net; KiLeidoscope checks each fits.",
+          "their net, or a line of them as one ghost via_row (from, to, pitch, net); KiLeidoscope checks "
+          "each fits.",
           "layer pair, via uuids, spacing in distance_mm or density in via_density_per_cm2",
           ("stitching", "distance", "ghost", "highlight"),
           values=("distance_mm", "via_density_per_cm2")),
@@ -127,8 +129,9 @@ CATALOGUE: tuple[Check, ...] = (
     Check("plane.edge_unstitched", "plane", "Pour edge not stitched",
           "Find pours that reach the board edge with no ground stitching vias along the rim. Draw "
           "stitching along edge with the ground net and the spacing you want; KiLeidoscope finds the "
-          "vias along the edge and marks every stretch wider than that; suggest new vias as ghost "
-          "vias. edge_gap shows how close the pour comes to the edge.",
+          "vias along the edge and marks every stretch wider than that; suggest new vias along the rim "
+          "as a ghost via_row (from, to, pitch, net), which KiLeidoscope checks via by via. edge_gap "
+          "shows how close the pour comes to the edge.",
           "layer, the stretch of edge, via spacing in distance_mm",
           ("stitching", "highlight", "ghost", "edge_gap", "label"),
           values=("distance_mm",)),
@@ -136,9 +139,10 @@ CATALOGUE: tuple[Check, ...] = (
     Check("decap.distance", "decap", "Decoupling cap distance",
           "Find decoupling caps far from the power pin they serve, or with a long loop to the plane. "
           "Draw a distance from the cap pad to the IC power pin with a limit (rule of thumb about 2 mm "
-          "for small caps, limit_is max) and highlight the cap.",
+          "for small caps, limit_is max) and highlight the cap. If the cap could sit closer, suggest "
+          "the move as a ghost part (part, at, rotation); KiLeidoscope checks it fits.",
           "cap reference, IC pad, distance_mm, loop length_mm or area_mm2 if measured",
-          ("distance", "highlight"), v1=True, later=("decap_loop",),
+          ("distance", "highlight", "ghost"), v1=True, later=("decap_loop",),
           values=("distance_mm", "length_mm", "area_mm2")),
     Check("decap.long_return", "decap", "Long cap return",
           "Find decoupling caps that reach the plane through a long track or a via shared with others.",
@@ -193,9 +197,10 @@ CATALOGUE: tuple[Check, ...] = (
           "inductor reference, nets and layers under it",
           ("isolate", "highlight", "layers")),
     Check("power.boot_cap_far", "power", "Bootstrap cap far",
-          "Find bootstrap or IC supply caps placed far from their pins (distance, limit_is max).",
+          "Find bootstrap or IC supply caps placed far from their pins (distance, limit_is max). A "
+          "better place for the cap is a ghost part (part, at).",
           "cap reference, IC pad, distance_mm",
-          ("distance", "highlight"),
+          ("distance", "highlight", "ghost"),
           values=("distance_mm",)),
     # DC and current
     Check("dc.trace_width", "dc", "Power track width",
@@ -258,9 +263,10 @@ CATALOGUE: tuple[Check, ...] = (
           ("clearance", "highlight"),
           values=("distance_mm", "length_mm")),
     Check("hs.termination_far", "hs", "Termination far from driver",
-          "Find series termination resistors placed far from their driver pin (distance, limit_is max).",
+          "Find series termination resistors placed far from their driver pin (distance, limit_is max). "
+          "A better place for the resistor is a ghost part (part, at).",
           "resistor reference, driver pad, distance_mm",
-          ("distance", "highlight"),
+          ("distance", "highlight", "ghost"),
           values=("distance_mm",)),
     Check("hs.bus_match", "hs", "Bus length match",
           "Find bus members that are not length matched within tolerance (state the tolerance). Draw "

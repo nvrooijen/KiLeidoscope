@@ -470,6 +470,10 @@ class BoardIndex:
         """The part a pad belongs to; None for a pad whose part the snapshot lacks."""
         return self._footprints.get(pad.footprint_id)
 
+    def part_pads(self, footprint_id: str) -> tuple[model.Pad, ...]:
+        """A part's pads that have copper, in snapshot order."""
+        return tuple(self._copper_pads.get(footprint_id, ()))
+
     def pads(self, reference: str, number: str) -> tuple[model.Pad, ...]:
         """Every pad with this number on the part: KiCad allows repeats (thermal pads)."""
         return tuple(self._pads.get((reference, number), ()))

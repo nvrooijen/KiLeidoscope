@@ -2,8 +2,9 @@
 state, the column lists both sources by check, a shown finding draws its tools at the
 right Blender coordinates (highlight, label, distance, arrow), confirm and dismiss update
 the rows, a hole finding cuts the board open through both holes and puts the user's cut
-back after, and a loaded file purges the drawing. What an LLM's file adds: isolate, a
-ghost checked to fit, a polygon area, layers, the fix and the names it mentions, a value
+back after, and a loaded file purges the drawing. What an LLM's file adds: isolate,
+ghosts checked to fit (a via, a part moved, a route, a row of vias), a polygon area,
+layers, the fix and the names it mentions, a value
 the bridge measured differently; the LLM prompt box ticks checks, sends Copy prompt with
 the user's notes, copies a ready prompt once and shows how far the LLM is (waiting,
 working, stalled, done). The measured tools (hand-built payloads, as the bridge measures
@@ -22,6 +23,7 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 import json
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import bpy
@@ -125,7 +127,27 @@ SUGGESTED = [  # what an LLM's answer adds: a ghost, a polygon area, layers, a f
               {"tool": "layers", "layers": ["F.Cu", "In1.Cu"]}]},
     {"check": "plane.isolated", "severity": "warning", "title": "Plane isolated",
      "draw": [{"tool": "isolate", "targets": [f"uuid:{ZONE}", f"uuid:{VIA}"]}]},
+    {"check": "decap.distance", "severity": "error", "title": "Moves and routes",  # each checked by the bridge
+     "draw": [{"tool": "ghost", "kind": "part", "part": "J3", "at": "pt:35,26@F.Cu", "rotation": 0},  # fits
+              {"tool": "ghost", "kind": "track", "net": "RF_B", "path": ["pt:16,10@F.Cu", "pt:26,10@F.Cu"]},  # the arc
+              {"tool": "ghost", "kind": "via_row", "from": "pt:5,2@F.Cu", "to": "pt:5,8@F.Cu", "pitch": 2,
+               "net": "GND"}]},  # its last two vias on an RF_A track
+    {"check": "decap.distance", "severity": "warning", "title": "Part on the bottom",
+     "draw": [{"tool": "ghost", "kind": "part", "part": "J4", "at": "pt:11,21@B.Cu"}]},  # its pad on J1's
 ]
+
+
+def with_second_pad(index):
+    """The fixture with a second pad on J3, 2 mm along from its first: J3 then has a body
+    (the box of its pads) to move. Blender draws what the bridge sends; the board stays."""
+    snapshot = index.snapshot
+    j3 = next(footprint for footprint in snapshot.footprints if footprint.reference == "J3")
+    first = next(pad for pad in snapshot.pads if pad.footprint_id == j3.id)
+    shifted = {layer: tuple(tuple(tuple((x + 2 * MM, y) for x, y in ring) for ring in polygon) for polygon in polygons)
+               for layer, polygons in first.polygons.items()}
+    second = replace(first, id="aaaaaaaa-0000-4000-8000-000000000002", number="2",
+                     pos=(first.pos[0] + 2 * MM, first.pos[1]), polygons=shifted)
+    return BoardIndex(replace(snapshot, pads=(*snapshot.pads, second)))
 
 
 def findings_file(extra=()):
@@ -282,8 +304,9 @@ def check_drawing(scene):
 def check_suggestions(scene, index):
     """What an LLM's file adds: a ghost via checked to fit and labelled, a polygon area just
     over its layer, layers listed; in the column the fix, a button per name the message
-    mentions, the claimed value against the measured one (the grey "?"); isolate's X-ray."""
-    apply.apply_frame(frame(index, extra=SUGGESTED), {})
+    mentions, the claimed value against the measured one (the grey "?"); isolate's X-ray;
+    a part moved, a route and a row of vias (`check_moves`)."""
+    apply.apply_frame(frame(with_second_pad(index), extra=SUGGESTED), {})
     found = show("Suggested fixes")
     drawn = objects()
     assert {"KLS finding 2 distance", "KLS finding 5 ghost", "KLS finding 5 ghost label", "KLS finding 6 area",
@@ -324,7 +347,88 @@ def check_suggestions(scene, index):
     show("Plane isolated")  # a second click hides it
     assert state.board.findings_shown == ("", "") and amount.default_value == 0.0 and not objects()
     assert zone["kls_zone_highlight"] == ""
+    check_moves(scene)
     apply.apply_frame(frame(index), {})
+
+
+def mesh_centres(obj):
+    """World (x, y) of each face's centre."""
+    return [tuple((obj.matrix_world @ face.center).xy) for face in obj.data.polygons]
+
+
+def check_moves(scene):
+    """A part moved: translucent pads at the new place on its layer, a thin body outline and
+    a thin arrow from where it is, "Move J3" over how far; a route that clashes: a flat red
+    ribbon at the net's width on F.Cu, "does not fit"; a row of vias: the clashing ones red
+    in an object of their own, one label for the row. A part on the bottom that lands on a
+    pad: red under the board. The column: whether each fits, and what was measured."""
+    found = show("Moves and routes")
+    part, route, row = found["draws"]
+    assert (part["fits"], route["fits"], row["fits"]) == (True, False, False), (part, route, row)
+    drawn = objects()
+    for name in ("KLS finding 1 ghost", "KLS finding 1 ghost body", "KLS finding 1 ghost arrow",
+                 "KLS finding 1 ghost arrow head", "KLS finding 1 ghost label", "KLS finding 2 ghost",
+                 "KLS finding 2 ghost label", "KLS finding 3 ghost", "KLS finding 3 ghost over",
+                 "KLS finding 3 ghost label"):
+        assert name in drawn, (name, sorted(drawn))
+    check_labels(found, 3)
+    severity = "KLS finding error"
+    # The part: its two pads at (33, 25) and (33, 27) mm, turned from 90 to 0 degrees, just out from F.Cu.
+    pads = drawn["KLS finding 1 ghost"]
+    assert pads.data.materials[0].name == severity + " ghost" and len(pads.data.polygons) == 2
+    expected = sorted(tuple(blender_xy([x * MM, y * MM])) for x, y in ((33, 25), (33, 27)))
+    assert np.allclose(sorted(mesh_centres(pads)), expected, atol=1e-7), mesh_centres(pads)
+    top = state.board.heights["F.Cu"]
+    heights = [v.co.z for v in pads.data.vertices]
+    assert min(heights) > top and max(heights) < top + 1e-4, (heights, top)
+    body = drawn["KLS finding 1 ghost body"]
+    assert body.type == "CURVE" and body.data.bevel_depth < findings_draw.TUBE_SHARE * label_place.size(
+        finding_box(found))  # a thin line, as a leader
+    arrow = drawn["KLS finding 1 ghost arrow"].data.splines[0].points
+    assert np.allclose(tuple(arrow[0].co)[:2], blender_xy([30 * MM, 25 * MM]), atol=1e-7)  # from where J3 is
+    assert drawn["KLS finding 1 ghost label"].data.body == "Move J3\n5.10 mm"
+    # The route: one flat ribbon (no tube) at RF_B's 0.7 mm, red: it runs over the RF_A arc.
+    ribbon = drawn["KLS finding 2 ghost"]
+    assert ribbon.type == "MESH" and ribbon.data.materials[0].name == "KLS finding over ghost"
+    zs = [v.co.z for v in ribbon.data.vertices]
+    assert np.ptp(zs) < 1e-9 and top < zs[0] < top + 1e-4, zs
+    ys = [v.co.y for v in ribbon.data.vertices]
+    assert np.isclose(np.ptp(ys), 0.7e-3, atol=1e-7), np.ptp(ys)  # its width (its round ends no wider)
+    assert drawn["KLS finding 2 ghost label"].data.body == "Suggested route\ndoes not fit"
+    # The row: four vias at (5, 2..8) mm, the two on the track red, in an object of their own.
+    fitting, clashing = drawn["KLS finding 3 ghost"], drawn["KLS finding 3 ghost over"]
+    assert fitting.data.materials[0].name == severity + " ghost"
+    assert clashing.data.materials[0].name == "KLS finding over ghost"
+    for obj, ys_mm in ((fitting, (2, 4)), (clashing, (6, 8))):
+        xy = np.array([tuple((obj.matrix_world @ v.co).xy) for v in obj.data.vertices])
+        for y_mm in ys_mm:
+            centre = blender_xy([5 * MM, y_mm * MM])
+            near = xy[np.hypot(*(xy - centre).T) < 1e-3]
+            assert len(near) and np.allclose(near.mean(axis=0), centre, atol=1e-7), (obj.name, y_mm)
+    assert drawn["KLS finding 3 ghost label"].data.body == "4 vias, 2.00 mm pitch\ndoes not fit: 2 clash"
+    # The column: whether each fits, and what the bridge measured.
+    texts = [text for _, text, _ in column(scene)]
+    for wanted in ("Suggested part move (by the LLM): fits", "Move J3: 5.10 mm", "Suggested route does not fit:",
+                   "Route: 10.00 mm long, 0.70 mm wide", "Suggested via row does not fit: 2 of 4 vias clash",
+                   "Via row: 4 vias, 2.00 mm pitch"):
+        assert any(text.startswith(wanted) for text in texts), (wanted, texts)
+    assert findings_draw.mark(finding_named("Moves and routes")) == "unknown"
+    show("Moves and routes")
+    # A part on the bottom whose pad lands on J1's: red, under the board, its label says so.
+    views = [space.region_3d.view_rotation.copy() for space in kileido.objects.view3d_spaces()]
+    found = show("Part on the bottom")
+    (moved,) = found["draws"]
+    assert moved["fits"] is False and moved["problem"].startswith("J4.1 clashes with RF_A pad"), moved["problem"]
+    drawn = objects()
+    pads = drawn["KLS finding 1 ghost"]
+    assert pads.data.materials[0].name == "KLS finding over ghost"
+    assert max(v.co.z for v in pads.data.vertices) < state.board.heights["B.Cu"]
+    assert drawn["KLS finding 1 ghost label"].data.body == "Move J4\ndoes not fit"
+    assert "KLS finding 1 ghost body" not in drawn  # one pad: no body
+    show("Part on the bottom")
+    for space, rotation in zip(kileido.objects.view3d_spaces(), views):  # seen from above again
+        space.region_3d.view_rotation = rotation
+    findings_draw._follow()
 
 
 def corners(obj):

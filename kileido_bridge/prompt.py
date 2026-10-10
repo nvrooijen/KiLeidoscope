@@ -34,7 +34,7 @@ MAX_NOTE_LINES = 8
 NOTES_HEADING = "Notes from the user"
 NOTES_RULE = "the rules in request.md come first"
 
-# tool -> (fields, what it draws, example); in the order of spec §6.1, §6.2, §6.3
+# tool -> (fields, what it draws, example or examples); in the order of spec §6.1, §6.2, §6.3
 _TOOLS = {
     "highlight": ("targets: list of targets", "glow on the targets",
                   '{"tool": "highlight", "targets": ["U3", "net:USB_D+@F.Cu~42.10,18.75"]}'),
@@ -49,13 +49,24 @@ _TOOLS = {
                  "dimension line, measured by KiLeidoscope; red past limit. limit_is min: a clearance "
                  "(closer is wrong); max: a reach (farther is wrong)",
                  '{"tool": "distance", "from": "C12.1", "to": "U3.4", "limit": 2, "limit_is": "max"}'),
-    "ghost": ("kind: via|cap|track|pad, at: target or pt:x,y@layer, size: mm (optional), net: the net it "
-              "would join (optional), rotation: degrees counter-clockwise seen from the top, 0 along x (optional)",
-              "translucent object that should be there: your suggestion; a via or pad is checked to fit "
-              "(clear of other nets' copper, and within a layer_change's limit); a cap (size: its length) is "
-              "checked to land clear of other parts and their pads on its side: put it on the side its part is "
-              "on (the layer of that part's pads), beside the pin, turned to fit",
-              '{"tool": "ghost", "kind": "via", "at": "pt:43.00,19.50@F.Cu", "size": 0.6, "net": "GND"}'),
+    "ghost": ("kind: via|cap|pad|part|track|via_row. via, cap, pad: at: target or pt:x,y@layer, size: mm "
+              "(optional), net: the net it would join (optional), rotation: degrees counter-clockwise seen from the "
+              "top, 0 along x (optional). part (move a part): part: its reference, at: its new position (KiCad's "
+              "footprint position), rotation (optional; default as it is). track (a route): path: 2 to "
+              f"{findings.MAX_GHOST_PATH} points or targets, net, layer (optional when every point names it), "
+              "width: mm (optional; default the net's usual). via_row: from, to, pitch: mm (vias no further apart), "
+              f"size and net (optional); at most {findings.MAX_ROW_VIAS} vias",
+              "translucent suggestion, drawn where you put it and checked to fit: a via, pad, moved part's pads, "
+              "route and each via of a row clear of other nets' copper (a via also within a layer_change's "
+              "limit); a cap (size: its length) or moved part clear of other parts on its side; a moved part and a "
+              "route inside the board. Put a cap on the side its part is on (the layer of that part's pads), "
+              "beside the pin, turned to fit",
+              ('{"tool": "ghost", "kind": "via", "at": "pt:43.00,19.50@F.Cu", "size": 0.6, "net": "GND"}',
+               '{"tool": "ghost", "kind": "part", "part": "C12", "at": "pt:41.20,18.75@F.Cu", "rotation": 90}',
+               '{"tool": "ghost", "kind": "track", "net": "CLK", "layer": "F.Cu", "path": ["U1.12", '
+               '"pt:45.00,20.00@F.Cu", "U4.3"]}',
+               '{"tool": "ghost", "kind": "via_row", "from": "pt:2.00,2.00@F.Cu", "to": "pt:2.00,30.00@F.Cu", '
+               '"pitch": 1.5, "net": "GND"}')),
     "area": ("layer: copper layer, and targets: list of targets or polygon: [[x, y], ...] in mm (one of them)",
              "translucent filled region",
              '{"tool": "area", "layer": "In1.Cu", "polygon": [[40.0, 15.0], [46.0, 15.0], [46.0, 17.5]]}'),
@@ -135,13 +146,19 @@ def drawn(check: Check) -> tuple[str, ...]:
     return tuple(tool for tool in check.draws if tool in findings.DRAWN)
 
 
+def examples(tool: str) -> tuple[str, ...]:
+    """A tool's examples: one, or one per kind (ghost)."""
+    example = _TOOLS[tool][2]
+    return (example,) if isinstance(example, str) else example
+
+
 def drawing_tools_short(tools: Iterable[str]) -> str:
-    """One line per tool (and its example), in spec order; tools Blender does not draw left out."""
+    """One line per tool (and its examples), in spec order; tools Blender does not draw left out."""
     wanted = set(tools) & findings.DRAWN
     lines = []
-    for tool, (fields, what, example) in _TOOLS.items():
+    for tool, (fields, what, _) in _TOOLS.items():
         if tool in wanted:
-            lines += [f"- {tool} [{fields}]: {what}", f"  {example}"]
+            lines += [f"- {tool} [{fields}]: {what}", *(f"  {example}" for example in examples(tool))]
     return "\n".join(lines)
 
 
