@@ -32,9 +32,9 @@ from .state import board
 RESOLUTION = 2048  # long side; ~22 um per pixel on the reference board, edges sharpened in shading
 IMAGE = "KLS holes"
 HOLED = ("board", "board_bottom", "board_edge", "ims_base", "vias", "via_rings", "highlight_selected",
-         "highlight_pair")  # + copper:<layer>
+         "highlight_pair", "highlight_finding")  # + copper:<layer>
 CLIPPED = ("vias", "via_rings", "plating", "plating_bare", "solder", "highlight_selected", "highlight_pair",
-           "highlight_selected_barrel", "highlight_pair_barrel")  # + copper:<layer>
+           "highlight_selected_barrel", "highlight_pair_barrel", "highlight_finding")  # + copper:<layer>
 
 THROUGH, TOP, BOTTOM = 0, 1, 2  # a via hole's side
 SIDE_MARGIN_M = 10e-6  # this far inside a laminate face still counts as that side (the board's own faces)

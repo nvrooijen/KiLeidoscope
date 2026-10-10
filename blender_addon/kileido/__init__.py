@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 4, 5),
+    "version": (0, 5, 0),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -22,8 +22,9 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        IntProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
-from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, focus, fold, footprints, holes,
-               ims, layers, lighting, live, models, packages, pick, protection, render_depth, studio, watcher)
+from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
+               findings_markers, focus, fold, footprints, hole_cut, holes, ims, layers, lighting, live, models,
+               packages, pick, protection, render_depth, studio, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -140,6 +141,10 @@ class KILEIDO_OT_pick(bpy.types.Operator):
     def invoke(self, context, event):
         from bpy_extras import view3d_utils
         coordinate = (event.mouse_region_x, event.mouse_region_y)
+        markers = findings_markers.hit(context.region.as_pointer(), *coordinate)
+        if markers is not None:  # drawn over everything: a finding's marker comes first
+            self.report({"INFO"}, findings_markers.open_markers(context, markers))
+            return {"FINISHED"}
         origin = view3d_utils.region_2d_to_origin_3d(context.region, context.region_data, coordinate)
         direction = view3d_utils.region_2d_to_vector_3d(context.region, context.region_data, coordinate)
         # The cut plane is an object to move, not a KiCad item: a click on its wireframe selects it
@@ -531,8 +536,14 @@ def _draw_studio(layout, scene):
     reset.operator(KILEIDO_OT_reset_lights.bl_idname, text="", icon="FILE_REFRESH")
 
 
-COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column}  # columns.TABS keys -> the column
-columns.STATES.update(IMS=_ims_state, FLEX=_flex_state)
+def _draw_findings(layout, scene):
+    """The DRC column (findings.py), its lines wrapped to the column."""
+    findings.draw_column(layout, scene, lambda text: _wrap(bpy.context, text))
+
+
+COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,
+           "DRC": _draw_findings}  # columns.TABS keys -> what the column draws
+columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=findings.tab_state)
 
 
 def _draw_flex(layout, scene):
@@ -1225,7 +1236,7 @@ CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_UL_boards, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
-           KILEIDO_OT_flex_group, *columns.CLASSES, KILEIDO_PT_panel)
+           KILEIDO_OT_flex_group, *findings.CLASSES, *columns.CLASSES, KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -1479,6 +1490,20 @@ def _scene_properties():
         "kileido_flex_open": StringProperty(
             name="Open flex checks", default="",
             description="The kinds of flex check shown in full in the panel, one per line"),
+        "kileido_findings_open": StringProperty(
+            name="Findings checks toggled", default="",
+            description="The DRC column's groups opened or closed from how they start, one per line"),
+        "kileido_markers": BoolProperty(
+            name="Markers", default=True,
+            description="Show each finding as an icon on the board (nearby ones share one); click one to show it",
+            update=lambda self, context: findings_markers.invalidate()),
+        "kileido_markers_level": EnumProperty(
+            name="Markers for", items=findings_markers.LEVELS, default="all",
+            update=lambda self, context: findings_markers.invalidate()),
+        "kileido_findings_dismissed": BoolProperty(
+            name="Show dismissed", default=False,
+            description="List the findings dismissed as not a problem too, greyed",
+            update=lambda self, context: findings.dismissed_toggled(context.scene)),
         "kileido_flex_use": EnumProperty(
             name="Flex use", items=(("STATIC", "Static", "Bent once, at assembly"),
                                     ("DYNAMIC", "Dynamic", "Flexing again and again in use")),
@@ -1528,8 +1553,10 @@ def _scene_properties():
 def _file_loaded(_):
     """Loading a file frees every ID the board state refers to: start over, and have a live
     bridge send the board again. A reflection image saved by another Blender install is
-    found again in this one."""
+    found again in this one. A finding drawn when the file was saved is gone: it may be stale."""
+    findings_draw.purge()
     board.reset()
+    hole_cut.restore()  # a file saved with a hole finding's cut: the user's own cut back
     lighting.refresh_reflections()
     live.request_resync()
 
@@ -1565,6 +1592,8 @@ def register():
     cut.install()
     fold.install()
     studio.install()
+    findings_draw.install()
+    findings_markers.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
@@ -1577,6 +1606,7 @@ def unregister():
     for timer in (dump.drain, _ims_rebuild):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
+    findings.release_icons()
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
@@ -1589,6 +1619,8 @@ def unregister():
     columns.uninstall()
     cut.uninstall()
     fold.uninstall()
+    findings_draw.uninstall()
+    findings_markers.uninstall()
     edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)

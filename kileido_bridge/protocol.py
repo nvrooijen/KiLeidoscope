@@ -27,6 +27,9 @@ PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}  # "|" = single byte, no byte order
 DEFAULT_THICKNESS_NM = 1_600_000  # board thickness when the stackup cannot give one
+# Every frame type the bridge sends (here and in loop.py); the add-on's client.py lists the same ones.
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
+                 "appearance", "selection", "status", "export", "findings")
 _LENGTH = struct.Struct(">I")
 
 
@@ -330,6 +333,16 @@ def all_keys(snapshot: model.BoardSnapshot) -> frozenset[Key]:
 def flex_message(report: dict | None, revision: int) -> bytes:
     """Flex mode's panel content (`flex_checks.report`); None: the board has no flex."""
     return encode_frame({"type": "flex", "revision": revision, "flex": report})
+
+
+def findings_message(payload: dict, revision: int) -> bytes:
+    """Findings for the Findings column (`findings_watch.FindingsWatch`), header only:
+    {"type": "findings", "revision", "findings": {"status": "ok" | "none" | "unsaved",
+    "folder": "<project>/.kileidoscope" or "", "drc": {"state": "idle" | "running" |
+    "failed", "error", "run"}, "sources": {"drc": ..., "file": ...}}}. Each source is
+    `findings.resolve_file`'s payload, or `findings.status_payload`'s without a file.
+    Never part of a snapshot: sent after it, so a findings resolve never delays the board."""
+    return encode_frame({"type": "findings", "revision": revision, "findings": payload})
 
 
 def snapshot_frames(snapshot: model.BoardSnapshot, revision: int = 1,

@@ -1,0 +1,875 @@
+{
+    "$schema": "https://schemas.kicad.org/drc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-10-06T12:47:04",
+    "ignored_checks": [
+        {
+            "description": "Footprint has no courtyard defined",
+            "key": "missing_courtyard"
+        },
+        {
+            "description": "Track endpoint not centered on via",
+            "key": "track_not_centered_on_via"
+        },
+        {
+            "description": "Tuning profile track geometries",
+            "key": "tuning_profile_track_geometries"
+        },
+        {
+            "description": "Footprint doesn't match symbol's footprint filters",
+            "key": "footprint_filters_mismatch"
+        },
+        {
+            "description": "Footprint component type doesn't match footprint pads",
+            "key": "footprint_type_mismatch"
+        }
+    ],
+    "included_severities": [
+        "error",
+        "warning"
+    ],
+    "kicad_version": "10.0.3",
+    "schematic_parity": [],
+    "source": "drc_violations.kicad_pcb",
+    "unconnected_items": [
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000601"
+                },
+                {
+                    "description": "Pad 1 [SIG_A] of R1 on F.Cu",
+                    "pos": {
+                        "x": 7.2,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000103"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 6,0000 mm",
+                    "pos": {
+                        "x": 16.0,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000603"
+                },
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000601"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Pad 2 [SIG_B] of R1 on F.Cu",
+                    "pos": {
+                        "x": 8.8,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000104"
+                },
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.35
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000602"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Pad 2 [SIG_B] of R1 on F.Cu",
+                    "pos": {
+                        "x": 8.8,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000104"
+                },
+                {
+                    "description": "PTH pad 1 [SIG_B] of J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000203"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.35
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000602"
+                },
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 4,5000 mm",
+                    "pos": {
+                        "x": 26.0,
+                        "y": 2.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000605"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 4.0,
+                        "y": 15.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000705"
+                },
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 7,0000 mm",
+                    "pos": {
+                        "x": 5.0,
+                        "y": 19.7
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000604"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 19.0,
+                        "y": 8.5
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000701"
+                },
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 7,0000 mm",
+                    "pos": {
+                        "x": 5.0,
+                        "y": 19.7
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000604"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 4,0000 mm",
+                    "pos": {
+                        "x": 28.0,
+                        "y": 4.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000606"
+                },
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 19.0,
+                        "y": 8.5
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000701"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 24.0,
+                        "y": 12.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000702"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        }
+    ],
+    "violations": [
+        {
+            "description": "Annular width (board setup constraints min annular width 0,1000 mm; actual 0,0500 mm)",
+            "items": [
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 4.0,
+                        "y": 15.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000705"
+                }
+            ],
+            "severity": "error",
+            "type": "annular_width"
+        },
+        {
+            "description": "Tracks crossing",
+            "items": [
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 4,5000 mm",
+                    "pos": {
+                        "x": 26.0,
+                        "y": 2.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000605"
+                },
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 4,0000 mm",
+                    "pos": {
+                        "x": 28.0,
+                        "y": 4.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000606"
+                }
+            ],
+            "severity": "error",
+            "type": "tracks_crossing"
+        },
+        {
+            "description": "Clearance violation ( clearance 0,2000 mm; actual 0,1000 mm)",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000601"
+                },
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.35
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000602"
+                }
+            ],
+            "severity": "error",
+            "type": "clearance"
+        },
+        {
+            "description": "Clearance violation ( clearance 0,2000 mm; actual 0,0500 mm)",
+            "items": [
+                {
+                    "description": "PTH pad 1 [SIG_B] of J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000203"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "error",
+            "type": "clearance"
+        },
+        {
+            "description": "Clearance violation ( clearance 0,2000 mm; actual 0,0750 mm)",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 6,0000 mm",
+                    "pos": {
+                        "x": 16.0,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000603"
+                },
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 19.0,
+                        "y": 8.5
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000701"
+                }
+            ],
+            "severity": "error",
+            "type": "clearance"
+        },
+        {
+            "description": "Hole clearance violation (board setup constraints hole clearance 0,2500 mm; actual 0,2250 mm)",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 6,0000 mm",
+                    "pos": {
+                        "x": 16.0,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000603"
+                },
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 19.0,
+                        "y": 8.5
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000701"
+                }
+            ],
+            "severity": "error",
+            "type": "hole_clearance"
+        },
+        {
+            "description": "Hole clearance violation (board setup constraints hole clearance 0,2500 mm; actual 0,2000 mm)",
+            "items": [
+                {
+                    "description": "PTH pad 1 [SIG_B] of J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000203"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "error",
+            "type": "hole_clearance"
+        },
+        {
+            "description": "Clearance violation ( clearance 0,2000 mm; actual 0,0500 mm)",
+            "items": [
+                {
+                    "description": "PTH pad 1 [SIG_B] of J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000203"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "error",
+            "type": "clearance"
+        },
+        {
+            "description": "Hole clearance violation (board setup constraints hole clearance 0,2500 mm; actual 0,2000 mm)",
+            "items": [
+                {
+                    "description": "PTH pad 1 [SIG_B] of J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000203"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "error",
+            "type": "hole_clearance"
+        },
+        {
+            "description": "Hole clearance violation (board setup constraints hole clearance 0,2500 mm; actual 0,2000 mm)",
+            "items": [
+                {
+                    "description": "PTH pad 1 [SIG_B] of J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000203"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "error",
+            "type": "hole_clearance"
+        },
+        {
+            "description": "Courtyards overlap",
+            "items": [
+                {
+                    "description": "Footprint R2",
+                    "pos": {
+                        "x": 20.0,
+                        "y": 16.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000300"
+                },
+                {
+                    "description": "Footprint R2",
+                    "pos": {
+                        "x": 21.2,
+                        "y": 16.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000400"
+                }
+            ],
+            "severity": "error",
+            "type": "courtyards_overlap"
+        },
+        {
+            "description": "Board edge clearance violation (board setup constraints edge clearance 0,5000 mm; actual 0,1750 mm)",
+            "items": [
+                {
+                    "description": "Rectangle on Edge.Cuts",
+                    "pos": {
+                        "x": 0.0,
+                        "y": 0.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000500"
+                },
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 7,0000 mm",
+                    "pos": {
+                        "x": 5.0,
+                        "y": 19.7
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000604"
+                }
+            ],
+            "severity": "error",
+            "type": "copper_edge_clearance"
+        },
+        {
+            "description": "Via diameter (board setup constraints min diameter 0,5000 mm; actual 0,4000 mm)",
+            "items": [
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 4.0,
+                        "y": 15.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000705"
+                }
+            ],
+            "severity": "error",
+            "type": "via_diameter"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000601"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 10,0000 mm",
+                    "pos": {
+                        "x": 2.0,
+                        "y": 3.35
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000602"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [SIG_A] on F.Cu, length 6,0000 mm",
+                    "pos": {
+                        "x": 16.0,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000603"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Via is not connected or connected on only one layer",
+            "items": [
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 19.0,
+                        "y": 8.5
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000701"
+                }
+            ],
+            "severity": "warning",
+            "type": "via_dangling"
+        },
+        {
+            "description": "Via is not connected or connected on only one layer",
+            "items": [
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 24.0,
+                        "y": 12.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000702"
+                }
+            ],
+            "severity": "warning",
+            "type": "via_dangling"
+        },
+        {
+            "description": "Via is not connected or connected on only one layer",
+            "items": [
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 24.5,
+                        "y": 12.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000703"
+                }
+            ],
+            "severity": "warning",
+            "type": "via_dangling"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 7,0000 mm",
+                    "pos": {
+                        "x": 5.0,
+                        "y": 19.7
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000604"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [SIG_B] on F.Cu, length 4,5000 mm",
+                    "pos": {
+                        "x": 26.0,
+                        "y": 2.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000605"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [SIG_C] on F.Cu, length 4,0000 mm",
+                    "pos": {
+                        "x": 28.0,
+                        "y": 4.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000606"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Via is not connected or connected on only one layer",
+            "items": [
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 12.85,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000704"
+                }
+            ],
+            "severity": "warning",
+            "type": "via_dangling"
+        },
+        {
+            "description": "Via is not connected or connected on only one layer",
+            "items": [
+                {
+                    "description": "Via [SIG_C] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 4.0,
+                        "y": 15.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000705"
+                }
+            ],
+            "severity": "warning",
+            "type": "via_dangling"
+        },
+        {
+            "description": "Silkscreen clipped by board edge",
+            "items": [
+                {
+                    "description": "Rectangle on Edge.Cuts",
+                    "pos": {
+                        "x": 0.0,
+                        "y": 0.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000500"
+                },
+                {
+                    "description": "PCB text 'EDGE' on F.Silkscreen",
+                    "pos": {
+                        "x": 29.0,
+                        "y": 10.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000501"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_edge_clearance"
+        },
+        {
+            "description": "Drilled hole too close to other hole (board setup constraints min 0,2495 mm; actual 0,2000 mm)",
+            "items": [
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 24.0,
+                        "y": 12.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000702"
+                },
+                {
+                    "description": "Via [GND] on F.Cu - B.Cu",
+                    "pos": {
+                        "x": 24.5,
+                        "y": 12.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000703"
+                }
+            ],
+            "severity": "warning",
+            "type": "hole_to_hole"
+        },
+        {
+            "description": "The current configuration does not include the footprint library 'Fixture'",
+            "items": [
+                {
+                    "description": "Footprint R1",
+                    "pos": {
+                        "x": 8.0,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000100"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_issues"
+        },
+        {
+            "description": "The current configuration does not include the footprint library 'Fixture'",
+            "items": [
+                {
+                    "description": "Footprint J1",
+                    "pos": {
+                        "x": 14.0,
+                        "y": 14.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000200"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_issues"
+        },
+        {
+            "description": "The current configuration does not include the footprint library 'Fixture'",
+            "items": [
+                {
+                    "description": "Footprint R2",
+                    "pos": {
+                        "x": 20.0,
+                        "y": 16.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000300"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_issues"
+        },
+        {
+            "description": "The current configuration does not include the footprint library 'Fixture'",
+            "items": [
+                {
+                    "description": "Footprint R2",
+                    "pos": {
+                        "x": 21.2,
+                        "y": 16.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000400"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_issues"
+        },
+        {
+            "description": "The current configuration does not include the footprint library 'Fixture'",
+            "items": [
+                {
+                    "description": "Footprint TP1",
+                    "pos": {
+                        "x": 28.0,
+                        "y": 4.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000800"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_issues"
+        },
+        {
+            "description": "The current configuration does not include the footprint library 'Fixture'",
+            "items": [
+                {
+                    "description": "Footprint TP2",
+                    "pos": {
+                        "x": 26.0,
+                        "y": 6.5
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000900"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_issues"
+        },
+        {
+            "description": "Silkscreen clipped by solder mask",
+            "items": [
+                {
+                    "description": "Segment on F.Silkscreen",
+                    "pos": {
+                        "x": 6.5,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000502"
+                },
+                {
+                    "description": "Pad 1 [SIG_A] of R1 on F.Cu",
+                    "pos": {
+                        "x": 7.2,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000103"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_over_copper"
+        },
+        {
+            "description": "Silkscreen clipped by solder mask",
+            "items": [
+                {
+                    "description": "Segment on F.Silkscreen",
+                    "pos": {
+                        "x": 6.5,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000502"
+                },
+                {
+                    "description": "Pad 2 [SIG_B] of R1 on F.Cu",
+                    "pos": {
+                        "x": 8.8,
+                        "y": 8.0
+                    },
+                    "uuid": "d0c00000-0000-4000-8000-000000000104"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_over_copper"
+        }
+    ]
+}

@@ -7,6 +7,7 @@ from . import nodes
 from .state import board
 
 OUTLINE = "KLS outline"
+VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
 
 
 def set_visible(obj, visible):
@@ -60,6 +61,7 @@ GROUPS = (
     ("drawings", "Drawings"),
     ("components", "Components"),
     ("highlights", "Highlights"),
+    ("findings", "Findings"),  # the DRC column's drawing (findings_draw)
 )
 _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zone": "pours", "drill": "drills",
                  "solder": "paste"}
@@ -67,6 +69,8 @@ _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zo
 
 def group_of(name):
     """The GROUPS key for a KiLeidoscope object name ("KLS F.Cu zone <id>" -> "pours")."""
+    if name.startswith("KLS finding "):
+        return "findings"
     if "highlight" in name:
         return "highlights"
     if name.startswith("KLS overlay "):  # "KLS overlay F.SilkS", "KLS overlay F.SilkS walls"
@@ -200,6 +204,15 @@ def view3d_spaces():
         for area in screen.areas:
             if area.type == "VIEW_3D":
                 yield area.spaces.active
+
+
+def shown_views():
+    """(area pointer, region_3d) of every 3D view in an open window: the screens on show,
+    not every workspace's screen in the file (those are views nobody is looking through)."""
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D" and area.spaces.active.region_3d is not None:
+                yield area.as_pointer(), area.spaces.active.region_3d
 
 
 def outline_bounds():

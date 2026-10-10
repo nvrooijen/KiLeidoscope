@@ -20,8 +20,8 @@ class LiveLink:
     """One connection to a bridge, reconnecting until `disconnect`.
 
     Frames are queued as they arrive and applied within a time budget per tick. A
-    newer frame for the same (layer, kind) replaces a queued older one, and a
-    snapshot supersedes everything queued before it.
+    newer frame for the same (layer, kind) replaces a queued older one (a newer findings
+    frame an older one), and a snapshot supersedes everything queued before it.
     """
 
     def __init__(self):
@@ -141,6 +141,10 @@ class LiveLink:
                     if queued.get("type") != "layer_data" or (queued.get("layer"), queued.get("kind")) != key]
             self.pending.clear()
             self.pending.extend(kept)
+        elif kind == "findings":  # each one is the whole list: only the newest counts
+            kept = [(queued, queued_arrays) for queued, queued_arrays in self.pending if queued.get("type") != kind]
+            self.pending.clear()
+            self.pending.extend(kept)
         self.pending.append((header, arrays))
         if kind == "snapshot_end":
             self.receiving_snapshot = False
@@ -231,7 +235,14 @@ def request_resync(adopt=False):
         link.client.request_resync(adopt)
 
 
-def request_select(ids, extend=False, center=False):
-    """A click in Blender: select these items in KiCad, and with `center` pan KiCad to them."""
+def request_select(ids, extend=False, center=False, exact=False):
+    """A click in Blender: select these items in KiCad, and with `center` pan KiCad to them;
+    `exact` (a finding) highlights the items alone, not their whole nets."""
     if link.client is not None:
-        link.client.request_select(ids, extend, center)
+        link.client.request_select(ids, extend, center, exact)
+
+
+def request_findings(action, key="", source="drc"):
+    """The DRC column: confirm, dismiss or reset a finding, run DRC."""
+    if link.client is not None:
+        link.client.request_findings(action, key, source)

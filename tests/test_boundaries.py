@@ -101,3 +101,41 @@ def test_the_only_kicad_action_pans_the_view():
                  for target in node.targets if isinstance(target, ast.Name)}
     assert isinstance(constants["CENTER_ACTION"], ast.Constant)
     assert constants["CENTER_ACTION"].value == VIEW_ACTION
+
+
+# Modules that may write files, and where: the live board copy and the hatch job in
+# folders of their own, kls_folder only inside the project's .kileidoscope folder, the
+# launcher its lock, log and pid files, and the dev CLI the dump the user names.
+WRITERS = {"live_copy.py", "hatch.py", "kls_folder.py", "launcher.py", "cli.py"}
+WRITE_CALLS = {"write_text", "write_bytes", "replace", "rename", "copyfile", "copy", "copy2", "copytree", "move",
+               "dump", "unlink", "rmtree", "mkdir", "makedirs"}
+
+
+def _writes(tree) -> list[str]:
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in WRITE_CALLS:
+            if func.attr in ("replace", "copy") and not (isinstance(func.value, ast.Name)
+                                                         and func.value.id in ("os", "shutil")):
+                continue  # str.replace, dict.copy, dataclasses.replace
+            if func.attr == "dump" and not (isinstance(func.value, ast.Name) and func.value.id == "json"):
+                continue
+            found.append(func.attr)
+        is_open = (isinstance(func, ast.Name) and func.id == "open") or             (isinstance(func, ast.Attribute) and func.attr == "open")
+        if is_open:
+            modes = [arg for arg in node.args[1:2]] + [kw.value for kw in node.keywords if kw.arg == "mode"]
+            if any(not isinstance(mode, ast.Constant) or set(str(mode.value)) & set("wax+") for mode in modes):
+                found.append("open")
+    return found
+
+
+def test_only_known_modules_write_files():
+    """The bridge reads the user's project; writing into it is kls_folder's alone."""
+    for path in BRIDGE.rglob("*.py"):
+        if path.name not in WRITERS:
+            assert not _writes(ast.parse(path.read_text(encoding="utf-8"))), path
+    for name in WRITERS:  # the list stays honest
+        assert _writes(ast.parse((BRIDGE / name).read_text(encoding="utf-8"))), name

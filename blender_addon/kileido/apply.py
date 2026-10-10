@@ -2,7 +2,8 @@
 
 Frames and their order are defined by the bridge (kileido_bridge/protocol.py): a
 snapshot is `snapshot_begin`, `board`, layer data, `footprints`, `stackup`,
-`snapshot_end`; live edits send single layer-data, footprint or selection frames.
+`snapshot_end`; live edits send single layer-data, footprint or selection frames. The
+DRC column's findings come in their own frames, after a snapshot.
 """
 
 import hashlib
@@ -11,19 +12,18 @@ import time
 import bpy
 import numpy as np
 
-from . import (cosmetics, cut, edge_plating, focus, fold, footprints, highlight, holes, ims, laminate, layers,
-               lighting, materials, models, nodes, protection, render_depth, studio, transform)
+from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
+               laminate, layers, lighting, materials, models, nodes, protection, render_depth, studio, transform)
 from .client import FrameDecoder
-from .objects import (OUTLINE, ensure_groups, hide, owned_object, read_attribute, read_coordinates, read_edges,
-                      set_modifier, set_node_input, set_visible, single_point, view3d_spaces, write_attribute,
-                      outline_bounds)
+from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, owned_object, read_attribute, read_coordinates,
+                      read_edges, set_modifier, set_node_input, set_visible, single_point, view3d_spaces,
+                      write_attribute, outline_bounds)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
 from . import state
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
-VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
 SECTION_INPUTS = ("board", "layer_data", "appearance", "stackup")  # frames the cut plane's section reads
 PLATED_WALL_INSET_M = 5e-6  # a plated drill wall stands this far inside its drill: clear of a board edge
                            # that follows the drill (a castellation drawn as a notch)
@@ -70,6 +70,8 @@ def apply_frame(header, arrays):
         # for it (the footprints frame alongside carries the variant's DNP flags).
         board.export = header.get("export") or {}
         models.follow_board(board.board_path, board.export)
+    elif message_type == "findings":
+        findings.apply_findings(header)  # the DRC column's list, and the finding drawn
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:
@@ -152,6 +154,7 @@ def _end_snapshot():
     cut.refresh()
     fold.invalidate()
     edge_plating.refresh()
+    findings_draw.refresh()  # after the sweep above: its objects are made again
     frame_board()
     models.follow_board(board.board_path, board.export)
     cosmetics.follow_board(board.board_path, board.export)
@@ -791,5 +794,6 @@ def refresh_thickness():
         _place_board(outline)
     holes.refresh_sides()  # which heights are the board's top and bottom side
     highlight.refresh()
+    findings_draw.refresh()  # its labels and lines sit on the copper's surfaces
     cosmetics.recolor()
     cut.invalidate()  # the section's lands stand out of the copper as far as the 3D pads

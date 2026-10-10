@@ -549,3 +549,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    import runpy  # then the DRC column's checks, on a fresh registration of the add-on
+    runpy.run_path(str(Path(__file__).with_name("run_findings.py")), run_name="__main__")

@@ -15,6 +15,8 @@ import socket
 import sys
 import time
 
+from .findings_watch import ACTIONS as FINDINGS_ACTIONS
+from .kls_folder import SOURCES as FINDINGS_SOURCES
 from .protocol import FrameDecoder
 
 DEFAULT_PORT = 47811
@@ -23,6 +25,8 @@ HELLO_MAX_BYTES = 64 * 1024  # a hello frame is a few hundred bytes
 VIEWER_MAX_BYTES = 4 * 1024 * 1024  # viewer frames are small; a selection holds at most MAX_SELECT_IDS ids
 HELLO_TIMEOUT_S = 5.0
 MAX_SELECT_IDS = 10_000
+MAX_FINDINGS_KEY = 64
+MAX_FINDINGS_REQUESTS = 64  # queued between two steps; more are dropped
 RECV_BYTES = 1 << 20
 
 
@@ -46,6 +50,7 @@ class BridgeServer:
         self.candidate_deadline = 0.0
         self.needs_snapshot = False
         self.select_requests = []
+        self.findings_requests = []
         self.adopt_requested = False  # the user pressed Resync in Blender
         self.outgoing = bytearray()
         self.snapshot_bytes = 0  # of `outgoing`: the latest snapshot, exempt from the backlog cap
@@ -118,7 +123,13 @@ class BridgeServer:
         elif header.get("type") == "select":  # a click in Blender
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
             extend, center = bool(header.get("extend", False)), bool(header.get("center", False))
-            self.select_requests.append((ids, extend, center))
+            self.select_requests.append((ids, extend, center, bool(header.get("exact", False))))
+        elif header.get("type") == "findings":  # confirm/dismiss a finding, Run DRC, ...
+            action, key, source = header.get("action"), header.get("key", ""), header.get("source", "drc")
+            if (isinstance(action, str) and action in FINDINGS_ACTIONS and isinstance(key, str)
+                    and len(key) <= MAX_FINDINGS_KEY and source in FINDINGS_SOURCES
+                    and len(self.findings_requests) < MAX_FINDINGS_REQUESTS):
+                self.findings_requests.append((action, key, source))
 
     def pump(self, timeout: float = 0.0) -> None:
         if self.candidate is not None and time.monotonic() > self.candidate_deadline:
@@ -173,6 +184,11 @@ class BridgeServer:
 
     def take_select_requests(self) -> list[tuple[list[str], bool, bool]]:
         requests, self.select_requests = self.select_requests, []
+        return requests
+
+    def take_findings_requests(self) -> list[tuple[str, str, str]]:
+        """(action, finding key, source) of each findings request, oldest first."""
+        requests, self.findings_requests = self.findings_requests, []
         return requests
 
     def take_adopt(self) -> bool:

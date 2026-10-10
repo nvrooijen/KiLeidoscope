@@ -15,7 +15,8 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import apply, components, cosmetics, cut, highlight, ims, layers, lighting, materials, nodes, render_depth, transform
+from . import (apply, components, cosmetics, cut, findings_draw, highlight, ims, layers, lighting, materials, nodes,
+               render_depth, transform)
 from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
@@ -134,7 +135,12 @@ def _mask_sheets(collection):
 
 def export_board(filepath):
     """Write the live board to a .blend package for `import_board`: as it looks now,
-    without KiCad's selection, and with its own Layers list."""
+    without KiCad's selection or a finding drawn, and with its own Layers list."""
+    with findings_draw.left_out():  # the DRC column's drawing is this session's, not the board's
+        _export_board(filepath)
+
+
+def _export_board(filepath):
     collection = board.collection
     if collection is None or board.in_snapshot:
         raise RuntimeError("No complete board to export")
