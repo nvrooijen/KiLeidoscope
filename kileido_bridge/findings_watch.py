@@ -489,12 +489,14 @@ class FindingsWatch:
     def _read_file(self, folder, source: str):
         """FindingsFile, FindingsError, None (no file) or _UNREAD (try again)."""
         try:
-            with folder.path_for(source).open("rb") as handle:
+            with folder.open_read(folder.path_for(source)) as handle:
                 data = handle.read(findings.MAX_FILE_BYTES + 1)
         except FileNotFoundError:
             return None
         except OSError:
             return _UNREAD
+        except ValueError:
+            return findings.FindingsError("the findings file is a link out of the .kileidoscope folder: not read")
         try:
             return findings.parse(data)
         except findings.FindingsError as error:
@@ -503,10 +505,10 @@ class FindingsWatch:
     def _read_progress(self, folder):
         """(parse_progress or None, mtime) of the progress file, or _UNREAD (try again)."""
         try:
-            with folder.progress_path.open("rb") as handle:
+            with folder.open_read(folder.progress_path) as handle:
                 mtime = os.fstat(handle.fileno()).st_mtime
                 data = handle.read(kls_folder.MAX_PROGRESS_BYTES + 1)
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):  # none, or a link out of the folder: not read
             return None, 0.0
         except OSError:
             return _UNREAD

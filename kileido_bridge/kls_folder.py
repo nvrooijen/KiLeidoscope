@@ -8,8 +8,9 @@ file. A `.gitignore` holding `*` keeps the folder out of the user's repository.
 - `runs/<N>/board.kicad_pcb`: KiCad's raw board text at the moment of a run (unsaved
   edits included), so it hashes to the run's stamp; `run.json` beside it, and copies of
   `<stem>.kicad_pro` / `<stem>.kicad_dru` as `board.*` (net classes, rule severities,
-  exclusions, custom rules) for kicad-cli. An LLM run adds `board.kls-board.json` (the
-  digest) and `request.md` (`prompt.make_run`). The last `KEEP_RUNS` runs are kept.
+  exclusions, custom rules) for kicad-cli. An LLM run's copies are scrubbed of what names
+  the user (`scrub.py`) and it adds `board.kls-board.json` (the digest) and `request.md`
+  (`prompt.make_run`). The last `KEEP_RUNS` runs are kept.
 - `<stem>.kls-findings.json`: an LLM's (or any tool's) answer; only read here.
 - `<stem>.drc.kls-findings.json`: the bridge's DRC findings.
 - `<stem>.kls-progress.json`: how far an LLM is with a prompt run (optional, `PROGRESS_FORMAT`,
@@ -179,21 +180,25 @@ class KlsFolder:
             return []
         return sorted(int(name) for name in names if _RUN_ID.fullmatch(name))
 
-    def new_run(self, text: str, kind: str) -> Run:
-        """Freeze KiCad's raw board text as the next run; older runs past KEEP_RUNS go."""
+    def new_run(self, text: str, kind: str, clean=None) -> Run:
+        """Freeze KiCad's raw board text as the next run; older runs past KEEP_RUNS go.
+        `clean(suffix, data)` gives each copy as written (None: left out), for an LLM run
+        (`scrub.clean`); the stamp is always the raw text's."""
         self.ensure()
         numbers = self._run_numbers()
         number = (numbers[-1] if numbers else 0) + 1
         run_id, run_stamp = str(number), stamp(text)
         directory = f"runs/{run_id}"
-        self._write(f"{directory}/board.kicad_pcb", text.encode("utf-8"))
+        copies = [(".kicad_pcb", text.encode("utf-8"))]
         for suffix in (".kicad_pro", ".kicad_dru"):
-            source = self.project / f"{self.stem}{suffix}"
             try:
-                data = source.read_bytes()
+                copies.append((suffix, (self.project / f"{self.stem}{suffix}").read_bytes()))
             except OSError:
                 continue  # none in this project
-            self._write(f"{directory}/board{suffix}", data)
+        for suffix, data in copies:
+            data = clean(suffix, data) if clean is not None else data
+            if data is not None:
+                self._write(f"{directory}/board{suffix}", data)
         info = {"run": run_id, "stamp": run_stamp, "board": f"{self.stem}.kicad_pcb", "kind": kind,
                 "made": datetime.now().astimezone().isoformat(timespec="seconds")}
         self._write(f"{directory}/run.json", json.dumps(info, indent=1).encode("utf-8"))
@@ -251,6 +256,11 @@ class KlsFolder:
             self._inside(self.drc_findings_path.name).unlink()
         except OSError:  # missing, or locked by an editor: the next run overwrites it anyway
             pass
+
+    def open_read(self, path: Path):
+        """A file of this folder opened for reading in binary, refused (ValueError) when a
+        link leads it out of the folder: an LLM's answer or progress file is read only so."""
+        return self._inside(path.name).open("rb")
 
     def write_findings(self, data: dict, source: str = "drc") -> Path:
         """A findings file the bridge made (DRC), written whole or not at all."""
