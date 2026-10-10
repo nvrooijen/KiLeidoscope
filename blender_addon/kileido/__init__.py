@@ -536,14 +536,15 @@ def _draw_studio(layout, scene):
     reset.operator(KILEIDO_OT_reset_lights.bl_idname, text="", icon="FILE_REFRESH")
 
 
-def _draw_findings(layout, scene):
-    """The DRC column (findings.py), its lines wrapped to the column."""
-    findings.draw_column(layout, scene, lambda text: _wrap(bpy.context, text))
+def _draw_findings(tab):
+    """The DRC or LLM column (findings.py), its lines wrapped to the column."""
+    return lambda layout, scene: findings.draw_column(layout, scene, lambda text: _wrap(bpy.context, text), tab)
 
 
 COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,
-           "DRC": _draw_findings}  # columns.TABS keys -> what the column draws
-columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=findings.tab_state)
+           "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM")}  # columns.TABS keys -> what the column draws
+columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=lambda: findings.tab_state("DRC"),
+                      LLM=lambda: findings.tab_state("LLM"))
 
 
 def _draw_flex(layout, scene):

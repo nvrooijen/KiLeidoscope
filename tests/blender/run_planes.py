@@ -201,7 +201,7 @@ def main():
 
         for finding in payload["findings"]:
             state.board.findings_shown = ("file", finding["key"])
-            findings.draw_column(Layout(), bpy.context.scene, lambda text: [text])
+            findings.draw_column(Layout(), bpy.context.scene, lambda text: [text], "LLM")
         state.board.findings_shown = ("", "")
         assert not [text for text in texts if "not drawn" in text], [text for text in texts if "not drawn" in text]
         print("KLS_PLANES_OK")

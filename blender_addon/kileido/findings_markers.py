@@ -129,12 +129,13 @@ def open_markers(context, members):
     for source_name, check in dict.fromkeys((marker["source"], marker["finding"].get("check") or "other")
                                             for marker in members):
         findings.open_group(context.scene, source_name, check)  # its row in sight, its details under it
-    if context.area is not None and context.scene.kileido_column != "DRC":
-        columns.open_column(context, "DRC")
     keys = [(marker["source"], marker["key"]) for marker in members]
     showing = keys.index(board.findings_shown) if board.findings_shown in keys else -1
     number = (showing + 1) % len(members) if len(members) > 1 else 0
     marker = members[number]
+    tab = findings.TABS.get(marker["source"], "DRC")  # the tab that lists it
+    if context.area is not None and context.scene.kileido_column != tab:
+        columns.open_column(context, tab)
     bpy.ops.kileido.finding_show(source=marker["source"], key=marker["key"])
     title = marker["finding"].get("title") or marker["finding"].get("check") or "finding"
     if len(members) == 1:

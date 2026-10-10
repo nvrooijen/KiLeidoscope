@@ -1,15 +1,15 @@
-"""The DRC column (its bookmark tab, columns.py): the bridge's findings, listed.
+"""The DRC and LLM columns (their bookmark tabs, columns.py): the bridge's findings, listed.
 
 The bridge sends one `findings` frame with two sources (kileido_bridge/findings.py builds
-each): "drc", KiCad's own DRC run on a copy of the board (the KiCad DRC button), and
-"file", what a tool or script wrote into the project's .kileidoscope folder. Each is listed
-in its own section, grouped by check, errors first. A finding's title shows it
+each): "drc", KiCad's own DRC run on a copy of the board (the KiCad DRC button), listed in
+the DRC tab, and "file", what the user's LLM (or a script) wrote into the project's
+.kileidoscope folder, listed in the LLM tab. Each is grouped by check, errors first. A finding's title shows it
 (findings_draw: its highlight, label, distance, ...) and frames the 3D views on it; its
 buttons select its items in KiCad, confirm it or dismiss it; a hole finding also cuts the
 board open through both holes (hole_cut.py). Everything in a finding is plain text from the
 file: shown as labels, never run or opened.
 
-Above the file's section, the LLM prompt box: the bridge's check catalogue as tick boxes by
+At the top of the LLM tab, the prompt box: the bridge's check catalogue as tick boxes by
 group, notes for the LLM (ready-made sentences to tick, and the user's own line), and Copy
 prompt. The bridge freezes a run for the ticked checks and sends the prompt back; the add-on
 puts it on the clipboard once, for the user to paste into their LLM tool. Under it, how far
@@ -26,7 +26,8 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import findings_draw, fold, hole_cut
 from .state import board
 
-SOURCES = (("drc", "KiCad DRC"), ("file", "File"))
+SOURCES = (("drc", "KiCad DRC"), ("file", "LLM"))
+TABS = {"drc": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS) that lists it
 MENTION_ICONS = {"part": "MESH_CUBE", "pad": "MESH_PLANE", "net": "LINKED", "via": "RADIOBUT_OFF"}  # by kind
 SEVERITY_ICONS = {"error": "ERROR", "warning": "ERROR", "info": "INFO", "unknown": "QUESTION"}  # without previews
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
@@ -272,12 +273,14 @@ def choose(scene, ids):
     scene.kileido_prompt_checks = "\n".join(sorted(ids)) or "\n"
 
 
-def tab_state():
-    """"unavailable" without a live link, "on" while a finding is shown, else "off"."""
+def tab_state(tab):
+    """"unavailable" without a live link, "on" while one of this tab's findings is shown,
+    else "off"."""
     from . import live
     if not live.linked():
         return "unavailable"
-    return "on" if findings_draw.shown_finding() is not None else "off"
+    shown = findings_draw.shown_finding() is not None and TABS.get(board.findings_shown[0]) == tab
+    return "on" if shown else "off"
 
 
 # --- The column -----------------------------------------------------------------------------
@@ -287,46 +290,49 @@ def _lines(layout, wrap, text, icon="NONE"):
         layout.label(text=line, icon=icon if index == 0 else ("BLANK1" if icon != "NONE" else "NONE"))
 
 
-def draw_column(layout, scene, wrap):
-    """The column: the KiCad DRC button and its state, then each source's findings."""
+def draw_column(layout, scene, wrap, tab):
+    """One tab's column: "DRC", the KiCad DRC button and its findings; "LLM", the prompt box
+    and the findings file's findings."""
     from . import live
-    layout.label(text="DRC")
+    layout.label(text=tab)
     found = board.findings or {}
     status = found.get("status", "")
-    drc = found.get("drc") or {}
-    running = drc.get("state") == "running"
     box = layout.box()
     linked = live.linked()
     if not linked:
         _lines(box, wrap, "KiCad not connected: use Open in Blender in KiCad to check the board", "INFO")
     if status == "unsaved":
         _lines(box, wrap, "Save the board first: DRC runs and findings files live beside it", "ERROR")
-    row = box.row()
-    row.enabled = linked and status != "unsaved" and not running
-    row.operator(KILEIDO_OT_findings_run_drc.bl_idname, text="Running KiCad DRC…" if running else "KiCad DRC",
-                 icon="TIME" if running else "PLAY")
-    if drc.get("state") == "failed":
-        _lines(box, wrap, f"DRC failed: {drc.get('error') or 'no report'}", "ERROR")
+    if tab == "DRC":
+        drc = found.get("drc") or {}
+        running = drc.get("state") == "running"
+        row = box.row()
+        row.enabled = linked and status != "unsaved" and not running
+        row.operator(KILEIDO_OT_findings_run_drc.bl_idname, text="Running KiCad DRC…" if running else "KiCad DRC",
+                     icon="TIME" if running else "PLAY")
+        if drc.get("state") == "failed":
+            _lines(box, wrap, f"DRC failed: {drc.get('error') or 'no report'}", "ERROR")
     box.prop(scene, "kileido_findings_dismissed", text="Show dismissed")
     markers = box.row(align=True)
     markers.prop(scene, "kileido_markers", text="Markers")
     level = markers.row(align=True)
     level.active = scene.kileido_markers
     level.prop(scene, "kileido_markers_level", expand=True)
-    if findings_draw.shown_finding() is not None and fold.folded():
+    if tab_state(tab) == "on" and fold.folded():
         _lines(box, wrap, "The drawing is hidden while the board is folded: set Fold to 0", "INFO")
+    if tab == "LLM":
+        _draw_prompt(layout, scene, wrap, found, linked)
     listed = False
     for name, title in SOURCES:
-        if name == "file":
-            _draw_prompt(layout, scene, wrap, found, linked)
         data = source(name)
-        if not data or (data.get("status") in ("", "none") and not data.get("findings")):
-            continue  # nothing from this source yet
+        if TABS[name] != tab or not data or (data.get("status") in ("", "none") and not data.get("findings")):
+            continue  # another tab's, or nothing from this source yet
         listed = True
         _draw_source(layout, scene, wrap, name, title, data)
     if not listed and status != "unsaved":
         folder = found.get("folder") or "the board's .kileidoscope folder"
-        _lines(layout, wrap, f"No findings yet. Press KiCad DRC, or put a findings file into {folder}")
+        _lines(layout, wrap, "No findings yet. Press KiCad DRC" if tab == "DRC" else
+               f"No findings yet. Copy the prompt into your LLM tool; its answer lands in {folder}")
 
 
 def _draw_prompt(layout, scene, wrap, found, linked):

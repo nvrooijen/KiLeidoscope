@@ -83,9 +83,11 @@ def wrap(text):
     return textwrap.wrap(text, 70) or [""]
 
 
-def column(scene, layout_type=BarLayout):
+def column(scene, layout_type=BarLayout, tabs=("DRC", "LLM")):
+    """What the tabs' columns draw, one after the other (both by default)."""
     layout = layout_type()
-    findings.draw_column(layout, scene, wrap)
+    for tab in tabs:
+        findings.draw_column(layout, scene, wrap, tab)
     return layout.drawn
 
 
@@ -198,7 +200,8 @@ def show(title):
 
 def check_drawing(scene):
     found = show("Tracks too close")
-    assert state.board.findings_shown == ("file", found["key"]) and columns.tab_state("DRC") == "on"
+    assert state.board.findings_shown == ("file", found["key"]) and columns.tab_state("LLM") == "on"
+    assert columns.tab_state("DRC") == "off"  # the file's findings are the LLM tab's
     framed = framed_centre(finding_box(found))
     for space in kileido.objects.view3d_spaces():  # the views framed on the finding and its labels
         assert np.allclose(space.region_3d.view_location[:2], framed, atol=1e-6)
@@ -1116,6 +1119,11 @@ def check_column(scene):
     texts = [text for _, text, _ in drawn]
     assert "Test tool, run 4: 4 findings" in texts, texts
     assert ("operator", "KiCad DRC", "PLAY") in drawn, drawn
+    drc, llm = ([text for _, text, _ in column(scene, tabs=(tab,))] for tab in ("DRC", "LLM"))
+    assert "KiCad DRC" in drc and "KiCad DRC" not in llm  # the DRC button only in the DRC tab
+    assert "Test tool, run 4: 4 findings" in llm and "Test tool, run 4: 4 findings" not in drc
+    assert not any(text.startswith("LLM prompt") for text in drc) and \
+        any(text.startswith("LLM prompt") for text in llm)  # the prompt box only in the LLM tab
     assert ("operator", "plane.gap_crossing (2)", "DISCLOSURE_TRI_DOWN") in drawn, drawn  # under 20: open
     order = [text for kind, text, _ in drawn if kind == "operator" and text in ("Tracks too close",
                                                                                  "plane.gap_crossing (2)", "Gone")]
@@ -1504,7 +1512,7 @@ def main():
         index = BoardIndex(snapshot)
         # Without a live link: the tab is greyed, Run DRC off, the list still shown.
         assert columns.tab_state("DRC") == "unavailable"
-        assert [key for key, _, _ in columns.TABS] == ["STUDIO", "IMS", "FLEX", "DRC"]
+        assert [key for key, _, _ in columns.TABS] == ["STUDIO", "IMS", "FLEX", "DRC", "LLM"]
         # A newer findings frame replaces a queued older one.
         link = live.LiveLink()
         for revision in (1, 2):
