@@ -22,6 +22,7 @@ from kipy.proto.board.board_pb2 import BoardStackupLayerType
 from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape, PadStackShape, PadStackType
 from kipy.proto.common import ApiStatusCode, commands
 from kipy.proto.common.types import KIID
+from kipy.proto.common.types.base_types_pb2 import ElectricalPinType
 from kipy.util.board_layer import CANONICAL_LAYER_NAMES, is_copper_layer
 
 from . import model
@@ -39,6 +40,13 @@ SLOW_SOURCES = {
     "texts": "get_text",
 }
 _DRILL_SHAPES = {DrillShape.DS_OBLONG: "oval", DrillShape.DS_CIRCLE: "round"}
+# a schematic pin's electrical type -> the board file's pintype word
+_PIN_TYPES = {getattr(ElectricalPinType, name): word for name, word in (
+    ("EPT_INPUT", "input"), ("EPT_OUTPUT", "output"), ("EPT_BIDIRECTIONAL", "bidirectional"),
+    ("EPT_TRISTATE", "tri_state"), ("EPT_PASSIVE", "passive"), ("EPT_FREE", "free"),
+    ("EPT_UNSPECIFIED", "unspecified"), ("EPT_POWER_INPUT", "power_in"), ("EPT_POWER_OUTPUT", "power_out"),
+    ("EPT_OPEN_COLLECTOR", "open_collector"), ("EPT_OPEN_EMITTER", "open_emitter"),
+    ("EPT_NO_CONNECT", "no_connect")) if hasattr(ElectricalPinType, name)}
 
 
 class KiCadBusy(Exception):
@@ -590,7 +598,13 @@ def _convert_footprint(item) -> tuple[model.Footprint, tuple[str, ...]]:
         tuple(model_item.filename for model_item in item.definition.models),
         model_visible=tuple(bool(model_item.visible) for model_item in item.definition.models),
         dnp=bool(item.attributes.do_not_populate),
+        value=item.value_field.text.value, lib_id=_lib_id(item.definition.id),
     ), tuple(child.id.value for child in item.definition.pads)
+
+
+def _lib_id(identifier) -> str:
+    """The board file's `Library:Footprint`; just the name when the library is unset."""
+    return f"{identifier.library}:{identifier.name}" if identifier.library else identifier.name
 
 
 def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) -> model.Pad:
@@ -598,7 +612,21 @@ def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) 
     diameter = _point(item.padstack.drill.diameter)
     return model.Pad(item.id.value, "", item.number, item.net.name, _point(item.position),
                      diameter if diameter != (0, 0) else None, dict(shapes.get(item.id.value, {})),
-                     _DRILL_SHAPES.get(item.padstack.drill.shape), float(item.padstack.angle.to_radians()))
+                     _DRILL_SHAPES.get(item.padstack.drill.shape), float(item.padstack.angle.to_radians()),
+                     *_symbol_pin(item))
+
+
+def _symbol_pin(item) -> tuple[str, str]:
+    """(name, type) of the schematic pin a pad carries, as the board file's pinfunction and
+    pintype spell them; ("", "") without one (a KiCad that does not send it, a bare pad)."""
+    proto = getattr(item, "_proto", None)
+    if proto is None or not hasattr(proto, "symbol_pin") or not proto.HasField("symbol_pin"):
+        return "", ""
+    pin = proto.symbol_pin
+    kind = _PIN_TYPES.get(pin.type, "")
+    if pin.no_connect:
+        kind = f"{kind}+no_connect" if kind else "no_connect"
+    return pin.name, kind
 
 
 def _convert_zone(item) -> tuple[model.ZoneFill, ...]:

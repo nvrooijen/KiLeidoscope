@@ -2,16 +2,25 @@
 
 The bridge watches the open board's `.kileidoscope/` folder (`kls_folder`) for its two
 findings files, `<stem>.drc.kls-findings.json` (ours, source "drc") and
-`<stem>.kls-findings.json` (a findings file written by a tool or script into the
-project's .kileidoscope folder, source "file"), and keeps one payload for Blender: both
-files resolved on the live board (`findings.resolve_file`), the confirm/dismiss state of
-`dismissed.json` and the state of a DRC run.
+`<stem>.kls-findings.json` (an LLM's or a tool's, source "file"), and keeps one payload
+for Blender: both files resolved on the live board (`findings.resolve_file`), the
+confirm/dismiss state of `dismissed.json`, the state of a DRC run and of a prompt, and
+the check catalogue (`checks`) Blender ticks checks from.
 
 `tick` is cheap and runs on the KiCad worker (also while KiCad is disconnected): it
 stats the files and hands work to a thread of its own, newest work first (as
 `hatch.Hatcher`), so neither KiCad polling nor Blender waits on a 300-finding resolve.
 A DRC run (`request("run_drc")`) runs kicad-cli on a frozen run folder in another
-thread and writes the DRC findings file, which then takes the same path as a tool's.
+thread and writes the DRC findings file, which then takes the same path as an LLM's.
+A prompt (`request("prompt", checks=ids)`) freezes a run the same way, with
+the board digest and `request.md` beside it (`prompt.make_run`), and hands Blender the
+clipboard prompt that points an LLM at it, with the user's notes in it.
+
+While the LLM works it may keep `<stem>.kls-progress.json` (`kls_folder.PROGRESS_FORMAT`).
+It is read like the findings files (settled, capped, never trusted) and gives the payload's
+"progress": "waiting" once a prompt is ready, "working" while a progress file for that run
+and stamp is there, "done" once the findings file for that run is. Only the file's content
+and the run change it: Blender ages it from the unix times itself, so time passing sends nothing.
 
 While KiCad is disconnected the last payload stays, marked not connected: without the
 board, `uuid:` targets cannot be named, so a resolve would change every finding's key
@@ -21,6 +30,8 @@ that changes meanwhile is read once KiCad is back.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -30,15 +41,99 @@ from . import drc_findings, findings, kls_folder
 from .board_index import BoardIndex
 from .kls_folder import SOURCES
 
-ACTIONS = frozenset({"confirm", "dismiss", "reset", "run_drc"})
+ACTIONS = frozenset({"confirm", "dismiss", "reset", "accept", "run_drc", "prompt"})
 MARKS = {"confirm": "confirmed", "dismiss": "dismissed", "reset": ""}
 SAVED_ONLY = "saved file, unsaved edits not checked"
 SAVE_FIRST = "Save the board first"
+NO_TEXT = "KiCad did not give the board text; try again once it is idle"
+NO_CHECKS = "None of the chosen checks is known to this bridge: tick at least one"
+MAX_CHECKS = 100  # ids in one prompt request
+MAX_NOTES = 500  # characters of a prompt request's notes
+PROGRESS = "progress"  # the progress file, watched beside SOURCES
+MAX_PROGRESS_COUNT = 10_000  # "done" and "total" are clamped to 0..this
+MAX_PROGRESS_CHECK = 64
+MAX_PROGRESS_NOTE = kls_folder.MAX_PROGRESS_NOTE
 _UNREAD = object()  # a file not read yet (None: read, and missing)
 
 
 def drc_state(state: str = "idle", error: str = "", run: str = "") -> dict:
     return {"state": state, "error": error, "run": run}
+
+
+def prompt_state(state: str = "idle", run: str = "", text: str = "", error: str = "") -> dict:
+    """"idle" | "making" | "ready" (`text`: the clipboard prompt of run `run`) | "failed"."""
+    return {"state": state, "run": run, "text": text, "error": error}
+
+
+def progress_state(state: str = "none", run: str = "", done: int = 0, total: int = 0, check: str = "",
+                   note: str = "", updated_unix: float = 0.0, made_unix: float = 0.0) -> dict:
+    """"none" (no prompt run) | "waiting" (a prompt is ready, no progress for it yet) |
+    "working" (a progress file for that run and stamp) | "done" (its findings file is in)."""
+    return {"state": state, "run": run, "done": done, "total": total, "check": check, "note": note,
+            "updated_unix": updated_unix, "made_unix": made_unix}
+
+
+def _count(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        return 0
+    return int(min(max(value, 0), MAX_PROGRESS_COUNT))
+
+
+def _plain(value, limit: int) -> str:
+    return (findings._text(value, limit, "", []) or "") if isinstance(value, str) else ""
+
+
+def parse_progress(data: bytes) -> dict | None:
+    """A progress file's {"run", "stamp", "done", "total", "check", "note"}: counts clamped,
+    text plain and cut. None for anything that is not one (too big, not JSON, wrong format)."""
+    if len(data) > kls_folder.MAX_PROGRESS_BYTES:
+        return None
+    try:
+        raw = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not (isinstance(raw, dict) and raw.get("format") == kls_folder.PROGRESS_FORMAT
+            and isinstance(raw.get("run"), str) and isinstance(raw.get("stamp"), str)):
+        return None
+    return {"run": raw["run"], "stamp": raw["stamp"], "done": _count(raw.get("done")),
+            "total": _count(raw.get("total")), "check": _plain(raw.get("check"), MAX_PROGRESS_CHECK),
+            "note": _plain(raw.get("note"), MAX_PROGRESS_NOTE)}
+
+
+def _group_row(group, titles: dict) -> dict:
+    """{"id", "title"} of one of `checks.GROUPS`, however it is written there."""
+    if isinstance(group, str):
+        return {"id": group, "title": str(titles.get(group, group))}
+    if isinstance(group, (tuple, list)) and group:
+        return {"id": str(group[0]), "title": str(group[1] if len(group) > 1 else group[0])}
+    ident = str(getattr(group, "id", group))
+    return {"id": ident, "title": str(getattr(group, "title", ident))}
+
+
+def catalogue() -> tuple[list, list] | None:
+    """(checks, groups) for Blender's check list: {"id", "group", "title", "v1"} per check and
+    {"id", "title"} per group, so Blender needs no bridge import; None without `checks`
+    (or with a broken one: the findings never wait on the catalogue)."""
+    try:
+        from . import checks
+        rows = [{"id": check.id, "group": check.group, "title": check.title, "v1": bool(check.v1)}
+                for check in checks.CATALOGUE]
+        groups = checks.GROUPS.items() if isinstance(checks.GROUPS, dict) else checks.GROUPS
+        titles = getattr(checks, "GROUP_TITLES", None) or {}
+        return rows, [_group_row(group, titles) for group in groups]
+    except Exception:
+        return None
+
+
+def make_prompt(folder, text: str, snapshot, ids, notes: str = "") -> tuple[str, str, str]:
+    """(run id, stamp, clipboard prompt) of a new prompt run for the checks `ids` (unknown
+    ones dropped), with the user's `notes`."""
+    from . import checks, prompt
+    chosen = checks.by_id(ids)
+    if not chosen:
+        raise ValueError(NO_CHECKS)
+    run, clipboard = prompt.make_run(folder, text, snapshot, chosen, notes=notes)
+    return run.id, run.stamp, clipboard
 
 
 def state_key(source: str, key: str) -> str:
@@ -56,6 +151,12 @@ def _signature(path: Path):
     return info.st_mtime_ns, info.st_size
 
 
+def _target_texts(finding: findings.Finding) -> list[str]:
+    """Every target a finding's draws name, as written, once each."""
+    texts = [text for draw in finding.draws for _, text in findings._roles(draw)]  # every tool's roles
+    return list(dict.fromkeys(texts))
+
+
 def _with_states(payload: dict, states: dict) -> dict:
     """The payload with each finding's state from `states`; the same dict when nothing
     changes (published payloads are never changed in place: they are compared and sent)."""
@@ -69,8 +170,8 @@ def _with_states(payload: dict, states: dict) -> dict:
 @dataclass
 class _Job:
     """Work for the thread; merged until it takes it."""
-    reload: set = field(default_factory=set)  # sources whose file changed
-    resolve: set = field(default_factory=set)  # sources to resolve again (board change)
+    reload: set = field(default_factory=set)  # sources whose file changed, and PROGRESS
+    resolve: set = field(default_factory=set)  # sources to resolve again (board change, accept)
     save: bool = False  # dismissed.json
 
     def __bool__(self) -> bool:
@@ -89,22 +190,30 @@ class FindingsWatch:
 
     Payload (the `findings` frame's "findings"): {"status": "ok" | "none" | "unsaved",
     "folder": "<project>/.kileidoscope" or "", "drc": {"state": "idle" | "running" |
-    "failed", "error", "run"}, "sources": {"drc": <source payload>, "file": <source
-    payload>}}. A source payload is what `findings.resolve_file` or
-    `findings.status_payload` gives: {"status", "error", "source", "path", "run",
-    "stamp", "live_stamp", "changed", "connected", "tool", "problems", "findings"}, each
-    finding {"key", "check", "group", "severity", "title", "message", "values", "state",
-    "faded", "problems", "bbox_nm", "passes", "draws"}. "none": neither file exists yet."""
+    "failed", "error", "run"}, "prompt": {"state": "idle" | "making" | "ready" |
+    "failed", "run", "text", "error"}, "progress": `progress_state`, "catalogue": [{"id",
+    "group", "title", "v1"}], "groups": [{"id", "title"}], "sources": {"drc": <source
+    payload>, "file": <source payload>}}. A source payload is what `findings.resolve_file`
+    or `findings.status_payload` gives: {"status", "error", "source", "path", "run",
+    "stamp", "live_stamp", "handshake", "changed", "connected", "tool", "problems", "drc",
+    "skipped", "findings"}, each finding {"key", "check", "group", "severity",
+    "confidence", "title", "message", "fix", "values", "values_text", "state", "faded",
+    "problems", "bbox_nm", "disagree", "passes", "mentions", "draws"}. "none": neither
+    file exists yet."""
 
     CHECK_S = 1.0  # between file checks
     SETTLE_S = 0.5  # a changed file is read once it stays unchanged this long
     RESOLVE_DEBOUNCE_S = 1.0  # at most one resolve for board edits per this long
 
-    def __init__(self, run_drc=drc_findings.run_drc, find_cli=drc_findings.find_kicad_cli):
+    def __init__(self, run_drc=drc_findings.run_drc, find_cli=drc_findings.find_kicad_cli,
+                 make_prompt=make_prompt, catalogue=catalogue):
         self._run_drc = run_drc
         self._find_cli = find_cli
+        self._make_prompt = make_prompt
+        self._catalogue_of = catalogue
+        self._catalogue = None  # (checks, groups) once `checks` gives them
         self._lock = threading.Lock()
-        self._runs_lock = threading.Lock()  # runs are numbered one at a time
+        self._runs_lock = threading.Lock()  # a DRC run and a prompt never number a run at once
         self._wake = threading.Event()
         self._thread = None
         self._generation = 0  # counts boards: work for an earlier one is dropped
@@ -121,9 +230,15 @@ class FindingsWatch:
         self._parsed = {}  # source -> FindingsFile, FindingsError or None (no file)
         self._sources = {}  # source -> source payload
         self._good = {}  # source -> last payload of a file that parsed
+        self._targets = {}  # source -> finding key -> its targets as written (for dismissed.json)
         self._drc = drc_state()
         self._drc_wanted = False
         self._drc_running = False
+        self._prompt = prompt_state()
+        self._prompt_wanted = None  # (check ids, notes) of a prompt the next tick starts
+        self._prompt_running = False
+        self._prompt_run = None  # (run, stamp, made at, unix) of the last prompt made
+        self._progress = (None, 0.0)  # (parse_progress of the progress file or None, its mtime)
         self._job = _Job()
         self._board = _Board(None, None, "")
         self._resolved = None  # board key the payload was resolved for
@@ -153,7 +268,7 @@ class FindingsWatch:
         folder = self.folder
         if folder is None:
             return
-        paths = {source: folder.path_for(source) for source in SOURCES}
+        paths = {**{source: folder.path_for(source) for source in SOURCES}, PROGRESS: folder.progress_path}
         signatures = {name: _signature(path) for name, path in paths.items()} if folder.available else {}
         connected = snapshot is not None
         with self._lock:
@@ -163,8 +278,11 @@ class FindingsWatch:
             if self._drc_wanted:
                 self._drc_wanted = False
                 self._start_drc(folder, snapshot, tools.get("kicad_cli", ""), copy_text)
+            if self._prompt_wanted is not None:
+                (ids, notes), self._prompt_wanted = self._prompt_wanted, None
+                self._start_prompt(folder, snapshot, copy_text, ids, notes)
             if not folder.available:
-                context = self._context(folder, "drc")
+                context = self._context(folder, "drc", {})
                 unsaved = {source: findings.status_payload("unsaved", replace(context, source=source),
                                                            connected=connected) for source in SOURCES}
                 if unsaved != self._sources:
@@ -178,7 +296,7 @@ class FindingsWatch:
                     settled = signature is None or time.time() - signature[0] / 1e9 >= self.SETTLE_S
                 else:
                     settled = now - seen[1] >= self.SETTLE_S
-                if settled and connected and self._read.get(source, _UNREAD) != signature:
+                if settled and (connected or source == PROGRESS) and self._read.get(source, _UNREAD) != signature:
                     self._read[source] = signature
                     self._job.reload.add(source)
             key = (revision, live_stamp) if connected else None
@@ -201,8 +319,10 @@ class FindingsWatch:
 
     # --- Blender's requests -------------------------------------------------------------
 
-    def request(self, action: str, key: str = "", source: str = "drc") -> None:
-        """confirm | dismiss | reset a finding of `source` by its key, or run_drc."""
+    def request(self, action: str, key: str = "", source: str = "drc", checks=(), notes: str = "") -> None:
+        """confirm | dismiss | reset a finding of `source` by its key, accept `source`'s
+        file from an unknown run, run_drc, or make a prompt for the check ids `checks`
+        with the user's `notes`."""
         if action not in ACTIONS:
             return
         source = source if source in SOURCES else "drc"
@@ -220,19 +340,39 @@ class FindingsWatch:
                     self._drc_wanted = True  # the next tick has the board text
                 self._publish()
                 return
+            if action == "prompt":
+                if self._prompt_running or self._prompt_wanted is not None:
+                    return
+                if not folder.available:
+                    self._prompt = prompt_state("failed", error=SAVE_FIRST)
+                else:
+                    self._prompt = prompt_state("making")
+                    notes = notes[:MAX_NOTES] if isinstance(notes, str) else ""
+                    self._prompt_wanted = (tuple(checks)[:MAX_CHECKS], notes)  # the next tick has the board text
+                self._publish()
+                return
             if not folder.available:
                 return
-            payload = self._sources.get(source)
-            row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
-            if row is None and action != "reset":
-                return  # not a finding Blender was sent
-            self._state.mark(state_key(source, key), MARKS[action])
-            states = self._states(source)
-            if payload is not None:
-                self._sources[source] = _with_states(payload, states)
-            if source in self._good:
-                self._good[source] = _with_states(self._good[source], states)
-            self._publish()
+            if action == "accept":
+                found = self._parsed.get(source)
+                if not isinstance(found, findings.FindingsFile):
+                    return
+                self._state.accept(findings.accept_key(found.run, found.stamp))
+                self._job.resolve.add(source)
+            else:
+                payload = self._sources.get(source)
+                row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
+                if row is None and action != "reset":
+                    return  # not a finding Blender was sent
+                targets = self._targets.get(source, {}).get(key, [])
+                self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "", targets,
+                                 row["title"] if row else "")
+                states = self._states(source)
+                if payload is not None:
+                    self._sources[source] = _with_states(payload, states)
+                if source in self._good:
+                    self._good[source] = _with_states(self._good[source], states)
+                self._publish()
             self._job.save = True
             self._kick()
 
@@ -240,12 +380,31 @@ class FindingsWatch:
 
     def _states(self, source: str) -> dict:
         prefix = state_key(source, "")
-        return {key[len(prefix):]: state for key, state in self._state.findings.items()
+        return {key[len(prefix):]: entry["state"] for key, entry in self._state.findings.items()
                 if (key.startswith(prefix) if prefix else ":" not in key)}
 
-    def _context(self, folder, source: str) -> findings.Context:
+    def _context(self, folder, source: str, runs: dict) -> findings.Context:
         return findings.Context(path=str(folder.path_for(source)) if folder.available else "", source=source,
-                                live_stamp=self._board.live_stamp, states=self._states(source))
+                                runs=runs, accepted=self._state.accepted(), live_stamp=self._board.live_stamp,
+                                states=self._states(source))
+
+    def _progress_payload(self) -> dict:
+        """The "progress" of the last prompt run, while the prompt is ready."""
+        if self._prompt["state"] != "ready" or self._prompt_run is None:
+            return progress_state()
+        run, run_stamp, made = self._prompt_run
+        progress, updated = self._progress
+        if progress is None or progress["run"] != run or progress["stamp"] != run_stamp:
+            progress, updated = None, 0.0  # none yet, or another run's
+        answer = self._parsed.get("file")
+        if isinstance(answer, findings.FindingsFile) and answer.run == run:
+            signature = self._read.get("file")
+            updated = signature[0] / 1e9 if isinstance(signature, tuple) else updated
+            state = "done"
+        else:
+            state = "working" if progress is not None else "waiting"
+        fields = {key: progress[key] for key in ("done", "total", "check", "note")} if progress else {}
+        return progress_state(state, run, updated_unix=updated, made_unix=made, **fields)
 
     def _publish(self):
         folder = self.folder
@@ -256,8 +415,12 @@ class FindingsWatch:
             status = "none"
         else:
             status = "ok"
+        if self._catalogue is None:
+            self._catalogue = self._catalogue_of()
+        rows, groups = self._catalogue or ([], [])
         payload = {"status": status, "folder": str(folder.root) if folder.available else "",
-                   "drc": dict(self._drc), "sources": sources}
+                   "drc": dict(self._drc), "prompt": dict(self._prompt), "progress": self._progress_payload(),
+                   "catalogue": rows, "groups": groups, "sources": sources}
         if payload != self._payload:
             self._payload = payload
             self._version += 1
@@ -279,7 +442,7 @@ class FindingsWatch:
             with self._lock:
                 job, self._job = self._job, _Job()
                 generation, folder, board = self._generation, self.folder, self._board
-                state = kls_folder.State(dict(self._state.findings))
+                state = kls_folder.State(dict(self._state.findings), list(self._state.accepted_runs))
             if job:
                 self._work(job, generation, folder, board, state)
 
@@ -290,7 +453,9 @@ class FindingsWatch:
             except (OSError, ValueError, kls_folder.NotAvailable):
                 pass  # kept in memory; the next confirm or dismiss tries again
         files = {source: self._read_file(folder, source) for source in job.reload if source in SOURCES}
+        progress = self._read_progress(folder) if PROGRESS in job.reload else None
         index = self._index_of(board)
+        runs = folder.runs()
         with self._lock:
             if generation != self._generation:
                 return
@@ -299,8 +464,12 @@ class FindingsWatch:
                     self._read.pop(source, None)  # could not read it (locked): the next tick tries again
                 else:
                     self._parsed[source] = found
+            if progress is _UNREAD:
+                self._read.pop(PROGRESS, None)  # locked: the next tick tries again
+            elif progress is not None:
+                self._progress = progress
             todo = [source for source in SOURCES if source in job.resolve or source in files]
-            work = [(source, self._parsed.get(source), self._context(folder, source)) for source in todo]
+            work = [(source, self._parsed.get(source), self._context(folder, source, runs)) for source in todo]
             good = dict(self._good)
         resolved = {source: self._resolve(found, index, context, good.get(source)) for source, found, context in work}
         with self._lock:
@@ -310,6 +479,8 @@ class FindingsWatch:
                 payload = _with_states(payload, self._states(source))  # a click while this ran
                 if parsed:
                     self._good[source] = payload
+                    self._targets[source] = {row["key"]: _target_texts(finding) for row, finding
+                                             in zip(payload["findings"], self._parsed[source].findings)}
                 elif payload["status"] == "none":
                     self._good.pop(source, None)
                 self._sources[source] = payload
@@ -328,6 +499,18 @@ class FindingsWatch:
             return findings.parse(data)
         except findings.FindingsError as error:
             return error
+
+    def _read_progress(self, folder):
+        """(parse_progress or None, mtime) of the progress file, or _UNREAD (try again)."""
+        try:
+            with folder.progress_path.open("rb") as handle:
+                mtime = os.fstat(handle.fileno()).st_mtime
+                data = handle.read(kls_folder.MAX_PROGRESS_BYTES + 1)
+        except FileNotFoundError:
+            return None, 0.0
+        except OSError:
+            return _UNREAD
+        return parse_progress(data), mtime
 
     def _index_of(self, board: _Board):
         if board.snapshot is None:
@@ -396,5 +579,41 @@ class FindingsWatch:
             if path is not None:  # read it now, not after the next settle
                 self._read["drc"] = _signature(path)
                 self._job.reload.add("drc")
+            self._publish()
+            self._kick()
+
+    # --- Prompt -------------------------------------------------------------------------
+
+    def _start_prompt(self, folder, snapshot, text: str, ids: tuple, notes: str):
+        """In the lock, on the tick that follows a prompt request: the run is made from
+        KiCad's raw board text, so it hashes to the stamp the findings echo."""
+        error = findings.NOT_CONNECTED if snapshot is None else ("" if text else NO_TEXT)
+        if error:
+            self._prompt = prompt_state("failed", error=error)
+            self._publish()
+            return
+        self._prompt_running = True
+        threading.Thread(target=self._prompt_make, args=(self._generation, folder, snapshot, text, ids, notes),
+                         name="kileido-prompt", daemon=True).start()
+
+    def _prompt_make(self, generation: int, folder, snapshot, text: str, ids: tuple, notes: str):
+        made = None
+        try:
+            with self._runs_lock:
+                run_id, run_stamp, clipboard = self._make_prompt(folder, text, snapshot, ids, notes)
+            outcome = prompt_state("ready", str(run_id), clipboard)
+            made = (str(run_id), str(run_stamp), time.time())
+        except Exception as exc:  # a file could not be written, no checks, or a digest bug
+            message = str(exc) if isinstance(exc, (ValueError, kls_folder.NotAvailable)) \
+                else f"{type(exc).__name__}: {exc}"
+            outcome = prompt_state("failed", error=message[-300:])
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._prompt_running = False
+            self._prompt = outcome
+            self._prompt_run = made or self._prompt_run
+            if outcome["state"] == "ready":  # a known run now: files echoing it (or a pruned one) resolve again
+                self._job.resolve.update(SOURCES)
             self._publish()
             self._kick()

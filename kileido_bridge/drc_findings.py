@@ -11,10 +11,12 @@ file's (pads included), `pos` is each item's own anchor (a track's start, a zone
 corner), never the marker. Numbers exist only inside the description, in the user's
 locale (`0,2000 mm`). So the converter measures what it can on the `BoardIndex` and
 parses the description only as a fallback; DRC's "actual" goes into the finding's
-`values` (`distance_mm`), and the bridge measures every `clearance` and `edge_gap` draw
-again on the live board. Track widths are drawn with `width`, which lists every segment
-of the track against the limit; isolated copper and a dangling via are highlighted and
-labelled. Coordinates in targets are mm in KiCad's frame (y down).
+`values` (`distance_mm`) as the claim, and the bridge measures every `clearance` and
+`edge_gap` draw again on the live board, which checks the index against KiCad on every
+clearance. Track widths are drawn with `width`, which lists every segment of the track
+against the limit; isolated copper with `plane_islands`, which shows the zone's pieces and
+which are tied; a dangling via with `stub`, which shows the layers its net meets it on and
+its unused barrel. Coordinates in targets are mm in KiCad's frame (y down).
 """
 
 from __future__ import annotations
@@ -484,11 +486,15 @@ def _draws(index: BoardIndex, kind: str, items: list[_Item], description: str, c
         return _highlight(items) + [_distance(a.target, b.target, "Not connected")], values
     if kind == "track_dangling" and not _is_via(a):
         return _highlight([a]) + [_label(_open_end(index, a), "Unconnected end")], values
-    if kind in ("via_dangling", "track_dangling"):  # a via
-        return _highlight([a]) + [_label(a.point, "Unconnected via")], values
+    if kind in ("via_dangling", "track_dangling"):  # a via: its unused barrel
+        stub = [{"tool": "stub", "via": a.target}] if _is_via(a) else []
+        return _highlight([a]) + stub + [_label(a.point, "Unconnected via")], values
     if kind == "isolated_copper":
         text = "Isolated copper" + (f" ({count} islands)" if count > 1 else "")
-        return _highlight([a]) + [_label(a.point, text)], values
+        zone = next((record for record in a.records if isinstance(record, model.ZoneFill) and record.net and
+                     (record.layer == a.layer or not a.layer)), None)
+        pieces = [{"tool": "plane_islands", "net": zone.net, "layer": zone.layer}] if zone else []
+        return _highlight([a]) + pieces + [_label(a.point, text)], values
     if kind in SIZES:
         key, word, size_of = SIZES[kind]
         size = next((size_of(record) for record in a.records if size_of(record) is not None), None)
@@ -545,7 +551,8 @@ def _finding(index: BoardIndex, entry: dict, count: int) -> dict:
     repeats = f" (reported {count} times)" if count > 1 else ""
     draws, values = _draws(index, kind, items, description, count)
     return {"check": f"drc.{kind}", "severity": severity if severity in ("error", "warning") else "info",
-            "title": _cut(title), "message": _cut(description, MAX_TEXT - len(repeats)) + repeats,
+            "confidence": "high", "title": _cut(title),
+            "message": _cut(description, MAX_TEXT - len(repeats)) + repeats,
             "values": values, "draw": draws}
 
 
@@ -583,4 +590,4 @@ def convert(report: dict, index: BoardIndex, run: str, stamp: str) -> dict:
     tool = f"KiCad DRC {version}".strip()
     if dropped:
         tool += f"; {dropped} library notice{'s' if dropped != 1 else ''} left out"
-    return {"format": FORMAT, "run": run, "stamp": stamp, "tool": _cut(tool), "findings": findings}
+    return {"format": FORMAT, "run": run, "stamp": stamp, "tool": _cut(tool), "findings": findings, "skipped": []}

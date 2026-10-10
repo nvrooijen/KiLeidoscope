@@ -8,10 +8,13 @@ file. A `.gitignore` holding `*` keeps the folder out of the user's repository.
 - `runs/<N>/board.kicad_pcb`: KiCad's raw board text at the moment of a run (unsaved
   edits included), so it hashes to the run's stamp; `run.json` beside it, and copies of
   `<stem>.kicad_pro` / `<stem>.kicad_dru` as `board.*` (net classes, rule severities,
-  exclusions, custom rules) for kicad-cli. The last `KEEP_RUNS` runs are kept.
-- `<stem>.kls-findings.json`: a findings file written by a tool or script; only read here.
+  exclusions, custom rules) for kicad-cli. An LLM run adds `board.kls-board.json` (the
+  digest) and `request.md` (`prompt.make_run`). The last `KEEP_RUNS` runs are kept.
+- `<stem>.kls-findings.json`: an LLM's (or any tool's) answer; only read here.
 - `<stem>.drc.kls-findings.json`: the bridge's DRC findings.
-- `dismissed.json`: confirmed and dismissed findings, by key.
+- `<stem>.kls-progress.json`: how far an LLM is with a prompt run (optional, `PROGRESS_FORMAT`,
+  rewritten whole after each check); only read here.
+- `dismissed.json`: confirmed and dismissed findings, and unknown runs the user accepted.
 """
 
 from __future__ import annotations
@@ -30,9 +33,16 @@ KEEP_RUNS = 5
 STATE_FILE = "dismissed.json"
 STATE_VERSION = 1
 MAX_STATE_ENTRIES = 10_000
+MAX_ACCEPTED = 1_000
 SOURCES = ("drc", "file")
 STATES = ("confirmed", "dismissed")
+PROGRESS_FORMAT = "kls-progress 1"
+MAX_PROGRESS_BYTES = 4096
+MAX_PROGRESS_NOTE = 120  # characters of a progress file's "note"
+_STAMP = re.compile(r"[0-9a-f]{8}")
 _RUN_ID = re.compile(r"[0-9]{1,9}")
+_RUN_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_FROZEN = frozenset({"board.kicad_pcb", "board.kicad_pro", "board.kicad_dru", "run.json"})
 
 
 def stamp(text: str) -> str:
@@ -53,18 +63,29 @@ class Run:
 
 @dataclass
 class State:
-    """dismissed.json: finding key -> "confirmed" | "dismissed"."""
+    """dismissed.json: finding key -> {"state", "check", "targets", "title", "at"}, plus
+    `accept_key`s of unknown runs the user accepted."""
     findings: dict = field(default_factory=dict)
+    accepted_runs: list = field(default_factory=list)
 
     def states(self) -> dict[str, str]:
-        return dict(self.findings)
+        return {key: entry["state"] for key, entry in self.findings.items()}
 
-    def mark(self, key: str, state: str) -> None:
+    def accepted(self) -> frozenset[str]:
+        return frozenset(self.accepted_runs)
+
+    def mark(self, key: str, state: str, check: str = "", targets=(), title: str = "") -> None:
         """Confirm or dismiss a finding; "" (or "reset") forgets it."""
         if state not in STATES:
             self.findings.pop(key, None)
             return
-        self.findings[key] = state
+        self.findings[key] = {"state": state, "check": check, "targets": list(targets), "title": title,
+                              "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+
+    def accept(self, run_key: str) -> None:
+        if run_key not in self.accepted_runs:
+            self.accepted_runs.append(run_key)
+            del self.accepted_runs[:-MAX_ACCEPTED]
 
 
 def _state_from(raw) -> State:
@@ -74,8 +95,20 @@ def _state_from(raw) -> State:
         return state
     entries = raw.get("findings")
     for key, entry in list(entries.items())[:MAX_STATE_ENTRIES] if isinstance(entries, dict) else ():
-        if isinstance(key, str) and len(key) <= 64 and entry in STATES:
-            state.findings[key] = entry
+        if not (isinstance(key, str) and len(key) <= 64 and isinstance(entry, dict)
+                and entry.get("state") in STATES):
+            continue
+        targets = entry.get("targets")
+        state.findings[key] = {
+            "state": entry["state"],
+            "check": entry["check"] if isinstance(entry.get("check"), str) else "",
+            "targets": [t for t in targets if isinstance(t, str)] if isinstance(targets, list) else [],
+            "title": entry["title"] if isinstance(entry.get("title"), str) else "",
+            "at": entry["at"] if isinstance(entry.get("at"), str) else "",
+        }
+    accepted = raw.get("accepted_runs")
+    if isinstance(accepted, list):
+        state.accepted_runs = [item for item in accepted if isinstance(item, str) and len(item) <= 64][-MAX_ACCEPTED:]
     return state
 
 
@@ -91,11 +124,12 @@ class KlsFolder:
         self.root = self.project / FOLDER
         self.findings_path = self.root / f"{self.stem}.kls-findings.json"
         self.drc_findings_path = self.root / f"{self.stem}.drc.kls-findings.json"
+        self.progress_path = self.root / f"{self.stem}.kls-progress.json"  # an LLM's, beside its answer
         self.state_path = self.root / STATE_FILE
         self.runs_dir = self.root / "runs"
 
     def path_for(self, source: str) -> Path:
-        """The findings file of a source: "drc" (ours) or "file" (a tool's or a script's)."""
+        """The findings file of a source: "drc" (ours) or "file" (an LLM's or a tool's)."""
         if source not in SOURCES:
             raise ValueError(f"unknown findings source {source!r}")
         return self.drc_findings_path if source == "drc" else self.findings_path
@@ -167,6 +201,30 @@ class KlsFolder:
             self._remove(f"runs/{old}")
         return Run(run_id, run_stamp, self.runs_dir / run_id)
 
+    def write_run_file(self, run: Run, name: str, text: str) -> Path:
+        """A text file the bridge made for a run (`request.md`, the board digest), in that
+        run's folder. A plain file name only; the frozen board and run.json stay as made."""
+        if not _RUN_ID.fullmatch(run.id) or not _RUN_FILE.fullmatch(name) or name in _FROZEN:
+            raise ValueError(f"{name!r} is not a file a run may get")
+        if not (self.runs_dir / run.id).is_dir():
+            raise ValueError(f"run {run.id} is gone")
+        return self._write(f"runs/{run.id}/{name}", text.encode("utf-8"))
+
+    def runs(self) -> dict[str, str]:
+        """Run id -> stamp of every run on disk with a readable run.json, oldest first."""
+        if not self.available:
+            return {}
+        known = {}
+        for number in self._run_numbers():
+            try:
+                info = json.loads((self.runs_dir / str(number) / "run.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            run_stamp = info.get("stamp") if isinstance(info, dict) else None
+            if isinstance(run_stamp, str) and _STAMP.fullmatch(run_stamp):
+                known[str(number)] = run_stamp
+        return known
+
     def load_state(self) -> State:
         """dismissed.json; a missing or broken file is an empty state."""
         if not self.available:
@@ -179,7 +237,7 @@ class KlsFolder:
 
     def save_state(self, state: State) -> None:
         self.ensure()
-        data = {"version": STATE_VERSION, "findings": state.findings}
+        data = {"version": STATE_VERSION, "findings": state.findings, "accepted_runs": state.accepted_runs}
         self._write(STATE_FILE, json.dumps(data, indent=1, ensure_ascii=False).encode("utf-8"))
 
     def discard(self, source: str = "drc") -> None:

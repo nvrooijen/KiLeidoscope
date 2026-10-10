@@ -29,7 +29,10 @@ class BoardState:
         # The DRC column (findings.py): the bridge's `findings` payload, and the one finding drawn.
         self.findings = {}  # {"status", "folder", "drc", "sources": {"drc": ..., "file": ...}}
         self.findings_shown = ("", "")  # (source, key) of the finding drawn, ("", "") for none
+        self.findings_isolate = False  # the drawn finding has an isolate draw: X-ray on whatever the tick box
         self.finding_severity = "error"  # its colour (materials.FINDING_COLORS)
+        self.prompt_wait = None  # Copy prompt pressed: the run shown then ("" none); None: not asked
+        self.prompt_copied = ""  # the run whose prompt went to the clipboard
 
         # Shared display resources.
         self.groups = {}  # Geometry Nodes groups by role (nodes.ensure_all)

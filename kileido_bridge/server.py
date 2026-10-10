@@ -16,6 +16,8 @@ import sys
 import time
 
 from .findings_watch import ACTIONS as FINDINGS_ACTIONS
+from .findings_watch import MAX_CHECKS as MAX_PROMPT_CHECKS  # check ids in one prompt request
+from .findings_watch import MAX_NOTES as MAX_PROMPT_NOTES  # characters of the user's notes in a prompt request
 from .kls_folder import SOURCES as FINDINGS_SOURCES
 from .protocol import FrameDecoder
 
@@ -26,8 +28,21 @@ VIEWER_MAX_BYTES = 4 * 1024 * 1024  # viewer frames are small; a selection holds
 HELLO_TIMEOUT_S = 5.0
 MAX_SELECT_IDS = 10_000
 MAX_FINDINGS_KEY = 64
+MAX_CHECK_ID = 64
 MAX_FINDINGS_REQUESTS = 64  # queued between two steps; more are dropped
 RECV_BYTES = 1 << 20
+
+
+class FindingsRequest(tuple):
+    """(action, finding key, source, check ids) of one findings request, compared as that
+    tuple; a prompt's user notes ride along as `notes`."""
+
+    notes: str
+
+    def __new__(cls, action: str, key: str, source: str, checks: tuple[str, ...], notes: str = ""):
+        request = super().__new__(cls, (action, key, source, checks))
+        request.notes = notes
+        return request
 
 
 class BridgeServer:
@@ -124,12 +139,17 @@ class BridgeServer:
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
             extend, center = bool(header.get("extend", False)), bool(header.get("center", False))
             self.select_requests.append((ids, extend, center, bool(header.get("exact", False))))
-        elif header.get("type") == "findings":  # confirm/dismiss a finding, Run DRC, ...
+        elif header.get("type") == "findings":  # confirm/dismiss a finding, Run DRC, Copy prompt, ...
             action, key, source = header.get("action"), header.get("key", ""), header.get("source", "drc")
+            checks = header.get("checks", [])  # a prompt's check ids; unknown ones are dropped later
+            notes = header.get("notes", "")  # a prompt's user notes; made plain text later
             if (isinstance(action, str) and action in FINDINGS_ACTIONS and isinstance(key, str)
                     and len(key) <= MAX_FINDINGS_KEY and source in FINDINGS_SOURCES
+                    and isinstance(checks, list) and len(checks) <= MAX_PROMPT_CHECKS
+                    and all(isinstance(check, str) and len(check) <= MAX_CHECK_ID for check in checks)
+                    and isinstance(notes, str) and len(notes) <= MAX_PROMPT_NOTES
                     and len(self.findings_requests) < MAX_FINDINGS_REQUESTS):
-                self.findings_requests.append((action, key, source))
+                self.findings_requests.append(FindingsRequest(action, key, source, tuple(checks), notes))
 
     def pump(self, timeout: float = 0.0) -> None:
         if self.candidate is not None and time.monotonic() > self.candidate_deadline:
@@ -186,8 +206,9 @@ class BridgeServer:
         requests, self.select_requests = self.select_requests, []
         return requests
 
-    def take_findings_requests(self) -> list[tuple[str, str, str]]:
-        """(action, finding key, source) of each findings request, oldest first."""
+    def take_findings_requests(self) -> list[FindingsRequest]:
+        """(action, finding key, source, check ids) of each findings request, oldest first;
+        a prompt's notes in `.notes`."""
         requests, self.findings_requests = self.findings_requests, []
         return requests
 

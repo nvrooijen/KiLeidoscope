@@ -524,10 +524,10 @@ class BridgeRuntime:
             self._take_select_requests()
             requests = self.server.take_findings_requests()
             for request in requests:
-                action, key, source = request
-                self.findings.request(action, key, source)
+                action, key, source, checks = request
+                self.findings.request(action, key, source, checks, request.notes)
             if requests:
-                self.next_findings_at = 0.0  # Run DRC starts on the next tick
+                self.next_findings_at = 0.0  # Run DRC and a prompt start on the next tick
                 self.wake.set()
             self.server.send_frames(self._findings_frames())  # a confirm or dismiss shows at once
             if self.server.take_adopt() and self.new_kicad:

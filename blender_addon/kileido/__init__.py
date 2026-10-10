@@ -1504,6 +1504,16 @@ def _scene_properties():
             name="Show dismissed", default=False,
             description="List the findings dismissed as not a problem too, greyed",
             update=lambda self, context: findings.dismissed_toggled(context.scene)),
+        "kileido_prompt_checks": StringProperty(
+            name="Prompt checks", default="",
+            description="The checks Copy prompt asks the LLM for, one id per line; empty: the quick (v1) checks"),
+        "kileido_prompt_show": BoolProperty(
+            name="Show prompt", default=False,
+            description="Show the prompt last copied to the clipboard"),
+        "kileido_prompt_note": StringProperty(
+            name="Notes for the LLM", default="",
+            description=f"Your own note, sent with the prompt after the ticked ones (plain text; all notes together "
+                        f"at most {findings.NOTES_MAX} characters)"),
         "kileido_flex_use": EnumProperty(
             name="Flex use", items=(("STATIC", "Static", "Bent once, at assembly"),
                                     ("DYNAMIC", "Dynamic", "Flexing again and again in use")),
@@ -1543,6 +1553,9 @@ def _scene_properties():
     for layer, label, default in cosmetics.LAYERS:
         properties[cosmetics.property_name(layer)] = BoolProperty(
             name=label, default=default, update=_layer_update(layer))
+    for name, sentence in findings.NOTE_TOGGLES:  # notes for the LLM, sent with the prompt when ticked
+        properties[name] = BoolProperty(name=sentence, default=False,
+                                        description=f"Send this note with the prompt: {sentence}")
     for row in (*layers.COPPER_LAYERS, "Vias", "Components", "Placeholders"):
         properties[layers.property_name(row)] = BoolProperty(
             name=row, default=True, update=_row_update(row))
@@ -1555,6 +1568,7 @@ def _file_loaded(_):
     bridge send the board again. A reflection image saved by another Blender install is
     found again in this one. A finding drawn when the file was saved is gone: it may be stale."""
     findings_draw.purge()
+    findings.stop_progress()  # the LLM's progress comes again with the findings
     board.reset()
     hole_cut.restore()  # a file saved with a hole finding's cut: the user's own cut back
     lighting.refresh_reflections()
@@ -1606,6 +1620,7 @@ def unregister():
     for timer in (dump.drain, _ims_rebuild):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
+    findings.stop_progress()
     findings.release_icons()
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)

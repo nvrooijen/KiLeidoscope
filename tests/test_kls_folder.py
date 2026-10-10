@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from kileido_bridge.kls_folder import KEEP_RUNS, KlsFolder, NotAvailable, State, stamp
+from kileido_bridge.kls_folder import KEEP_RUNS, KlsFolder, NotAvailable, Run, State, stamp
 
 TEXT = "(kicad_pcb (version 20250101)\r\n  (gr_text \"µ\")\n)\n"
 
@@ -18,7 +18,7 @@ def folder(tmp_path):
 
 def test_unsaved_board_has_no_folder():
     folder = KlsFolder("")
-    assert not folder.available and folder.load_state() == State()
+    assert not folder.available and folder.runs() == {} and folder.load_state() == State()
     with pytest.raises(NotAvailable):
         folder.new_run(TEXT, "drc")
     with pytest.raises(NotAvailable):
@@ -54,28 +54,48 @@ def test_project_and_rule_files_are_copied_when_present(folder, tmp_path):
 
 
 def test_runs_count_up_and_prune_to_the_last_five(folder, tmp_path):
-    for i in range(7):
-        folder.new_run(f"{TEXT}{i}", "drc")
+    stamps = [folder.new_run(f"{TEXT}{i}", "drc").stamp for i in range(7)]
     runs = tmp_path / ".kileidoscope" / "runs"
-    assert sorted(int(p.name) for p in runs.iterdir()) == [3, 4, 5, 6, 7] and KEEP_RUNS == 5
+    assert sorted(int(p.name) for p in runs.iterdir()) == [3, 4, 5, 6, 7]
+    assert folder.runs() == {str(i + 1): stamps[i] for i in range(2, 7)} and KEEP_RUNS == 5
     (runs / "notes").mkdir()
-    assert folder.new_run(TEXT, "drc").id == "8"
+    (runs / "6" / "run.json").write_text("broken", encoding="utf-8")
+    assert list(folder.runs()) == ["3", "4", "5", "7"]
+    assert folder.new_run(TEXT, "llm").id == "8"
     assert sorted(p.name for p in runs.iterdir()) == ["4", "5", "6", "7", "8", "notes"]
+
+
+def test_run_files_land_in_the_run_and_spare_the_frozen_board(folder):
+    run = folder.new_run(TEXT, "llm")
+    path = folder.write_run_file(run, "request.md", "# µ\n")
+    assert path == run.directory / "request.md" and path.read_bytes() == "# µ\n".encode("utf-8")
+    for name in ("board.kicad_pcb", "run.json", "../x.md", "a/b.md", ".hidden", "", "x" * 65):
+        with pytest.raises(ValueError):
+            folder.write_run_file(run, name, "x")
+    with pytest.raises(ValueError):
+        folder.write_run_file(Run("../1", run.stamp, run.directory), "request.md", "x")
+    with pytest.raises(ValueError):
+        folder.write_run_file(Run("99", run.stamp, run.directory), "request.md", "x")
+    assert stamp((run.directory / "board.kicad_pcb").read_bytes().decode("utf-8")) == run.stamp
 
 
 def test_dismissed_state_round_trip(folder, tmp_path):
     assert folder.load_state() == State()
     state = State()
-    state.mark("k1", "dismissed")
+    state.mark("k1", "dismissed", "drc.clearance", ["U3.4", "net:SIG@F.Cu~15,10"], "Clearance")
     state.mark("k2", "confirmed")
     state.mark("k3", "dismissed")
     state.mark("k3", "")
+    state.accept("4|a1b2c3d4")
+    state.accept("4|a1b2c3d4")
     folder.save_state(state)
     raw = json.loads((tmp_path / ".kileidoscope" / "dismissed.json").read_text(encoding="utf-8"))
-    assert raw == {"version": 1, "findings": {"k1": "dismissed", "k2": "confirmed"}}
+    assert raw["version"] == 1 and raw["accepted_runs"] == ["4|a1b2c3d4"]
+    assert raw["findings"]["k1"]["targets"] == ["U3.4", "net:SIG@F.Cu~15,10"] and raw["findings"]["k1"]["at"]
     loaded = folder.load_state()
     assert loaded == state
     assert loaded.states() == {"k1": "dismissed", "k2": "confirmed"}
+    assert loaded.accepted() == frozenset({"4|a1b2c3d4"})
 
 
 def test_broken_state_files_load_empty_or_partly(folder, tmp_path):
@@ -83,10 +103,11 @@ def test_broken_state_files_load_empty_or_partly(folder, tmp_path):
     path = tmp_path / ".kileidoscope" / "dismissed.json"
     path.write_text("{oops", encoding="utf-8")
     assert folder.load_state() == State()
-    path.write_text(json.dumps({"version": 1, "findings": {"a": "dismissed", "b": "maybe", "c": 5,
-                                                           "d": {"state": "dismissed"}}}), encoding="utf-8")
-    assert list(folder.load_state().findings) == ["a"]
-    path.write_text(json.dumps({"version": 2, "findings": {"a": "dismissed"}}), encoding="utf-8")
+    path.write_text(json.dumps({"version": 1, "findings": {"a": {"state": "dismissed"}, "b": {"state": "maybe"},
+                                                           "c": "x"}, "accepted_runs": ["1|x", 5]}), encoding="utf-8")
+    loaded = folder.load_state()
+    assert list(loaded.findings) == ["a"] and loaded.accepted_runs == ["1|x"]
+    path.write_text(json.dumps({"version": 2, "findings": {"a": {"state": "dismissed"}}}), encoding="utf-8")
     assert folder.load_state() == State()
 
 
@@ -94,6 +115,7 @@ def test_findings_files_per_source(folder, tmp_path):
     root = tmp_path / ".kileidoscope"
     assert folder.findings_path == root / "x.kls-findings.json"
     assert folder.drc_findings_path == root / "x.drc.kls-findings.json"
+    assert folder.progress_path == root / "x.kls-progress.json"  # an LLM's, beside its answer; never written here
     path = folder.write_findings({"format": "kls-findings 1", "tool": "µ"}, "drc")
     assert path == folder.drc_findings_path and not folder.findings_path.exists()
     assert json.loads(path.read_text(encoding="utf-8"))["tool"] == "µ"

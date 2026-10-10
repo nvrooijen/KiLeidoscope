@@ -1,13 +1,17 @@
 """Findings over the live link: `.kileidoscope/` files in, `findings` frames out, requests back."""
 
 import json
+import sys
+import types
+from collections import namedtuple
 from dataclasses import replace
 
+import kileido_bridge
 from kileido_bridge import findings_watch, kls_folder
 from kileido_bridge.live_copy import LiveBoardCopy
 from kileido_bridge.loop import BridgeRuntime
 from kileido_bridge.protocol import encode_frame
-from kileido_bridge.server import MAX_FINDINGS_REQUESTS, BridgeServer
+from kileido_bridge.server import MAX_FINDINGS_REQUESTS, MAX_PROMPT_CHECKS, MAX_PROMPT_NOTES, BridgeServer
 from test_live_link import FakeReader, addon_client, exchange, fixture
 
 LIMIT = 3000  # the watch works on threads of its own: allow it a few seconds
@@ -89,7 +93,7 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
         (row,) = file_rows(payload)
         assert row["title"] == "Stub on the clock" and row["state"] == "" and not row["faded"]
         source = payload["sources"]["file"]
-        assert source["status"] == "ok" and source["connected"]
+        assert source["status"] == "ok" and source["connected"] and source["handshake"] == "unknown_run"
         assert source["path"] == str(project / ".kileidoscope" / "board.kls-findings.json")
         assert payload["sources"]["drc"]["status"] == "none"
         types = [h["type"] for h, _ in frames]
@@ -125,10 +129,15 @@ def test_dismiss_is_saved_and_sent_again(tmp_path, monkeypatch):
                 continue
         else:
             raise AssertionError("dismissed.json was not written")
-        assert saved["findings"] == {findings_watch.state_key("file", key): "dismissed"}
+        entry = saved["findings"][findings_watch.state_key("file", key)]
+        assert entry["state"] == "dismissed" and entry["check"] == "hs.stub"
+        assert entry["targets"] == [f"uuid:{reader.snapshot.tracks[0].id}"]
         request(client, "dismiss", key)  # a DRC finding by that key: there is none, nothing changes
         request(client, "reset", key, source="file")
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "")
+        assert not file_rows(payload)[0]["draws"]  # an unknown run: listed, not drawn
+        request(client, "accept", source="file")
+        payload = until_payload(runtime, client, lambda p: p["sources"]["file"]["handshake"] == "accepted")
         assert file_rows(payload)[0]["draws"][0]["ids"] == [reader.snapshot.tracks[0].id]
     finally:
         client.close()
@@ -290,7 +299,7 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
         assert calls == [("kicad-cli", FakeBoard.contents)]  # the raw board text, unsaved edits included
         drc = payload["sources"]["drc"]
         assert drc["stamp"] == kls_folder.stamp(FakeBoard.contents) == drc["live_stamp"]
-        assert not drc["changed"] and drc["tool"] == "KiCad DRC 10.0.3"
+        assert drc["handshake"] == "known" and not drc["changed"] and drc["tool"] == "KiCad DRC 10.0.3"
         (row,) = drc["findings"]
         assert row["check"] == "drc.track_dangling" and row["draws"][0]["ids"] == [track.id]
         folder = project / ".kileidoscope"
@@ -310,19 +319,243 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
         runtime.close()
 
 
+Check = namedtuple("Check", "id group title instruction evidence draws v1")
+CATALOGUE = (Check("plane.gap_crossing", "plane", "Signal crossing a plane gap", "Find them", "net", ("highlight",),
+                   True),
+             Check("decap.distance", "decap", "Decoupling cap far from its pin", "Measure", "cap", ("distance",),
+                   True),
+             Check("hs.stub", "hs", "Stubs on fast nets", "Find stubs", "net", ("highlight",), False))
+
+
+def stub_modules(monkeypatch, calls, fail=None):
+    """checks and prompt as their interfaces say (they are written alongside this)."""
+    checks = types.ModuleType("kileido_bridge.checks")
+    checks.CATALOGUE, checks.QUICK = CATALOGUE, ("plane.gap_crossing", "decap.distance")
+    checks.GROUPS = (("plane", "Return paths and planes"), ("decap", "Decoupling"), ("hs", "High speed"))
+    checks.by_id = lambda ids: tuple(check for check in CATALOGUE if check.id in set(ids))
+    prompt = types.ModuleType("kileido_bridge.prompt")
+
+    def make_run(folder, text, snapshot, chosen, notes=""):
+        if fail:
+            raise fail
+        run = folder.new_run(text, "prompt")
+        folder._write(f"runs/{run.id}/request.md", b"# KiLeidoscope review request")
+        calls.append((text, snapshot is not None, [check.id for check in chosen], notes))
+        return run, f"Run: {run.id}   Stamp: {run.stamp}\nRead request.md in {run.directory} first."
+    prompt.make_run = make_run
+    for name, module in (("checks", checks), ("prompt", prompt)):
+        monkeypatch.setitem(sys.modules, f"kileido_bridge.{name}", module)
+        monkeypatch.setattr(kileido_bridge, name, module, raising=False)
+
+
+def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):
+    calls = []
+    stub_modules(monkeypatch, calls)
+    runtime, reader, client, project = live(tmp_path, monkeypatch)
+    track = reader.snapshot.tracks[0]
+    try:
+        runtime.step()
+        client.connect()
+        payload = until_payload(runtime, client, lambda p: p["status"] == "none")
+        assert payload["prompt"] == {"state": "idle", "run": "", "text": "", "error": ""}
+        assert payload["progress"] == {"state": "none", "run": "", "done": 0, "total": 0, "check": "", "note": "",
+                                       "updated_unix": 0.0, "made_unix": 0.0}
+        assert payload["catalogue"][0] == {"id": "plane.gap_crossing", "group": "plane",
+                                           "title": "Signal crossing a plane gap", "v1": True}
+        assert [row["v1"] for row in payload["catalogue"]] == [True, True, False]
+        assert payload["groups"][1] == {"id": "decap", "title": "Decoupling"}
+        client.request_findings("prompt", "", "file", checks=["decap.distance", "not.a_check", "hs.stub"])
+        frames = exchange(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f)),
+                          limit=LIMIT)
+        assert "making" in [p["prompt"]["state"] for p in payloads(frames)]
+        prompt = payloads(frames)[-1]["prompt"]
+        stamp = kls_folder.stamp(FakeBoard.contents)
+        assert prompt["run"] == "1" and prompt["error"] == "" and prompt["text"].startswith(f"Run: 1   Stamp: {stamp}")
+        assert calls == [(FakeBoard.contents, True, ["decap.distance", "hs.stub"], "")]  # unknown ids dropped
+        run = project / ".kileidoscope" / "runs" / "1"
+        assert (run / "request.md").is_file()
+        assert (run / "board.kicad_pcb").read_text(encoding="utf-8") == FakeBoard.contents
+        # The LLM's answer echoes the run and its stamp: a known run, drawn.
+        write(project, {**tool_file(track), "run": "1", "stamp": stamp})
+        payload = until_payload(runtime, client, lambda p: p["sources"]["file"]["status"] == "ok")
+        source = payload["sources"]["file"]
+        assert source["handshake"] == "known" and source["run"] == "1" and not source["changed"]
+        assert file_rows(payload)[0]["draws"][0]["ids"] == [track.id]
+        assert payload["prompt"]["state"] == "ready"  # kept until the next prompt
+        # None of the ticked checks known: said, no run made.
+        client.request_findings("prompt", "", "file", checks=["not.a_check"])
+        payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
+        assert payload["prompt"]["error"] == findings_watch.NO_CHECKS and len(calls) == 1
+    finally:
+        client.close()
+        runtime.close()
+
+
+def write_progress(project, data):
+    write(project, data, "board.kls-progress.json")
+    return project / ".kileidoscope" / "board.kls-progress.json"
+
+
+def until_progress_read(runtime, client, test):
+    """Step until the watch has read the progress file (`test` on what it parsed)."""
+    exchange(runtime, client, lambda _frames: test(runtime.findings._progress[0]), limit=LIMIT)
+    return runtime.findings.result()[1]["progress"]
+
+
+def test_progress_waits_then_works_then_is_done(tmp_path, monkeypatch):
+    calls = []
+    stub_modules(monkeypatch, calls)
+    runtime, reader, client, project = live(tmp_path, monkeypatch)
+    stamp = kls_folder.stamp(FakeBoard.contents)
+    try:
+        runtime.step()
+        client.connect()
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        request(client, "prompt", source="file", checks=["plane.gap_crossing"], notes="Mind J5")
+        payload = until_payload(runtime, client, lambda p: p["progress"]["state"] == "waiting")
+        progress = payload["progress"]
+        assert payload["prompt"]["state"] == "ready" and calls[0][3] == "Mind J5"
+        assert progress["run"] == "1" and progress["made_unix"] > 0 and progress["updated_unix"] == 0.0
+        made = progress["made_unix"]
+        # Another run's progress, this run with another stamp, and broken files are ignored.
+        other = {"format": "kls-progress 1", "run": "7", "stamp": stamp, "done": 1, "total": 2}
+        write_progress(project, {**other, "run": "1", "stamp": "deadbeef"})
+        assert until_progress_read(runtime, client, lambda p: p and p["stamp"] == "deadbeef")["state"] == "waiting"
+        for data in ("{not json", {**other, "format": "kls-progress 9", "run": "1"}, {**other, "run": 1},
+                     {**other, "run": "1", "note": "x" * 5000}):
+            write_progress(project, other)
+            assert until_progress_read(runtime, client, lambda p: p and p["run"] == "7")["state"] == "waiting"
+            path = project / ".kileidoscope" / "board.kls-progress.json"
+            path.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+            assert until_progress_read(runtime, client, lambda p: p is None)["state"] == "waiting"
+        # A progress file for this run and stamp: working, never trusted.
+        path = write_progress(project, {"format": "kls-progress 1", "run": "1", "stamp": stamp, "done": 10 ** 9,
+                                        "total": -3, "check": "plane.gap_crossing", "note": "Tracing\tGND‮" * 20})
+        payload = until_payload(runtime, client, lambda p: p["progress"]["state"] == "working")
+        progress = payload["progress"]
+        assert progress["run"] == "1" and progress["made_unix"] == made
+        assert progress["done"] == findings_watch.MAX_PROGRESS_COUNT and progress["total"] == 0
+        assert progress["check"] == "plane.gap_crossing" and progress["updated_unix"] == path.stat().st_mtime
+        assert len(progress["note"]) == findings_watch.MAX_PROGRESS_NOTE and progress["note"].endswith("…")
+        assert progress["note"].startswith("Tracing GND Tracing") and "\t" not in progress["note"]
+        # The findings file for this run is in: done.
+        write(project, {**tool_file(reader.snapshot.tracks[0]), "run": "1", "stamp": stamp})
+        payload = until_payload(runtime, client, lambda p: p["progress"]["state"] == "done")
+        answer = project / ".kileidoscope" / "board.kls-findings.json"
+        assert payload["progress"]["run"] == "1" and payload["progress"]["made_unix"] == made
+        assert payload["progress"]["updated_unix"] == answer.stat().st_mtime_ns / 1e9
+        version = runtime.findings.result()[0]
+        for _ in range(20):  # time passing alone publishes nothing
+            runtime.step()
+        assert runtime.findings.result()[0] == version
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_progress_files_are_parsed_as_untrusted_data():
+    good = {"format": "kls-progress 1", "run": "3", "stamp": "a1b2c3d4", "done": 2.7, "total": 5,
+            "check": "decap.distance", "note": "line\nbreak"}
+    assert findings_watch.parse_progress(json.dumps(good).encode()) == {
+        "run": "3", "stamp": "a1b2c3d4", "done": 2, "total": 5, "check": "decap.distance", "note": "line break"}
+    for done, total in ((True, "5"), (-1, float("nan")), (None, [5])):
+        loose = findings_watch.parse_progress(json.dumps({**good, "done": done, "total": total, "check": 5,
+                                                          "note": None}).encode())
+        assert (loose["done"], loose["total"], loose["check"], loose["note"]) == (0, 0, "", "")
+    for bad in (b"", b"[]", b"\xff", json.dumps({**good, "format": "kls-findings 1"}).encode(),
+                json.dumps({**good, "stamp": None}).encode(), b"[" * 5000,
+                json.dumps({**good, "note": "x" * kls_folder.MAX_PROGRESS_BYTES}).encode()):
+        assert findings_watch.parse_progress(bad) is None
+
+
+def test_a_prompt_that_cannot_be_made_says_why(tmp_path, monkeypatch):
+    stub_modules(monkeypatch, [], fail=OSError("disk full"))
+    runtime, reader, client, project = live(tmp_path, monkeypatch)
+    try:
+        runtime.step()
+        client.connect()
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        request(client, "prompt", source="file", checks=["plane.gap_crossing"])
+        payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
+        assert payload["prompt"] == {"state": "failed", "run": "", "text": "", "error": "OSError: disk full"}
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_an_unsaved_board_makes_no_prompt(tmp_path, monkeypatch):
+    calls = []
+    stub_modules(monkeypatch, calls)
+    runtime, reader, client, project = live(tmp_path, monkeypatch, saved=False)
+    try:
+        runtime.step()
+        client.connect()
+        payload = until_payload(runtime, client, lambda p: p["status"] == "unsaved")
+        assert [row["id"] for row in payload["catalogue"]] == [check.id for check in CATALOGUE]
+        request(client, "prompt", source="file", checks=["plane.gap_crossing"])
+        payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
+        assert payload["prompt"]["error"] == "Save the board first"
+        assert not calls and not (project / ".kileidoscope").exists()
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_without_board_text_no_prompt_is_made(tmp_path, monkeypatch):
+    calls = []
+    stub_modules(monkeypatch, calls)
+    runtime, reader, client, project = live(tmp_path, monkeypatch)
+    try:
+        runtime.step()
+        client.connect()
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        runtime.copy_enabled = False  # this KiCad cannot serialize boards
+        request(client, "prompt", source="file", checks=["plane.gap_crossing"])
+        payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
+        assert payload["prompt"]["error"] == findings_watch.NO_TEXT and not calls
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_without_the_checks_module_the_catalogue_is_empty(monkeypatch):
+    monkeypatch.setitem(sys.modules, "kileido_bridge.checks", None)  # an import of it fails
+    monkeypatch.delattr(kileido_bridge, "checks", raising=False)
+    assert findings_watch.catalogue() is None
+    watch = findings_watch.FindingsWatch()
+    watch.target("")
+    watch.request("prompt", source="file", checks=["plane.gap_crossing"])
+    _, payload = watch.result()
+    assert payload["catalogue"] == [] and payload["groups"] == []
+    assert payload["prompt"] == {"state": "failed", "run": "", "text": "", "error": "Save the board first"}
+
+
 def test_the_server_queues_only_well_formed_findings_requests():
     server = BridgeServer(port=0, token="t")
     try:
         server._handle({"type": "findings", "action": "dismiss", "key": "3f2a"})
         server._handle({"type": "findings", "action": "confirm", "key": "3f2a", "source": "file"})
         server._handle({"type": "findings", "action": "run_drc"})
+        server._handle({"type": "findings", "action": "prompt", "source": "file", "checks": ["plane.gap_crossing"]})
+        server._handle({"type": "findings", "action": "prompt", "source": "file",
+                        "checks": ["c" * 64] * MAX_PROMPT_CHECKS, "notes": "n" * MAX_PROMPT_NOTES})
+        server._handle({"type": "findings", "action": "prompt", "source": "file", "checks": ["plane.gap_crossing"],
+                        "notes": "Mind J5,\nit is a test header"})
         for bad in ({"action": "delete", "key": ""}, {"action": ["run_drc"]}, {"action": "dismiss", "key": 5},
                     {"action": "dismiss", "key": "k" * 65}, {"action": "dismiss", "source": "../x"},
                     {"action": "dismiss", "source": ["drc"]}, {"action": "undo", "source": "file"},
-                    {"action": "accept", "source": "file"}):
+                    {"action": "prompt", "checks": "plane.gap_crossing"},
+                    {"action": "prompt", "checks": [5]}, {"action": "prompt", "checks": ["c" * 65]},
+                    {"action": "prompt", "checks": ["c"] * (MAX_PROMPT_CHECKS + 1)},
+                    {"action": "prompt", "notes": 5}, {"action": "prompt", "notes": ["Mind J5"]},
+                    {"action": "prompt", "notes": "n" * (MAX_PROMPT_NOTES + 1)}):
             server._handle({"type": "findings", **bad})
         requests = server.take_findings_requests()
-        assert requests == [("dismiss", "3f2a", "drc"), ("confirm", "3f2a", "file"), ("run_drc", "", "drc")]
+        assert requests[:4] == [("dismiss", "3f2a", "drc", ()), ("confirm", "3f2a", "file", ()),
+                                ("run_drc", "", "drc", ()), ("prompt", "", "file", ("plane.gap_crossing",))]
+        assert len(requests) == 6 and len(requests[4][3]) == MAX_PROMPT_CHECKS
+        assert [request.notes for request in requests] == ["", "", "", "", "n" * MAX_PROMPT_NOTES,
+                                                           "Mind J5,\nit is a test header"]
         assert server.take_findings_requests() == []
         for _ in range(MAX_FINDINGS_REQUESTS + 10):
             server._handle({"type": "findings", "action": "reset", "key": "k"})

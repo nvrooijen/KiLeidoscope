@@ -2,11 +2,19 @@
 state, the column lists both sources by check, a shown finding draws its tools at the
 right Blender coordinates (highlight, label, distance, arrow), confirm and dismiss update
 the rows, a hole finding cuts the board open through both holes and puts the user's cut
-back after, and a loaded file purges the drawing. The measured tools (a hand-built
-payload, as the bridge measures them): clearance, edge gap, width ribbons and callout.
-Labels (label_place): light text on a dark plate, beside the finding's box, above the
-surface the view sees with a leader to their anchor, sized to the finding, apart on
-screen; on a hole finding's cut face, flat on it, within the board, beside the holes.
+back after, and a loaded file purges the drawing. What an LLM's file adds: isolate, a
+ghost checked to fit, a polygon area, layers, the fix and the names it mentions, a value
+the bridge measured differently; the LLM prompt box ticks checks, sends Copy prompt with
+the user's notes, copies a ready prompt once and shows how far the LLM is (waiting,
+working, stalled, done). The measured tools (hand-built payloads, as the bridge measures
+them): clearance, edge gap, width ribbons and callout, a routed path through its vias, a
+bar chart on its label's plate; a layer change's return via tube and rings, a plane gap's
+plane edges and red spans, a return path's covered share, plane islands by colour and
+number; stitching vias ringed with the largest spacing measured, a stub's barrel red past
+its last layer used, discontinuity markers by kind. Labels (label_place): light text on
+a dark plate, beside the finding's box, above the surface the view sees with a leader to
+their anchor, sized to the finding, apart on screen; on a hole finding's cut face, flat
+on it, within the board, beside the holes.
 
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_findings.py
 """
@@ -64,12 +72,19 @@ class Layout:
         return type("Properties", (), {})()
 
 
+class BarLayout(Layout):
+    """Blender 5.1's layout: it has progress bars (recorded with their factor)."""
+
+    def progress(self, factor=0.0, text="", **kwargs):
+        self.drawn.append(("progress", text, round(factor, 4)))
+
+
 def wrap(text):
     return textwrap.wrap(text, 70) or [""]
 
 
-def column(scene):
-    layout = Layout()
+def column(scene, layout_type=BarLayout):
+    layout = layout_type()
     findings.draw_column(layout, scene, wrap)
     return layout.drawn
 
@@ -95,6 +110,22 @@ BELOW = [  # labels on the bottom copper and an inner layer, one finding: seen f
 ]
 
 
+SUGGESTED = [  # what an LLM's answer adds: a ghost, a polygon area, layers, a fix, a claim, isolate
+    {"check": "rf.clearance", "severity": "error", "confidence": "high", "title": "Suggested fixes",
+     "message": "RF_A runs close to itself near J1 (via 420d87bb)", "fix": "Move the lower track down",
+     "values": {"distance_mm": 1.0, "net_name": "RF_A"},  # the bridge measures 5.3 mm: they disagree
+     "draw": [{"tool": "highlight", "targets": [f"uuid:{TRACK}", f"uuid:{OTHER}"]},
+              {"tool": "distance", "from": f"uuid:{TRACK}", "to": f"uuid:{OTHER}", "limit": 6.0, "limit_is": "min"},
+              {"tool": "label", "at": "J1", "text": "J1 feeds this"},
+              {"tool": "arrow", "from": "J1", "to": f"uuid:{VIA}", "label": "return path"},
+              {"tool": "ghost", "kind": "via", "at": "pt:15,15@F.Cu"},
+              {"tool": "area", "layer": "F.Cu", "polygon": [[14, 14], [18, 14], [18, 18], [14, 18]]},
+              {"tool": "layers", "layers": ["F.Cu", "In1.Cu"]}]},
+    {"check": "plane.isolated", "severity": "warning", "title": "Plane isolated",
+     "draw": [{"tool": "isolate", "targets": [f"uuid:{ZONE}", f"uuid:{VIA}"]}]},
+]
+
+
 def findings_file(extra=()):
     """A findings file on the fixture board: one finding per tool family."""
     items = [
@@ -113,19 +144,38 @@ def findings_file(extra=()):
          "draw": [{"tool": "highlight", "targets": ["uuid:00000000-dead-4bee-8f00-000000000000"]}]},
         *extra,
     ]
-    data = {"format": "kls-findings 1", "run": "4", "stamp": STAMP, "tool": "Test tool", "findings": items}
+    data = {"format": "kls-findings 1", "run": "4", "stamp": STAMP, "tool": "Test tool", "findings": items,
+            "skipped": [{"check": "emc.ground", "reason": "no stackup"}]}
     return json.dumps(data).encode("utf-8")
 
 
 def frame(index, drop=(), extra=()):
-    """The bridge's findings frame: the findings file resolved (the board as it is), no DRC run yet."""
-    context = bridge_findings.Context("x.kls-findings.json", "file", STAMP, {})
+    """The bridge's findings frame: the findings file resolved (the board as it is, a known
+    run), no DRC run yet."""
+    context = bridge_findings.Context("x.kls-findings.json", "file", {"4": STAMP}, frozenset(), STAMP, {})
     payload = bridge_findings.resolve_file(bridge_findings.parse(findings_file(extra)), index, context)
     payload["findings"] = [f for f in payload["findings"] if f["title"] not in drop]
-    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", STAMP, {}))
+    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, frozenset(), STAMP, {}))
     return {"type": "findings", "revision": 1,
             "findings": {"status": "ok", "folder": "C:/boards/.kileidoscope",
                          "drc": {"state": "idle", "error": "", "run": ""}, "sources": {"drc": drc, "file": payload}}}
+
+
+CATALOGUE = [{"id": "plane.gap_crossing", "group": "plane", "title": "Signal crossing a plane gap", "v1": True},
+             {"id": "decap.distance", "group": "decap", "title": "Decoupling cap far from its pin", "v1": True},
+             {"id": "hs.stub", "group": "hs", "title": "Stubs on fast nets", "v1": False}]
+GROUPS = [{"id": "plane", "title": "Return paths and planes"}, {"id": "decap", "title": "Decoupling"},
+          {"id": "hs", "title": "High speed"}]
+QUICK = {"plane.gap_crossing", "decap.distance"}
+PROMPT = "KiLeidoscope LLM Visualizer: board review request\nRun: 5   Stamp: a1b2c3d4\n\nRead request.md first."
+
+
+def prompt_frame(index, state="idle", run="", text="", error="", status="ok"):
+    """The findings frame with the bridge's check catalogue and a prompt's state."""
+    header = frame(index)
+    header["findings"].update(status=status, catalogue=CATALOGUE, groups=GROUPS,
+                              prompt={"state": state, "run": run, "text": text, "error": error})
+    return header
 
 
 def finding_named(title):
@@ -226,6 +276,54 @@ def check_drawing(scene):
     assert zone["kls_zone_highlight"] == "" and columns.tab_state("DRC") == "off"
 
 
+def check_suggestions(scene, index):
+    """What an LLM's file adds: a ghost via checked to fit and labelled, a polygon area just
+    over its layer, layers listed; in the column the fix, a button per name the message
+    mentions, the claimed value against the measured one (the grey "?"); isolate's X-ray."""
+    apply.apply_frame(frame(index, extra=SUGGESTED), {})
+    found = show("Suggested fixes")
+    drawn = objects()
+    assert {"KLS finding 2 distance", "KLS finding 5 ghost", "KLS finding 5 ghost label", "KLS finding 6 area",
+            findings_draw.EYE} <= set(drawn), sorted(drawn)
+    check_labels(found, 4)  # the ghost labelled too: the LLM's suggestion, here on an RF_A arc
+    assert drawn["KLS finding 5 ghost label"].data.body == "Suggested via\ndoes not fit"
+    assert drawn["KLS finding 5 ghost"].data.materials[0].name == "KLS finding over ghost"
+    # Ghost via: a cylinder through the board at (15, 15) mm.
+    ghost = drawn["KLS finding 5 ghost"]
+    assert np.allclose(ghost.matrix_world.translation[:2], blender_xy([15_000_000, 15_000_000]), atol=1e-7)
+    corners_ = np.array([tuple(v.co) for v in ghost.data.vertices])
+    assert np.isclose(np.ptp(corners_[:, 2]), state.board.heights["F.Cu"] - state.board.heights["B.Cu"], atol=1e-7)
+    assert np.isclose(np.ptp(corners_[:, 0]), findings_draw.VIA_GHOST_M, atol=1e-6)
+    # Area: one face just over F.Cu.
+    area = drawn["KLS finding 6 area"]
+    assert len(area.data.polygons) == 1 and area.matrix_world.translation.z > state.board.heights["F.Cu"]
+    # The column: the message, the fix, the claimed value against the measured one, the layers listed.
+    drawn = column(scene)
+    texts = [text for _, text, _ in drawn]
+    assert "RF_A runs close to itself near J1 (via 420d87bb)" in texts and "Fix: Move the lower track down" in texts
+    # A button per name it mentions, in order; a made-up code greyed, not a button.
+    chips = [(kind, text) for kind, text, _ in drawn if text.split(":")[0] in ("RF_A", "J1", "420d87bb")]
+    assert [text.split(":")[0] for _, text in chips] == ["RF_A", "J1", "420d87bb"], chips
+    assert [kind for kind, _ in chips] == ["operator", "operator", "label"] and \
+        chips[2][1] == "420d87bb: not on the board", chips
+    assert "distance: claimed 1 mm, measured 5.3 mm" in texts, texts
+    assert "Layers: F.Cu, In1.Cu" in texts and "Measured 5.30 mm < 6.00 mm min" in texts, texts
+    # Not confirmed, a "?": the bridge measured the distance differently (1.0 claimed, 5.3 mm).
+    unknown = next(iter(findings.severity_icon("unknown").values()))
+    assert ("operator", "Suggested fixes", unknown) in drawn
+    assert findings_draw.mark(finding_named("Suggested fixes")) == "unknown"
+    # Isolate: a zone and a via, X-ray on whatever the tick box says.
+    amount = bpy.data.node_groups[focus.GROUP].nodes["Amount"].outputs[0]
+    show("Plane isolated")
+    assert state.board.findings_isolate and amount.default_value == 1.0
+    zone = state.board.collection.all_objects[f"KLS In1.Cu zone {ZONE}"]
+    assert zone["kls_zone_highlight"] == "finding"
+    show("Plane isolated")  # a second click hides it
+    assert state.board.findings_shown == ("", "") and amount.default_value == 0.0 and not objects()
+    assert zone["kls_zone_highlight"] == ""
+    apply.apply_frame(frame(index), {})
+
+
 def corners(obj):
     return [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
 
@@ -300,7 +398,7 @@ def check_labels(found, count, below=False):
     the view sees with a leader to its anchor, on its plate, the plates apart on screen."""
     bpy.context.view_layer.update()
     drawn = objects()
-    texts = [obj for obj in drawn.values() if obj.type == "FONT" and obj.parent is None]  # not a glyph
+    texts = [obj for obj in drawn.values() if obj.type == "FONT" and obj.parent is None]  # not a glyph, a bar's
     assert len(texts) == count, sorted(drawn)
     box = finding_box(found)
     rect = [Vector((x, y, 0.0)) for x in (box[0], box[2]) for y in (box[1], box[3])]
@@ -540,11 +638,11 @@ MM = 1_000_000
 
 def measured_draw(tool, what, **fields):
     """A measured draw as the bridge sends it: the common fields, `what`, the tool's own."""
-    return {"tool": tool, "ok": True, "problem": "", "ids": [], "targets": [], "label": "",
+    return {"tool": tool, "ok": True, "problem": "", "ids": [], "targets": [], "label": "", "step": 0,
             "emphasis": "normal", "what": what, **fields}
 
 
-MEASURED = {  # hand-built (the bridge measures these): one finding with every measured tool
+MEASURED = {  # hand-built (the bridge measures these): one finding with every DRC measured tool
     "key": "measured-1", "check": "hs.length_match", "severity": "warning", "title": "Measured geometry", "state": "",
     "bbox_nm": [5 * MM, 1 * MM, 20 * MM, 20 * MM],
     "draws": [
@@ -628,6 +726,368 @@ def check_measured(scene, index):
     apply.apply_frame(frame(index), {})
 
 
+ROUTED = {  # hand-built (the bridge measures these): a routed length and a bar chart
+    "key": "measured-2", "check": "hs.length_match", "severity": "warning", "title": "Routed and charted",
+    "state": "", "bbox_nm": [5 * MM, 1 * MM, 20 * MM, 20 * MM],
+    "draws": [
+        measured_draw("routed_length", "Routed length",  # down a via at (8, 11), up one at (14, 13) mm
+                      path_nm=[[5 * MM, 11 * MM, "F.Cu"], [8 * MM, 11 * MM, "F.Cu"], [8 * MM, 11 * MM, "B.Cu"],
+                               [12 * MM, 13 * MM, "B.Cu"], [14 * MM, 13 * MM, "F.Cu"]],
+                      measured_nm=23_400_000, points=[[5 * MM, 11 * MM, "F.Cu"], [14 * MM, 13 * MM, "F.Cu"]]),
+        measured_draw("bars", "Length mismatch", unit="mm", points=[[20 * MM, 20 * MM, "F.Cu"]],
+                      bars=[{"label": "CLK_P", "value": 12.0, "limit": 10.0, "over": True},
+                            {"label": "CLK_N", "value": 8.0, "limit": 10.0, "over": False},
+                            {"label": "DATA0", "value": 5.0, "limit": 10.0}]),
+    ]}
+
+
+def check_routed(scene, index):
+    """A routed path stepping through the board at its vias, ends marked; a bar chart on
+    its label's plate, each bar scaled to the largest, the over one red, the limit across;
+    the values in the column."""
+    header = frame(index)
+    header["findings"]["sources"]["file"]["findings"].append(ROUTED)
+    apply.apply_frame(header, {})
+    found = show("Routed and charted")
+    drawn = objects()
+    top, bottom = state.board.heights["F.Cu"], state.board.heights["B.Cu"]
+    severity = "KLS finding warning"
+    # Routed length: along the path just out from the copper, straight through the board at each via.
+    path = spline_points(drawn["KLS finding 1 routed_length"])
+    radius = drawn["KLS finding 1 routed_length"].data.bevel_depth
+    expected = [([5, 11], top), ([8, 11], top), ([8, 11], bottom), ([12, 13], bottom), ([14, 13], bottom),
+                ([14, 13], top)]  # the second via reached on B.Cu, then up
+    assert len(path) == len(expected), path
+    for point, (xy, z) in zip(path, expected):
+        assert np.allclose(point[:2], blender_xy([xy[0] * MM, xy[1] * MM]), atol=1e-7), (point, xy)
+        assert np.isclose(point[2], z + (radius if z == top else -radius), atol=2e-5), (point, z)
+    for end, at in (("start", path[0]), ("end", path[-1])):
+        assert np.allclose(drawn[f"KLS finding 1 routed_length {end}"].matrix_world.translation, at, atol=1e-7)
+    assert drawn["KLS finding 1 routed_length label"].data.body == "Routed length\n23.40 mm"
+    # Bars: under the title on its plate, one bar each scaled to the largest, the over one red, the limit across.
+    title = drawn["KLS finding 2 bars"]
+    assert title.data.body == "Length mismatch\nlimit 10 mm", title.data.body
+    size = title.data.size
+    bars = [drawn[f"KLS finding 2 bars bar {n}"] for n in (1, 2, 3)]
+    assert "KLS finding 2 bars bar 4" not in drawn
+    assert all(bar.parent == title and bar.show_in_front for bar in bars)
+    heights = [np.ptp([v.co.y for v in bar.data.vertices]) for bar in bars]
+    assert np.allclose(heights, np.array([12, 8, 5]) / 12 * findings_draw.BAR_HEIGHT * size, rtol=1e-4), heights
+    assert [bar.data.materials[0].name for bar in bars] == ["KLS finding over", severity, severity]
+    base = min(v.co.y + bar.location.y for bar in bars for v in bar.data.vertices)
+    limit = in_text(drawn["KLS finding 2 bars limit"])
+    assert np.isclose(limit[:, 1].mean(), base + 10 / 12 * findings_draw.BAR_HEIGHT * size, rtol=1e-4)
+    lows = [bar.location.x - findings_draw.BAR * size / 2 for bar in bars]
+    assert limit[:, 0].min() <= min(lows) and limit[:, 0].max() >= max(lows) + findings_draw.BAR * size  # across all
+    for number, (value, name) in enumerate((("12", "CLK_P"), ("8", "CLK_N"), ("5", "DATA0")), start=1):
+        over = drawn[f"KLS finding 2 bars bar {number} value"]
+        assert over.data.body == value and over.location.y > bars[number - 1].location.y + heights[number - 1] / 2
+        assert drawn[f"KLS finding 2 bars bar {number} name"].data.body == name
+        assert drawn[f"KLS finding 2 bars bar {number} name"].location.y < base
+    plate = in_text(drawn["KLS finding 2 bars plate"])
+    for part in [*bars, drawn["KLS finding 2 bars limit"], drawn["KLS finding 2 bars base"]]:
+        local = in_text(part)
+        assert plate[:, 0].min() < local[:, 0].min() and local[:, 0].max() < plate[:, 0].max(), part.name
+        assert plate[:, 1].min() < local[:, 1].min() and local[:, 1].max() < plate[:, 1].max(), part.name
+        assert local[:, 2].max() > 0  # stands out of the plate, towards the eye
+    check_labels(found, 2)  # the path's label and the chart's, beside the box, above the board, apart on screen
+    texts = [text for _, text, _ in column(scene)]
+    for line in ("Routed length: 23.40 mm", "Length mismatch", "CLK_P: 12 mm", "CLK_N: 8 mm", "DATA0: 5 mm",
+                 "limit: 10 mm"):
+        assert line in texts, (line, texts)
+    bars_column = []
+    findings._draw_bars(Layout(bars_column), wrap, {"unit": "ps", "bars": [{"label": "A", "value": 3.5, "limit": 2},
+                                                                           {"label": "B", "value": 1.0}]})
+    assert [text for _, text, _ in bars_column] == ["A: 3.5 ps (limit 2)", "B: 1 ps"], bars_column
+    show("Routed and charted")
+    apply.apply_frame(frame(index), {})
+
+
+def plane_draw(tool, what, **fields):
+    """A plane draw as the bridge sends it: the measured fields and the plane keys, empty
+    unless given (kileido_bridge findings._empty_draw)."""
+    return measured_draw(tool, what, **{"planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [],
+                                        "fits": None, "islands": [], "barrel": {}, "marks": [], "layer": "",
+                                        "measured_nm": None, "limit_nm": None, "limit_is": "", "over": False,
+                                        **fields})
+
+
+C_SHAPE = [[14, 1], [20, 1], [20, 2], [15, 2], [15, 6], [20, 6], [20, 7], [14, 7]]  # mm: its centroid in the notch
+PLANES = {  # hand-built (the bridge measures these): one finding with every plane tool
+    "key": "planes-1", "check": "plane.gap_crossing", "severity": "warning", "title": "Planes and returns", "state": "",
+    "bbox_nm": [5 * MM, 1 * MM, 20 * MM, 16 * MM],
+    "draws": [
+        plane_draw("layer_change", "Return via", ids=[VIA, "return-1", "return-2"],
+                   points=[[8 * MM, 8 * MM, "F.Cu"], [9_400_000, 8 * MM, "In2.Cu"]],  # drawn on the via's layer
+                   measured_nm=1_400_000, limit_nm=1 * MM, limit_is="max", over=True,
+                   planes=["GND@In1.Cu", "GND@In2.Cu"],
+                   returns=[[9_400_000, 8 * MM, 600_000, "return-1"], [6 * MM, 10 * MM, 400_000, "return-2"]]),
+        plane_draw("plane_gap", "Gap", layer="In1.Cu", ids=[TRACK], planes=["GND@In1.Cu"],
+                   spans_nm=[[10 * MM, 5 * MM, 11_200_000, 5 * MM, "F.Cu", 250_000],
+                             [13 * MM, 5 * MM, 13_500_000, 5 * MM, "F.Cu", 250_000]],
+                   edges_nm=[[[10 * MM, 3 * MM], [10 * MM, 7 * MM]], [[11_200_000, 3 * MM], [11_200_000, 7 * MM]]],
+                   points=[[10_600_000, 5 * MM, "F.Cu"], [13_250_000, 5 * MM, "F.Cu"]], measured_nm=1_200_000),
+        plane_draw("return_path", "Without plane", layer="In1.Cu", ids=[OTHER],
+                   covered_nm=[[5 * MM, 15 * MM, 13 * MM, 15 * MM, "F.Cu", 200_000]],
+                   spans_nm=[[13 * MM, 15 * MM, 15 * MM, 15 * MM, "F.Cu", 200_000]], measured_nm=2 * MM,
+                   planes=["GND@In1.Cu"]),
+        plane_draw("plane_islands", "Islands", ids=[ZONE], islands=[
+            {"index": 1, "layer": "In1.Cu", "polygon_nm": [[x * MM, y * MM] for x, y in C_SHAPE], "area_mm2": 16.0,
+             "main": True, "tied": True},
+            {"index": 2, "layer": "In1.Cu", "polygon_nm": [[16 * MM, 9 * MM], [17 * MM, 9 * MM], [17 * MM, 10 * MM],
+                                                           [16 * MM, 10 * MM], [16 * MM, 9 * MM]],  # closed
+             "area_mm2": 1.0, "main": False, "tied": False},
+            {"index": 3, "layer": "In2.Cu", "polygon_nm": [[18 * MM, 9 * MM], [20 * MM, 9 * MM], [19 * MM, 11 * MM]],
+             "area_mm2": 2.0, "main": False, "tied": True}]),
+    ]}
+NO_RETURN = {
+    "key": "planes-2", "check": "plane.layer_change_no_return", "severity": "error", "title": "No return via",
+    "state": "", "bbox_nm": [7 * MM, 7 * MM, 9 * MM, 9 * MM],
+    "draws": [plane_draw("layer_change", "Return via", ids=[VIA], points=[[8 * MM, 8 * MM, "F.Cu"]], limit_nm=1 * MM,
+                         limit_is="max", planes=["GND@In1.Cu"])]}
+
+
+def leader_anchor(drawn, label):
+    return np.array(tuple(drawn[label + " leader"].data.splines[0].points[-1].co)[:3])
+
+
+def check_planes(scene, index):
+    """A layer change's via highlighted with a measured tube on its layer to the nearest
+    return via (red past the limit), the others ringed, no ghost of its own; a plane
+    gap's plane edges lit up on the plane's layer and named, the spans without plane red
+    with end ticks and the gap labelled; a return path's covered stretches faint, the rest
+    red, with the share covered; plane islands as areas on their layers, each its own
+    colour, the loose one outlined red, numbered labels and the count; the column's lines."""
+    header = frame(index)
+    header["findings"]["sources"]["file"]["findings"] += [PLANES, NO_RETURN]
+    apply.apply_frame(header, {})
+    found = show("Planes and returns")
+    drawn = objects()
+    top = state.board.heights["F.Cu"]
+    severity, over = "KLS finding warning", "KLS finding over"
+    assert state.board.highlight["finding"] == {VIA}, state.board.highlight["finding"]  # the via, not its returns
+    assert not state.board.collection.all_objects["KLS vias highlight finding"].hide_get()
+    # Layer change: the tube on F.Cu (the return's In2.Cu ignored), red past 1 mm; one ring, at the other return.
+    tube = drawn["KLS finding 1 layer_change"]
+    ends = spline_points(tube)
+    assert np.allclose(ends[:, :2], [blender_xy([8 * MM, 8 * MM]), blender_xy([9_400_000, 8 * MM])], atol=1e-7), ends
+    assert np.all(ends[:, 2] > top) and np.all(ends[:, 2] < top + 1e-4), ends
+    assert tube.data.materials[0].name == over
+    assert drawn["KLS finding 1 layer_change label"].data.body == "Return via\n1.40 mm > 1.00 mm max"
+    rings = drawn["KLS finding 1 layer_change returns"]
+    assert len(rings.data.splines) == 1 and rings.data.materials[0].name == severity
+    ring = spline_points(rings)
+    centre = blender_xy([6 * MM, 10 * MM])
+    assert np.allclose(np.hypot(ring[:, 0] - centre[0], ring[:, 1] - centre[1]), 0.2e-3 * findings_draw.RING, atol=1e-7)
+    assert np.all(ring[:, 2] > top)
+    # The limit: a thin circle of 1 mm round the via on its layer, where a return via must be.
+    limit = drawn["KLS finding 1 layer_change limit"]
+    circle, centre = spline_points(limit), blender_xy([8 * MM, 8 * MM])
+    assert np.allclose(np.hypot(circle[:, 0] - centre[0], circle[:, 1] - centre[1]), 1e-3, atol=1e-7)
+    assert np.all(circle[:, 2] > top) and limit.data.bevel_depth < tube.data.bevel_depth
+    assert "KLS finding 1 layer_change ghost" not in drawn  # suggesting one is the LLM's (a ghost draw)
+    # Plane gap: the plane's edges on In1.Cu, named; the spans red on the track with a tick across each end.
+    edges = drawn["KLS finding 2 plane_gap edges"]
+    assert len(edges.data.splines) == 2 and edges.data.materials[0].name == severity
+    inner = findings_draw._surface("In1.Cu")[0]
+    for number, x in enumerate((10 * MM, 11_200_000)):
+        line = spline_points(edges, number)
+        assert np.allclose(line[:, 0], blender_xy([x, 0])[0], atol=1e-7), line
+        assert np.all(np.abs(line[:, 2] - inner) < 1e-4) and np.all(line[:, 2] < top), (line, inner)
+    assert drawn["KLS finding 2 plane_gap edges label"].data.body == "Plane edge\nGND@In1.Cu"
+    spans = drawn["KLS finding 2 plane_gap spans"]
+    assert spans.data.materials[0].name == over and spans.show_in_front
+    corners_ = np.array([tuple(v.co) for v in spans.data.vertices])
+    (x0, y0), (x1, _) = blender_xy([10 * MM, 5 * MM]), blender_xy([13_500_000, 5 * MM])
+    assert np.isclose(np.ptp(corners_[:, 1]), 0.25e-3, atol=1e-7) and np.isclose(corners_[:, 1].mean(), y0, atol=1e-7)
+    assert np.isclose(corners_[:, 0].min(), x0 - 0.125e-3, atol=1e-7) and np.isclose(corners_[:, 0].max(),
+                                                                                       x1 + 0.125e-3, atol=1e-7)
+    assert np.all(corners_[:, 2] > top)
+    ends = drawn["KLS finding 2 plane_gap span ends"]
+    assert len(ends.data.splines) == 4 and ends.data.materials[0].name == over
+    assert all(np.ptp(spline_points(ends, i)[:, 1]) > 0.25e-3 for i in range(4))  # across, past the ribbon
+    assert drawn["KLS finding 2 plane_gap label"].data.body == "Gap\n1.20 mm"
+    anchor = leader_anchor(drawn, "KLS finding 2 plane_gap label")
+    assert np.allclose(anchor[:2], blender_xy([10_600_000, 5 * MM]), atol=1e-7) and anchor[2] > top  # the longest
+    # Return path: covered faint, uncovered red; the share covered on the label.
+    assert drawn["KLS finding 3 return_path covered"].data.materials[0].name == severity + " ghost"
+    assert drawn["KLS finding 3 return_path spans"].data.materials[0].name == over
+    assert drawn["KLS finding 3 return_path label"].data.body == "Without plane\n2.00 mm (80 % covered)"
+    anchor = leader_anchor(drawn, "KLS finding 3 return_path label")
+    assert np.allclose(anchor[:2], blender_xy([14 * MM, 15 * MM]), atol=1e-7)
+    # Plane islands: an area per piece on its layer, its own colour; the loose one outlined red.
+    name = "KLS finding 4 plane_islands"
+    heights = {1: "In1.Cu", 2: "In1.Cu", 3: "In2.Cu"}
+    colours = set()
+    for number, layer in heights.items():
+        area = drawn[f"{name} island {number}"]
+        assert len(area.data.polygons) == 1 and area.show_in_front
+        assert np.isclose(area.matrix_world.translation.z, findings_draw._surface(layer, findings_draw.AREA_LIFT_M)[0])
+        assert area.data.materials[0].name == f"KLS finding island {number}"
+        colours.add(tuple(round(c, 4) for c in area.data.materials[0].diffuse_color[:3]))
+        assert (f"{name} island {number} outline" in drawn) == (number == 2), number
+    assert len(colours) == 3 and len(drawn[f"{name} island 2"].data.vertices) == 4  # the closing point dropped
+    assert drawn[f"{name} island 2 outline"].data.materials[0].name == over
+    for number, body in ((1, "Island 1, In1.Cu\n16.0 mm², main"), (2, "Island 2, In1.Cu\n1.0 mm², not tied"),
+                         (3, "Island 3, In2.Cu\n2.0 mm², tied")):
+        assert drawn[f"{name} island {number} label"].data.body == body, number
+    assert drawn[f"{name} label"].data.body == "Islands\n3 pieces, 1 not tied"
+    anchor = leader_anchor(drawn, f"{name} island 1 label")  # the C's centroid is in its notch: a corner instead
+    assert any(np.allclose(anchor[:2], blender_xy([x * MM, y * MM]), atol=1e-7) for x, y in C_SHAPE), anchor
+    anchor = leader_anchor(drawn, f"{name} island 2 label")
+    assert np.allclose(anchor[:2], blender_xy([16_500_000, 9_500_000]), atol=1e-7)
+    check_labels(found, 8)
+    texts = [text for _, text, _ in column(scene)]
+    for line in ("Return via: 1.40 mm > 1.00 mm max", "Planes: GND@In1.Cu, GND@In2.Cu", "Gap: 1.20 mm",
+                 "Planes: GND@In1.Cu", "Without plane: 2.00 mm", "80 % covered", "Islands: 3 pieces, 1 not tied",
+                 "1: 16.0 mm², main (In1.Cu)", "2: 1.0 mm², not tied (In1.Cu)", "3: 2.0 mm², tied (In2.Cu)"):
+        assert line in texts, (line, texts)
+    # No return via at all: the label at the via says so, red; the limit round it.
+    found = show("No return via")
+    drawn = objects()
+    assert "KLS finding 1 layer_change" not in drawn and "KLS finding 1 layer_change returns" not in drawn
+    label = drawn["KLS finding 1 layer_change label"]
+    assert label.data.body == "Return via\nnone found"
+    assert drawn["KLS finding 1 layer_change label leader"].data.materials[0].name == over
+    assert np.allclose(leader_anchor(drawn, "KLS finding 1 layer_change label")[:2], blender_xy([8 * MM, 8 * MM]),
+                       atol=1e-7)
+    assert "KLS finding 1 layer_change limit" in drawn
+    assert ("label", "Return via: none found", "DRIVER_DISTANCE") in column(scene)
+    # Texts alone: the share never 100 % while a stretch is without plane; islands counted.
+    nearly = {"covered_nm": [[0, 0, 999, 0, "F.Cu", 1]], "spans_nm": [[0, 0, 1, 0, "F.Cu", 1]]}
+    assert findings_draw.covered_text(nearly) == "99 % covered"
+    assert findings_draw.covered_text({}) == ""
+    assert findings_draw.islands_text({"islands": [{"main": True}]}) == "1 piece, 0 not tied"
+    assert findings_draw.island_text({"area_mm2": 1234.5, "tied": False}) == "1234 mm², not tied"
+    show("No return via")
+    apply.apply_frame(frame(index), {})
+
+
+MARKS = [{"x": 13 * MM, "y": 5 * MM, "layer": "F.Cu", "kind": "width", "text": "0.20 -> 0.15 mm"},
+         {"x": 14 * MM, "y": 12 * MM, "layer": "F.Cu", "kind": "layer", "text": "F.Cu -> In2.Cu"},
+         {"x": 16 * MM, "y": 14 * MM, "layer": "In2.Cu", "kind": "reference", "text": "GND@In1.Cu -> GND@In2.Cu"}]
+VIAS = {  # hand-built (the bridge measures these): one finding with every via and step tool
+    "key": "planes-3", "check": "plane.stitching_sparse", "severity": "warning", "title": "Stitching and stubs",
+    "state": "", "bbox_nm": [4 * MM, 2 * MM, 16 * MM, 14 * MM],
+    "draws": [
+        plane_draw("stitching", "Stitching gap", layer="In1.Cu", ids=["via-a", "via-b", "via-c", "via-d"],
+                   path_nm=[[4 * MM, 2 * MM, "In1.Cu"], [16 * MM, 2 * MM, "In1.Cu"]],
+                   returns=[[5 * MM, 2 * MM, 600_000, "via-a"], [6 * MM, 2 * MM, 600_000, "via-b"],
+                            [9_200_000, 2 * MM, 600_000, "via-c"], [11 * MM, 2 * MM, 600_000, "via-d"]],
+                   points=[[6 * MM, 2 * MM, "In1.Cu"], [9_200_000, 2 * MM, "In1.Cu"]],
+                   edges_nm=[[[6 * MM, 2 * MM], [9_200_000, 2 * MM]],  # the widest, then the other over the limit
+                             [[11 * MM, 2 * MM], [16 * MM, 2 * MM], [16 * MM, 5 * MM]]],
+                   measured_nm=3_200_000, limit_nm=2 * MM, limit_is="max", over=True),
+        plane_draw("stub", "Stub", ids=[VIA], points=[[8 * MM, 8 * MM, "F.Cu"]], measured_nm=850_000,
+                   barrel={"x": 8 * MM, "y": 8 * MM, "size_nm": 600_000, "used": ["F.Cu", "In1.Cu"],
+                           "stub": ["In1.Cu", "B.Cu"]}),
+        plane_draw("discontinuity", "Discontinuity", ids=[TRACK], marks=MARKS,
+                   points=[[mark["x"], mark["y"], mark["layer"]] for mark in MARKS]),
+    ]}
+MANY = [{"x": (4 + n) * MM, "y": 16 * MM, "layer": "F.Cu", "kind": "width", "text": f"0.{20 + n} -> 0.15 mm"}
+        for n in range(10)]
+NO_STUB = {
+    "key": "planes-4", "check": "hs.stub", "severity": "info", "title": "No stub", "state": "",
+    "bbox_nm": [4 * MM, 2 * MM, 16 * MM, 16 * MM],
+    "draws": [plane_draw("stub", "Stub", ids=[VIA], points=[[8 * MM, 8 * MM, "F.Cu"]], measured_nm=0,
+                         barrel={"x": 8 * MM, "y": 8 * MM, "size_nm": 600_000, "used": ["F.Cu", "B.Cu"], "stub": []}),
+              plane_draw("discontinuity", "Discontinuity", ids=[TRACK], marks=MANY),
+              plane_draw("stitching", "Stitching gap", layer="F.Cu", path_nm=[[4 * MM, 2 * MM], [16 * MM, 2 * MM]],
+                         points=[[10 * MM, 2 * MM, "F.Cu"]], measured_nm=12 * MM, limit_nm=2 * MM,
+                         limit_is="max", over=True)]}
+
+
+def check_vias_and_steps(scene, index):
+    """Stitching's vias ringed on its layer, no ghost of its own where one is missing, the
+    stretches over the limit along its line, the widest measured between its neighbouring
+    vias (red past the limit); a stub's unused barrel red between its layers' copper, the used part faint;
+    a discontinuity's markers by kind (bar, ring, diamond) on their layers, labelled with
+    their text, the first MARK_LABELS only; a via with no stub says "none"; the column's lines."""
+    header = frame(index)
+    header["findings"]["sources"]["file"]["findings"] += [VIAS, NO_STUB]
+    apply.apply_frame(header, {})
+    found = show("Stitching and stubs")
+    drawn = objects()
+    top, bottom = state.board.heights["F.Cu"], state.board.heights["B.Cu"]
+    severity, over = "KLS finding warning", "KLS finding over"
+    inner, deeper = findings_draw._surface("In1.Cu")[0], findings_draw._surface("In2.Cu")[0]
+    # Stitching: four vias ringed on In1.Cu; each stretch over the limit a thin red line along
+    # the pour edge with end ticks, the widest (3.2 mm, between the 2nd and 3rd vias) labelled.
+    assert "KLS finding 1 stitching path" not in drawn and "KLS finding 1 stitching ghost" not in drawn
+    rings = drawn["KLS finding 1 stitching vias"]
+    assert len(rings.data.splines) == 4 and rings.data.materials[0].name == severity
+    for number, x in enumerate((5 * MM, 6 * MM, 9_200_000, 11 * MM)):
+        ring, centre = spline_points(rings, number), blender_xy([x, 2 * MM])
+        assert np.allclose(np.hypot(ring[:, 0] - centre[0], ring[:, 1] - centre[1]), 0.3e-3 * findings_draw.RING,
+                           atol=1e-7), number
+        assert np.all(np.abs(ring[:, 2] - inner) < 1e-4)
+    tube = drawn["KLS finding 1 stitching"]
+    assert len(tube.data.splines) == 2 + 4 and tube.data.materials[0].name == over  # two stretches, four ticks
+    ends = spline_points(tube)
+    assert np.allclose(ends[:, :2], [blender_xy([6 * MM, 2 * MM]), blender_xy([9_200_000, 2 * MM])], atol=1e-7), ends
+    assert np.all(np.abs(ends[:, 2] - inner) < 1e-4) and np.all(ends[:, 2] < top)
+    assert len(spline_points(tube, 1)) == 3  # along the pour edge round its corner
+    assert tube.data.bevel_depth < rings.data.bevel_depth  # a hairline, as a label's leader
+    assert drawn["KLS finding 1 stitching label"].data.body == "Stitching gap\n3.20 mm > 2.00 mm max"
+    # Stub: red from In1.Cu down to B.Cu, the used part faint from F.Cu to In1.Cu, just around the via.
+    stub, used = drawn["KLS finding 2 stub"], drawn["KLS finding 2 stub used"]
+    centre = blender_xy([8 * MM, 8 * MM])
+    upper, lower = findings_draw._surface("F.Cu")[0], findings_draw._surface("B.Cu")[0]  # the copper's outer faces
+    for part, (low, high), material in ((stub, (lower, inner), over), (used, (inner, upper), severity + " ghost")):
+        world = np.array([tuple(part.matrix_world @ v.co) for v in part.data.vertices])
+        assert np.isclose(world[:, 2].min(), min(low, high), atol=1e-6) and \
+            np.isclose(world[:, 2].max(), max(low, high), atol=1e-6), (part.name, world[:, 2].min(), low, high)
+        assert np.isclose(np.hypot(world[:, 0] - centre[0], world[:, 1] - centre[1]).max(),
+                          0.3e-3 * findings_draw.BARREL, atol=1e-7), part.name
+        assert part.data.materials[0].name == material and part.show_in_front
+    assert drawn["KLS finding 2 stub label"].data.body == "Stub\n0.85 mm"
+    assert drawn["KLS finding 2 stub label leader"].data.materials[0].name == over
+    anchor = leader_anchor(drawn, "KLS finding 2 stub label")
+    assert np.allclose(anchor, [*centre, (lower + inner) / 2], atol=1e-7), anchor
+    # Discontinuity: a bar, a ring and a diamond on their layers, each labelled with its kind over its text.
+    size = drawn["KLS finding 2 stub label"].data.size
+    half = size * findings_draw.MARK / 2
+    shapes = {1: 2, 2: findings_draw.RING_SEGMENTS + 1, 3: 5}
+    for number, mark in enumerate(MARKS, start=1):
+        marker = spline_points(drawn[f"KLS finding 3 discontinuity mark {number}"])
+        centre = blender_xy([mark["x"], mark["y"]])
+        assert len(marker) == shapes[number], (number, len(marker))
+        assert np.allclose(np.hypot(marker[:, 0] - centre[0], marker[:, 1] - centre[1]).max(), half, rtol=1e-4)
+        z = findings_draw._surface(mark["layer"])[0]
+        assert np.all(np.abs(marker[:, 2] - z) < 1e-4), (number, marker[:, 2], z)
+    assert np.all(spline_points(drawn["KLS finding 3 discontinuity mark 3"])[:, 2] < inner)  # on In2.Cu
+    assert abs(deeper - inner) > 1e-5
+    for number, body in ((1, "Width step\n0.20 -> 0.15 mm"), (2, "Layer change\nF.Cu -> In2.Cu"),
+                         (3, "Reference change\nGND@In1.Cu -> GND@In2.Cu")):
+        assert drawn[f"KLS finding 3 discontinuity mark {number} label"].data.body == body, number
+    check_labels(found, 5)
+    texts = [text for _, text, _ in column(scene)]
+    for line in ("Stitching gap: 3.20 mm > 2.00 mm max", "Stub: 0.85 mm", "width: 0.20 -> 0.15 mm",
+                 "layer: F.Cu -> In2.Cu", "reference: GND@In1.Cu -> GND@In2.Cu"):
+        assert line in texts, (line, texts)
+    # No stub: only the faint used barrel, through the board, and "none"; marks past MARK_LABELS
+    # unlabelled in 3D but all in the column; stitching without vias labelled at its line's middle.
+    show("No stub")
+    drawn = objects()
+    assert "KLS finding 1 stub" not in drawn and drawn["KLS finding 1 stub used"].dimensions.z > top - bottom - 1e-5
+    assert drawn["KLS finding 1 stub label"].data.body == "Stub\nnone"
+    assert all(f"KLS finding 2 discontinuity mark {n}" in drawn for n in range(1, 11))
+    labelled = [n for n in range(1, 11) if f"KLS finding 2 discontinuity mark {n} label" in drawn]
+    assert labelled == list(range(1, findings_draw.MARK_LABELS + 1)), labelled
+    assert "KLS finding 3 stitching" not in drawn and "KLS finding 3 stitching vias" not in drawn
+    assert drawn["KLS finding 3 stitching label"].data.body == "Stitching gap\n12.00 mm > 2.00 mm max"
+    anchor = leader_anchor(drawn, "KLS finding 3 stitching label")
+    assert np.allclose(anchor[:2], blender_xy([10 * MM, 2 * MM]), atol=1e-7) and anchor[2] > top, anchor
+    drawn_column = column(scene)
+    texts = [text for _, text, _ in drawn_column]
+    assert ("label", "Stub: none", "DRIVER_DISTANCE") in drawn_column
+    assert not any(text.startswith("Stub: 0") for text in texts), texts
+    assert all(findings_draw.mark_text(mark) in texts for mark in MANY), texts
+    assert findings_draw.mark_text({"kind": "layer"}) == "layer" and not findings_draw.stubbed({"measured_nm": 0})
+    show("No stub")
+    apply.apply_frame(frame(index), {})
+
+
 def check_severity_icons():
     """The rows' severity icons coloured as their 3D labels': the shape's colour at the
     edge, the glyph's ink in the middle, see-through corners."""
@@ -666,7 +1126,8 @@ def check_column(scene):
     assert ("operator", "Gone", unknown) in drawn and findings_draw.mark(finding_named("Gone")) == "unknown"
     assert findings_draw.mark(finding_named("Tracks too close")) == "error"
     check_severity_icons()
-    assert not any(text.startswith("KiCad DRC,") for text in texts), texts
+    # The checks the file says it skipped, with why.
+    assert "emc.ground: no stackup" in texts and not any(text.startswith("KiCad DRC,") for text in texts), texts
     gone = finding_named("Gone")
     assert gone["faded"] and not gone["draws"][0]["ok"]
     # Confirm, then dismiss: the rows at once (the bridge would write its state file).
@@ -703,6 +1164,182 @@ def check_drc_header(scene, index):
     assert "2 library notices left out" in texts and "Saved file, unsaved edits not checked" in texts, texts
     apply.apply_frame(frame(index), {})
     assert not any(text.startswith("KiCad DRC 10") for _, text, _ in column(scene))
+def check_prompt(scene, index):
+    """The LLM prompt box above the LLM's findings: v1 checks ticked to start with, groups
+    folded, Quick and All, Copy prompt sends the ticked ids, a ready prompt is copied once."""
+    copied = []
+    findings.set_clipboard = copied.append  # background Blender has no clipboard
+    apply.apply_frame(prompt_frame(index), {})
+    drawn = column(scene)
+    texts = [text for _, text, _ in drawn]
+    assert "LLM prompt: 2 of 3 checks" in texts, texts  # the quick (v1) checks to start with
+    assert texts.index("KiCad DRC") < texts.index("LLM prompt: 2 of 3 checks") < \
+        texts.index("Test tool, run 4: 4 findings"), texts  # above the file's section
+    for group in ("Return paths and planes (1/1)", "Decoupling (1/1)", "High speed (0/1)"):
+        assert ("operator", group, "DISCLOSURE_TRI_RIGHT") in drawn, drawn  # folded
+    assert "Stubs on fast nets" not in texts and ("operator", "Copy prompt", "COPYDOWN") in drawn
+    assert bpy.ops.kileido.findings_group(group="prompt:hs") == {"FINISHED"}
+    assert ("operator", "Stubs on fast nets", "CHECKBOX_DEHLT") in column(scene)
+    assert bpy.ops.kileido.prompt_check(check="hs.stub") == {"FINISHED"}
+    assert findings.chosen(scene) == QUICK | {"hs.stub"}
+    drawn = column(scene)
+    assert ("operator", "Stubs on fast nets", "CHECKBOX_HLT") in drawn and ("operator", "High speed (1/1)",
+                                                                           "DISCLOSURE_TRI_DOWN") in drawn, drawn
+    assert bpy.ops.kileido.prompt_preset(preset="quick") == {"FINISHED"}
+    assert findings.chosen(scene) == QUICK and scene.kileido_prompt_checks == ""
+    assert bpy.ops.kileido.prompt_preset(preset="all") == {"FINISHED"}
+    assert findings.chosen(scene) == {row["id"] for row in CATALOGUE}
+    for row in CATALOGUE:  # none ticked: stays none (not back to quick), and nothing to ask for
+        bpy.ops.kileido.prompt_check(check=row["id"])
+    assert findings.chosen(scene) == set() and "LLM prompt: 0 of 3 checks" in [t for _, t, _ in column(scene)]
+    assert not bpy.ops.kileido.findings_prompt.poll()
+    bpy.ops.kileido.prompt_preset(preset="quick")
+    # Copy prompt: the ticked ids in the catalogue's order, then Making prompt… until the bridge answers.
+    assert bpy.ops.kileido.findings_prompt() == {"FINISHED"}
+    assert sent[-1] == ("prompt", "", "file", ("plane.gap_crossing", "decap.distance"), ""), sent[-1]  # no notes
+    assert ("operator", "Making prompt…", "TIME") in column(scene) and not bpy.ops.kileido.findings_prompt.poll()
+    apply.apply_frame(prompt_frame(index, "making"), {})
+    assert not copied
+    apply.apply_frame(prompt_frame(index, "ready", "5", PROMPT), {})
+    assert copied == [PROMPT]
+    drawn = column(scene)
+    texts = [text for _, text, _ in drawn]
+    assert "Prompt for run 5 copied — paste it into your LLM tool" in texts, texts
+    assert ("prop", "kileido_prompt_show", "") in drawn and "Read request.md first." not in texts
+    apply.apply_frame(prompt_frame(index, "ready", "5", PROMPT), {})  # sent again (a resync): not copied again
+    assert copied == [PROMPT]
+    scene.kileido_prompt_show = True
+    texts = [text for _, text, _ in column(scene)]
+    assert "Read request.md first." in texts and "Run: 5   Stamp: a1b2c3d4" in texts, texts
+    apply.apply_frame(prompt_frame(index, "ready", "6", PROMPT), {})  # a run not asked for here: not copied
+    assert copied == [PROMPT] and "Prompt for run 6 made" in [t for _, t, _ in column(scene)]
+    # The press after a ready run: that run sent again is not the new one.
+    assert bpy.ops.kileido.findings_prompt() == {"FINISHED"}
+    apply.apply_frame(prompt_frame(index, "ready", "6", PROMPT), {})
+    assert copied == [PROMPT]
+    apply.apply_frame(prompt_frame(index, "failed", error="disk full"), {})
+    assert "Prompt failed: disk full" in [t for _, t, _ in column(scene)] and len(copied) == 1
+    apply.apply_frame(prompt_frame(index, "ready", "7", PROMPT + "!"), {})  # the press's run, after all
+    assert copied == [PROMPT, PROMPT + "!"]
+    apply.apply_frame(prompt_frame(index, status="unsaved"), {})
+    assert not bpy.ops.kileido.findings_prompt.poll()
+    scene.kileido_findings_open, scene.kileido_prompt_show = "", False
+    apply.apply_frame(frame(index), {})
+
+
+CHEAP = "Keep it cheap: no sub-agents, as few tokens as possible"
+CONFIDENT = "Report only findings you are confident about"
+
+
+def check_notes(scene, index):
+    """Notes for the LLM, folded under the checks: none ticked to start with; the ticked
+    sentences one per line, then the user's line, capped; Copy prompt sends them."""
+    apply.apply_frame(prompt_frame(index), {})
+    assert all(not getattr(scene, name) for name, _ in findings.NOTE_TOGGLES) and scene.kileido_prompt_note == ""
+    assert findings.notes(scene) == ""
+    drawn = column(scene)
+    texts = [text for _, text, _ in drawn]
+    assert ("operator", "Notes", "DISCLOSURE_TRI_RIGHT") in drawn, drawn  # folded, nothing given
+    assert texts.index("High speed (0/1)") < texts.index("Notes") < texts.index("Copy prompt"), texts
+    assert not any(kind == "prop" and name.startswith("kileido_note") for kind, name, _ in drawn)
+    assert bpy.ops.kileido.findings_group(group=findings.NOTES_TAG) == {"FINISHED"}
+    drawn = column(scene)
+    for name in (*(name for name, _ in findings.NOTE_TOGGLES), "kileido_prompt_note"):
+        assert ("prop", name, "") in drawn, (name, drawn)
+    scene.kileido_note_cheap = scene.kileido_note_confident = True
+    scene.kileido_prompt_note = "  Only the RF side  "
+    assert findings.notes(scene) == f"{CHEAP}\n{CONFIDENT}\nOnly the RF side", findings.notes(scene)
+    assert ("operator", "Notes (3)", "DISCLOSURE_TRI_DOWN") in column(scene)
+    # Copy prompt sends them with the checks.
+    assert bpy.ops.kileido.findings_prompt() == {"FINISHED"}
+    assert sent[-1] == ("prompt", "", "file", ("plane.gap_crossing", "decap.distance"),
+                        f"{CHEAP}\n{CONFIDENT}\nOnly the RF side"), sent[-1]
+    # Capped: 500 characters, 8 lines.
+    scene.kileido_prompt_note = "x" * 600
+    capped = findings.notes(scene)
+    assert len(capped) == findings.NOTES_MAX and capped.startswith(f"{CHEAP}\n{CONFIDENT}\nxxx"), len(capped)
+    scene.kileido_prompt_note = "\n".join(f"line {n}" for n in range(10))  # set from Python: still 8 lines
+    assert findings.notes(scene).split("\n") == [CHEAP, CONFIDENT, *(f"line {n}" for n in range(6))]
+    scene.kileido_note_tools = True
+    scene.kileido_note_cheap = scene.kileido_note_confident = False
+    scene.kileido_prompt_note = ""
+    assert findings.notes(scene) == "Use any KiCad analysis tools or skills you have installed"
+    assert ("operator", "Notes (1)", "DISCLOSURE_TRI_DOWN") in column(scene)
+    scene.kileido_note_tools = False
+    scene.kileido_findings_open = ""
+    state.board.prompt_wait = None
+    apply.apply_frame(frame(index), {})
+
+
+NOW = 1_800_000_000.0
+STALLED = "No update for 5 min — the LLM may have stalled or be waiting for your approval"
+
+
+def progress_frame(index, **progress):
+    """The findings frame with the LLM's progress (as the bridge reads it from the run's folder)."""
+    header = prompt_frame(index)
+    header["findings"]["progress"] = {"state": "none", "run": "", "done": 0, "total": 0, "check": "", "note": "",
+                                      "updated_unix": 0, "made_unix": 0, **progress}
+    return header
+
+
+def check_progress(scene, index):
+    """How far the LLM is, under Copy prompt: waiting since the prompt was made, a bar while
+    it works with its note and age, an alert past 5 min without word, its answer arrived;
+    nothing before. The 1 s redraw timer runs while it waits or works, and only then."""
+    findings.now = lambda: NOW  # the ages count to this
+    ticking = findings._progress_tick
+    apply.apply_frame(progress_frame(index), {})
+    texts = [text for _, text, _ in column(scene)]
+    assert not any(text.startswith(("Waiting for the LLM", "Run ", "LLM answer", "No update")) for text in texts)
+    assert not bpy.app.timers.is_registered(ticking) and ticking() is None
+    # Waiting: since the prompt was made.
+    apply.apply_frame(progress_frame(index, state="waiting", run="4", made_unix=NOW - 40), {})
+    drawn = column(scene)
+    texts = [text for _, text, _ in drawn]
+    assert ("label", "Waiting for the LLM… prompt copied 40 s ago", "TIME") in drawn, drawn
+    assert texts.index("Copy prompt") < texts.index("Waiting for the LLM… prompt copied 40 s ago"), texts
+    assert bpy.app.timers.is_registered(ticking) and ticking() == findings.PROGRESS_TICK_S
+    findings.now = lambda: NOW + 19  # a later redraw: older
+    assert ("label", "Waiting for the LLM… prompt copied 59 s ago", "TIME") in column(scene)
+    findings.now = lambda: NOW + 20
+    assert ("label", "Waiting for the LLM… prompt copied 1 min ago", "TIME") in column(scene)
+    findings.now = lambda: NOW
+    # Working: a bar for the checks done, the one under way named, the LLM's note and how long ago.
+    apply.apply_frame(progress_frame(index, state="working", run="4", done=1, total=3, check="decap.distance",
+                                     note="Measuring cap distances", updated_unix=NOW - 12, made_unix=NOW - 400), {})
+    drawn = column(scene)
+    assert ("progress", "Run 4: check 2 of 3 — decap.distance", round(1 / 3, 4)) in drawn, drawn
+    assert ("label", "Measuring cap distances — 12 s ago", "BLANK1") in drawn, drawn
+    assert not any(text.startswith("No update") for _, text, _ in drawn)  # its age is the update's, not the prompt's
+    assert bpy.app.timers.is_registered(ticking) and ticking() == findings.PROGRESS_TICK_S
+    drawn = column(scene, Layout)  # a layout without progress bars: a line instead
+    assert ("label", "Run 4: check 2 of 3 — decap.distance", "TIME") in drawn, drawn
+    # Exactly 5 min: not yet; past it: an alert, with an icon and words.
+    apply.apply_frame(progress_frame(index, state="working", run="4", done=1, total=3, updated_unix=NOW - 300), {})
+    assert not any(kind == "alert" for kind, *_ in findings.progress_lines())
+    apply.apply_frame(progress_frame(index, state="working", run="4", done=1, total=3, updated_unix=NOW - 301), {})
+    assert ("alert", STALLED, "ERROR", None) in findings.progress_lines(), findings.progress_lines()
+    assert ("label", wrap(STALLED)[0], "ERROR") in column(scene)
+    assert ("label", "5 min ago", "BLANK1") in column(scene)  # no note: the age alone
+    apply.apply_frame(progress_frame(index, state="waiting", run="4", made_unix=NOW - 2 * 3600), {})
+    lines = findings.progress_lines()
+    assert lines[0][1] == "Waiting for the LLM… prompt copied 2 h ago" and lines[-1][0] == "alert", lines
+    assert lines[-1][1].startswith("No update for 2 h — "), lines
+    # Done: its answer arrived (listed below); the timer stops.
+    apply.apply_frame(progress_frame(index, state="done", run="4", done=3, total=3, updated_unix=NOW - 900), {})
+    drawn = column(scene)
+    assert ("label", "LLM answer for run 4 arrived", "CHECKMARK") in drawn, drawn
+    assert not any(text.startswith("No update") for _, text, _ in drawn)
+    assert not bpy.app.timers.is_registered(ticking) and ticking() is None
+    # Working again, then none (a new board): the timer stops.
+    apply.apply_frame(progress_frame(index, state="working", run="5", updated_unix=NOW), {})
+    assert bpy.app.timers.is_registered(ticking)
+    assert ("progress", "Run 5: working", 0.0) in column(scene)
+    apply.apply_frame(progress_frame(index), {})
+    assert not bpy.app.timers.is_registered(ticking)
+    apply.apply_frame(frame(index), {})  # no progress at all: nothing, no timer
+    assert findings.progress_lines() == [] and not bpy.app.timers.is_registered(ticking)
 
 
 def cut_settings(scene):
@@ -874,11 +1511,13 @@ def main():
             link._queue({"type": "findings", "revision": revision}, {})
         assert [header["revision"] for header, _ in link.pending] == [2]
         apply.apply_frame(frame(index), {})
+        assert state.board.findings["sources"]["file"]["handshake"] == "known"
         assert not objects()
         texts = [text for _, text, _ in column(scene)]
         assert any(text.startswith("KiCad not connected") for text in texts), texts
         live.linked = lambda: True  # as if live; requests are recorded instead of sent
-        live.request_findings = lambda action, key="", source="drc": sent.append((action, key, source))
+        live.request_findings = lambda action, key="", source="drc", checks=None, notes=None: sent.append(
+            (action, key, source) if checks is None else (action, key, source, tuple(checks), notes))
         assert columns.tab_state("DRC") == "off"
         check_column(scene)
         check_drc_header(scene, index)
@@ -889,6 +1528,13 @@ def main():
         check_fold(scene, index)
         check_placement(scene, index)
         check_measured(scene, index)
+        check_routed(scene, index)
+        check_suggestions(scene, index)
+        check_planes(scene, index)
+        check_vias_and_steps(scene, index)
+        check_prompt(scene, index)
+        check_notes(scene, index)
+        check_progress(scene, index)
         # Run DRC: asked of the bridge, the button says so until the bridge answers.
         assert bpy.ops.kileido.findings_run_drc() == {"FINISHED"} and sent[-1] == ("run_drc", "", "drc")
         assert ("operator", "Running KiCad DRC…", "TIME") in column(scene)
@@ -903,6 +1549,11 @@ def main():
         assert "KLS finding 2 distance" in objects() and len(objects()["KLS finding 4 arrow head"].data.vertices)
         findings_draw.purge()
         assert not any(obj.get(findings_draw.TAG) is not None for obj in bpy.data.objects)
+        # A file loaded while the LLM works: the redraw timer stops (the bridge sends its progress again).
+        apply.apply_frame(progress_frame(index, state="working", run="4", updated_unix=NOW), {})
+        assert bpy.app.timers.is_registered(findings._progress_tick)
+        kileido._file_loaded(None)
+        assert not bpy.app.timers.is_registered(findings._progress_tick)
         print("KLS_FINDINGS_OK")
     finally:
         kileido.unregister()
