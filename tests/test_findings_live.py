@@ -116,11 +116,15 @@ def test_dismiss_is_saved_and_sent_again(tmp_path, monkeypatch):
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "dismissed")
         assert file_rows(payload)[0]["key"] == key
         state = project / ".kileidoscope" / "dismissed.json"
-        for _ in range(LIMIT):  # written on the watch's thread
+        for _ in range(LIMIT):  # written on the watch's thread, atomically: an open can land mid-replace
             runtime.step()
-            if state.is_file():
+            try:
+                saved = json.loads(state.read_text(encoding="utf-8"))
                 break
-        saved = json.loads(state.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+        else:
+            raise AssertionError("dismissed.json was not written")
         assert saved["findings"] == {findings_watch.state_key("file", key): "dismissed"}
         request(client, "dismiss", key)  # a DRC finding by that key: there is none, nothing changes
         request(client, "reset", key, source="file")
