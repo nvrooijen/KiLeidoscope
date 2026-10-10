@@ -52,7 +52,7 @@ def only_draw(result):
     (b"{not json", "error"),
     (b'{"format": "kls-findings 1", "findings": [{"values": {"x_mm": NaN}}]}', "error"),
     (b'{"format": "kls-findings 1", "x": Infinity}', "error"),
-    (b"[" * 100_000 + b"]" * 100_000, "error"),
+    (b"[" * 100_000 + b"]" * 100_000, ("error", "unknown_format")),  # 3.14's decoder parses it: then not an object
     (b"\xff\xfe{}", "error"),
     (b'{"format": "kls-findings 2"}', "unknown_format"),
     (b'{"findings": []}', "unknown_format"),
@@ -61,7 +61,7 @@ def only_draw(result):
 def test_refused_files(data, status):
     with pytest.raises(FindingsError) as error:
         parse(data)
-    assert error.value.status == status
+    assert error.value.status in ((status,) if isinstance(status, str) else status)
 
 
 def test_file_size_limit_and_bom():
