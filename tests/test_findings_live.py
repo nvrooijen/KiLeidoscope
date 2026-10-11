@@ -5,6 +5,7 @@ import sys
 import time
 import types
 from collections import namedtuple
+from contextlib import contextmanager
 from dataclasses import replace
 
 import kileido_bridge
@@ -12,7 +13,7 @@ from kileido_bridge import findings_watch, kls_folder
 from kileido_bridge.live_copy import LiveBoardCopy
 from kileido_bridge.loop import BridgeRuntime
 from kileido_bridge.protocol import encode_frame
-from kileido_bridge.server import MAX_FINDINGS_REQUESTS, MAX_PROMPT_CHECKS, MAX_PROMPT_NOTES, BridgeServer
+from kileido_bridge.server import MAX_FINDINGS_REQUESTS, BridgeServer
 from test_live_link import FakeReader, addon_client, exchange, fixture
 
 LIMIT = 3000  # the watch works on threads of its own: allow it a few seconds
@@ -49,6 +50,18 @@ def live(tmp_path, monkeypatch, saved=True, watch=None, snapshot=None):
     return runtime, reader, client, project
 
 
+@contextmanager
+def connected(runtime, client):
+    """The runtime stepped once and the add-on connected; both closed after."""
+    try:
+        runtime.step()
+        client.connect()
+        yield
+    finally:
+        client.close()
+        runtime.close()
+
+
 def payloads(frames):
     return [header["findings"] for header, _ in frames if header["type"] == "findings"]
 
@@ -74,6 +87,14 @@ def tool_file(track):
          "draw": [{"tool": "highlight", "targets": [f"uuid:{track.id}"]}]}]}
 
 
+def dangling(track, version):
+    """KiCad's DRC report of one dangling track."""
+    return {"kicad_version": version, "violations": [{
+        "type": "track_dangling", "severity": "warning", "description": "Track has unconnected end",
+        "items": [{"uuid": track.id, "description": f"Track [{track.net}] on {track.layer}",
+                   "pos": {"x": track.start[0] / 1e6, "y": track.start[1] / 1e6}}]}]}
+
+
 def file_rows(payload):
     return payload["sources"]["file"]["findings"]
 
@@ -81,9 +102,7 @@ def file_rows(payload):
 def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, monkeypatch):
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     track = reader.snapshot.tracks[0]
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
                           and any(p["status"] == "none" for p in payloads(f)), limit=LIMIT)
         none = payloads(frames)[-1]
@@ -96,7 +115,6 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
         source = payload["sources"]["file"]
         assert source["status"] == "ok" and source["connected"] and source["handshake"] == "outside"
         assert row["draws"][0]["ids"] == [track.id]  # another tool's file: drawn straight away
-        assert source["path"] == str(project / ".kileidoscope" / "board.kls-findings.json")
         assert payload["sources"]["drc"]["status"] == "none"
         types = [h["type"] for h, _ in frames]
         assert "findings" not in types[:types.index("snapshot_end")]  # never inside a snapshot
@@ -105,17 +123,12 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
         broken = until_payload(runtime, client, lambda p: p["sources"]["file"]["status"] == "error")
         assert broken["sources"]["file"]["error"].startswith("not JSON")
         assert [r["title"] for r in file_rows(broken)] == ["Stub on the clock"]  # the last good list stays
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_dismiss_is_saved_and_sent_again(tmp_path, monkeypatch):
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     write(project, tool_file(reader.snapshot.tracks[0]))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         key = file_rows(payload)[0]["key"]
         request(client, "dismiss", key, source="file")
@@ -138,17 +151,12 @@ def test_dismiss_is_saved_and_sent_again(tmp_path, monkeypatch):
         request(client, "reset", key, source="file")
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "")
         assert file_rows(payload)[0]["draws"][0]["ids"] == [reader.snapshot.tracks[0].id]
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_a_resync_sends_the_findings_again_after_the_snapshot(tmp_path, monkeypatch):
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     write(project, tool_file(reader.snapshot.tracks[0]))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "ok")
         client.request_resync()
         frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
@@ -156,35 +164,25 @@ def test_a_resync_sends_the_findings_again_after_the_snapshot(tmp_path, monkeypa
         types = [h["type"] for h, _ in frames]
         assert types.index("findings") > types.index("snapshot_end")
         assert file_rows(payloads(frames)[-1])[0]["title"] == "Stub on the clock"
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_a_removed_track_fades_its_finding(tmp_path, monkeypatch):
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     track = reader.snapshot.tracks[0]
     write(project, tool_file(track))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         assert not file_rows(payload)[0]["faded"]
         without = replace(reader.snapshot, tracks=reader.snapshot.tracks[1:])
         reader.events.append((without, {(track.layer, "tracks")}))
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["faded"])
         assert file_rows(payload)[0]["title"] == "Stub on the clock"
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_a_disconnect_keeps_the_folder_and_the_keys(tmp_path, monkeypatch):
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     write(project, tool_file(reader.snapshot.tracks[0]))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         folder, key = runtime.findings.folder, file_rows(payload)[0]["key"]
         reader.events.append(ConnectionError("KiCad closed"))
@@ -194,9 +192,6 @@ def test_a_disconnect_keeps_the_folder_and_the_keys(tmp_path, monkeypatch):
         client.request_resync()  # a viewer that reconnects meanwhile gets the list too
         frames = exchange(runtime, client, lambda f: any(h["type"] == "findings" for h, _ in f), limit=LIMIT)
         assert file_rows(payloads(frames)[-1])[0]["key"] == key
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_a_file_changed_while_kicad_is_gone_is_read_once_it_is_back(tmp_path, monkeypatch):
@@ -206,9 +201,7 @@ def test_a_file_changed_while_kicad_is_gone_is_read_once_it_is_back(tmp_path, mo
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     track = reader.snapshot.tracks[0]
     write(project, tool_file(track))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "ok")
         reader.events.append(ConnectionError("KiCad closed"))
         until_payload(runtime, client, lambda p: not p["sources"]["file"]["connected"])
@@ -223,16 +216,11 @@ def test_a_file_changed_while_kicad_is_gone_is_read_once_it_is_back(tmp_path, mo
         runtime.next_connect_at = 0.0  # KiCad is back
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["title"] == "Stub, renamed")
         assert payload["sources"]["file"]["connected"]
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_an_unsaved_board_says_so(tmp_path, monkeypatch):
     runtime, reader, client, project = live(tmp_path, monkeypatch, saved=False)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "unsaved")
         assert payload["folder"] == ""
         assert {source["status"] for source in payload["sources"].values()} == {"unsaved"}
@@ -240,9 +228,6 @@ def test_an_unsaved_board_says_so(tmp_path, monkeypatch):
         payload = until_payload(runtime, client, lambda p: p["drc"]["state"] == "failed")
         assert payload["drc"]["error"] == "Save the board first"
         assert not (project / ".kileidoscope").exists()
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_a_board_saved_after_the_link_started_gets_its_folder(tmp_path, monkeypatch):
@@ -253,9 +238,7 @@ def test_a_board_saved_after_the_link_started_gets_its_folder(tmp_path, monkeypa
     board_file = project / "board.kicad_pcb"
     board_file.unlink()
     monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(board_file) if board_file.is_file() else "")
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "unsaved")
         assert runtime.copy.project_dir == ""
         board_file.write_text(FakeBoard.contents, encoding="utf-8")  # the user saves
@@ -265,9 +248,6 @@ def test_a_board_saved_after_the_link_started_gets_its_folder(tmp_path, monkeypa
         assert runtime.board_path == str(board_file) and runtime.copy.project_dir == str(project)
         exports = [header["export"] for header, _ in frames if header["type"] == "export"]
         assert exports and exports[-1]["project_dir"] == str(project)  # Blender learns the folder too
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
@@ -277,16 +257,11 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
 
     def run_drc(cli, run_dir):
         calls.append((cli, (run_dir / "board.kicad_pcb").read_text(encoding="utf-8")))
-        return {"kicad_version": "10.0.3", "violations": [{
-            "type": "track_dangling", "severity": "warning", "description": "Track has unconnected end",
-            "items": [{"uuid": track.id, "description": f"Track [{track.net}] on {track.layer}",
-                       "pos": {"x": track.start[0] / 1e6, "y": track.start[1] / 1e6}}]}]}
+        return dangling(track, "10.0.3")
 
     watch = findings_watch.FindingsWatch(run_drc=run_drc, find_cli=lambda hint: hint or "kicad-cli")
     runtime, reader, client, project = live(tmp_path, monkeypatch, watch=watch, snapshot=snapshot)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         request(client, "run_drc")
         frames = exchange(runtime, client, lambda f: any(p["sources"]["drc"]["status"] == "ok"
@@ -297,13 +272,13 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
         assert payload["drc"] == {"state": "idle", "error": "", "run": "1"}
         assert calls == [("kicad-cli", FakeBoard.contents)]  # the raw board text, unsaved edits included
         drc = payload["sources"]["drc"]
-        assert drc["stamp"] == kls_folder.stamp(FakeBoard.contents) == drc["live_stamp"]
         assert drc["handshake"] == "known" and not drc["changed"] and drc["tool"] == "KiCad DRC 10.0.3"
         (row,) = drc["findings"]
         assert row["check"] == "drc.track_dangling" and row["draws"][0]["ids"] == [track.id]
         folder = project / ".kileidoscope"
         assert (folder / "runs" / "1" / "board.kicad_pcb").read_text(encoding="utf-8") == FakeBoard.contents
-        assert (folder / "board.drc.kls-findings.json").is_file()
+        written = json.loads((folder / "board.drc.kls-findings.json").read_text(encoding="utf-8"))
+        assert written["stamp"] == kls_folder.stamp(FakeBoard.contents)  # the live board's stamp
         assert (folder / ".gitignore").read_text(encoding="utf-8") == "*\n"
 
         def broken(cli, run_dir):
@@ -313,9 +288,6 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
         payload = until_payload(runtime, client, lambda p: p["drc"]["state"] == "failed")
         assert payload["drc"] == {"state": "failed", "error": "Failed to load board", "run": "2"}
         assert payload["sources"]["drc"]["findings"]  # the last run's findings stay listed
-    finally:
-        client.close()
-        runtime.close()
 
 
 Check = namedtuple("Check", "id group title instruction evidence draws v1")
@@ -327,11 +299,12 @@ CATALOGUE = (Check("plane.gap_crossing", "plane", "Signal crossing a plane gap",
 
 
 def stub_modules(monkeypatch, calls, fail=None, drcs=None, dismissals=None):
-    """checks and prompt as their interfaces say (they are written alongside this); what
-    KiCad's DRC gave each prompt goes into `drcs`, what the user dismissed into `dismissals`."""
+    """checks and prompt as their interfaces say; what KiCad's DRC gave each prompt goes
+    into `drcs`, what the user dismissed into `dismissals`."""
     checks = types.ModuleType("kileido_bridge.checks")
-    checks.CATALOGUE, checks.QUICK = CATALOGUE, ("plane.gap_crossing", "decap.distance")
-    checks.GROUPS = (("plane", "Return paths and planes"), ("decap", "Decoupling"), ("hs", "High speed"))
+    checks.CATALOGUE = CATALOGUE
+    checks.GROUPS = ("plane", "decap", "hs")
+    checks.GROUP_TITLES = {"plane": "Return paths and planes", "decap": "Decoupling", "hs": "High speed"}
     checks.by_id = lambda ids: tuple(check for check in CATALOGUE if check.id in set(ids))
     prompt = types.ModuleType("kileido_bridge.prompt")
 
@@ -358,17 +331,11 @@ def test_a_prompt_runs_kicads_drc_first_and_names_what_it_found(tmp_path, monkey
 
     def run_drc(cli, run_dir):
         texts.append((run_dir / "board.kicad_pcb").read_text(encoding="utf-8"))
-        track = reader.snapshot.tracks[0]
-        return {"kicad_version": "10.0.6", "violations": [{
-            "type": "track_dangling", "severity": "warning", "description": "Track has unconnected end",
-            "items": [{"uuid": track.id, "description": f"Track [{track.net}] on {track.layer}",
-                       "pos": {"x": track.start[0] / 1e6, "y": track.start[1] / 1e6}}]}]}
+        return dangling(reader.snapshot.tracks[0], "10.0.6")
 
     watch = findings_watch.FindingsWatch(run_drc=run_drc, find_cli=lambda hint: hint or "kicad-cli")
     runtime, reader, client, project = live(tmp_path, monkeypatch, watch=watch)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         client.request_findings("prompt", "", "file", checks=["decap.distance"])
         frames = exchange(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f))
@@ -378,26 +345,18 @@ def test_a_prompt_runs_kicads_drc_first_and_names_what_it_found(tmp_path, monkey
         assert len(drcs) == 1 and sum(drcs[0].values()) == 1 and all(k.startswith("drc.") for k in drcs[0])
         payload = payloads(frames)[-1]
         assert payload["drc"] == {"state": "idle", "error": "", "run": "1"} and payload["prompt"]["run"] == "2"
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_without_kicad_cli_a_prompt_says_why_drc_did_not_run(tmp_path, monkeypatch):
     calls, drcs = [], []
     stub_modules(monkeypatch, calls, drcs=drcs)
     runtime, reader, client, project = live(tmp_path, monkeypatch)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         client.request_findings("prompt", "", "file", checks=["decap.distance"])
         payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "ready")
         assert payload["prompt"]["run"] == "1" and "kicad-cli not found" in drcs[0]
         assert payload["drc"]["state"] == "failed"  # the DRC tab says so too
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):
@@ -405,9 +364,7 @@ def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):
     stub_modules(monkeypatch, calls)
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     track = reader.snapshot.tracks[0]
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "none")
         assert payload["prompt"] == {"state": "idle", "run": "", "text": "", "error": ""}
         assert payload["progress"] == {"state": "none", "run": "", "done": 0, "total": 0, "check": "", "note": "",
@@ -438,9 +395,6 @@ def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):
         client.request_findings("prompt", "", "file", checks=["not.a_check"])
         payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
         assert payload["prompt"]["error"] == findings_watch.NO_CHECKS and len(calls) == 1
-    finally:
-        client.close()
-        runtime.close()
 
 
 def write_progress(project, data):
@@ -459,9 +413,7 @@ def test_progress_waits_then_works_then_is_done(tmp_path, monkeypatch):
     stub_modules(monkeypatch, calls)
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     stamp = kls_folder.stamp(FakeBoard.contents)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         request(client, "prompt", source="file", checks=["plane.gap_crossing"], notes="Mind J5")
         payload = until_payload(runtime, client, lambda p: p["progress"]["state"] == "waiting")
@@ -488,7 +440,7 @@ def test_progress_waits_then_works_then_is_done(tmp_path, monkeypatch):
         assert progress["run"] == "1" and progress["made_unix"] == made
         assert progress["done"] == findings_watch.MAX_PROGRESS_COUNT and progress["total"] == 0
         assert progress["check"] == "plane.gap_crossing" and progress["updated_unix"] == path.stat().st_mtime
-        assert len(progress["note"]) == findings_watch.MAX_PROGRESS_NOTE and progress["note"].endswith("…")
+        assert len(progress["note"]) == kls_folder.MAX_PROGRESS_NOTE and progress["note"].endswith("…")
         assert progress["note"].startswith("Tracing GND Tracing") and "\t" not in progress["note"]
         # The findings file for this run is in: done.
         write(project, {**tool_file(reader.snapshot.tracks[0]), "run": "1", "stamp": stamp})
@@ -500,9 +452,6 @@ def test_progress_waits_then_works_then_is_done(tmp_path, monkeypatch):
         for _ in range(20):  # time passing alone publishes nothing
             runtime.step()
         assert runtime.findings.result()[0] == version
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_progress_files_are_parsed_as_untrusted_data():
@@ -523,51 +472,36 @@ def test_progress_files_are_parsed_as_untrusted_data():
 def test_a_prompt_that_cannot_be_made_says_why(tmp_path, monkeypatch):
     stub_modules(monkeypatch, [], fail=OSError("disk full"))
     runtime, reader, client, project = live(tmp_path, monkeypatch)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         request(client, "prompt", source="file", checks=["plane.gap_crossing"])
         payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
         assert payload["prompt"] == {"state": "failed", "run": "", "text": "", "error": "OSError: disk full"}
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_an_unsaved_board_makes_no_prompt(tmp_path, monkeypatch):
     calls = []
     stub_modules(monkeypatch, calls)
     runtime, reader, client, project = live(tmp_path, monkeypatch, saved=False)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "unsaved")
         assert [row["id"] for row in payload["catalogue"]] == [check.id for check in CATALOGUE]
         request(client, "prompt", source="file", checks=["plane.gap_crossing"])
         payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
         assert payload["prompt"]["error"] == "Save the board first"
         assert not calls and not (project / ".kileidoscope").exists()
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_without_board_text_no_prompt_is_made(tmp_path, monkeypatch):
     calls = []
     stub_modules(monkeypatch, calls)
     runtime, reader, client, project = live(tmp_path, monkeypatch)
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         runtime.copy_enabled = False  # this KiCad cannot serialize boards
         request(client, "prompt", source="file", checks=["plane.gap_crossing"])
         payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "failed")
         assert payload["prompt"]["error"] == findings_watch.NO_TEXT and not calls
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_without_the_checks_module_the_catalogue_is_empty(monkeypatch):
@@ -584,13 +518,14 @@ def test_without_the_checks_module_the_catalogue_is_empty(monkeypatch):
 
 def test_the_server_queues_only_well_formed_findings_requests():
     server = BridgeServer(port=0, token="t")
+    most_checks, most_notes = findings_watch.MAX_CHECKS, findings_watch.MAX_NOTES
     try:
         server._handle({"type": "findings", "action": "dismiss", "key": "3f2a"})
         server._handle({"type": "findings", "action": "confirm", "key": "3f2a", "source": "file"})
         server._handle({"type": "findings", "action": "run_drc"})
         server._handle({"type": "findings", "action": "prompt", "source": "file", "checks": ["plane.gap_crossing"]})
         server._handle({"type": "findings", "action": "prompt", "source": "file",
-                        "checks": ["c" * 64] * MAX_PROMPT_CHECKS, "notes": "n" * MAX_PROMPT_NOTES})
+                        "checks": ["c" * 64] * most_checks, "notes": "n" * most_notes})
         server._handle({"type": "findings", "action": "prompt", "source": "file", "checks": ["plane.gap_crossing"],
                         "notes": "Mind J5,\nit is a test header"})
         for bad in ({"action": "delete", "key": ""}, {"action": ["run_drc"]}, {"action": "dismiss", "key": 5},
@@ -598,15 +533,16 @@ def test_the_server_queues_only_well_formed_findings_requests():
                     {"action": "dismiss", "source": ["drc"]}, {"action": "undo", "source": "file"},
                     {"action": "prompt", "checks": "plane.gap_crossing"},
                     {"action": "prompt", "checks": [5]}, {"action": "prompt", "checks": ["c" * 65]},
-                    {"action": "prompt", "checks": ["c"] * (MAX_PROMPT_CHECKS + 1)},
+                    {"action": "prompt", "checks": ["c"] * (most_checks + 1)},
                     {"action": "prompt", "notes": 5}, {"action": "prompt", "notes": ["Mind J5"]},
-                    {"action": "prompt", "notes": "n" * (MAX_PROMPT_NOTES + 1)}):
+                    {"action": "prompt", "notes": "n" * (most_notes + 1)}):
             server._handle({"type": "findings", **bad})
         requests = server.take_findings_requests()
-        assert requests[:4] == [("dismiss", "3f2a", "drc", ()), ("confirm", "3f2a", "file", ()),
-                                ("run_drc", "", "drc", ()), ("prompt", "", "file", ("plane.gap_crossing",))]
-        assert len(requests) == 6 and len(requests[4][3]) == MAX_PROMPT_CHECKS
-        assert [request.notes for request in requests] == ["", "", "", "", "n" * MAX_PROMPT_NOTES,
+        assert [request[:4] for request in requests[:4]] == [
+            ("dismiss", "3f2a", "drc", ()), ("confirm", "3f2a", "file", ()), ("run_drc", "", "drc", ()),
+            ("prompt", "", "file", ("plane.gap_crossing",))]
+        assert len(requests) == 6 and len(requests[4].checks) == most_checks
+        assert [request.notes for request in requests] == ["", "", "", "", "n" * most_notes,
                                                            "Mind J5,\nit is a test header"]
         assert server.take_findings_requests() == []
         for _ in range(MAX_FINDINGS_REQUESTS + 10):
@@ -621,18 +557,13 @@ def test_a_prompt_names_what_the_user_dismissed_on_this_board(tmp_path, monkeypa
     stub_modules(monkeypatch, calls, dismissals=dismissals)
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     write(project, tool_file(reader.snapshot.tracks[0]))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         request(client, "dismiss", file_rows(payload)[0]["key"], source="file")
         until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "dismissed")
         request(client, "prompt", source="file", checks=["hs.stub"])
         until_payload(runtime, client, lambda p: p["prompt"]["state"] == "ready")
         assert dismissals == [[("hs.stub", "Stub on the clock")]]
-    finally:
-        client.close()
-        runtime.close()
 
 
 def test_a_bug_in_one_job_never_ends_the_findings_thread(tmp_path):
@@ -678,13 +609,8 @@ def test_a_drc_file_from_an_earlier_session_is_discarded(tmp_path, monkeypatch):
     track = reader.snapshot.tracks[0]
     write(project, tool_file(track), name="board.drc.kls-findings.json")
     write(project, tool_file(track))
-    try:
-        runtime.step()
-        client.connect()
+    with connected(runtime, client):
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         assert not (project / ".kileidoscope" / "board.drc.kls-findings.json").exists()
         assert payload["sources"]["drc"]["status"] == "none"
         assert [r["title"] for r in file_rows(payload)] == ["Stub on the clock"]
-    finally:
-        client.close()
-        runtime.close()

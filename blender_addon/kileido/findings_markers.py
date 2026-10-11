@@ -1,4 +1,4 @@
-"""Markers on the board for the DRC column's findings: one icon per finding, as its
+"""Markers on the board for the DRC and LLM columns' findings: one icon per finding, as its
 row's (findings_draw.ICONS: a red circle "!", a yellow triangle "!", a blue circle "i", a
 grey "?" for one KiLeidoscope could not confirm), just out from the side it is on.
 
@@ -9,7 +9,7 @@ share one, showing the worst icon and a count; zooming in splits them. Dismissed
 have none, the severity filter leaves out the milder ones, and while a finding is shown
 the others fade, as do markers on the side the view does not see.
 
-A click on a marker (KILEIDO_OT_pick asks `hit` first) opens the DRC column with its
+A click on a marker (KILEIDO_OT_pick asks `hit` first) opens the column that lists it with its
 group unfolded, and shows its finding as its title there does: drawn, framed, its items
 selected in KiCad, its details under its row. A shared marker's click opens their groups
 and frames its findings, so they split.
@@ -22,6 +22,7 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 from . import findings, findings_draw, fold, transform
+from .objects import shown_view_areas
 from .state import board
 
 MARKER_PX = 18  # unscaled: a marker's width on screen
@@ -50,10 +51,8 @@ def invalidate():
     """A new findings frame or a rebuilt board: the markers placed again, the views redrawn."""
     _cache["markers"] = None
     try:
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == "VIEW_3D":
-                    area.tag_redraw()
+        for area in shown_view_areas():
+            area.tag_redraw()
     except (AttributeError, ReferenceError):
         pass
 

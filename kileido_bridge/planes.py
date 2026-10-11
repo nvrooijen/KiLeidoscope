@@ -1,4 +1,4 @@
-"""Planes and return paths on a board snapshot, for findings (LLM Visualizer, Stage 3).
+"""Planes and return paths on a board snapshot, for findings.
 
 The stackup gives each copper layer its nearest copper layers above and below, with the
 dielectric between (`copper_neighbours`). A plane is one net's zone fill on one layer
@@ -13,8 +13,8 @@ of a net and the vias, plated holes, pads and tracks that tie them across layers
 hole's barrel (`barrel`) runs over the layers of its span and is used where its net meets
 it; the rest past the last used layer is a stub, its length from the stackup
 (`barrel_length`). A `Line` is a closed ring followed along (a pour's or the board's
-outline): `stitches` are the vias of a net along it, `gaps` the stretches between them,
-`fill` where more would go. Exact geometry in numpy (segment crossings, even-odd tests):
+outline): `stitches` are the vias of a net along it, `gaps` the stretches between them.
+Exact geometry in numpy (segment crossings, even-odd tests):
 no rasters and no shapely, the bridge runs on KiCad's Python. Values are nanometres in
 KiCad's board frame (y down), as in `model`.
 """
@@ -28,7 +28,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import model, protocol
-from .board_index import BoardIndex, _inside, _point_segments, copper_rank, gap, has_copper, on_layer, shape_of
+from .board_index import (BoardIndex, _inside, _point_segments, copper_rank, gap, has_copper, on_layer, polygon_area,
+                          shape_of)
 from .geometry import sample_arc
 from .model import Point
 from .selection import diff_pair_partner
@@ -36,6 +37,7 @@ from .selection import diff_pair_partner
 MAX_ANTIPAD_NM = 2_000_000  # a hole closing within this of a via of the signal's own net is its antipad
 TOUCH_NM = 5_000  # copper this close is joined: a fill meets a via or pad at its edge
 MIN_STRETCH_NM = 1_000  # shorter pieces of a centre line are rounding where it crosses an edge
+JOIN_NM = 1_000  # stretch ends on this grid are one point (`joined`)
 _BLOCK = 1 << 20  # point/segment pairs computed at once (memory stays small)
 
 Rings = tuple[np.ndarray, ...]  # one polygon: outer ring, then its holes, each (k, 2)
@@ -106,7 +108,7 @@ def outline(snapshot: model.BoardSnapshot) -> tuple[Rings, ...]:
 
 def largest(polygons: tuple[Rings, ...]) -> Rings:
     """The polygon whose outer ring holds the most area."""
-    return max(polygons, key=lambda rings: _area(rings[:1]))
+    return max(polygons, key=lambda rings: polygon_area(rings[:1]))
 
 
 def signal_nets(index: BoardIndex, nets) -> frozenset[str]:
@@ -282,14 +284,14 @@ def _round(point) -> Point:
     return (int(round(point[0])), int(round(point[1])))
 
 
-def runs(stretches) -> list[tuple[float, list[Stretch]]]:
-    """Stretches joined where one ends where another starts on the same layer (1 µm
-    apart at most), with their total length, longest first: the gaps along a route."""
+def joined(stretches) -> list[tuple[float, list[Stretch]]]:
+    """Stretches joined where one ends where another starts on the same layer (on the
+    same JOIN_NM grid point), with their total length, longest first: the gaps along a route."""
     union = _Union(len(stretches))
     ends: dict[tuple, int] = {}
     for i, stretch in enumerate(stretches):
         for x, y in (stretch.start, stretch.end):
-            key = (round(x / 1_000), round(y / 1_000), stretch.layer)
+            key = (round(x / JOIN_NM), round(y / JOIN_NM), stretch.layer)
             if key in ends:
                 union.join(ends[key], i)
             else:
@@ -370,16 +372,6 @@ def _polylines(ring: np.ndarray, box) -> list[list[Point]]:
         else:
             lines.append([_round(ring[i] + t0[i] * d[i]), end])
     return lines
-
-
-def nearest_edge(polygons: tuple[Rings, ...], point: Point) -> Point | None:
-    """The point of the polygons' edges nearest `point`, or None without any."""
-    edges = _edges(polygons)
-    if not len(edges):
-        return None
-    distance, cx, cy = _point_segments(np.array([point[0]], dtype=float), np.array([point[1]], dtype=float), edges)
-    k = int(np.argmin(distance[0]))
-    return _round((cx[0, k], cy[0, k]))
 
 
 # vias
@@ -632,13 +624,6 @@ class Island:
     main: bool
 
 
-def _area(rings: Rings) -> float:
-    def shoelace(ring):
-        x, y = ring[:, 0], ring[:, 1]
-        return abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2
-    return shoelace(rings[0]) - sum(shoelace(ring) for ring in rings[1:])
-
-
 def _touching(points: np.ndarray, radii: np.ndarray, rings: Rings) -> np.ndarray:
     """Which discs (centre, radius) lie in a polygon's copper or reach its edge."""
     low, high = rings[0].min(axis=0), rings[0].max(axis=0)
@@ -765,7 +750,7 @@ def islands(index: BoardIndex, net: str) -> list[Island]:
         items += [(len(pieces) + len(vias) + len(holes) + k, index.shape(record)) for k, record in enumerate(tracks)
                   if record.layer == layer]
         _join_touching(union, [(node, copper) for node, copper in items if len(copper.segments)])
-    areas = [_area(rings) for _, _, rings in pieces]
+    areas = [polygon_area(rings) for _, _, rings in pieces]
     totals: dict[int, float] = defaultdict(float)
     for i, area in enumerate(areas):
         totals[union.find(i)] += area

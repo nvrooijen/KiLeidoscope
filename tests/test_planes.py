@@ -148,9 +148,9 @@ def test_runs_join_gaps_that_meet():
                  planes.Stretch("b", "F.Cu", 1, (MM, 0), (MM, 3 * MM), False),
                  planes.Stretch("c", "F.Cu", 1, (5 * MM, 0), (7 * MM, 0), False),
                  planes.Stretch("d", "B.Cu", 1, (MM, 3 * MM), (MM, 9 * MM), False)]  # meets b, but on B.Cu
-    found = planes.runs(stretches)
+    found = planes.joined(stretches)
     assert [length for length, _ in found] == [6 * MM, 4 * MM, 2 * MM]
-    assert [s.id for s in found[1][1]] == ["a", "b"] and planes.runs([]) == []
+    assert [s.id for s in found[1][1]] == ["a", "b"] and planes.joined([]) == []
 
 
 # edges
@@ -175,8 +175,6 @@ def test_an_edge_leaving_and_entering_the_box_is_two_lines():
     assert sorted(lines) == [[(0, 6 * MM), (0, 4 * MM)], [(10 * MM, 4 * MM), (10 * MM, 6 * MM)]]
     corner = planes.edges_near(copper, [(9 * MM, -MM, 11 * MM, MM)], 0)
     assert corner == [[(9 * MM, 0), (10 * MM, 0), (10 * MM, MM)]]  # one line round the corner
-    assert planes.nearest_edge(copper, (5 * MM, 2 * MM)) == (5 * MM, 0)
-    assert planes.nearest_edge((), (0, 0)) is None
 
 
 # vias

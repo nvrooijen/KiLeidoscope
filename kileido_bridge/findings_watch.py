@@ -42,7 +42,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import drc_findings, findings, ghost_drc, kls_folder
@@ -60,8 +60,6 @@ MAX_CHECKS = 100  # ids in one prompt request
 MAX_NOTES = 500  # characters of a prompt request's notes
 PROGRESS = "progress"  # the progress file, watched beside SOURCES
 MAX_PROGRESS_COUNT = 10_000  # "done" and "total" are clamped to 0..this
-MAX_PROGRESS_CHECK = 64
-MAX_PROGRESS_NOTE = kls_folder.MAX_PROGRESS_NOTE
 _UNREAD = object()  # a file not read yet (None: read, and missing)
 
 
@@ -105,18 +103,8 @@ def parse_progress(data: bytes) -> dict | None:
             and isinstance(raw.get("run"), str) and isinstance(raw.get("stamp"), str)):
         return None
     return {"run": raw["run"], "stamp": raw["stamp"], "done": _count(raw.get("done")),
-            "total": _count(raw.get("total")), "check": _plain(raw.get("check"), MAX_PROGRESS_CHECK),
-            "note": _plain(raw.get("note"), MAX_PROGRESS_NOTE)}
-
-
-def _group_row(group, titles: dict) -> dict:
-    """{"id", "title"} of one of `checks.GROUPS`, however it is written there."""
-    if isinstance(group, str):
-        return {"id": group, "title": str(titles.get(group, group))}
-    if isinstance(group, (tuple, list)) and group:
-        return {"id": str(group[0]), "title": str(group[1] if len(group) > 1 else group[0])}
-    ident = str(getattr(group, "id", group))
-    return {"id": ident, "title": str(getattr(group, "title", ident))}
+            "total": _count(raw.get("total")), "check": _plain(raw.get("check"), findings.MAX_CHECK),
+            "note": _plain(raw.get("note"), kls_folder.MAX_PROGRESS_NOTE)}
 
 
 def catalogue() -> tuple[list, list] | None:
@@ -127,9 +115,7 @@ def catalogue() -> tuple[list, list] | None:
         from . import checks
         rows = [{"id": check.id, "group": check.group, "title": check.title, "v1": bool(check.v1)}
                 for check in checks.CATALOGUE]
-        groups = checks.GROUPS.items() if isinstance(checks.GROUPS, dict) else checks.GROUPS
-        titles = getattr(checks, "GROUP_TITLES", None) or {}
-        return rows, [_group_row(group, titles) for group in groups]
+        return rows, [{"id": group, "title": checks.GROUP_TITLES.get(group, group)} for group in checks.GROUPS]
     except Exception:
         return None
 
@@ -171,6 +157,18 @@ def _with_states(payload: dict, states: dict) -> dict:
     return {**payload, "findings": rows}
 
 
+def _failure(exc: Exception, expected=(drc_findings.DrcFailed, kls_folder.NotAvailable)) -> str:
+    """Why a thread's work failed, for the payload: an `expected` error in its own words,
+    anything else with its type (a bug); its last MAX_TEXT characters."""
+    message = str(exc) if isinstance(exc, expected) else f"{type(exc).__name__}: {exc}"
+    return message[-findings.MAX_TEXT:]
+
+
+def _start(target, name: str, *args) -> None:
+    """`target(*args)` on a daemon thread of its own."""
+    threading.Thread(target=target, args=args, name=name, daemon=True).start()
+
+
 @dataclass
 class _Job:
     """Work for the thread; merged until it takes it."""
@@ -183,7 +181,8 @@ class _Job:
 
 
 @dataclass(frozen=True)
-class _Board:
+class _LiveBoard:
+    """What the last tick knew of KiCad's open board."""
     revision: int | None  # None: KiCad not connected
     snapshot: object
     live_stamp: str
@@ -200,11 +199,10 @@ class FindingsWatch:
     "failed", "run", "text", "error"}, "progress": `progress_state`, "catalogue": [{"id",
     "group", "title", "v1"}], "groups": [{"id", "title"}], "sources": {"drc": <source
     payload>, "file": <source payload>}}. A source payload is what `findings.resolve_file`
-    or `findings.status_payload` gives: {"status", "error", "source", "path", "run",
-    "stamp", "live_stamp", "handshake", "changed", "connected", "tool", "problems", "drc",
-    "skipped", "findings"}, each finding {"key", "check", "group", "severity",
-    "confidence", "title", "message", "fix", "values", "values_text", "state", "faded",
-    "problems", "bbox_nm", "disagree", "passes", "mentions", "draws"}; a ghost draw's
+    or `findings.status_payload` gives: {"status", "error", "run", "handshake", "changed",
+    "connected", "tool", "problems", "skipped", "left_out", "findings"}, each finding {"key",
+    "check", "severity", "confidence", "title", "message", "fix", "values", "values_text",
+    "state", "faded", "problems", "bbox_nm", "disagree", "passes", "mentions", "draws"}; a ghost draw's
     "kicad_drc" says what KiCad's DRC made of it (`ghost_drc.apply`). "none": neither
     file exists yet."""
 
@@ -247,7 +245,7 @@ class FindingsWatch:
         self._prompt_run = None  # (run, stamp, made at, unix) of the last prompt made
         self._progress = (None, 0.0)  # (parse_progress of the progress file or None, its mtime)
         self._job = _Job()
-        self._board = _Board(None, None, "")
+        self._board = _LiveBoard(None, None, "")
         self._resolved = None  # board key the payload was resolved for
         self._resolved_at = -float("inf")
         self._index = (None, None)  # (revision, BoardIndex)
@@ -285,8 +283,8 @@ class FindingsWatch:
         with self._lock:
             if folder is not self.folder:
                 return
-            self._board = _Board(revision if connected else None, snapshot, live_stamp, copy_text,
-                                 tools.get("kicad_cli", ""))
+            self._board = _LiveBoard(revision if connected else None, snapshot, live_stamp, copy_text,
+                                     tools.get("kicad_cli", ""))
             if self._drc_wanted:
                 self._drc_wanted = False
                 self._start_drc(folder, snapshot, tools.get("kicad_cli", ""), copy_text)
@@ -294,9 +292,7 @@ class FindingsWatch:
                 (ids, notes), self._prompt_wanted = self._prompt_wanted, None
                 self._start_prompt(folder, snapshot, tools.get("kicad_cli", ""), copy_text, ids, notes)
             if not folder.available:
-                context = self._context(folder, "drc", {})
-                unsaved = {source: findings.status_payload("unsaved", replace(context, source=source),
-                                                           connected=connected) for source in SOURCES}
+                unsaved = {source: findings.status_payload("unsaved", connected=connected) for source in SOURCES}
                 if unsaved != self._sources:
                     self._sources = unsaved
                     self._publish()
@@ -342,53 +338,61 @@ class FindingsWatch:
             if folder is None:
                 return
             if action == "run_drc":
-                if self._drc_running or self._drc_wanted:
-                    return
-                if not folder.available:
-                    self._drc = drc_state("failed", SAVE_FIRST, self._drc["run"])
-                else:
-                    self._drc = drc_state("running", run=self._drc["run"])
-                    self._drc_wanted = True  # the next tick has the board text
-                self._publish()
-                return
-            if action == "prompt":
-                if self._prompt_running or self._prompt_wanted is not None:
-                    return
-                if not folder.available:
-                    self._prompt = prompt_state("failed", error=SAVE_FIRST)
-                else:
-                    self._prompt = prompt_state("making")
-                    notes = notes[:MAX_NOTES] if isinstance(notes, str) else ""
-                    self._prompt_wanted = (tuple(checks)[:MAX_CHECKS], notes)  # the next tick has the board text
-                self._publish()
-                return
-            if not folder.available:
-                return
-            payload = self._sources.get(source)
-            row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
-            if row is None and action != "reset":
-                return  # not a finding Blender was sent
-            self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "",
-                             row["title"] if row else "", folder.stem)
-            states = self._states(source)
-            if payload is not None:
-                self._sources[source] = _with_states(payload, states)
-            if source in self._good:
-                self._good[source] = _with_states(self._good[source], states)
-            self._publish()
-            self._job.save = True
-            self._kick()
+                self._ask_drc(folder)
+            elif action == "prompt":
+                self._ask_prompt(folder, checks, notes)
+            elif folder.available:
+                self._mark(folder, action, key, source)
 
     # --- inside the lock ----------------------------------------------------------------
+
+    def _ask_drc(self, folder):
+        """A DRC run asked for: started on the next tick, which has the board text."""
+        if self._drc_running or self._drc_wanted:
+            return
+        if not folder.available:
+            self._drc = drc_state("failed", SAVE_FIRST, self._drc["run"])
+        else:
+            self._drc = drc_state("running", run=self._drc["run"])
+            self._drc_wanted = True  # the next tick has the board text
+        self._publish()
+
+    def _ask_prompt(self, folder, checks, notes):
+        """A prompt asked for: made on the next tick, which has the board text."""
+        if self._prompt_running or self._prompt_wanted is not None:
+            return
+        if not folder.available:
+            self._prompt = prompt_state("failed", error=SAVE_FIRST)
+        else:
+            self._prompt = prompt_state("making")
+            notes = notes[:MAX_NOTES] if isinstance(notes, str) else ""
+            self._prompt_wanted = (tuple(checks)[:MAX_CHECKS], notes)  # the next tick has the board text
+        self._publish()
+
+    def _mark(self, folder, action: str, key: str, source: str):
+        """A finding confirmed, dismissed or reset: shown at once, saved by the thread."""
+        payload = self._sources.get(source)
+        row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
+        if row is None and action != "reset":
+            return  # not a finding Blender was sent
+        self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "",
+                         row["title"] if row else "", folder.stem)
+        states = self._states(source)
+        if payload is not None:
+            self._sources[source] = _with_states(payload, states)
+        if source in self._good:
+            self._good[source] = _with_states(self._good[source], states)
+        self._publish()
+        self._job.save = True
+        self._kick()
 
     def _states(self, source: str) -> dict:
         prefix = state_key(source, "")
         return {key[len(prefix):]: entry["state"] for key, entry in self._state.findings.items()
                 if (key.startswith(prefix) if prefix else ":" not in key)}
 
-    def _context(self, folder, source: str, runs: dict) -> findings.Context:
-        return findings.Context(path=str(folder.path_for(source)) if folder.available else "", source=source,
-                                runs=runs, live_stamp=self._board.live_stamp,
+    def _context(self, source: str, runs: dict) -> findings.Context:
+        return findings.Context(source=source, runs=runs, live_stamp=self._board.live_stamp,
                                 states=self._states(source))
 
     def _progress_payload(self) -> dict:
@@ -453,21 +457,21 @@ class FindingsWatch:
             try:
                 self._work(job, generation, folder, board, state)
             except Exception as exc:  # a bug costs this job's files, never the thread
-                self._failed(generation, folder, f"could not read the findings ({type(exc).__name__}: {exc}); "
-                                                  "please report it")
+                self._failed(generation, f"could not read the findings ({type(exc).__name__}: {exc}); "
+                                         "please report it")
 
-    def _failed(self, generation: int, folder, error: str):
+    def _failed(self, generation: int, error: str):
         """A job's error on both sources: a listed file keeps its findings, with the error."""
         with self._lock:
             if generation != self._generation:
                 return
             for source in SOURCES:
                 shown = self._sources.get(source) or findings.status_payload(
-                    "error", self._context(folder, source, {}), connected=self._board.revision is not None)
+                    "error", connected=self._board.revision is not None)
                 self._sources[source] = {**shown, "status": "error", "error": error[:findings.MAX_TEXT]}
             self._publish()
 
-    def _work(self, job: _Job, generation: int, folder, board: _Board, state):
+    def _work(self, job: _Job, generation: int, folder, board: _LiveBoard, state):
         if job.save:
             try:
                 folder.save_state(state)
@@ -490,7 +494,7 @@ class FindingsWatch:
             elif progress is not None:
                 self._progress = progress
             todo = [source for source in SOURCES if source in job.resolve or source in files]
-            work = [(source, self._parsed.get(source), self._context(folder, source, runs)) for source in todo]
+            work = [(source, self._parsed.get(source), self._context(source, runs)) for source in todo]
             good = dict(self._good)
         resolved = {source: self._resolve(found, index, context, good.get(source)) for source, found, context in work}
         with self._lock:
@@ -534,7 +538,7 @@ class FindingsWatch:
             return _UNREAD
         return parse_progress(data), mtime
 
-    def _index_of(self, board: _Board):
+    def _index_of(self, board: _LiveBoard):
         if board.snapshot is None:
             return None
         revision, index = self._index
@@ -548,20 +552,20 @@ class FindingsWatch:
         the last good list, with the error."""
         connected = index is not None
         if found is None:
-            return findings.status_payload("none", context, connected=connected), False
+            return findings.status_payload("none", connected=connected), False
         if isinstance(found, findings.FindingsError):
             if good is not None:
                 return {**good, "status": found.status, "error": str(found)}, False
-            return findings.status_payload(found.status, context, error=str(found), connected=connected), False
+            return findings.status_payload(found.status, error=str(found), connected=connected), False
         try:
             return findings.resolve_file(found, index, context), True
         except Exception as exc:  # a resolver bug costs this file, never the bridge
             error = f"could not resolve this file ({type(exc).__name__}: {exc}); please report it"
-            return findings.status_payload("error", context, error=error, connected=connected), False
+            return findings.status_payload("error", error=error, connected=connected), False
 
     # --- KiCad's DRC on the ghosts ----------------------------------------------------------
 
-    def _with_ghosts(self, source: str, payload: dict, board: _Board, folder) -> dict:
+    def _with_ghosts(self, source: str, payload: dict, board: _LiveBoard, folder) -> dict:
         """In the lock: `payload` with KiCad's DRC on its ghosts. The outcome kept for these
         ghosts on this board text when there is one; else "pending", and a run asked for
         (the newest ask replaces an older one; the run going is never asked again, and an
@@ -592,8 +596,7 @@ class FindingsWatch:
         source = next(iter(self._ghost_want))
         key, ghosts, text, hint, folder = self._ghost_want.pop(source)
         self._ghost_running = (source, key)
-        threading.Thread(target=self._ghost_run, args=(self._generation, source, key, folder, ghosts, text, hint),
-                         name="kileido-ghost-drc", daemon=True).start()
+        _start(self._ghost_run, "kileido-ghost-drc", self._generation, source, key, folder, ghosts, text, hint)
 
     def _ghost_run(self, generation: int, source: str, key, folder, ghosts, text: str, hint: str):
         """KiCad's DRC on a copy of `text` (else the saved file) with `ghosts` written in;
@@ -607,9 +610,7 @@ class FindingsWatch:
                 raise drc_findings.DrcFailed(ghost_drc.NO_CLI)
             outcome = ghost_drc.check(folder, text, ghosts, cli, self._run_ghost_drc, self._runs_lock)
         except Exception as exc:  # kicad-cli failed, the run could not be written, a bug: the quick check stands
-            message = str(exc) if isinstance(exc, (drc_findings.DrcFailed, kls_folder.NotAvailable)) \
-                else f"{type(exc).__name__}: {exc}"
-            outcome = ghost_drc.Outcome(error=message[-300:] or "KiCad's DRC failed")
+            outcome = ghost_drc.Outcome(error=_failure(exc) or "KiCad's DRC failed")
         with self._lock:
             if generation != self._generation:
                 return
@@ -631,8 +632,7 @@ class FindingsWatch:
             self._publish()
             return
         self._drc_running = True
-        threading.Thread(target=self._drc_run, args=(self._generation, folder, snapshot, hint, text),
-                         name="kileido-drc", daemon=True).start()
+        _start(self._drc_run, "kileido-drc", self._generation, folder, snapshot, hint, text)
 
     def _drc_run(self, generation: int, folder, snapshot, hint: str, text: str):
         """Run KiCad's DRC on `text` and publish it; {check: entries} of the run, or why it
@@ -644,7 +644,7 @@ class FindingsWatch:
                 text, note = Path(folder.board_path).read_text(encoding="utf-8"), SAVED_ONLY
             cli = self._find_cli(hint)
             if not cli:
-                raise drc_findings.DrcFailed("kicad-cli not found; set KILEIDO_KICAD_CLI to it")
+                raise drc_findings.DrcFailed(ghost_drc.NO_CLI)
             with self._runs_lock:
                 run = folder.new_run(text, "drc")
             run_id = run.id
@@ -658,9 +658,7 @@ class FindingsWatch:
             for item in data.get("findings", ()):
                 found[item.get("check") or "drc"] = found.get(item.get("check") or "drc", 0) + 1
         except Exception as exc:  # kicad-cli failed, a file could not be written, or a converter bug
-            message = str(exc) if isinstance(exc, (drc_findings.DrcFailed, kls_folder.NotAvailable)) \
-                else f"{type(exc).__name__}: {exc}"
-            outcome, path = drc_state("failed", message[-300:], run_id), None
+            outcome, path = drc_state("failed", _failure(exc), run_id), None
         with self._lock:
             if generation != self._generation:
                 return found if found is not None else outcome["error"]
@@ -692,9 +690,8 @@ class FindingsWatch:
             self._drc = drc_state("running", run=self._drc["run"])
             self._publish()
         dismissed = self._state.dismissed(folder.stem)
-        threading.Thread(target=self._prompt_make,
-                         args=(self._generation, folder, snapshot, hint if with_drc else None, text, ids, notes,
-                               dismissed), name="kileido-prompt", daemon=True).start()
+        _start(self._prompt_make, "kileido-prompt", self._generation, folder, snapshot, hint if with_drc else None,
+               text, ids, notes, dismissed)
 
     def _prompt_make(self, generation: int, folder, snapshot, hint, text: str, ids: tuple, notes: str, dismissed):
         """`hint` None: no DRC first (one was already running)."""
@@ -707,9 +704,7 @@ class FindingsWatch:
             outcome = prompt_state("ready", str(run_id), clipboard)
             made = (str(run_id), str(run_stamp), time.time())
         except Exception as exc:  # a file could not be written, no checks, or a digest bug
-            message = str(exc) if isinstance(exc, (ValueError, kls_folder.NotAvailable)) \
-                else f"{type(exc).__name__}: {exc}"
-            outcome = prompt_state("failed", error=message[-300:])
+            outcome = prompt_state("failed", error=_failure(exc, (ValueError, kls_folder.NotAvailable)))
         with self._lock:
             if generation != self._generation:
                 return

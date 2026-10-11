@@ -1,4 +1,4 @@
-"""The review prompt of the LLM Visualizer (spec §3, §4): clipboard text and `request.md`.
+"""The review prompt of the LLM Visualizer: clipboard text and `request.md`.
 
 We never call an LLM: the user pastes the clipboard prompt into their own tool. It is
 short and names the run folder; the long part, `request.md` (rules, the chosen checks,
@@ -22,6 +22,7 @@ from typing import Iterable
 
 from . import findings, scrub
 from .checks import Check
+from .findings_watch import MAX_NOTES  # characters of the user's notes
 from .kls_folder import MAX_PROGRESS_NOTE, PROGRESS_FORMAT, KlsFolder, Run
 
 KIND = "llm"  # run.json "kind"
@@ -32,12 +33,12 @@ MAX_DRC_LISTED = 30  # kinds of KiCad DRC entries named in a request; the rest c
 MAX_DISMISSED_LISTED = 30  # findings the user dismissed named in a request, the latest first; the rest counted
 MAX_DISMISSED_TITLE = 120  # characters of each one's title
 ALWAYS = ("highlight", "label")  # offered with any selection of checks
-MAX_NOTES = 500  # characters of the user's notes
 MAX_NOTE_LINES = 8
 NOTES_HEADING = "Notes from the user"
 NOTES_RULE = "the rules in request.md come first"
 
-# tool -> (fields, what it draws, example or examples); in the order of spec §6.1, §6.2, §6.3
+# tool -> (fields, what it draws, example or examples); in the order the request lists them: the
+# marks, then the measured geometry, then the plane tools
 _TOOLS = {
     "highlight": ("targets: list of targets", "glow on the targets",
                   '{"tool": "highlight", "targets": ["U3", "net:USB_D+@F.Cu~42.10,18.75"]}'),
@@ -157,7 +158,7 @@ def examples(tool: str) -> tuple[str, ...]:
 
 
 def drawing_tools_short(tools: Iterable[str]) -> str:
-    """One line per tool (and its examples), in spec order; tools Blender does not draw left out."""
+    """One line per tool (and its examples), in `_TOOLS` order; tools Blender does not draw left out."""
     wanted = set(tools) & findings.DRAWN
     lines = []
     for tool, (fields, what, _) in _TOOLS.items():
@@ -243,7 +244,7 @@ def _dismissed_text(dismissed) -> str:
     Plain text, each cut; at most MAX_DISMISSED_LISTED, the rest counted. "" for none."""
     rows = []
     for check, title in dismissed:
-        check = findings._CONTROL.sub(" ", str(check)).strip()[:64]
+        check = findings._CONTROL.sub(" ", str(check)).strip()[:findings.MAX_CHECK]
         title = " ".join(findings._CONTROL.sub(" ", str(title)).split())
         title = title if len(title) <= MAX_DISMISSED_TITLE else title[:MAX_DISMISSED_TITLE - 1] + "…"
         if check or title:
@@ -258,7 +259,7 @@ def _dismissed_text(dismissed) -> str:
 
 def request_md(run: str, stamp: str, findings_path: str, checks: tuple[Check, ...], progress_path: str = "",
                notes: str = "", drc=None, dismissed=()) -> str:
-    """The request file (spec §4.2) for these checks; with a progress file to keep when
+    """The request file for these checks; with a progress file to keep when
     `progress_path` is given, what KiCad's DRC already found (`_drc_text`), what the user
     dismissed on this board (`_dismissed_text`), and the user's notes at the end."""
     tools = {tool for check in checks for tool in drawn(check)} | set(ALWAYS)
@@ -336,7 +337,7 @@ come from the severity; do not give any.
 
 
 def clipboard(run: str, stamp: str, run_dir: str, findings_path: str, notes: str = "") -> str:
-    """The short prompt the user pastes (spec §4.1), with the user's notes before its last line."""
+    """The short prompt the user pastes, with the user's notes before its last line."""
     notes = clean_notes(notes)
     notes = f"{NOTES_HEADING} ({NOTES_RULE}):\n{notes}\n\n" if notes else ""
     return f"""KiLeidoscope LLM Visualizer — board review request

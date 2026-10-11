@@ -54,7 +54,8 @@ J1 = "66666666-6666-4666-8666-666666666666"
 
 
 class Layout:
-    """Records what a panel draws: (kind, text, icon) per label or operator."""
+    """Records what a panel draws: (kind, text, icon) per label or operator, (kind, text,
+    factor) per progress bar."""
 
     def __init__(self, drawn=None):
         self.drawn = [] if drawn is None else drawn
@@ -75,10 +76,6 @@ class Layout:
         self.drawn.append(("operator", text, icon_value or icon))
         return type("Properties", (), {})()
 
-
-class BarLayout(Layout):
-    """Blender 5.1's layout: it has progress bars (recorded with their factor)."""
-
     def progress(self, factor=0.0, text="", **kwargs):
         self.drawn.append(("progress", text, round(factor, 4)))
 
@@ -87,9 +84,9 @@ def wrap(text):
     return textwrap.wrap(text, 70) or [""]
 
 
-def column(scene, layout_type=BarLayout, tabs=("DRC", "LLM")):
+def column(scene, tabs=("DRC", "LLM")):
     """What the tabs' columns draw, one after the other (both by default)."""
-    layout = layout_type()
+    layout = Layout()
     for tab in tabs:
         findings.draw_column(layout, scene, wrap, tab)
     return layout.drawn
@@ -178,10 +175,10 @@ def findings_file(extra=()):
 def frame(index, drop=(), extra=()):
     """The bridge's findings frame: the findings file resolved (the board as it is, a known
     run), no DRC run yet."""
-    context = bridge_findings.Context("x.kls-findings.json", "file", {"4": STAMP}, STAMP, {})
+    context = bridge_findings.Context("file", {"4": STAMP}, STAMP, {})
     payload = bridge_findings.resolve_file(bridge_findings.parse(findings_file(extra)), index, context)
     payload["findings"] = [f for f in payload["findings"] if f["title"] not in drop]
-    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, STAMP, {}))
+    drc = bridge_findings.status_payload("none")
     return {"type": "findings", "revision": 1,
             "findings": {"status": "ok", "folder": "C:/boards/.kileidoscope",
                          "drc": {"state": "idle", "error": "", "run": ""}, "sources": {"drc": drc, "file": payload}}}
@@ -986,8 +983,8 @@ def check_routed(scene, index):
     # The bar past its limit: red, with an icon and words (never colour alone); the others without.
     assert ("label", "CLK_P: 12 mm, over the limit", "ERROR") in column(scene) and "CLK_P: 12 mm" not in texts
     bars_column = []
-    findings._draw_bars(Layout(bars_column), wrap, {"unit": "ps", "bars": [{"label": "A", "value": 3.5, "limit": 2},
-                                                                           {"label": "B", "value": 1.0}]})
+    findings._bar_lines(Layout(bars_column), wrap, {"unit": "ps", "bars": [
+        {"label": "A", "value": 3.5, "limit": 2, "over": True}, {"label": "B", "value": 1.0, "over": False}]})
     assert bars_column == [("label", "A: 3.5 ps (limit 2), over the limit", "ERROR"), ("label", "B: 1 ps", "BLANK1")], \
         bars_column
     # A thin line, as a label's leader (never a fat tube).
@@ -1385,7 +1382,7 @@ def origin_frame(index, **top):
     """`frame` with the findings file's top-level fields changed (`run`, `stamp`, `tool`)."""
     data = json.loads(findings_file())
     data.update(top)
-    context = bridge_findings.Context("x.kls-findings.json", "file", {"4": STAMP}, STAMP, {})
+    context = bridge_findings.Context("file", {"4": STAMP}, STAMP, {})
     header = frame(index)
     header["findings"]["sources"]["file"] = bridge_findings.resolve_file(
         bridge_findings.parse(json.dumps(data).encode("utf-8")), index, context)
@@ -1425,14 +1422,14 @@ def check_origin(scene, index):
 
 
 def check_prompt(scene, index):
-    """The LLM prompt box above the LLM's findings: v1 checks ticked to start with, groups
+    """The LLM prompt box above the LLM's findings: the quick checks ticked to start with, groups
     folded, Quick and All, Copy prompt sends the ticked ids, a ready prompt is copied once."""
     copied = []
     findings.set_clipboard = copied.append  # background Blender has no clipboard
     apply.apply_frame(prompt_frame(index), {})
     drawn = column(scene)
     texts = [text for _, text, _ in drawn]
-    assert "LLM prompt: 2 of 3 checks" in texts, texts  # the quick (v1) checks to start with
+    assert "LLM prompt: 2 of 3 checks" in texts, texts  # the quick checks to start with
     assert texts.index("KiCad DRC") < texts.index("LLM prompt: 2 of 3 checks") < \
         texts.index("Test tool, run 4: 4 findings"), texts  # above the file's section
     for group in ("Return paths and planes (1/1)", "Decoupling (1/1)", "High speed (0/1)"):
@@ -1573,8 +1570,6 @@ def check_progress(scene, index):
     assert ("label", "Measuring cap distances — 12 s ago", "BLANK1") in drawn, drawn
     assert not any(text.startswith("No update") for _, text, _ in drawn)  # its age is the update's, not the prompt's
     assert bpy.app.timers.is_registered(ticking) and ticking() == findings.PROGRESS_TICK_S
-    drawn = column(scene, Layout)  # a layout without progress bars: a line instead
-    assert ("label", "Run 4: check 2 of 3 — decap.distance", "TIME") in drawn, drawn
     # Exactly 5 min: not yet; past it: an alert, with an icon and words.
     apply.apply_frame(progress_frame(index, state="working", run="4", done=1, total=3, updated_unix=NOW - 300), {})
     assert not any(kind == "alert" for kind, *_ in findings.progress_lines())

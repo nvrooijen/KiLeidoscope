@@ -24,6 +24,8 @@ import bpy.utils.previews
 from bpy.props import EnumProperty, IntProperty, StringProperty
 
 from . import findings_draw, fold, hole_cut
+from .findings_draw import figure
+from .objects import shown_view_areas
 from .state import board
 
 SOURCES = (("drc", "KiCad DRC"), ("file", "LLM"))
@@ -32,6 +34,7 @@ MENTION_ICONS = {"part": "MESH_CUBE", "pad": "MESH_PLANE", "net": "LINKED", "via
 SEVERITY_ICONS = {"error": "ERROR", "warning": "ERROR", "info": "INFO", "unknown": "QUESTION"}  # without previews
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 FOLD_PAST = 20  # a source with more findings starts with its groups folded
+INDENT = 0.04  # of the column's width: an opened group's rows indented
 PROBLEM_LINES = 3  # a file's problems shown; the rest counted
 UNITS = (("_mm2", "mm²"), ("_cm2", "cm²"), ("_mm", "mm"), ("_ps", "ps"), ("_mv", "mV"),
          ("_a", "A"), ("_pct", "%"))  # longest first; as the bridge's findings.UNITS
@@ -132,9 +135,9 @@ def _take_prompt():
 def notes(scene):
     """What Copy prompt tells the LLM besides the checks: the ticked sentences, one per line,
     then the user's own line; at most NOTES_LINES lines and NOTES_MAX characters."""
-    lines = [sentence for name, sentence in NOTE_TOGGLES if getattr(scene, name)]
-    lines += [line.strip() for line in scene.kileido_prompt_note.splitlines() if line.strip()]
-    return "\n".join(lines[:NOTES_LINES])[:NOTES_MAX].rstrip()
+    sent = [sentence for name, sentence in NOTE_TOGGLES if getattr(scene, name)]
+    sent += [line.strip() for line in scene.kileido_prompt_note.splitlines() if line.strip()]
+    return "\n".join(sent[:NOTES_LINES])[:NOTES_MAX].rstrip()
 
 
 def notes_count(scene):
@@ -213,12 +216,10 @@ def _progress_tick():
     if progress().get("state") not in LIVE:
         return None
     try:
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == "VIEW_3D":
-                    for region in area.regions:
-                        if region.type == "UI":
-                            region.tag_redraw()
+        for area in shown_view_areas():
+            for region in area.regions:
+                if region.type == "UI":
+                    region.tag_redraw()
     except (AttributeError, ReferenceError):
         pass
     return PROGRESS_TICK_S
@@ -259,7 +260,7 @@ def catalogue():
 
 
 def chosen(scene):
-    """The ticked check ids: the scene's list, or the v1 checks while it is "" (Quick)."""
+    """The ticked check ids: the scene's list, or the quick checks (the catalogue's "v1") while it is ""."""
     stored = scene.kileido_prompt_checks
     if not stored:
         return {row.get("id") for row in catalogue() if row.get("v1")}
@@ -268,10 +269,9 @@ def chosen(scene):
 
 def open_group(scene, source_name, check):
     """Unfold a check's group in a source's list (a long list starts with its groups folded)."""
-    visible = [finding for finding in source(source_name).get("findings") or ()
-               if scene.kileido_findings_dismissed or finding.get("state") != "dismissed"]
+    visible = _visible(scene, source(source_name).get("findings") or ())
     tag = f"{source_name}:{check}"
-    toggled = set(filter(None, scene.kileido_findings_open.split("\n")))
+    toggled = _toggled(scene)
     toggled = toggled | {tag} if len(visible) > FOLD_PAST else toggled - {tag}  # toggled: the other way
     scene.kileido_findings_open = "\n".join(sorted(toggled))
 
@@ -307,6 +307,39 @@ def tab_state(tab):
 def _lines(layout, wrap, text, icon="NONE"):
     for index, line in enumerate(wrap(text)):
         layout.label(text=line, icon=icon if index == 0 else ("BLANK1" if icon != "NONE" else "NONE"))
+
+
+def _toggled(scene):
+    """The groups opened or closed from how they start (kileido_findings_open), as a set."""
+    return set(filter(None, scene.kileido_findings_open.split("\n")))
+
+
+def _visible(scene, findings):
+    """The findings the list shows: the dismissed ones too only with Show dismissed."""
+    return [finding for finding in findings if scene.kileido_findings_dismissed or finding.get("state") != "dismissed"]
+
+
+def _indented(layout, align=False):
+    """A column indented under an opened group."""
+    indent = layout.split(factor=INDENT)
+    indent.label(text="")
+    return indent.column(align=align)
+
+
+def _fold_button(layout, text, tag, opened):
+    """The button that opens or folds a group (`tag` in kileido_findings_open)."""
+    operator = layout.operator(KILEIDO_OT_findings_group.bl_idname, text=text, emboss=False,
+                               icon="DISCLOSURE_TRI_DOWN" if opened else "DISCLOSURE_TRI_RIGHT")
+    operator.group = tag
+
+
+def _linked(cls, message="Not live with KiCad"):
+    """An operator's poll: KiCad is live, else `message` says why it is greyed."""
+    from . import live
+    if live.linked():
+        return True
+    cls.poll_message_set(message)
+    return False
 
 
 def draw_column(layout, scene, wrap, tab):
@@ -368,7 +401,7 @@ def _draw_prompt(layout, scene, wrap, found, linked):
         head.operator(KILEIDO_OT_prompt_preset.bl_idname, text=text).preset = preset
     if not rows:
         _lines(box, wrap, "The checks come from the bridge once KiCad is connected", "INFO")
-    toggled = set(scene.kileido_findings_open.split("\n"))
+    toggled = _toggled(scene)
     titles = {group.get("id"): group.get("title") or group.get("id") for group in found.get("groups") or ()}
     for group in dict.fromkeys([*titles, *(row.get("group") for row in rows)]):  # the bridge's order
         members = [row for row in rows if row.get("group") == group]
@@ -377,14 +410,9 @@ def _draw_prompt(layout, scene, wrap, found, linked):
         tag = f"prompt:{group}"
         opened = tag in toggled  # folded until opened
         count = sum(1 for row in members if row.get("id") in ticked)
-        operator = box.operator(KILEIDO_OT_findings_group.bl_idname, emboss=False,
-                                text=f"{titles.get(group) or group} ({count}/{len(members)})",
-                                icon="DISCLOSURE_TRI_DOWN" if opened else "DISCLOSURE_TRI_RIGHT")
-        operator.group = tag
+        _fold_button(box, f"{titles.get(group) or group} ({count}/{len(members)})", tag, opened)
         if opened:
-            indent = box.split(factor=0.04)
-            indent.label(text="")
-            column = indent.column(align=True)
+            column = _indented(box, align=True)
             for row in members:
                 text = (wrap(row.get("title") or row.get("id") or "?") or ["?"])[0]
                 operator = column.operator(KILEIDO_OT_prompt_check.bl_idname, text=text, emboss=False,
@@ -419,15 +447,10 @@ def _draw_notes(box, scene, toggled):
     """Notes for the LLM, folded until opened: the ready-made sentences, the user's line."""
     opened = NOTES_TAG in toggled
     count = notes_count(scene)
-    operator = box.operator(KILEIDO_OT_findings_group.bl_idname, emboss=False,
-                            text=f"Notes ({count})" if count else "Notes",
-                            icon="DISCLOSURE_TRI_DOWN" if opened else "DISCLOSURE_TRI_RIGHT")
-    operator.group = NOTES_TAG
+    _fold_button(box, f"Notes ({count})" if count else "Notes", NOTES_TAG, opened)
     if not opened:
         return
-    indent = box.split(factor=0.04)
-    indent.label(text="")
-    column = indent.column(align=True)
+    column = _indented(box, align=True)
     for name, sentence in NOTE_TOGGLES:
         column.prop(scene, name, text=sentence)
     column.prop(scene, "kileido_prompt_note", text="", placeholder="Notes for the LLM", icon="GREASEPENCIL")
@@ -437,14 +460,14 @@ def _draw_progress(box, wrap, found):
     """How far the LLM is: a bar while it works, how long ago it said so; an alert past
     STALE_S (an icon and words, not colour alone)."""
     for kind, text, icon, factor in progress_lines(found):
-        if kind == "bar" and hasattr(box, "progress"):
+        if kind == "bar":
             box.progress(factor=factor, text=text)
         elif kind == "alert":
             line = box.column()
             line.alert = True
             _lines(line, wrap, text, icon)
         else:
-            _lines(box, wrap, text, "TIME" if kind == "bar" else icon)
+            _lines(box, wrap, text, icon)
 
 
 def _source_line(name, title, data, findings):
@@ -453,12 +476,12 @@ def _source_line(name, title, data, findings):
     unsaved edits not checked"), each shown on a line of its own under it."""
     dismissed = sum(1 for finding in findings if finding.get("state") == "dismissed")
     tool = data.get("tool") or title
-    head, *notes = [part.strip() for part in tool.split(";")] if name == "drc" else [tool]
+    head, *remarks = [part.strip() for part in tool.split(";")] if name == "drc" else [tool]
     head = head or title
     if data.get("run"):
         head += f", run {data['run']}"
     text = f"{head}: {len(findings)} finding{'' if len(findings) == 1 else 's'}"
-    return text + (f", {dismissed} dismissed" if dismissed else ""), [note for note in notes if note]
+    return text + (f", {dismissed} dismissed" if dismissed else ""), [remark for remark in remarks if remark]
 
 
 def origin_line(data):
@@ -478,13 +501,13 @@ def origin_line(data):
 def _draw_source(layout, scene, wrap, name, title, data):
     findings = data.get("findings") or []
     box = layout.box()
-    line, notes = _source_line(name, title, data, findings)
+    line, remarks = _source_line(name, title, data, findings)
     _lines(box, wrap, line)
     origin = origin_line(data)
     if origin:
         _lines(box, wrap, origin, "INFO")
-    for note in notes:
-        _lines(box, wrap, note[:1].upper() + note[1:], "INFO")
+    for remark in remarks:
+        _lines(box, wrap, remark[:1].upper() + remark[1:], "INFO")
     status = data.get("status")
     if status in ("error", "unknown_format"):
         _lines(box, wrap, data.get("error") or "The findings file could not be read", "ERROR")
@@ -497,13 +520,12 @@ def _draw_source(layout, scene, wrap, name, title, data):
         _lines(box, wrap, problem, "INFO")
     if len(problems) > PROBLEM_LINES:
         box.label(text=f"… and {len(problems) - PROBLEM_LINES} more problems in the file", icon="BLANK1")
-    shown_dismissed = scene.kileido_findings_dismissed
-    visible = [finding for finding in findings if shown_dismissed or finding.get("state") != "dismissed"]
+    visible = _visible(scene, findings)
     groups = {}
     for finding in visible:  # one check together, in the order they come
         groups.setdefault(finding.get("check") or "other", []).append(finding)
     ordered = sorted(groups.items(), key=lambda item: min(SEVERITY_ORDER.get(f.get("severity"), 1) for f in item[1]))
-    toggled = set(scene.kileido_findings_open.split("\n"))
+    toggled = _toggled(scene)
     folded = len(visible) > FOLD_PAST
     left_out = data.get("left_out") or {}  # check -> findings the bridge kept back (the worst are shown)
     for check, members in ordered:
@@ -517,13 +539,9 @@ def _draw_source(layout, scene, wrap, name, title, data):
         header = box.row(align=True)
         header.alert = worst == "error"
         count = f"{len(members)} of {len(members) + more:,}" if more else f"{len(members)}"
-        operator = header.operator(KILEIDO_OT_findings_group.bl_idname, text=f"{check} ({count})", emboss=False,
-                                   icon="DISCLOSURE_TRI_DOWN" if opened else "DISCLOSURE_TRI_RIGHT")
-        operator.group = tag
+        _fold_button(header, f"{check} ({count})", tag, opened)
         if opened:
-            indent = box.split(factor=0.04)
-            indent.label(text="")
-            column = indent.column()
+            column = _indented(box)
             for finding in members:
                 _draw_finding(column, wrap, name, finding)
             if more:
@@ -574,11 +592,7 @@ def _unit(name):
     return name.replace("_", " "), ""
 
 
-def _number(value):
-    return f"{value:.4g}" if isinstance(value, float) else str(value)
-
-
-def _draw_bars(box, wrap, draw):
+def _bar_lines(box, wrap, draw):
     """A bars draw as lines: "CLK_P: 12.3 mm"; one past its limit red, with an icon and
     "over the limit" (never colour alone); the shared limit once, else each bar's after
     its value."""
@@ -588,14 +602,14 @@ def _draw_bars(box, wrap, draw):
     if draw.get("what"):
         _lines(box, wrap, draw["what"])
     for bar in bars:
-        own = f" (limit {_number(bar['limit'])})" if shared is None and bar.get("limit") is not None else ""
-        over = findings_draw.bar_over(bar)
+        own = f" (limit {figure(bar['limit'])})" if shared is None and bar.get("limit") is not None else ""
+        over = bool(bar.get("over"))
         line = box.row()
         line.alert = over
-        line.label(text=f"{bar.get('label') or '?'}: {_number(bar.get('value'))} {unit}".rstrip() + own +
+        line.label(text=f"{bar.get('label') or '?'}: {figure(bar.get('value'))} {unit}".rstrip() + own +
                    (", over the limit" if over else ""), icon="ERROR" if over else "BLANK1")
     if shared is not None:
-        box.label(text=f"limit: {_number(shared)} {unit}".rstrip())
+        box.label(text=f"limit: {figure(shared)} {unit}".rstrip())
 
 
 def _draw_islands(box, wrap, draw):
@@ -646,65 +660,71 @@ def _draw_detail(box, wrap, source_name, finding):
         line = box.row()
         if name in disagree:  # the bridge measured it differently: say both
             line.alert = True
-            line.label(text=f"{label}: claimed {_number(disagree[name]['claimed'])} {unit}, measured "
-                            f"{_number(disagree[name]['measured'])} {unit}".replace("  ", " "), icon="ERROR")
+            line.label(text=f"{label}: claimed {figure(disagree[name]['claimed'])} {unit}, measured "
+                            f"{figure(disagree[name]['measured'])} {unit}".replace("  ", " "), icon="ERROR")
         else:
-            line.label(text=f"{label}: {_number(value)} {unit}".rstrip())
+            line.label(text=f"{label}: {figure(value)} {unit}".rstrip())
     for name, text in (finding.get("values_text") or {}).items():
         _lines(box, wrap, f"{name.replace('_', ' ')}: {text}")
     for draw in finding.get("draws") or ():
-        tool, ok = draw.get("tool", ""), draw.get("ok", True)
-        if not ok:
-            _lines(box, wrap, f"{tool} not drawn: {draw.get('problem') or 'not found'}", "ERROR")
-        elif tool == "ghost":  # the LLM's suggestion: whether it fits, whose verdict that is, what was measured
-            for text, icon, alert in findings_draw.ghost_lines(draw):
-                line = box.column()
-                line.alert = alert
-                _lines(line, wrap, text, icon)
-            if findings_draw.ghost_line(draw):
-                box.label(text=findings_draw.ghost_line(draw), icon="DRIVER_DISTANCE")
-        for target in draw.get("targets") or ():
-            if not target.get("found", True):
-                line = box.column()
-                line.active = False
-                _lines(line, wrap, f"{target.get('text')}: {target.get('note') or 'not found on board'}", "QUESTION")
-        if not ok:
-            continue  # nothing was measured: none of its tool's facts
-        if tool == "layers" and draw.get("layers"):
-            _lines(box, wrap, f"Layers shown: {', '.join(draw['layers'])} (other copper hidden while shown)",
-                   "RENDERLAYERS")
-        no_stub = tool == "stub" and not findings_draw.stubbed(draw)
-        measured = findings_draw.measured_text(draw) if tool in MEASURED and not no_stub else ""
-        if measured:  # "Clearance: 0.080 mm < 0.20 mm min"; without a `what`, "Measured …"
-            line = box.row()
-            line.alert = bool(draw.get("over"))
-            line.label(text=f"{draw['what']}: {measured}" if draw.get("what") else f"Measured {measured}",
-                       icon="DRIVER_DISTANCE")
-        if tool == "layer_change" and len(draw.get("points") or ()) < 2:  # no return via
-            line = box.row()
-            line.alert = True
-            line.label(text=f"{findings_draw.what_text(draw)}: none found", icon="DRIVER_DISTANCE")
-        if no_stub:  # its barrel all used
-            box.label(text=f"{findings_draw.what_text(draw)}: none", icon="DRIVER_DISTANCE")
-        if tool == "return_path" and findings_draw.covered_text(draw):
-            box.label(text=findings_draw.covered_text(draw))
-        if draw.get("planes"):
-            _lines(box, wrap, f"Planes: {', '.join(draw['planes'])}", "MESH_PLANE")
-        if tool == "plane_islands":
-            _draw_islands(box, wrap, draw)
-        if tool == "discontinuity":  # "width: 0.20 -> 0.15 mm", each mark (3D labels only the first few)
-            for mark in draw.get("marks") or ():
-                _lines(box, wrap, findings_draw.mark_text(mark))
-        if tool == "width" and draw.get("narrow"):
-            _lines(box, wrap, f"{len(draw['narrow'])} of {len(draw.get('segments_nm') or ())} segments too narrow")
-        if tool == "bars":
-            _draw_bars(box, wrap, draw)
-        if draw.get("label") and tool != "label":
-            _lines(box, wrap, draw["label"])
+        _draw_facts(box, wrap, draw)
     for problem in finding.get("problems") or ():
         _lines(box, wrap, problem, "INFO")
     if finding.get("faded"):
         _lines(box, wrap, "Its items are no longer on the board", "INFO")
+
+
+def _draw_facts(box, wrap, draw):
+    """One draw's lines under its finding: why it was not drawn, a suggestion's verdict, the
+    targets not found, then what its tool measured or shows."""
+    tool, ok = draw.get("tool", ""), draw.get("ok", True)
+    if not ok:
+        _lines(box, wrap, f"{tool} not drawn: {draw.get('problem') or 'not found'}", "ERROR")
+    elif tool == "ghost":  # the LLM's suggestion: whether it fits, whose verdict that is, what was measured
+        for text, icon, alert in findings_draw.ghost_lines(draw):
+            line = box.column()
+            line.alert = alert
+            _lines(line, wrap, text, icon)
+        if findings_draw.ghost_line(draw):
+            box.label(text=findings_draw.ghost_line(draw), icon="DRIVER_DISTANCE")
+    for target in draw.get("targets") or ():
+        if not target.get("found", True):
+            line = box.column()
+            line.active = False
+            _lines(line, wrap, f"{target.get('text')}: {target.get('note') or 'not found on board'}", "QUESTION")
+    if not ok:
+        return  # nothing was measured: none of its tool's facts
+    if tool == "layers" and draw.get("layers"):
+        _lines(box, wrap, f"Layers shown: {', '.join(draw['layers'])} (other copper hidden while shown)",
+               "RENDERLAYERS")
+    no_stub = tool == "stub" and not findings_draw.stubbed(draw)
+    measured = findings_draw.measured_text(draw) if tool in MEASURED and not no_stub else ""
+    if measured:  # "Clearance: 0.080 mm < 0.20 mm min"; without a `what`, "Measured …"
+        line = box.row()
+        line.alert = bool(draw.get("over"))
+        line.label(text=f"{draw['what']}: {measured}" if draw.get("what") else f"Measured {measured}",
+                   icon="DRIVER_DISTANCE")
+    if tool == "layer_change" and len(draw.get("points") or ()) < 2:  # no return via
+        line = box.row()
+        line.alert = True
+        line.label(text=f"{findings_draw.what_text(draw)}: none found", icon="DRIVER_DISTANCE")
+    if no_stub:  # its barrel all used
+        box.label(text=f"{findings_draw.what_text(draw)}: none", icon="DRIVER_DISTANCE")
+    if tool == "return_path" and findings_draw.covered_text(draw):
+        box.label(text=findings_draw.covered_text(draw))
+    if draw.get("planes"):
+        _lines(box, wrap, f"Planes: {', '.join(draw['planes'])}", "MESH_PLANE")
+    if tool == "plane_islands":
+        _draw_islands(box, wrap, draw)
+    if tool == "discontinuity":  # "width: 0.20 -> 0.15 mm", each mark (3D labels only the first few)
+        for change in draw.get("marks") or ():
+            _lines(box, wrap, findings_draw.mark_text(change))
+    if tool == "width" and draw.get("narrow"):
+        _lines(box, wrap, f"{len(draw['narrow'])} of {len(draw.get('segments_nm') or ())} segments too narrow")
+    if tool == "bars":
+        _bar_lines(box, wrap, draw)
+    if draw.get("label") and tool != "label":
+        _lines(box, wrap, draw["label"])
 
 
 # --- Operators ------------------------------------------------------------------------------
@@ -772,11 +792,7 @@ class KILEIDO_OT_finding_kicad(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        from . import live
-        if not live.linked():
-            cls.poll_message_set("Not live with KiCad")
-            return False
-        return True
+        return _linked(cls)
 
     def execute(self, context):
         from . import live
@@ -800,11 +816,7 @@ class KILEIDO_OT_finding_mention(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        from . import live
-        if not live.linked():
-            cls.poll_message_set("Not live with KiCad")
-            return False
-        return True
+        return _linked(cls)
 
     def execute(self, context):
         from . import live
@@ -837,11 +849,7 @@ class KILEIDO_OT_finding_state(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        from . import live
-        if not live.linked():
-            cls.poll_message_set("Not live with KiCad: the bridge keeps these marks")
-            return False
-        return True
+        return _linked(cls, "Not live with KiCad: the bridge keeps these marks")
 
     def execute(self, context):
         from . import live
@@ -866,10 +874,8 @@ class KILEIDO_OT_findings_run_drc(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        from . import live
         found = board.findings or {}
-        if not live.linked():
-            cls.poll_message_set("Not live with KiCad")
+        if not _linked(cls):
             return False
         if found.get("status") == "unsaved":
             cls.poll_message_set("Save the board first")
@@ -895,10 +901,8 @@ class KILEIDO_OT_findings_prompt(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        from . import live
         found = board.findings or {}
-        if not live.linked():
-            cls.poll_message_set("Not live with KiCad")
+        if not _linked(cls):
             return False
         if found.get("status") == "unsaved":
             cls.poll_message_set("Save the board first")
@@ -944,13 +948,13 @@ class KILEIDO_OT_prompt_preset(bpy.types.Operator):
     bl_label = "Checks preset"
     bl_options = {"INTERNAL"}
 
-    preset: EnumProperty(items=(("quick", "Quick", "The first checks built (v1)"),
+    preset: EnumProperty(items=(("quick", "Quick", "The quick checks: a short review"),
                                 ("all", "All", "Every check in the catalogue")))
 
     @classmethod
     def description(cls, context, properties):
         if properties.preset == "quick":
-            return "Tick the quick checks only (the first ones built)"
+            return "Tick the quick checks only (a short review)"
         return "Tick every check (a long review: the LLM takes much longer)"
 
     def execute(self, context):
@@ -977,7 +981,7 @@ class KILEIDO_OT_findings_group(bpy.types.Operator):
         return "Show or hide the findings of this check"
 
     def execute(self, context):
-        toggled = set(filter(None, context.scene.kileido_findings_open.split("\n")))
+        toggled = _toggled(context.scene)
         toggled ^= {self.group}
         context.scene.kileido_findings_open = "\n".join(sorted(toggled))
         return {"FINISHED"}

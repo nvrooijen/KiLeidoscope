@@ -1,7 +1,6 @@
-"""An LLM run's copies without what names the user (scrub.py), and the folder's link check."""
+"""An LLM run's copies without what names the user (scrub.py)."""
 
 import json
-import os
 
 import pytest
 
@@ -132,26 +131,3 @@ def test_a_project_left_out_is_not_copied(tmp_path):
     folder = kls_folder.KlsFolder(str(tmp_path / "acme.kicad_pcb"))
     run = folder.new_run(BOARD, "llm", clean=scrub.clean)
     assert not (run.directory / "board.kicad_pro").exists()
-
-
-def test_a_link_out_of_the_folder_is_not_read(tmp_path):
-    folder = kls_folder.KlsFolder(str(tmp_path / "acme.kicad_pcb"))
-    folder.ensure()
-    secret = tmp_path / "secret.txt"
-    secret.write_text("private", encoding="utf-8")
-    try:
-        os.symlink(secret, folder.findings_path)
-    except (OSError, NotImplementedError):
-        pytest.skip("no symlinks here (Windows without developer mode)")
-    with pytest.raises(ValueError):
-        folder.open_read(folder.findings_path)
-
-
-def test_a_plain_file_of_the_folder_is_read(tmp_path):
-    folder = kls_folder.KlsFolder(str(tmp_path / "acme.kicad_pcb"))
-    folder.ensure()
-    folder.findings_path.write_bytes(b"{}")
-    with folder.open_read(folder.findings_path) as handle:
-        assert handle.read() == b"{}"
-    with pytest.raises(FileNotFoundError):
-        folder.open_read(folder.progress_path)

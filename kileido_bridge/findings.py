@@ -56,10 +56,14 @@ MAX_FINDINGS = 300
 MAX_PER_CHECK = 20  # findings of one check kept; the rest only counted (`_kept`)
 MAX_DRAWS = 20
 MAX_TEXT = 300
+MAX_RUN = 32  # characters of a file's run id
+MAX_CHECK = 64  # characters of a check id
 MAX_VALUES = 20
 MAX_SKIPPED = 300
 MAX_TARGETS = 50  # per list
 MAX_TARGET_TEXT = 200
+MAX_LAYER_TEXT = 40  # characters of a non-copper layer a `pt:` names
+SHOWN = 80  # characters of a name or an error quoted in a problem
 MAX_POLYGON = 1000
 MAX_IDS_DRAW = 5_000
 MAX_IDS_FILE = 100_000
@@ -67,6 +71,8 @@ MAX_PAIRS = 250_000  # item pairs one edge distance may measure
 MAX_SEGMENTS = 2_000  # width: track segments drawn; plane_gap, return_path: stretches of each kind
 MAX_EDGE_POINTS = 4_000  # plane_gap: points of the plane's edges drawn
 MAX_RETURNS = 8  # layer_change: return vias drawn
+RETURN_REACH = 3  # layer_change: other return vias drawn within this many limits of the via ...
+MIN_RETURN_REACH_NM = 2_000_000  # ... and at least this far
 MAX_ISLANDS = 64
 MAX_ISLAND_POINTS = 2_000  # per island outline
 MAX_PLANES = 2
@@ -86,6 +92,7 @@ MAX_LINE_POINTS = 2_000  # stitching: points of the line followed
 STITCH_REACH_NM = 2_000_000  # stitching: a via this close to the line (centre) stitches along it
 MAX_SPOTS = 20  # discontinuity: points
 SPOT_REACH_NM = 1_000_000  # discontinuity: the net's copper, and a change, this close to a point is at it
+MEETING_REACH_NM = 2 * SPOT_REACH_NM  # discontinuity: tracks this close to a point may meet at it
 RETURN_LIMIT_MM = 1.0  # layer_change: a return via this close, unless the draw gives its own limit
 EDGE_REACH_NM = 1_000_000  # plane_gap: the plane's edges this far around each gap
 MAX_BARS = 12
@@ -118,11 +125,9 @@ CONFIDENCES = ("high", "medium", "low")
 GHOSTS = ("via", "cap", "track", "pad", "part", "via_row")
 GHOST_SPOTS = ("at", "from", "to", "path")  # a ghost's roles whose `pt:` is that point, never snapped
 FIXED = (model.Track, model.Arc, model.Via, model.Pad)  # copper a suggestion must keep clear of (zones refill)
-GROUPS = frozenset({"drc", "plane", "decap", "power", "dc", "hs", "dp", "emc", "analog", "thermal", "fab"})
-STATES = ("confirmed", "dismissed")
 NOT_CONNECTED = "KiCad not connected"
 
-_CHECK = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_CHECK = re.compile(rf"[A-Za-z0-9_.:-]{{1,{MAX_CHECK}}}")
 _VALUE_KEY = re.compile(r"[a-z0-9_]{1,40}")
 _STAMP = re.compile(r"[0-9a-f]{8}")
 # C0/C1 controls, line/paragraph separators and bidi overrides (text that reads differently than it is)
@@ -143,7 +148,6 @@ class Draw:
     tool: str
     fields: dict  # validated tool fields; targets kept as strings, lengths in mm
     label: str = ""
-    step: int = 0
     emphasis: str = "normal"
 
 
@@ -175,7 +179,6 @@ class FindingsFile:
 @dataclass(frozen=True)
 class Context:
     """What the payload needs besides the file."""
-    path: str
     source: str  # "drc" | "file"
     runs: dict  # known run id -> stamp (KlsFolder.runs())
     live_stamp: str  # stamp of KiCad's raw board text now, "" if unknown
@@ -252,7 +255,7 @@ def _targets(value, what: str = "targets") -> tuple[str, ...]:
     return tuple(_target(item, f"{what}[{i}]") for i, item in enumerate(value))
 
 
-def _mm(value, what: str, positive: bool = False) -> float:
+def _in_mm(value, what: str, positive: bool = False) -> float:
     number = _number(value)
     if number is None or abs(number) > MAX_MM or (positive and number <= 0):
         raise _Bad(f"{what} is not a {'positive ' if positive else ''}number in mm")
@@ -263,7 +266,7 @@ def _limit(raw: dict, key: str) -> float | None:
     """An optional limit in mm: None when absent, else a number that is not negative."""
     if raw.get(key) is None:
         return None
-    limit = _mm(raw[key], key)
+    limit = _in_mm(raw[key], key)
     if limit < 0:
         raise _Bad(f"{key} is negative")
     return limit
@@ -332,7 +335,7 @@ def _spot(value, what: str) -> str:
     if isinstance(value, list):
         if len(value) != 2:
             raise _Bad(f"{what} is not [x, y]")
-        return f"pt:{_mm_text(_mm(value[0], what))},{_mm_text(_mm(value[1], what))}"
+        return f"pt:{_mm_text(_in_mm(value[0], what))},{_mm_text(_in_mm(value[1], what))}"
     return _target(value, what)
 
 
@@ -343,7 +346,7 @@ def _polygon(value) -> tuple[tuple[float, float], ...]:
     for i, point in enumerate(value):
         if not isinstance(point, list) or len(point) != 2:
             raise _Bad(f"polygon[{i}] is not [x, y]")
-        points.append((_mm(point[0], f"polygon[{i}]"), _mm(point[1], f"polygon[{i}]")))
+        points.append((_in_mm(point[0], f"polygon[{i}]"), _in_mm(point[1], f"polygon[{i}]")))
     return tuple(points)
 
 
@@ -355,7 +358,7 @@ def _ghost_fields(raw: dict) -> dict:
     ghost = raw.get("kind")
     if ghost not in GHOSTS:
         raise _Bad(f"kind is not one of {', '.join(GHOSTS)}")
-    size = _mm(raw["size"], "size", positive=True) if raw.get("size") is not None else None
+    size = _in_mm(raw["size"], "size", positive=True) if raw.get("size") is not None else None
     net = raw.get("net")
     if net is not None and (not isinstance(net, str) or not net.strip()):
         raise _Bad("net is not a net name")
@@ -376,7 +379,7 @@ def _ghost_fields(raw: dict) -> dict:
             raise _Bad(f"path is not a list of 2 to {MAX_GHOST_PATH} points or targets")
         if not fields["net"]:
             raise _Bad("net missing: the net the track would carry")
-        width = _mm(raw["width"], "width", positive=True) if raw.get("width") is not None else None
+        width = _in_mm(raw["width"], "width", positive=True) if raw.get("width") is not None else None
         if width is not None and width > MAX_GHOST_WIDTH_MM:
             raise _Bad(f"width is over {MAX_GHOST_WIDTH_MM:g} mm")
         layer = _layer(raw["layer"], "layer") if raw.get("layer") is not None else None
@@ -384,7 +387,7 @@ def _ghost_fields(raw: dict) -> dict:
                 "width": width}
     if ghost == "via_row":
         return {**fields, "from": _spot(_need(raw, "from"), "from"), "to": _spot(_need(raw, "to"), "to"),
-                "pitch": _mm(_need(raw, "pitch"), "pitch", positive=True)}
+                "pitch": _in_mm(_need(raw, "pitch"), "pitch", positive=True)}
     return {**fields, "at": _target(_need(raw, "at"), "at")}
 
 
@@ -442,7 +445,7 @@ def _fields(tool: str, raw: dict, problems: list) -> dict:
         given = raw.get("planes")
         if given is not None and (not isinstance(given, list) or not 1 <= len(given) <= MAX_PLANES):
             raise _Bad(f"planes is not a list of 1 to {MAX_PLANES} planes (net@layer)")
-        limit = _mm(raw["limit"], "limit", positive=True) if raw.get("limit") is not None else RETURN_LIMIT_MM
+        limit = _in_mm(raw["limit"], "limit", positive=True) if raw.get("limit") is not None else RETURN_LIMIT_MM
         return {"via": _target(_need(raw, "via"), "via"), "limit": limit,
                 "planes": tuple(_plane(plane, f"planes[{i}]") for i, plane in enumerate(given or ()))}
     if tool == "plane_gap":
@@ -460,8 +463,8 @@ def _fields(tool: str, raw: dict, problems: list) -> dict:
             raise _Bad("along edge needs net: the stitching net (e.g. GND)")
         if along != "edge" and net is not None and net != along[0]:
             raise _Bad(f"net {_show(net)} is not the pour's net {_show(along[0])}")
-        maximum = _mm(raw["max_mm"], "max_mm", positive=True) if raw.get("max_mm") is not None else None
-        spacing = _mm(_need(raw, "spacing_mm"), "spacing_mm", positive=True)
+        maximum = _in_mm(raw["max_mm"], "max_mm", positive=True) if raw.get("max_mm") is not None else None
+        spacing = _in_mm(_need(raw, "spacing_mm"), "spacing_mm", positive=True)
         return {"along": along, "net": net or along[0], "spacing": spacing, "max": maximum}
     if tool == "stub":
         has_via, has_pad = raw.get("via") is not None, raw.get("pad") is not None
@@ -498,16 +501,15 @@ def _draw(raw, number: int, problems: list) -> Draw | None:
     label = ""
     if raw.get("label") is not None:
         label = _text(raw["label"], MAX_TEXT, "label", notes) or ""
-    step = raw.get("step", 0)
+    step = raw.get("step", 0)  # checked and said, not drawn
     if "step" in raw and (isinstance(step, bool) or not isinstance(step, int) or not 1 <= step <= 100):
         notes.append("step is not a whole number 1..100")
-        step = 0
     emphasis = raw.get("emphasis", "normal")
     if emphasis not in ("normal", "strong"):
         notes.append("emphasis is not normal or strong")
         emphasis = "normal"
     problems.extend(f"{what}: {note}" for note in notes)
-    return Draw(tool, fields, label, step, emphasis)
+    return Draw(tool, fields, label, emphasis)
 
 
 def _values(raw, problems: list) -> tuple[dict, dict]:
@@ -604,7 +606,7 @@ def parse(data: bytes) -> FindingsFile:
         shown = f' "{_show(given)}"' if isinstance(given, str) else ""
         raise FindingsError(f"unknown format{shown}; expected \"{FORMAT}\"", "unknown_format")
     problems: list[str] = []
-    run = _text(raw["run"], 32, "run", problems) if raw.get("run") is not None else ""
+    run = _text(raw["run"], MAX_RUN, "run", problems) if raw.get("run") is not None else ""
     stamp = raw.get("stamp")
     stamp = stamp.strip().lower() if isinstance(stamp, str) else ""
     if not _STAMP.fullmatch(stamp):
@@ -632,7 +634,7 @@ def parse(data: bytes) -> FindingsFile:
         if not isinstance(item, dict):
             problems.append("a skipped entry is not an object")
             continue
-        check = _text(item.get("check", ""), 64, "skipped check", problems) or ""
+        check = _text(item.get("check", ""), MAX_CHECK, "skipped check", problems) or ""
         reason = _text(item.get("reason", ""), MAX_TEXT, "skipped reason", problems) or ""
         skipped.append((check, reason))
     return FindingsFile(run or "", stamp, tool or "", tuple(f for f in findings if f is not None),
@@ -720,7 +722,7 @@ def finding_key(check: str, names: Iterable[str]) -> str:
 
 # resolving
 
-class _Board:
+class _Resolver:
     """The live board for one file: targets resolved once, ids counted against the caps."""
 
     def __init__(self, index: BoardIndex | None):
@@ -737,7 +739,7 @@ class _Board:
                 try:
                     found = resolve(self.index, text)
                 except (ValueError, TypeError, ArithmeticError) as error:  # never lose the file to one target
-                    found = Resolved(text, note=f"could not resolve: {_show(str(error), 80)}")
+                    found = Resolved(text, note=f"could not resolve: {_show(str(error), SHOWN)}")
             self._cache[text] = found
         return found
 
@@ -757,14 +759,25 @@ def _target_layer(resolved: Resolved) -> str:
         return resolved.layer
     text = resolved.target.strip()
     if text.lower().startswith("pt:") and "@" in text:
-        return text.partition("@")[2].strip()[:40]
+        return text.partition("@")[2].strip()[:MAX_LAYER_TEXT]
     return top_layer(resolved.items[0]) if resolved.items else ""
+
+
+def _found(resolved: Resolved, role: str) -> None:
+    """A target in `role` must be on the board: why not, else."""
+    if not resolved.found:
+        raise _Bad(f"{role}: {resolved.note or 'not found on board'}")
+
+
+def _known_net(index: BoardIndex, net: str, role: str = "") -> None:
+    """A net named must be on the board (`role` before the reason when given)."""
+    if net not in index.nets:
+        raise _Bad(f"{role}net {_show(net, SHOWN)} not found on board")
 
 
 def _anchor(resolved: Resolved, role: str) -> list:
     """[x_nm, y_nm, layer] of a target: its named point, else its first item's centre."""
-    if not resolved.found:
-        raise _Bad(f"{role}: {resolved.note or 'not found on board'}")
+    _found(resolved, role)
     point = resolved.point if resolved.point is not None else centre(resolved.items[0])
     return [int(point[0]), int(point[1]), _target_layer(resolved)]
 
@@ -774,7 +787,8 @@ def _anchor_pair(index: BoardIndex | None, a: Resolved, b: Resolved) -> list[lis
     layer named, put both ends on it (where they come closest; the top one on a tie): a
     via against a bottom pad is a problem on B.Cu, not a slant from the via's top."""
     ends = [_anchor(a, "from"), _anchor(b, "to")]
-    if index is not None and a.items and b.items and not a.layer and not b.layer             and a.point is None and b.point is None:
+    if (index is not None and a.items and b.items and not a.layer and not b.layer
+            and a.point is None and b.point is None):
         _, layer_a, layer_b = _on_one_layer(index, Gap(0.0, (0, 0), (0, 0)), a.items[0], b.items[0])
         if layer_a == layer_b and layer_a:
             ends[0][2] = ends[1][2] = layer_a
@@ -786,8 +800,7 @@ def _edge_gap(index: BoardIndex, a: Resolved, b: Resolved, roles=("from", "to"))
     edge's end on the other side's layer). A `pt:` that snapped to nothing measures as
     its point."""
     for resolved, role in zip((a, b), roles):
-        if not resolved.found:
-            raise _Bad(f"{role}: {resolved.note or 'not found on board'}")
+        _found(resolved, role)
     if a.items and b.items:
         if len(a.items) * len(b.items) > MAX_PAIRS:
             raise _Bad(f"{len(a.items):,} × {len(b.items):,} items to measure; name single items")
@@ -847,7 +860,7 @@ def _roles(draw: Draw) -> list[tuple[str, str]]:
             for text in (fields[role] if isinstance(fields[role], tuple) else (fields[role],))]
 
 
-def _ids(board: _Board, resolved: list[Resolved]) -> tuple[list[str], bool]:
+def _ids(board: _Resolver, resolved: list[Resolved]) -> tuple[list[str], bool]:
     """Item ids of every target (outline: a flag, it has no id), within the caps."""
     ids: dict[str, None] = {}
     outline = False
@@ -863,15 +876,18 @@ def _ids(board: _Board, resolved: list[Resolved]) -> tuple[list[str], bool]:
     return _capped(board, list(ids)), outline
 
 
-def _capped(board: _Board, ids: list[str]) -> list[str]:
+def _capped(board: _Resolver, ids: list[str]) -> list[str]:
     if board.ids + len(ids) > MAX_IDS_FILE:
         raise _TooMany(f"over {MAX_IDS_FILE:,} items in this file; draw left out")
     return ids
 
 
 def _empty_draw(draw: Draw) -> dict:
-    return {"tool": draw.tool, "step": draw.step, "emphasis": draw.emphasis, "label": draw.label, "text": "",
-            "ok": True, "problem": "", "targets": [], "ids": [], "outline": False, "points": [],
+    """A draw's payload with every key, nothing measured. A ghost's `net`, `touches` and
+    its `kicad_drc`'s `quick_*` and `kept` keys are for the bridge (`ghost_drc` reads and
+    judges them); they ride along to Blender unread."""
+    return {"tool": draw.tool, "emphasis": draw.emphasis, "label": draw.label, "text": "",
+            "ok": True, "problem": "", "targets": [], "ids": [], "points": [],
             "measured_nm": None, "limit_nm": None, "limit_is": "", "over": False,
             "polygon_nm": [], "layer": "", "layers": [], "kind": "", "size_nm": 0,
             "what": "", "segments_nm": [], "narrow": [], "min_nm": None, "path_nm": [], "bars": [], "unit": "",
@@ -906,12 +922,11 @@ def _gap_points(found: Gap, layer_a: str, layer_b: str) -> list[list]:
     return [[int(found.a[0]), int(found.a[1]), layer_a], [int(found.b[0]), int(found.b[1]), layer_b]]
 
 
-def _width(board: _Board, out: dict, target: Resolved, required: float | None) -> None:
+def _width(board: _Resolver, out: dict, target: Resolved, required: float | None) -> None:
     """Every track and arc of the target as segments with their width (arcs sampled),
     the ones thinner than `required`, and the thinnest marked."""
-    if not target.found:
-        raise _Bad(f"target: {target.note or 'not found on board'}")
-    tracks = [record for record in target.items if isinstance(record, (model.Track, model.Arc))]
+    _found(target, "target")
+    tracks =[record for record in target.items if isinstance(record, (model.Track, model.Arc))]
     if not tracks:
         raise _Bad(f"target: {target.target.strip()} has no tracks or arcs")
     ids = list(dict.fromkeys(record.id for record in tracks))
@@ -940,14 +955,12 @@ def _width(board: _Board, out: dict, target: Resolved, required: float | None) -
         out["narrow"] = [i for i, segment in enumerate(segments) if segment[5] < out["limit_nm"]]
 
 
-def _route(board: _Board, out: dict, net: str, start: Resolved, end: Resolved) -> None:
+def _route(board: _Resolver, out: dict, net: str, start: Resolved, end: Resolved) -> None:
     """The copper path along `net` between two pads, its length and items."""
     index = board.index
     for found, role in ((start, "from"), (end, "to")):
-        if not found.found:
-            raise _Bad(f"{role}: {found.note or 'not found on board'}")
-    if net not in index.nets:
-        raise _Bad(f"net {_show(net, 80)} not found on board")
+        _found(found, role)
+    _known_net(index, net)
     pads = []
     for found, role in ((start, "from"), (end, "to")):
         named_pads = [record for record in found.items if isinstance(record, model.Pad)]
@@ -955,12 +968,12 @@ def _route(board: _Board, out: dict, net: str, start: Resolved, end: Resolved) -
             raise _Bad(f"{role}: {found.target.strip()} is not a pad (give one, e.g. U3.4)")
         on_net = [pad for pad in named_pads if pad.net == net]
         if not on_net:
-            raise _Bad(f"{role}: {found.target.strip()} is not on net {_show(net, 80)}")
+            raise _Bad(f"{role}: {found.target.strip()} is not on net {_show(net, SHOWN)}")
         pads.append(on_net)
     found = index.route(net, pads[0], pads[1])
     if found is None:
         raise _Bad(f"no copper path between {start.target.strip()} and {end.target.strip()} on net "
-                   f"{_show(net, 80)} ({ROUTE_LIMIT})")
+                   f"{_show(net, SHOWN)} ({ROUTE_LIMIT})")
     length, path, ids = found
     out["ids"] = _capped(board, ids)
     out["path_nm"] = [[x, y, layer] for x, y, layer in path]
@@ -977,17 +990,15 @@ def _plane_name(plane: tuple[str, str]) -> str:
 def _check_plane(index: BoardIndex, plane: tuple[str, str], role: str) -> None:
     """A named plane must be fill of its net on its layer."""
     net, layer = plane
-    name = _show(_plane_name(plane), 80)
-    if net not in index.nets:
-        raise _Bad(f"{role} {name}: net {_show(net, 80)} not found on board")
+    name = _show(_plane_name(plane), SHOWN)
+    _known_net(index, net, f"{role} {name}: ")
     if not planes.plane(index, net, layer):
-        raise _Bad(f"{role} {name}: {_show(net, 80)} has no zone fill on {layer}")
+        raise _Bad(f"{role} {name}: {_show(net, SHOWN)} has no zone fill on {layer}")
 
 
-def _tracks_next_to(board: _Board, target: Resolved, role: str, layer: str) -> list:
+def _tracks_next_to(board: _Resolver, target: Resolved, role: str, layer: str) -> list:
     """The tracks and arcs of a target on the copper layers right above and below `layer`."""
-    if not target.found:
-        raise _Bad(f"{role}: {target.note or 'not found on board'}")
+    _found(target, role)
     tracks = [record for record in target.items if isinstance(record, (model.Track, model.Arc))]
     if not tracks:
         raise _Bad(f"{role}: {target.target.strip()} has no tracks or arcs")
@@ -1009,7 +1020,7 @@ def _stretches(out: dict, key: str, stretches: list) -> None:
         out["problem"] = f"{len(stretches):,} stretches; the first {MAX_SEGMENTS:,} drawn"
 
 
-def _coverage(board: _Board, out: dict, target: Resolved, role: str, plane: tuple[str, str]):
+def _coverage(board: _Resolver, out: dict, target: Resolved, role: str, plane: tuple[str, str]):
     """(tracks measured, plane as they see it, their stretches) of a target next to a plane."""
     index = board.index
     _check_plane(index, plane, "plane")
@@ -1026,7 +1037,7 @@ def _at_track(record) -> list:
     return [int(x), int(y), record.layer]
 
 
-def _plane_gap(board: _Board, out: dict, crossing: Resolved, plane: tuple[str, str]) -> None:
+def _plane_gap(board: _Resolver, out: dict, crossing: Resolved, plane: tuple[str, str]) -> None:
     """Where the crossing has no plane under it, the plane's edges around each such
     span, and the longest gap along the track (spans that meet count as one)."""
     tracks, copper, stretches = _coverage(board, out, crossing, "crossing", plane)
@@ -1044,10 +1055,10 @@ def _plane_gap(board: _Board, out: dict, crossing: Resolved, plane: tuple[str, s
         points += len(line)
     out["edges_nm"] = edges
     out["points"] = [[*span.middle, span.layer] for span in spans[:MAX_SEGMENTS]] or [_at_track(tracks[0])]
-    out["measured_nm"] = int(round(planes.runs(spans)[0][0])) if spans else 0
+    out["measured_nm"] = int(round(planes.joined(spans)[0][0])) if spans else 0
 
 
-def _return_path(board: _Board, out: dict, signal: Resolved, plane: tuple[str, str]) -> None:
+def _return_path(board: _Resolver, out: dict, signal: Resolved, plane: tuple[str, str]) -> None:
     """The signal's stretches with and without the plane under them, and the length without."""
     tracks, _, stretches = _coverage(board, out, signal, "signal", plane)
     spans = [stretch for stretch in stretches if not stretch.covered]
@@ -1060,9 +1071,8 @@ def _return_path(board: _Board, out: dict, signal: Resolved, plane: tuple[str, s
 
 def _via(index: BoardIndex, target: Resolved) -> model.Via:
     """The via a target names; a `net@layer~x,y` target at a via picks the via of that net there."""
-    if not target.found:
-        raise _Bad(f"via: {target.note or 'not found on board'}")
-    via = next((record for record in target.items if isinstance(record, model.Via)), None)
+    _found(target, "via")
+    via =next((record for record in target.items if isinstance(record, model.Via)), None)
     if via is None and target.point is not None:  # net@layer~x,y at a via picks the track ending there
         nets = {getattr(record, "net", "") for record in target.items} - {""}
         near = index.nearest(target.point, [record for net in nets for record in index.net_items(net)
@@ -1073,7 +1083,7 @@ def _via(index: BoardIndex, target: Resolved) -> model.Via:
     return via
 
 
-def _layer_change(board: _Board, out: dict, target: Resolved, given: tuple, limit_mm: float) -> None:
+def _layer_change(board: _Resolver, out: dict, target: Resolved, given: tuple, limit_mm: float) -> None:
     """A signal via (a `net@layer~x,y` target picks the via of that net at the point): the
     layers it joins, their reference planes (named, or the fill of another net next to
     each layer at the via), the return vias that join both planes with the nearest one
@@ -1106,7 +1116,7 @@ def _layer_change(board: _Board, out: dict, target: Resolved, given: tuple, limi
         return
     layers = {layer for _, layer in references}
     found = planes.return_vias(index, {net for net, _ in references}, layers, via.pos, skip=via)
-    reach = max(3 * limit_mm * 1e6, 2_000_000)  # the nearest one, and others within 3 limits (2 mm at least)
+    reach = max(RETURN_REACH * limit_mm * 1e6, MIN_RETURN_REACH_NM)  # the nearest one, and others within reach
     shown = found[:1] + [item for item in found[1:MAX_RETURNS] if item[0] <= reach]
     out["returns"] = [[int(record.pos[0]), int(record.pos[1]),
                        int(record.diameter if isinstance(record, model.Via) else max(record.drill)), record.id]
@@ -1120,15 +1130,14 @@ def _layer_change(board: _Board, out: dict, target: Resolved, given: tuple, limi
         out["over"] = True
 
 
-def _islands(board: _Board, out: dict, net: str, layer: str | None, label: str) -> None:
+def _islands(board: _Resolver, out: dict, net: str, layer: str | None, label: str) -> None:
     """The net's fill pieces (on `layer`, or every layer), which are tied to the main
     plane through vias and plated holes, each one's area; the label counts them."""
     index = board.index
-    if net not in index.nets:
-        raise _Bad(f"net {_show(net, 80)} not found on board")
+    _known_net(index, net)
     shown = [island for island in planes.islands(index, net) if layer is None or island.layer == layer]
     if not shown:
-        raise _Bad(f"{_show(net, 80)} has no zone fill" + (f" on {layer}" if layer else ""))
+        raise _Bad(f"{_show(net, SHOWN)} has no zone fill" + (f" on {layer}" if layer else ""))
     out["ids"] = _capped(board, list(dict.fromkeys(island.zone for island in shown)))
     out["layer"] = layer or ""
     picked = sorted(shown, key=lambda island: (not island.main, island.tied, -island.area_nm2))[:MAX_ISLANDS]
@@ -1149,7 +1158,7 @@ def _outline(ring) -> list[list[int]]:
     return [[int(round(x)), int(round(y))] for x, y in ring[::step]]
 
 
-def _stitching(board: _Board, out: dict, along, net: str, spacing_mm: float, max_mm: float | None) -> None:
+def _stitching(board: _Resolver, out: dict, along, net: str, spacing_mm: float, max_mm: float | None) -> None:
     """The vias of `net` along one closed line, in order along it: the outline of a pour's
     largest piece (`along` net@layer: vias through its layer whose land meets the pour) or
     of the board (`along` "edge": vias inside the board), each within STITCH_REACH_NM of
@@ -1159,8 +1168,7 @@ def _stitching(board: _Board, out: dict, along, net: str, spacing_mm: float, max
     limit. Where vias should go is the LLM's to suggest (`ghost`). With fewer than two
     vias the spacing is the way round the line."""
     index = board.index
-    if net not in index.nets:
-        raise _Bad(f"net {_show(net, 80)} not found on board")
+    _known_net(index, net)
     if along == "edge":
         polygons = list(planes.outline(index.snapshot))
         if not polygons:
@@ -1195,7 +1203,7 @@ def _stitching(board: _Board, out: dict, along, net: str, spacing_mm: float, max
         ends = [found[0][2].pos] if found else [line.at(0.0)]
     out["points"] = [[int(x), int(y), layer] for x, y in ends]
     if len(found) < 2:
-        notes.append((f"one {_show(net, 80)} via" if found else f"no {_show(net, 80)} via") +
+        notes.append((f"one {_show(net, SHOWN)} via" if found else f"no {_show(net, SHOWN)} via") +
                      f" within {STITCH_REACH_NM / 1e6:g} mm of the {what}; the spacing is the way round it")
     _measured(out, measured, limit_mm, "max")
     shown = [via for _, _, via in found[:MAX_STITCHES]]
@@ -1208,7 +1216,7 @@ def _stitching(board: _Board, out: dict, along, net: str, spacing_mm: float, max
     out["problem"] = "; ".join(notes)
 
 
-def _stub(board: _Board, out: dict, via: Resolved | None, pad: Resolved | None) -> None:
+def _stub(board: _Resolver, out: dict, via: Resolved | None, pad: Resolved | None) -> None:
     """The barrel of a via (or a pad's plated hole): the layers its net meets it on, and
     the unused part past the last of them to the barrel's end with its length from the
     stackup (0 without a stub). A stub at each end: the longer one, the other in `problem`."""
@@ -1217,8 +1225,7 @@ def _stub(board: _Board, out: dict, via: Resolved | None, pad: Resolved | None) 
         record = _via(index, via)
         size, word = record.drill, "via"
     else:
-        if not pad.found:
-            raise _Bad(f"pad: {pad.note or 'not found on board'}")
+        _found(pad, "pad")
         record = next((item for item in pad.items if planes.plated(item)), None)
         if record is None:
             raise _Bad(f"pad: {pad.target.strip()} is not a plated hole")
@@ -1269,7 +1276,7 @@ def _changes(index: BoardIndex, net: str, record, point) -> list[tuple[dict, lis
         spot, (dx, dy) = planes.on_centre_line(record, point)
         layer = record.layer
         near = [item for item in index.net_items(net, layer) if isinstance(item, (model.Track, model.Arc)) and
-                point_gap(index.shape(item), spot).distance <= 2 * SPOT_REACH_NM]
+                point_gap(index.shape(item), spot).distance <= MEETING_REACH_NM]
         best = None
         for item in near:
             for end in (item.start, item.end):
@@ -1308,13 +1315,12 @@ def _changes(index: BoardIndex, net: str, record, point) -> list[tuple[dict, lis
     return found
 
 
-def _discontinuity(board: _Board, out: dict, net: str, spots: list[Resolved]) -> None:
+def _discontinuity(board: _Resolver, out: dict, net: str, spots: list[Resolved]) -> None:
     """At each point, the net's nearest copper (within SPOT_REACH_NM; on the point's layer
     when it names one) and what changes there (`_changes`), one mark per change. A point
     with no change is listed in `problem`."""
     index = board.index
-    if net not in index.nets:
-        raise _Bad(f"net {_show(net, 80)} not found on board")
+    _known_net(index, net)
     copper = [item for item in index.net_items(net)
               if isinstance(item, (model.Track, model.Arc, model.Via)) or planes.plated(item)]
     marks, ids, notes, snapped = [], [], [], []
@@ -1328,7 +1334,7 @@ def _discontinuity(board: _Board, out: dict, net: str, spots: list[Resolved]) ->
         near = index.nearest(point, [item for item in copper if layer is None or on_layer(item, layer)], layer,
                              max_distance=SPOT_REACH_NM)
         if near is None:
-            notes.append(f"{where}: {_show(net, 80)} has no copper within {SPOT_REACH_NM / 1e6:.2f} mm")
+            notes.append(f"{where}: {_show(net, SHOWN)} has no copper within {SPOT_REACH_NM / 1e6:.2f} mm")
             continue
         changes = _changes(index, net, near.record, point)
         if not changes:
@@ -1349,7 +1355,7 @@ def _discontinuity(board: _Board, out: dict, net: str, spots: list[Resolved]) ->
     out["problem"] = "; ".join(notes)
 
 
-def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
+def _resolve_draw(board: _Resolver, draw: Draw) -> tuple[dict, list[Resolved]]:
     """The payload of one draw, and its resolved targets."""
     out = _empty_draw(draw)
     fields = draw.fields
@@ -1364,10 +1370,11 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
     try:
         if (resolved or tool in UNTARGETED) and board.index is None:
             raise _Bad(NOT_CONNECTED)
+        outline = False  # the board edge among the targets: it has no id
         if tool not in OWN_IDS:  # width and the plane tools: the items they measure, not the whole target
-            out["ids"], out["outline"] = _ids(board, resolved)
+            out["ids"], outline = _ids(board, resolved)
         if tool in ("highlight", "isolate") or (tool == "area" and fields["targets"]):
-            if not out["ids"] and not out["outline"]:
+            if not out["ids"] and not outline:
                 missing = next((found for found in resolved if found.note), None)
                 raise _Bad(missing.note if missing else "no target found on board")
         if tool == "label":
@@ -1413,7 +1420,6 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
             edge = board.resolve("edge")
             found, layer_a, layer_b = _edge_gap(board.index, by_role["target"], edge, ("target", "edge"))
             out["points"] = _gap_points(found, layer_a, layer_b)
-            out["outline"] = True
             _measured(out, found.distance, fields["min_mm"], "min")
         elif tool == "width":
             _width(board, out, by_role["target"], fields["required"])
@@ -1446,7 +1452,7 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
         elif tool == "layers":
             out["layers"] = list(fields["layers"])
     except _TooMany as error:
-        out.update(ok=False, problem=str(error), ids=[], outline=False)
+        out.update(ok=False, problem=str(error), ids=[])
     except _Bad as error:
         out["ok"], out["problem"] = False, str(error)
     except Exception as error:  # a measuring bug costs this draw, never the file; nothing half-measured is kept
@@ -1456,7 +1462,7 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
     return out, resolved
 
 
-def _bbox(board: _Board, drawn: list[tuple[dict, list[Resolved]]]) -> list[int] | None:
+def _bbox(board: _Resolver, drawn: list[tuple[dict, list[Resolved]]]) -> list[int] | None:
     """Box around the items of every draw that kept its ids (not the whole outline) and
     every point: Blender frames the views on it. A zone counts only when nothing smaller
     does: a finding at a point of the ground plane is framed on that point, not the plane."""
@@ -1531,7 +1537,7 @@ def _touch(out: dict, member: int, record, gap: float) -> None:
         out["touches"].append([member, record.net])
 
 
-def _fit_ghost(board: _Board, out: dict, net: str, kept: list) -> None:
+def _fit_ghost(board: _Resolver, out: dict, net: str, kept: list) -> None:
     """Does a suggested via or pad fit where the LLM put it: `fits` False, and why in
     `problem`, when its copper comes within GHOST_CLEAR_NM of fixed copper (tracks, arcs,
     vias, pads) of another net, or of any net when it names none. A via spans every
@@ -1626,19 +1632,20 @@ def _off_board(index: BoardIndex, shape) -> str:
     return "" if inside.all() else "outside the board"
 
 
-def _turner(origin, to, degrees: float):
-    """A function moving board points (nm) as a part is moved from `origin` to `to` and
-    turned `degrees` counter-clockwise about it as seen from the top (KiCad's sense)."""
+def turner(origin, to, degrees: float):
+    """A function moving board points (nm, as floats) as a part is moved from `origin` to
+    `to` and turned `degrees` counter-clockwise about it as seen from the top (KiCad's
+    sense). `ghost_drc` moves a part's text with it too."""
     a = math.radians(degrees)
     cos, sin = math.cos(a), math.sin(a)
 
     def move(point):
         dx, dy = point[0] - origin[0], point[1] - origin[1]
-        return (int(round(to[0] + dx * cos + dy * sin)), int(round(to[1] - dx * sin + dy * cos)))
+        return to[0] + dx * cos + dy * sin, to[1] - dx * sin + dy * cos
     return move
 
 
-def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotation: float | None,
+def _ghost_part(board: _Resolver, out: dict, target: Resolved, at: Resolved, rotation: float | None,
                 kept: list) -> None:
     """A part moved to `at` (its anchor, KiCad's footprint position) and turned to
     `rotation` (None: as it is): its pads' copper and its body (`_body`) moved with it. It
@@ -1650,8 +1657,7 @@ def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotati
     MAX_GHOST_PADS, which is noted), the body as `polygon_nm`, `from` its place now,
     `moved_nm` how far."""
     index = board.index
-    if not target.found:
-        raise _Bad(f"part: {target.note or 'not found on board'}")
+    _found(target, "part")
     parts = [record for record in target.items if isinstance(record, model.Footprint)]
     if not parts:
         raise _Bad(f"part: {target.target.strip()} is not a part (give its reference, e.g. C12)")
@@ -1662,7 +1668,11 @@ def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotati
     layer = top_layer(part)
     now = math.degrees(part.rotation_rad) % 360
     turned = now if rotation is None else rotation
-    move = _turner(part.pos, (x, y), turned - now)
+    turn = turner(part.pos, (x, y), turned - now)
+
+    def move(point):
+        moved_x, moved_y = turn(point)
+        return int(round(moved_x)), int(round(moved_y))
     pads = list(index.part_pads(part.id))
     moved = [(pad, {name: tuple(tuple(tuple(map(move, ring)) for ring in polygon) for polygon in polygons)
                     for name, polygons in pad.polygons.items() if copper_rank(name) is not None})
@@ -1717,7 +1727,7 @@ def _usual_width(index: BoardIndex, net: str) -> int:
     return max(counts, key=lambda width: (counts[width], width)) if counts else GHOST_TRACK_NM
 
 
-def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict, kept: list) -> None:
+def _ghost_track(board: _Resolver, out: dict, path: list[Resolved], fields: dict, kept: list) -> None:
     """A suggested route for `net`: straight segments through the path's points on one
     copper layer (the draw's, else the one every point names), `width` (else the net's
     usual one, `_usual_width`). It does not fit (`fits` False, why in `problem`) where it
@@ -1726,9 +1736,8 @@ def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict, k
     `path_nm`, `width_nm`, `length_nm`."""
     index = board.index
     net = fields["net"]
-    if net not in index.nets:
-        raise _Bad(f"net {_show(net, 80)} not found on board")
-    spots = [_anchor(found, f"path[{i}]") for i, found in enumerate(path)]
+    _known_net(index, net)
+    spots =[_anchor(found, f"path[{i}]") for i, found in enumerate(path)]
     named_layers = [found.layer for found in path]
     layer = fields["layer"]
     if layer is None:
@@ -1757,7 +1766,7 @@ def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict, k
     out["problem"] = "; ".join(reasons)
 
 
-def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: dict, kept: list,
+def _via_row(board: _Resolver, out: dict, start: Resolved, end: Resolved, fields: dict, kept: list,
              kept_row: list) -> None:
     """A row of suggested vias from `start` to `end`, both ends included, spaced evenly and
     no further apart than `pitch`; each checked as a via ghost is (`_via_near`). More than
@@ -1897,7 +1906,7 @@ def _ghosts_in_reach(drawn: list[tuple[dict, list[Resolved]]]) -> None:
                     draw["kicad_drc"]["kept"].append(reason)
 
 
-def _place_bars(board: _Board, drawn: list[tuple[dict, list[Resolved]]], resolved: list[Resolved]) -> None:
+def _place_bars(board: _Resolver, drawn: list[tuple[dict, list[Resolved]]], resolved: list[Resolved]) -> None:
     """Bars with no `at` stand at the finding's first target found on the board."""
     first = next((found for found in resolved if found.found), None)
     for draw, _ in drawn:
@@ -1922,19 +1931,10 @@ def handshake(found: FindingsFile, context: Context) -> str:
     return "outside"
 
 
-def status_payload(status: str, context: Context | None = None, error: str = "",
-                   connected: bool = False) -> dict:
+def status_payload(status: str, error: str = "", connected: bool = False) -> dict:
     """A payload with no findings: "none" (no file), "unsaved", "error", "unknown_format"."""
-    return {"status": status, "error": error,
-            "source": context.source if context else "", "path": context.path if context else "",
-            "run": "", "stamp": "", "live_stamp": context.live_stamp if context else "",
-            "handshake": "", "changed": False, "connected": connected, "tool": "", "problems": [],
-            "drc": {"state": "idle", "error": "", "run": ""}, "skipped": [], "left_out": {}, "findings": []}
-
-
-def _group(check: str) -> str:
-    family = check.partition(".")[0]
-    return family if "." in check and family in GROUPS else "other"
+    return {"status": status, "error": error, "run": "", "handshake": "", "changed": False, "connected": connected,
+            "tool": "", "problems": [], "skipped": [], "left_out": {}, "findings": []}
 
 
 def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context) -> dict:
@@ -1942,14 +1942,14 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
     listed and every target says so. `handshake`: where the file came from (`handshake()`);
     every file is drawn. `changed`: a file of a known run whose stamp differs from the live
     board's (the board was edited since the run)."""
-    payload = status_payload("ok", context, connected=index is not None)
+    payload = status_payload("ok", connected=index is not None)
     agreed = handshake(found, context)
-    payload.update(run=found.run, stamp=found.stamp, handshake=agreed, tool=found.tool,
+    payload.update(run=found.run, handshake=agreed, tool=found.tool,
                    changed=agreed == "known" and bool(context.live_stamp) and context.live_stamp != found.stamp,
                    problems=list(found.problems),
                    skipped=[{"check": check, "reason": reason} for check, reason in found.skipped],
                    left_out=dict(found.left_out))
-    board = _Board(index)
+    board = _Resolver(index)
     keys: dict[str, int] = {}
     for finding in found.findings:
         resolved = [board.target(draw.tool, role, text) for draw in finding.draws for role, text in _roles(draw)]
@@ -1963,7 +1963,7 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
         _ghosts_in_reach(drawn)
         draws = [draw for draw, _ in drawn]
         payload["findings"].append({
-            "key": key, "check": finding.check, "group": _group(finding.check),
+            "key": key, "check": finding.check,
             "severity": finding.severity, "confidence": finding.confidence,
             "title": finding.title, "message": finding.message, "fix": finding.fix,
             "values": dict(finding.values), "values_text": dict(finding.values_text),

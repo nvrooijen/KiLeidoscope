@@ -1,4 +1,4 @@
-"""The finding shown from the DRC column (findings.py), drawn in 3D.
+"""The finding shown from the DRC or LLM column (findings.py), drawn in 3D.
 
 Real objects in the board's "Findings" group, not viewport-only drawing, so they render
 and show in a saved image. Only the shown finding is drawn; every object carries
@@ -105,13 +105,25 @@ ICONS = {"error": ("circle", (0.85, 0.08, 0.12), "!", (0.95, 0.95, 0.95)),
          "pass": ("circle", (0.1, 0.65, 0.25), "✓", (0.98, 0.98, 0.98))}  # a label's measurement within its limit
 CHECK = ((-0.45, 0.0), (-0.12, -0.35), (0.5, 0.4))  # the tick of "✓", in an icon's radius
 MARK_ORDER = ("error", "warning", "unknown", "info")  # the worst first: a shared marker shows the first
+SEVERITIES = ("error", "warning", "info")  # a finding's, as the bridge sends them
+TICK_STROKE = 0.13  # of an icon's radius: half the width of the "✓" strokes
 TUBE_MIN_M = 5e-6
 TUBE_SHARE = 1 / 10  # of a label's size: a tube's radius
 LEADER = 0.5  # of a tube's radius: a leader's
 TICK = 6  # a distance's end ticks, in tube radii either side
 EDGE_TICK = 2.5  # of TICK: an edge gap's tick on the outline, along the edge
 AREA_LIFT_M = 20e-6  # an area's n-gon and a width's ribbons out from their copper
+NARROW_LIFT_M = AREA_LIFT_M * 1.5  # red ribbons (narrow segments, spans without plane) over the others
+CALLOUT_LIFT_M = AREA_LIFT_M * 2  # a width's dimension over its ribbons
+MIN_DEPTH_M = 1e-5  # a cylinder through the board is never flatter than this
+ARROW_HEAD = 0.8  # of a label's size: an arrow's head, at most ...
+ARROW_HEAD_SHARE = 0.4  # ... and at most this much of the arrow
+ARROW_CONE = 3.0  # of the tube's radius: the head's radius at least, ...
+ARROW_CONE_SHARE = 0.35  # ... else this much of the head's length
+THIN_HEAD = 0.5  # of a label's size: a thin arrow's head (a moved part's), at most ...
+THIN_HEAD_SHARE = 0.3  # ... and at most this much of the arrow
 DOT = 2.5  # of a tube's radius: a routed length's end dots
+END_SEGMENTS = 16  # round ends of ribbons, a routed length's end dots
 # bars: in text sizes (a chart is sized to the finding as its title is)
 CHART = "kls_bars"  # a bars label's chart, JSON on its title text
 BAR = 1.0  # a bar's width
@@ -159,8 +171,8 @@ def shown_finding():
     source, key = board.findings_shown
     if not key:
         return None
-    found = ((board.findings or {}).get("sources") or {}).get(source) or {}
-    return next((finding for finding in found.get("findings", ()) if finding.get("key") == key), None)
+    from . import findings  # it imports this module
+    return findings.find(source, key)
 
 
 def item_ids(finding, tools=None):
@@ -218,7 +230,7 @@ def mark(finding):
     """The icon a finding shows (ICONS key): "unknown" unconfirmed, else its severity."""
     if not confirmed(finding):
         return "unknown"
-    return finding.get("severity") if finding.get("severity") in ICONS else "warning"
+    return finding.get("severity") if finding.get("severity") in SEVERITIES else "warning"
 
 
 def icon_pixels(kind, px):
@@ -356,7 +368,7 @@ def clear():
 
 
 @contextmanager
-def left_out():
+def nothing_drawn():
     """No finding drawn while inside (an exported board package is the board, not this session's check)."""
     shown = board.findings_shown
     clear()
@@ -424,7 +436,8 @@ def _followed_view():
 def _view_eye(view):
     """Where a 3D view looks from (its view matrix inverted), from what sets it: the view
     matrix itself is only brought up to date by a redraw."""
-    return Matrix.Translation(view.view_location) @ view.view_rotation.to_matrix().to_4x4() @         Matrix.Translation((0.0, 0.0, view.view_distance))
+    return (Matrix.Translation(view.view_location) @ view.view_rotation.to_matrix().to_4x4() @
+            Matrix.Translation((0.0, 0.0, view.view_distance)))
 
 
 def _camera_eye(camera):
@@ -457,7 +470,8 @@ def _place_eye(eye_view=None, force=False):
         return
     matrix, ortho, near = eye_view if eye_view is not None else _eye_matrix()
     last = _state["eye"]
-    if force or last is None or last[1:] != (ortho, near) or             any(abs(a - b) > 1e-7 for row, other in zip(last[0], matrix) for a, b in zip(row, other)):
+    if (force or last is None or last[1:] != (ortho, near) or
+            any(abs(a - b) > 1e-7 for row, other in zip(last[0], matrix) for a, b in zip(row, other))):
         eye.matrix_world = matrix
         _state["eye"] = (matrix.copy(), ortho, near)
         _lay_out(matrix, ortho, near)
@@ -552,8 +566,8 @@ def _surface(layer, lift=0.0):
         up = outward(layer)
         return transform.copper_z(layer, "drills", board.heights) + up * lift, up
     if layer.startswith("B."):
-        return board.heights.get("B.Cu", 0.0) - lift, -1.0
-    return board.heights.get("F.Cu", board.thickness_m) + lift, 1.0
+        return _faces()[1] - lift, -1.0
+    return _faces()[0] + lift, 1.0
 
 
 def _point(point, lift=0.0):
@@ -666,31 +680,32 @@ def _plate(obj, finding, icon=None):
         bm.faces.new([bm.verts.new((x, y, 0.0)) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
     plate = _mesh(obj.name + " plate", build, Matrix.Translation((0.0, 0.0, -behind)), finding,
                   _plain("plate", PLATE_COLOR))
-    severity = icon if icon in ICONS else finding.get("severity") if finding.get("severity") in ICONS else "warning"
-    shape, color, mark, ink = ICONS[severity]
+    severity = icon if icon in ICONS else \
+        finding.get("severity") if finding.get("severity") in SEVERITIES else "warning"
+    shape, color, glyph_mark, ink = ICONS[severity]
     radius = ICON * size / 2
 
     def disc(bm):
-        bmesh.ops.create_circle(bm, cap_ends=True, segments=24, radius=radius)
+        bmesh.ops.create_circle(bm, cap_ends=True, segments=RING_SEGMENTS, radius=radius)
 
     def triangle(bm):
         bm.faces.new([bm.verts.new((x, y, 0.0)) for x, y in ((-radius, -radius), (radius, -radius), (0.0, radius))])
-    icon = _mesh(obj.name + " icon", disc if shape == "circle" else triangle,
-                 Matrix.Translation((cx, cy, -behind / 2)), finding, _plain(f"icon {severity}", color))
+    badge = _mesh(obj.name + " icon", disc if shape == "circle" else triangle,
+                  Matrix.Translation((cx, cy, -behind / 2)), finding, _plain(f"icon {severity}", color))
     ink_material = _plain("glyph dark" if max(ink) < 0.5 else "glyph light", ink)
-    if mark == "✓":  # drawn, not typed: the label font may lack it
+    if glyph_mark == "✓":  # drawn, not typed: the label font may lack it
         glyph = _mesh(obj.name + " icon glyph", _tick(radius), Matrix.Translation((cx, cy, -behind / 4)), finding,
                       ink_material)
     else:
         curve = bpy.data.curves.new(obj.name + " icon glyph", "FONT")
-        curve.body = mark
+        curve.body = glyph_mark
         curve.size = GLYPH * ICON * size
         curve.align_x, curve.align_y = "CENTER", "CENTER"
         curve.materials.append(ink_material)
         glyph = _new(curve.name, curve, finding)
         lower = radius / 4 if shape == "triangle" else 0.0  # a triangle's room is low
         glyph.location = (cx, cy - lower, -behind / 4)
-    for part in (plate, icon, glyph, *_chart_parts(obj, finding, behind)):
+    for part in (plate, badge, glyph, *_chart_parts(obj, finding, behind)):
         part.parent = obj
         part.show_in_front = True
     return plate
@@ -698,7 +713,7 @@ def _plate(obj, finding, icon=None):
 
 def _tick(radius):
     """A builder of the "✓" glyph: CHECK's two strokes as quads, in an icon of `radius`."""
-    stroke = radius * 0.13
+    stroke = radius * TICK_STROKE
 
     def build(bm):
         for (x0, y0), (x1, y1) in zip(CHECK, CHECK[1:]):
@@ -711,15 +726,9 @@ def _tick(radius):
     return build
 
 
-def _figure(value):
+def figure(value):
+    """A value as the column and the 3D labels show it: a float to 4 significant digits."""
     return f"{value:.4g}" if isinstance(value, float) else str(value)
-
-
-def bar_over(bar):
-    """A bar past its limit: the bridge's `over`, else its value above the limit."""
-    if bar.get("over") is not None:
-        return bool(bar["over"])
-    return bar.get("limit") is not None and bar.get("value", 0) > bar["limit"]
 
 
 def common_limit(bars):
@@ -739,7 +748,7 @@ def _chart(obj):
     size = obj.data.size
     small = BAR_TEXT * size
     x0, y0, _, _ = _bounds(obj)
-    widest = max(len(text) for bar in bars for text in (_figure(bar["value"]), bar["name"]))
+    widest = max(len(text) for bar in bars for text in (figure(bar["value"]), bar["name"]))
     pitch = max(BAR, widest * CHAR * BAR_TEXT) * size + BAR_GAP * size
     peak = y0 - BAR_GAP * size - small - BAR_GAP * size / 2  # the tallest bar's top, its value over it
     base = peak - BAR_HEIGHT * size
@@ -775,10 +784,10 @@ def _chart_parts(obj, finding, behind):
     for number, bar in enumerate(chart["bars"], start=1):
         x = left + pitch * (number - 0.5)
         height = max(abs(bar["value"]) * scale, BAR_MIN * size)
-        material = _material("over" if bar_over(bar) else finding.get("severity"))
+        material = _material("over" if bar.get("over") else finding.get("severity"))
         parts.append(_mesh(f"{obj.name} bar {number}", _box((BAR * size, height, depth)),
                            Matrix.Translation((x, base + height / 2, middle)), finding, material))
-        text(f"{obj.name} bar {number} value", _figure(bar["value"]), x, base + height + BAR_GAP * size / 2 + small / 2)
+        text(f"{obj.name} bar {number} value", figure(bar["value"]), x, base + height + BAR_GAP * size / 2 + small / 2)
         text(f"{obj.name} bar {number} name", bar["name"], x, base - BAR_GAP * size / 2 - small / 2)
     width = pitch * len(chart["bars"])
     shared = common_limit(chart["bars"])
@@ -814,7 +823,7 @@ def _place_labels(finding, box, unit):
         bounds = outline_bounds()
         a, b, normal = section
         centre = Vector(((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)) if bounds else (a + b) / 2
-        low, high = board.heights.get("B.Cu", 0.0), board.heights.get("F.Cu", board.thickness_m)
+        high, low = _faces()
         spots = label_place.on_cut([_block(obj, entry["anchor"]) for obj, entry in zip(objects, labels)],
                                    (a, b), normal, box or (a.x, a.y, b.x, b.y), centre, low, high, unit)
         corners = []
@@ -830,7 +839,7 @@ def _place_labels(finding, box, unit):
     if box is None and labels:
         xs, ys = [entry["anchor"].x for entry in labels], [entry["anchor"].y for entry in labels]
         box = (min(xs), min(ys), max(xs), max(ys))
-    radius = max(TUBE_MIN_M, unit * TUBE_SHARE * LEADER)
+    radius = _hairline(unit)
     for obj, entry in zip(objects, labels):
         track = obj.constraints.new("TRACK_TO")
         track.target = _eye()
@@ -930,9 +939,25 @@ def _box(size):
 def _cylinder(radius, depth, tip=None):
     """Along local z, centred; `tip` a cone's top radius."""
     def build(bm):
-        bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=radius,
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=RING_SEGMENTS, radius1=radius,
                               radius2=radius if tip is None else tip, depth=depth)
     return build
+
+
+def _strong(draw):
+    """A draw with `emphasis: strong`: drawn STRONG times larger."""
+    return draw.get("emphasis") == "strong"
+
+
+def _faces():
+    """(top, bottom): the heights of the board's outer copper surfaces (F.Cu, B.Cu)."""
+    return board.heights.get("F.Cu", board.thickness_m), board.heights.get("B.Cu", 0.0)
+
+
+def _circle(centre, radius, segments=RING_SEGMENTS):
+    """A closed polyline round `centre` (a Blender point) in the board's plane."""
+    return [centre + Vector((radius * math.cos(step), radius * math.sin(step), 0.0))
+            for step in np.linspace(0.0, 2 * math.pi, segments + 1)]
 
 
 def _hairline(unit):
@@ -942,11 +967,11 @@ def _hairline(unit):
 
 def _thin(unit, draw):
     """A drawn line's radius: a hairline, STRONG times it for `emphasis: strong`."""
-    return _hairline(unit) * (STRONG if draw.get("emphasis") == "strong" else 1.0)
+    return _hairline(unit) * (STRONG if _strong(draw) else 1.0)
 
 
 def _tube_radius(unit, length, draw):
-    radius = unit * TUBE_SHARE * (STRONG if draw.get("emphasis") == "strong" else 1.0)
+    radius = unit * TUBE_SHARE * (STRONG if _strong(draw) else 1.0)
     return max(TUBE_MIN_M, min(radius, length / 6) if length > 0 else radius)
 
 
@@ -1028,9 +1053,9 @@ def stubbed(draw):
     return bool(barrel.get("stub")) if barrel else bool(draw.get("measured_nm"))
 
 
-def mark_text(mark):
+def mark_text(change):
     """"width: 0.20 -> 0.15 mm": a discontinuity mark's kind and its text, as the column lists it."""
-    return ": ".join(text for text in (mark.get("kind") or "", mark.get("text") or "") if text)
+    return ": ".join(text for text in (change.get("kind") or "", change.get("text") or "") if text)
 
 
 def ghost_name(draw):
@@ -1183,7 +1208,7 @@ def _draw_label(draw, unit, name, finding):
     if top is not None:
         at.z = top
     _label(draw.get("label") or draw.get("text") or "", at, unit, name, finding,
-           _material(finding.get("severity")), draw.get("emphasis") == "strong")
+           _material(finding.get("severity")), _strong(draw))
 
 
 def _part_top(draw, up):
@@ -1229,24 +1254,29 @@ def _draw_distance(draw, unit, name, finding, thin=False):
     if along.length > 1e-9:
         lines.insert(0, [a, b])
     _tube(name, lines, radius, finding, material)
-    _label(label_text(draw), (a + b) / 2, unit, name + " label", finding, material, draw.get("emphasis") == "strong",
+    _label(label_text(draw), (a + b) / 2, unit, name + " label", finding, material, _strong(draw),
            icon=_icon(draw))
+
+
+def _arrow(name, a, b, radius, head, head_radius, finding, material):
+    """A tube from `a` towards `b` ending in a cone `head` long at `b`; the cone."""
+    along = b - a
+    direction = along / along.length
+    base = b - direction * head
+    _tube(name, [[a, base]], radius, finding, material)
+    matrix = Matrix.Translation(base + direction * head / 2) @ direction.to_track_quat("Z", "Y").to_matrix().to_4x4()
+    return _mesh(name + " head", _cylinder(head_radius, head, tip=0.0), matrix, finding, material)
 
 
 def _draw_arrow(draw, unit, name, finding):
     a, b, up, radius = _ends(draw, unit)
     material = _material(finding.get("severity"))
-    along = b - a
-    length = along.length
+    length = (b - a).length
     if length > 1e-9:
-        direction = along / length
-        head = min(unit * 0.8, length * 0.4)
-        base = b - direction * head
-        _tube(name, [[a, base]], radius, finding, material)
-        matrix = Matrix.Translation(base + direction * head / 2) @ direction.to_track_quat("Z", "Y").to_matrix().to_4x4()
-        _mesh(name + " head", _cylinder(max(radius * 3, head * 0.35), head, tip=0.0), matrix, finding, material)
+        head = min(unit * ARROW_HEAD, length * ARROW_HEAD_SHARE)
+        _arrow(name, a, b, radius, head, max(radius * ARROW_CONE, head * ARROW_CONE_SHARE), finding, material)
     if draw.get("label"):
-        _label(draw["label"], a, unit, name + " label", finding, material, draw.get("emphasis") == "strong")
+        _label(draw["label"], a, unit, name + " label", finding, material, _strong(draw))
 
 
 def _ghost_look(draw, finding):
@@ -1266,8 +1296,8 @@ def _draw_ghost(draw, unit, name, finding):
     size = (draw.get("size_nm") or 0) * 1e-9
     kind = draw.get("kind")
     if kind == "via":
-        top, bottom = board.heights.get("F.Cu", board.thickness_m), board.heights.get("B.Cu", 0.0)
-        build = _cylinder((size or VIA_GHOST_M) / 2, max(top - bottom, 1e-5))
+        top, bottom = _faces()
+        build = _cylinder((size or VIA_GHOST_M) / 2, max(top - bottom, MIN_DEPTH_M))
         middle = Vector((at.x, at.y, (top + bottom) / 2))
     elif kind == "cap":
         length = size or CAP_GHOST_M
@@ -1280,7 +1310,7 @@ def _draw_ghost(draw, unit, name, finding):
     material, line = _ghost_look(draw, finding)
     turn = Matrix.Rotation(math.radians(draw.get("rotation_deg") or 0.0), 4, "Z")  # KiCad's sense, seen from the top
     _mesh(name, build, Matrix.Translation(middle) @ turn, finding, material)
-    _label(ghost_label(draw), at, unit, name + " label", finding, line, draw.get("emphasis") == "strong")
+    _label(ghost_label(draw), at, unit, name + " label", finding, line, _strong(draw))
 
 
 def _ghost_part(draw, unit, name, finding):
@@ -1313,21 +1343,16 @@ def _ghost_part(draw, unit, name, finding):
     start = draw.get("from") or ()
     if len(start) >= 2:
         _thin_arrow(name + " arrow", _point([*start[:2], layer], thin)[0], at, thin, unit, finding, line)
-    _label(ghost_label(draw), at, unit, name + " label", finding, line, draw.get("emphasis") == "strong")
+    _label(ghost_label(draw), at, unit, name + " label", finding, line, _strong(draw))
 
 
 def _thin_arrow(name, a, b, thin, unit, finding, material):
     """A thin line from `a` to `b` with a small cone at `b` (none when they meet)."""
-    along = b - a
-    length = along.length
+    length = (b - a).length
     if length < 1e-9:
         return
-    direction = along / length
-    head = min(unit * 0.5, length * 0.3)
-    base = b - direction * head
-    _tube(name, [[a, base]], thin, finding, material)
-    matrix = Matrix.Translation(base + direction * head / 2) @ direction.to_track_quat("Z", "Y").to_matrix().to_4x4()
-    _mesh(name + " head", _cylinder(thin * GHOST_HEAD, head, tip=0.0), matrix, finding, material).show_in_front = True
+    head = min(unit * THIN_HEAD, length * THIN_HEAD_SHARE)
+    _arrow(name, a, b, thin, head, thin * GHOST_HEAD, finding, material).show_in_front = True
 
 
 def _ghost_route(draw, unit, name, finding):
@@ -1343,7 +1368,7 @@ def _ghost_route(draw, unit, name, finding):
     segments = [[*a[:2], *b[:2], layer, width] for a, b in zip(points, points[1:])]
     _mesh(name, _ribbons(segments, AREA_LIFT_M), Matrix.Identity(4), finding, material).show_in_front = True
     middle = _along([_point([*point[:2], layer], AREA_LIFT_M)[0] for point in points], 0.5)
-    _label(ghost_label(draw), middle, unit, name + " label", finding, line, draw.get("emphasis") == "strong")
+    _label(ghost_label(draw), middle, unit, name + " label", finding, line, _strong(draw))
 
 
 def _ghost_row(draw, unit, name, finding):
@@ -1354,8 +1379,8 @@ def _ghost_row(draw, unit, name, finding):
     spots = [spot for spot in draw.get("row") or () if len(spot) >= 2]
     if not spots:
         return
-    top, bottom = board.heights.get("F.Cu", board.thickness_m), board.heights.get("B.Cu", 0.0)
-    radius, depth = ((draw.get("size_nm") or 0) * 1e-9 or VIA_GHOST_M) / 2, max(top - bottom, 1e-5)
+    top, bottom = _faces()
+    radius, depth = ((draw.get("size_nm") or 0) * 1e-9 or VIA_GHOST_M) / 2, max(top - bottom, MIN_DEPTH_M)
     for clash in (False, True):
         members = [spot[:2] for spot in spots if (len(spot) > 2 and spot[2] is False) == clash]
         if not members:
@@ -1364,8 +1389,8 @@ def _ghost_row(draw, unit, name, finding):
 
         def vias(bm, centres=centres):
             for x, y in centres:
-                bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=radius, radius2=radius, depth=depth,
-                                      matrix=Matrix.Translation((float(x), float(y), 0.0)))
+                bmesh.ops.create_cone(bm, cap_ends=True, segments=RING_SEGMENTS, radius1=radius, radius2=radius,
+                                      depth=depth, matrix=Matrix.Translation((float(x), float(y), 0.0)))
         _mesh(name + (" over" if clash else ""), vias, Matrix.Translation((0.0, 0.0, (top + bottom) / 2)), finding,
               _material("over" if clash else finding.get("severity"), GHOST_ALPHA))
         if clash:
@@ -1378,7 +1403,7 @@ def _ghost_row(draw, unit, name, finding):
     ends = (spots[0], spots[-1])
     middle = _point([(ends[0][0] + ends[1][0]) / 2, (ends[0][1] + ends[1][1]) / 2, layer])[0]
     _label(ghost_label(draw), middle, unit, name + " label", finding, _ghost_look(draw, finding)[1],
-           draw.get("emphasis") == "strong")
+           _strong(draw))
 
 
 def _ring(polygon):
@@ -1417,7 +1442,7 @@ def _draw_area(draw, unit, name, finding):
         x = sum(p[0] for p in points) / len(points)
         y = sum(p[1] for p in points) / len(points)
         _label(draw["label"], Vector((x, y, z)), unit, name + " label", finding, _material(finding.get("severity")),
-               draw.get("emphasis") == "strong")
+               _strong(draw))
 
 
 def _ribbons(segments, lift):
@@ -1435,7 +1460,8 @@ def _ribbons(segments, lift):
                 side = Vector((-along.y, along.x, 0.0)).normalized() * half
                 bm.faces.new([bm.verts.new(corner) for corner in (a - side, b - side, b + side, a + side)])
             for end in (a, b):
-                bmesh.ops.create_circle(bm, cap_ends=True, segments=16, radius=half, matrix=Matrix.Translation(end))
+                bmesh.ops.create_circle(bm, cap_ends=True, segments=END_SEGMENTS, radius=half,
+                                        matrix=Matrix.Translation(end))
     return build
 
 
@@ -1455,7 +1481,7 @@ def _draw_width(draw, unit, name, finding):
     poking out past both, a tick along the track at each edge."""
     segments = [segment for segment in draw.get("segments_nm") or () if len(segment) >= 6]
     narrow = set(draw.get("narrow") or ())
-    for over, lift in ((False, AREA_LIFT_M), (True, AREA_LIFT_M * 1.5)):
+    for over, lift in ((False, AREA_LIFT_M), (True, NARROW_LIFT_M)):
         members = [segment for index, segment in enumerate(segments) if (index in narrow) == over]
         if members:
             ribbon = _mesh(name + (" narrow" if over else ""), _ribbons(members, lift), Matrix.Identity(4), finding,
@@ -1472,7 +1498,7 @@ def _draw_width(draw, unit, name, finding):
         along = along.normalized() if along.length > 1e-12 else Vector((1.0, 0.0, 0.0))
         half = width * 1e-9 / 2
         radius = _tube_radius(unit, half * 2, draw)
-        centre, _ = _point([*at[:2], layer], AREA_LIFT_M * 2 + radius)
+        centre, _ = _point([*at[:2], layer], CALLOUT_LIFT_M + radius)
         side = Vector((-along.y, along.x, 0.0))
         tick, poke = along * radius * TICK, side * radius * TICK
         a, b = centre - side * half, centre + side * half
@@ -1480,7 +1506,7 @@ def _draw_width(draw, unit, name, finding):
               _plain("text"))
     else:
         centre, _ = _point(at)
-    _label(label_text(draw), centre, unit, name + " label", finding, material, draw.get("emphasis") == "strong",
+    _label(label_text(draw), centre, unit, name + " label", finding, material, _strong(draw),
            icon=_icon(draw))
 
 
@@ -1519,11 +1545,11 @@ def _draw_routed_length(draw, unit, name, finding):
     _tube(name, [line], radius, finding, material)
 
     def dot(bm):
-        bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=radius * DOT)
+        bmesh.ops.create_uvsphere(bm, u_segments=END_SEGMENTS, v_segments=END_SEGMENTS // 2, radius=radius * DOT)
     for end, at in (("start", line[0]), ("end", line[-1])):
         _mesh(f"{name} {end}", dot, Matrix.Translation(at), finding, material).show_in_front = True
     _label(label_text(draw), _along(line, 0.5), unit, name + " label", finding, material,
-           draw.get("emphasis") == "strong", icon=_icon(draw))
+           _strong(draw), icon=_icon(draw))
 
 
 def _bar_name(text):
@@ -1541,9 +1567,9 @@ def _draw_bars(draw, unit, name, finding):
         return
     at, _ = _point(draw["points"][0])
     shared, unit_name = common_limit(bars), draw.get("unit") or ""
-    second = f"limit {_figure(shared)} {unit_name}" if shared is not None else (f"in {unit_name}" if unit_name else "")
+    second = f"limit {figure(shared)} {unit_name}" if shared is not None else (f"in {unit_name}" if unit_name else "")
     title = what_text(draw) + (f"\n{second.rstrip()}" if second else "")
-    obj = _label(title, at, unit, name, finding, _material(finding.get("severity")), draw.get("emphasis") == "strong")
+    obj = _label(title, at, unit, name, finding, _material(finding.get("severity")), _strong(draw))
     obj[CHART] = json.dumps(bars)
 
 
@@ -1555,7 +1581,7 @@ def _draw_layer_change(draw, unit, name, finding):
     points = [point for point in draw.get("points") or () if len(point) >= 2]
     if not points:
         return
-    via, strong = points[0], draw.get("emphasis") == "strong"
+    via, strong = points[0], _strong(draw)
     layer = via[2] if len(via) > 2 else ""
     if len(points) > 1:  # the return via on the via's layer: the distance across the board, not through it
         _draw_distance(dict(draw, points=[via, [*points[1][:2], layer]]), unit, name, finding, thin=True)
@@ -1569,10 +1595,8 @@ def _draw_layer_change(draw, unit, name, finding):
     if draw.get("limit_nm"):
         thin = _hairline(unit)
         centre, _ = _point([*via[:2], layer], thin)
-        reach = draw["limit_nm"] * 1e-9
-        _tube(name + " limit", [[centre + Vector((reach * math.cos(step), reach * math.sin(step), 0.0))
-                                 for step in np.linspace(0.0, 2 * math.pi, RING_SEGMENTS * 2 + 1)]],
-              thin, finding, _material(finding.get("severity")))
+        _tube(name + " limit", [_circle(centre, draw["limit_nm"] * 1e-9, RING_SEGMENTS * 2)], thin, finding,
+              _material(finding.get("severity")))
 
 
 def _via_rings(vias, layer, unit, draw, name, finding):
@@ -1582,11 +1606,7 @@ def _via_rings(vias, layer, unit, draw, name, finding):
     if not rings:
         return
     radius = _thin(unit, draw)
-    lines = []
-    for xy, ring in rings:
-        centre, _ = _point([*xy, layer], radius)
-        lines.append([centre + Vector((ring * math.cos(step), ring * math.sin(step), 0.0))
-                      for step in np.linspace(0.0, 2 * math.pi, RING_SEGMENTS + 1)])
+    lines = [_circle(_point([*xy, layer], radius)[0], ring) for xy, ring in rings]
     _tube(name, lines, radius, finding, _material(finding.get("severity")))
 
 
@@ -1616,7 +1636,7 @@ def _gap_spans(draw, unit, name, finding):
     if not spans:
         return None
     material = _material("over")
-    lift = AREA_LIFT_M * 1.5
+    lift = NARROW_LIFT_M
     ribbon = _mesh(name + " spans", _ribbons(spans, lift), Matrix.Identity(4), finding, material)
     ribbon.show_in_front = True  # an inner layer's too, as the tubes
     radius = _thin(unit, draw)
@@ -1628,15 +1648,20 @@ def _gap_spans(draw, unit, name, finding):
         reach = max(width * 1e-9 / 2 * SPAN_TICK, radius * TICK)
         ticks += [[end - side * reach, end + side * reach] for end in (a, b)]
     _tube(name + " span ends", ticks, radius, finding, material)
+    return _longest_middle(spans, lift + radius)
+
+
+def _longest_middle(spans, lift):
+    """The middle of the longest of [x0, y0, x1, y1, layer, ...] stretches, `lift` out from its copper."""
     x0, y0, x1, y1, layer = max(spans, key=lambda span: math.hypot(span[2] - span[0], span[3] - span[1]))[:5]
-    return _point([(x0 + x1) / 2, (y0 + y1) / 2, layer], lift + radius)[0]
+    return _point([(x0 + x1) / 2, (y0 + y1) / 2, layer], lift)[0]
 
 
 def _draw_plane_gap(draw, unit, name, finding):
     """The broken part of the plane, not the track: its edges near the gap lit up on its
     layer and named; the crossing's stretches without plane under them red, the gap
     labelled at the longest."""
-    strong = draw.get("emphasis") == "strong"
+    strong = _strong(draw)
     edge = _plane_edges(draw, unit, name, finding)
     if edge is not None:
         plane = next(iter(draw.get("planes") or ()), "") or draw.get("layer") or ""
@@ -1660,17 +1685,16 @@ def _draw_return_path(draw, unit, name, finding):
     _plane_edges(draw, unit, name, finding)  # when the bridge sends any
     at = _gap_spans(draw, unit, name, finding)
     if at is None and covered:
-        x0, y0, x1, y1, layer = max(covered, key=lambda span: math.hypot(span[2] - span[0], span[3] - span[1]))[:5]
-        at = _point([(x0 + x1) / 2, (y0 + y1) / 2, layer], AREA_LIFT_M)[0]
+        at = _longest_middle(covered, AREA_LIFT_M)
     if at is None:
         return
     share = covered_text(draw)
     second = " ".join(text for text in (measured_text(draw), f"({share})" if share else "") if text)
     _label(what_text(draw) + (f"\n{second}" if second else ""), at, unit, name + " label", finding,
-           _material("over" if draw.get("spans_nm") else finding.get("severity")), draw.get("emphasis") == "strong")
+           _material("over" if draw.get("spans_nm") else finding.get("severity")), _strong(draw))
 
 
-def _inside(points):
+def _label_spot(points):
     """A point inside a polygon (Blender (x, y) points) to name it at: its centroid, else
     (a C shape) the corner nearest it."""
     xy = np.array(points)
@@ -1692,8 +1716,8 @@ def _draw_plane_islands(draw, unit, name, finding):
     """Each piece of the plane a translucent area on its layer in its own colour, one not
     tied to the main plane outlined red; labels "Island 2, In1.Cu" over "4.1 mm², not tied" for the
     main one, then those not tied, then the largest (ISLAND_LABELS), and one with the count."""
-    strong = draw.get("emphasis") == "strong"
-    radius = max(TUBE_MIN_M, unit * TUBE_SHARE * LEADER)
+    strong = _strong(draw)
+    radius = _hairline(unit)
     placed = []
     for number, island in enumerate(draw.get("islands") or (), start=1):
         points = _ring(island.get("polygon_nm"))
@@ -1712,7 +1736,7 @@ def _draw_plane_islands(draw, unit, name, finding):
         if loose:
             outline = [Vector((x, y, z + up * radius)) for x, y in (*points, points[0])]
             _tube(f"{name} island {index} outline", [outline], radius, finding, _material("over"))
-        placed.append((island, index, loose, Vector((*_inside(points), z))))
+        placed.append((island, index, loose, Vector((*_label_spot(points), z))))
     if not placed:
         return
     placed.sort(key=lambda entry: (not entry[0].get("main"), not entry[2], -(entry[0].get("area_mm2") or 0.0)))
@@ -1739,7 +1763,7 @@ def _draw_stitching(draw, unit, name, finding):
         line = [_point([*point[:2], layer], thin)[0] for point in raw if len(point) >= 2]
         if len(line) > 1:
             stretches.append(line)
-    strong = draw.get("emphasis") == "strong"
+    strong = _strong(draw)
     if stretches:
         ticks = []
         for line in stretches:  # square to the line at each end, along the board
@@ -1776,12 +1800,12 @@ def _draw_stub(draw, unit, name, finding):
             continue
         low, high = sorted(_surface(layer)[0] for layer in layers[:2])
         middles[part] = Vector((x, y, (low + high) / 2))
-        _mesh(name + (" used" if part == "used" else ""), _cylinder(radius, max(high - low, 1e-5)),
+        _mesh(name + (" used" if part == "used" else ""), _cylinder(radius, max(high - low, MIN_DEPTH_M)),
               Matrix.Translation(middles[part]), finding, material).show_in_front = True  # inside the board
     stub = stubbed(draw)
     at = middles.get("stub" if stub else "used") or next(iter(middles.values()), None) or _point([*xy, ""])[0]
     _label(label_text(draw) if stub else f"{what_text(draw)}\nnone", at, unit, name + " label", finding,
-           _material("over" if stub else finding.get("severity")), draw.get("emphasis") == "strong")
+           _material("over" if stub else finding.get("severity")), _strong(draw))
 
 
 def _draw_discontinuity(draw, unit, name, finding):
@@ -1792,24 +1816,22 @@ def _draw_discontinuity(draw, unit, name, finding):
     radius = _thin(unit, draw)
     material = _material(finding.get("severity"))
     labelled = 0
-    for number, mark in enumerate(draw.get("marks") or (), start=1):
-        if mark.get("x") is None or mark.get("y") is None:
+    for number, change in enumerate(draw.get("marks") or (), start=1):
+        if change.get("x") is None or change.get("y") is None:
             continue
-        centre, _ = _point([mark["x"], mark["y"], mark.get("layer") or draw.get("layer") or ""], radius)
-        kind = mark.get("kind")
-        if kind == "width":
-            corners = ((-half, 0.0), (half, 0.0))
-        elif kind == "layer":
-            corners = [(half * math.cos(step), half * math.sin(step))
-                       for step in np.linspace(0.0, 2 * math.pi, RING_SEGMENTS + 1)]
+        centre, _ = _point([change["x"], change["y"], change.get("layer") or draw.get("layer") or ""], radius)
+        kind = change.get("kind")
+        if kind == "layer":
+            line = _circle(centre, half)
         else:
-            corners = ((half, 0.0), (0.0, half), (-half, 0.0), (0.0, -half), (half, 0.0))
-        _tube(f"{name} mark {number}", [[centre + Vector((dx, dy, 0.0)) for dx, dy in corners]], radius, finding,
-              material)
+            corners = ((-half, 0.0), (half, 0.0)) if kind == "width" else \
+                ((half, 0.0), (0.0, half), (-half, 0.0), (0.0, -half), (half, 0.0))
+            line = [centre + Vector((dx, dy, 0.0)) for dx, dy in corners]
+        _tube(f"{name} mark {number}", [line], radius, finding, material)
         if labelled < MARK_LABELS:
             title = MARK_TITLES.get(kind, what_text(draw))
-            _label(title + (f"\n{mark['text']}" if mark.get("text") else ""), centre, unit,
-                   f"{name} mark {number} label", finding, material, draw.get("emphasis") == "strong")
+            _label(title + (f"\n{change['text']}" if change.get("text") else ""), centre, unit,
+                   f"{name} mark {number} label", finding, material, _strong(draw))
             labelled += 1
 
 
@@ -1831,7 +1853,7 @@ FRAME_PART_CLEARANCE_M = 1e-3  # how far outside a part's box the framed eye sta
 
 def frame_bounds(xmin, ymin, xmax, ymax, side=None):
     """Centre every 3D view on a box (Blender metres) and fit it with room around it,
-    keeping each view's direction: a finding shown from the DRC column. With `side`
+    keeping each view's direction: a finding shown from its column. With `side`
     (+1 top, -1 bottom), a view looking from the other side is mirrored through the board."""
     extent = label_place.extent((xmin, ymin, xmax, ymax))  # a hole gap is a fraction of a millimetre: at least FRAME_MIN_M
     boxes = part_boxes()

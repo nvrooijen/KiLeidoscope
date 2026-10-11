@@ -26,7 +26,7 @@ class BoardState:
         self.ims_warnings = []  # what would short to the metal base (apply.refresh_ims_warnings)
         self.flex = {}  # flex mode's panel content from the bridge (kileido_bridge.flex_checks.report)
         self.fold_findings = []  # what runs into what at the end of a folding step (fold.check_steps)
-        # The DRC column (findings.py): the bridge's `findings` payload, and the one finding drawn.
+        # The DRC and LLM columns (findings.py): the bridge's `findings` payload, and the one finding drawn.
         self.findings = {}  # {"status", "folder", "drc", "sources": {"drc": ..., "file": ...}}
         self.findings_shown = ("", "")  # (source, key) of the finding drawn, ("", "") for none
         self.findings_isolate = False  # the drawn finding has an isolate draw: X-ray on whatever the tick box

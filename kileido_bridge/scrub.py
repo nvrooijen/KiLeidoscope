@@ -31,11 +31,12 @@ _LOCAL = re.compile(r'(?i)^\s*(?:file:|[a-z]:[\\/]|[\\/]|~[\\/]|\.\.?[\\/]|\$\{)
 PROJECT_KEPT = ("meta", "board", "net_settings", "component_class_settings", "tuning_profiles")
 
 
-def _nodes(text: str):
-    """(start, end, name, depth) of every list node: `start` at its "(", `end` past its
-    ")", depth 0 for the file's own (kicad_pcb ...). Quoted strings are skipped whole."""
+def nodes(text: str, start: int = 0):
+    """(start, end, name, depth) of every list node from `start` on, in the order they
+    close: `start` at its "(", `end` past its ")", depth 0 for the outermost (the file's own
+    (kicad_pcb ...)). Quoted strings are skipped whole. `ghost_drc` walks footprints so."""
     stack = []
-    for match in _NODE.finditer(text):
+    for match in _NODE.finditer(text, start):
         token = match.group(0)
         if token[0] == "(":
             stack.append((match.start(), match.group(1) or ""))
@@ -69,7 +70,7 @@ def board(text: str) -> str:
     """KiCad's board text without its title block and board-level text variables, its 3D
     model paths cut to the file name, a footprint Datasheet that is a local file emptied."""
     edits = []  # (start, end, replacement), never overlapping
-    for start, end, name, depth in _nodes(text):
+    for start, end, name, depth in nodes(text):
         if (name in _DROPPED and _DROPPED[name] in (None, depth)) or (
                 name == "property" and depth == 2 and _SHEET_PROPERTY.match(text, start)):
             edits.append((_line_start(text, start), end, ""))

@@ -57,14 +57,17 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from . import drc_findings
-from .findings import _CONTROL, CAP_GHOST_NM, GHOST_VIA_NM
+from .findings import _CONTROL, CAP_GHOST_NM, GHOST_VIA_NM, _mm_text, _show, turner
 from .hatch import layer_names
+from .scrub import nodes
 
 RUN_KIND = "ghost_drc"  # kls_folder.SIDE_RUNS
 KINDS = ("via", "pad", "cap", "track", "via_row", "part")
 COVERED = frozenset({"via", "pad", "track", "via_row", "part"})  # KiCad judges what the quick check does
 OUTER = ("F.Cu", "B.Cu")
 MIN_DRILL_NM = 100_000
+DRILL_DIGITS = -4  # a drill guessed from a via's size alone: half of it, rounded to 10 µm
+COURTYARD_MM = 0.05  # a cap's courtyard line width
 MAX_NET = 200
 MAX_LINES = 6  # problem lines per ghost; the rest counted
 MAX_ITEM_TEXT = 80
@@ -93,8 +96,7 @@ _DECLARED = re.compile(r'\n\t\(net (\d+) "((?:[^"\\]|\\.)*)"\)')  # KiCad 9 and 
 _VIA = re.compile(r"\n\t\(via\b(.*?)\n\t\)", re.S)
 _SIZE = re.compile(r"\((size|drill) ([\d.]+)\)")
 _FOOTPRINT = re.compile(r"\n\t\(footprint\s")
-_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[()]')
-_AT = re.compile(r"\(at (-?[\d.]+) (-?[\d.]+)(?: (-?[\d.]+))?((?:\s+unlocked)?)\)")
+_AT =re.compile(r"\(at (-?[\d.]+) (-?[\d.]+)(?: (-?[\d.]+))?((?:\s+unlocked)?)\)")
 _XY = re.compile(r"\(xy (-?[\d.]+) (-?[\d.]+)\)")
 _ZONE = re.compile(r"\(zone\b")
 _UUID = re.compile(r'\((?:uuid|tstamp) "?([0-9A-Fa-f-]{8,})"?\)')
@@ -195,7 +197,7 @@ def digest(ghosts: list[Ghost]) -> str:
 # writing the copy
 
 @dataclass
-class _Board:
+class _BoardText:
     layers: frozenset
     declared: dict  # net name -> number (KiCad 9 and older); {} for KiCad 10's named nets
     vias: dict  # (size, drill) nm -> how many
@@ -206,7 +208,7 @@ class _Board:
         return bool(self.declared)
 
 
-def _board(text: str) -> _Board:
+def _board(text: str) -> _BoardText:
     declared = {_ESCAPE.sub(r"\1", name): int(number) for number, name in _DECLARED.findall(text)}
     vias: dict[tuple[int, int], int] = {}
     for body in _VIA.findall(text):
@@ -214,12 +216,12 @@ def _board(text: str) -> _Board:
         if "size" in sizes and "drill" in sizes:
             key = (round(float(sizes["size"]) * 1e6), round(float(sizes["drill"]) * 1e6))
             vias[key] = vias.get(key, 0) + 1
-    return _Board(frozenset(layer_names(text).values()), declared, vias)
+    return _BoardText(frozenset(layer_names(text).values()), declared, vias)
 
 
-def _mm(nm: float) -> str:
-    text = f"{nm / 1e6:.6f}".rstrip("0").rstrip(".")
-    return "0" if text in ("-0", "") else text
+def _file_mm(nm: float) -> str:
+    """A length in nm as the board file writes it in mm: "1.5", "0"."""
+    return _mm_text(nm / 1e6)
 
 
 def _angle(degrees: float) -> str:
@@ -230,18 +232,14 @@ def _angle(degrees: float) -> str:
     return " " + (f"{degrees:.6f}".rstrip("0").rstrip("."))
 
 
-def _shown(text: str) -> str:
-    return _CONTROL.sub(" ", text)[:40]
-
-
-def _net_node(board: _Board, net: str, pad: bool = False) -> str:
+def _net_node(board: _BoardText, net: str, pad: bool = False) -> str:
     """The `(net ...)` of an item ("" for none): KiCad 10 names the net, older files number
     it (a pad also names it), declaring a net the board lacks. A name that could break out
     of its quotes is refused."""
     if not net:
         return ""
     if len(net) > MAX_NET or '"' in net or "\\" in net or _CONTROL.search(net):
-        raise _Skip(f"net {_shown(net)!r} cannot be written into a board file")
+        raise _Skip(f"net {_show(net)!r} cannot be written into a board file")
     if not board.numbered:
         return f'(net "{net}")'
     number = board.declared.get(net)
@@ -252,7 +250,7 @@ def _net_node(board: _Board, net: str, pad: bool = False) -> str:
     return f'(net {number} "{net}")' if pad else f"(net {number})"
 
 
-def _drill(board: _Board, size: int) -> tuple[int, bool]:
+def _drill(board: _BoardText, size: int) -> tuple[int, bool]:
     """A suggested via's drill: as the board's vias of its size most often have it, else its
     size less the board's usual via ring, else half its size (never under 0.1 mm)."""
     same = {drill: count for (diameter, drill), count in board.vias.items() if diameter == size}
@@ -262,14 +260,14 @@ def _drill(board: _Board, size: int) -> tuple[int, bool]:
         diameter, drill = max(board.vias, key=lambda key: (board.vias[key], key))
         if size - (diameter - drill) >= MIN_DRILL_NM:
             return size - (diameter - drill), False
-    return max(MIN_DRILL_NM, int(round(size / 2, -4))), False
+    return max(MIN_DRILL_NM, int(round(size / 2, DRILL_DIGITS))), False
 
 
-def _layer(board: _Board, layer: str, outer: bool = False) -> str:
+def _layer(board: _BoardText, layer: str, outer: bool = False) -> str:
     if outer and layer not in OUTER:
-        raise _Skip(f"KiCad has pads and parts on the outer layers only, not on {_shown(layer)}")
+        raise _Skip(f"KiCad has pads and parts on the outer layers only, not on {_show(layer)}")
     if layer not in board.layers:
-        raise _Skip(f"layer {_shown(layer)} is not on this board")
+        raise _Skip(f"layer {_show(layer)} is not on this board")
     return layer
 
 
@@ -282,11 +280,11 @@ def _uid(placement: Placement, gi: int, member: int = 0) -> str:
 def _via_text(placement, gi, member, at, size, drill, net) -> str:
     uid = _uid(placement, gi, member)
     net = f"\n\t\t{net}" if net else ""
-    return (f"\t(via\n\t\t(at {_mm(at[0])} {_mm(at[1])})\n\t\t(size {_mm(size)})\n\t\t(drill {_mm(drill)})\n"
-            f'\t\t(layers "F.Cu" "B.Cu"){net}\n\t\t(uuid "{uid}")\n\t)\n')
+    return (f"\t(via\n\t\t(at {_file_mm(at[0])} {_file_mm(at[1])})\n\t\t(size {_file_mm(size)})\n"
+            f'\t\t(drill {_file_mm(drill)})\n\t\t(layers "F.Cu" "B.Cu"){net}\n\t\t(uuid "{uid}")\n\t)\n')
 
 
-def _items(board: _Board, placement: Placement, gi: int, ghost: Ghost) -> str:
+def _items(board: _BoardText, placement: Placement, gi: int, ghost: Ghost) -> str:
     """The text of a ghost that is added to the board (all but a moved part)."""
     if ghost.kind in ("via", "via_row"):
         net = _net_node(board, ghost.net)
@@ -304,44 +302,40 @@ def _items(board: _Board, placement: Placement, gi: int, ghost: Ghost) -> str:
         if not lines:
             raise _Skip("the route has no length")
         net = f"\t\t{net}\n" if net else ""
-        return "".join(f"\t(segment\n\t\t(start {_mm(a[0])} {_mm(a[1])})\n\t\t(end {_mm(b[0])} {_mm(b[1])})\n"
-                       f'\t\t(width {_mm(ghost.width)})\n\t\t(layer "{layer}")\n{net}'
+        return "".join(f"\t(segment\n\t\t(start {_file_mm(a[0])} {_file_mm(a[1])})\n"
+                       f"\t\t(end {_file_mm(b[0])} {_file_mm(b[1])})\n"
+                       f'\t\t(width {_file_mm(ghost.width)})\n\t\t(layer "{layer}")\n{net}'
                        f'\t\t(uuid "{_uid(placement, gi)}")\n\t)\n' for a, b in lines)
     side = _layer(board, ghost.layer if ghost.layer in OUTER or ghost.kind == "pad" else "F.Cu", outer=True)
     at, turn = ghost.spots[0], _angle(ghost.rotation)
     head = (f'\t(footprint "KLS:ghost_{ghost.kind}"\n\t\t(layer "{side}")\n\t\t(uuid "{_uid(placement, gi)}")\n'
-            f"\t\t(at {_mm(at[0])} {_mm(at[1])}{turn})\n\t\t(attr smd)\n")
+            f"\t\t(at {_file_mm(at[0])} {_file_mm(at[1])}{turn})\n\t\t(attr smd)\n")
     if ghost.kind == "pad":
         net = _net_node(board, ghost.net, pad=True)
         placement.nets[gi] = ghost.net
         mask = side[0] + ".Mask"
         layers = f'"{side}"' + (f' "{mask}"' if mask in board.layers else "")
         net = f"\t\t\t{net}\n" if net else ""
-        size = _mm(ghost.size)
+        size = _file_mm(ghost.size)
         return (head + f'\t\t(pad "1" smd rect\n\t\t\t(at 0 0{turn})\n\t\t\t(size {size} {size})\n'
                 f"\t\t\t(layers {layers})\n{net}\t\t\t(uuid \"{_uid(placement, gi)}\")\n\t\t)\n\t)\n")
     courtyard = side[0] + ".CrtYd"
     if courtyard not in board.layers:
         raise _Skip(f"the board has no {courtyard} layer")
     length, width = ghost.size, ghost.size / 2
-    return (head + f"\t\t(fp_rect\n\t\t\t(start {_mm(-length / 2)} {_mm(-width / 2)})\n"
-            f"\t\t\t(end {_mm(length / 2)} {_mm(width / 2)})\n\t\t\t(stroke\n\t\t\t\t(width 0.05)\n"
+    return (head + f"\t\t(fp_rect\n\t\t\t(start {_file_mm(-length / 2)} {_file_mm(-width / 2)})\n"
+            f"\t\t\t(end {_file_mm(length / 2)} {_file_mm(width / 2)})\n"
+            f"\t\t\t(stroke\n\t\t\t\t(width {COURTYARD_MM:g})\n"
             f'\t\t\t\t(type default)\n\t\t\t)\n\t\t\t(fill no)\n\t\t\t(layer "{courtyard}")\n'
             f'\t\t\t(uuid "{_uid(placement, gi)}")\n\t\t)\n\t)\n')
 
 
 def _node_end(text: str, start: int) -> int:
     """Just past the ")" that closes the node opening at `start`; quoted text skipped."""
-    depth = 0
-    for match in _TOKEN.finditer(text, start):
-        token = match.group(0)
-        if token == "(":
-            depth += 1
-        elif token == ")":
-            depth -= 1
-            if depth == 0:
-                return match.end()
-    raise ValueError("the board text ends inside a footprint")
+    end = next((end for _, end, _, depth in nodes(text, start) if depth == 0), None)
+    if end is None:
+        raise ValueError("the board text ends inside a footprint")
+    return end
 
 
 def _footprints(text: str) -> list[tuple[int, int, str, str]]:
@@ -358,18 +352,6 @@ def _footprints(text: str) -> list[tuple[int, int, str, str]]:
     return found
 
 
-def _turner(origin, to, degrees: float):
-    """Board points (nm) moved as a part turned `degrees` about `origin` and set at `to`
-    (KiCad's sense, seen from the top: `findings._turner`)."""
-    a = math.radians(degrees)
-    cos, sin = math.cos(a), math.sin(a)
-
-    def move(x, y):
-        dx, dy = x - origin[0], y - origin[1]
-        return to[0] + dx * cos + dy * sin, to[1] - dx * sin + dy * cos
-    return move
-
-
 def _moved(body: str, ghost: Ghost) -> str:
     """A footprint's text moved to the ghost's anchor and angle: its own `(at)` set, every
     other `(at)` in it (pads, texts: absolute angles) turned by the same amount, the points
@@ -380,19 +362,20 @@ def _moved(body: str, ghost: Ghost) -> str:
     origin = (float(first.group(1)) * 1e6, float(first.group(2)) * 1e6)
     turn = ghost.rotation - float(first.group(3) or 0.0)
     at = ghost.spots[0]
-    head = body[:first.start()] + f"(at {_mm(at[0])} {_mm(at[1])}{_angle(ghost.rotation)})"
+    head = body[:first.start()] + f"(at {_file_mm(at[0])} {_file_mm(at[1])}{_angle(ghost.rotation)})"
     rest = body[first.end():]
     if not math.isclose(turn % 360, 0.0, abs_tol=1e-9):
         rest = _AT.sub(lambda m: f"(at {m.group(1)} {m.group(2)}{_angle(float(m.group(3) or 0.0) + turn)}"
                                  f"{m.group(4)})", rest)
-    move = _turner(origin, at, turn)
+    move = turner(origin, at, turn)
     pieces, last = [], 0
     for zone in _ZONE.finditer(rest):
         if zone.start() < last:
             continue
         end = _node_end(rest, zone.start())
         pieces += [rest[last:zone.start()], _XY.sub(
-            lambda m: "(xy {} {})".format(*map(_mm, move(float(m.group(1)) * 1e6, float(m.group(2)) * 1e6))),
+            lambda m: "(xy {} {})".format(*map(_file_mm, move((float(m.group(1)) * 1e6,
+                                                                float(m.group(2)) * 1e6)))),
             rest[zone.start():end])]
         last = end
     return head + "".join(pieces) + rest[last:]
@@ -425,12 +408,12 @@ def build(text: str, ghosts: list[Ghost]) -> tuple[str, Placement]:
             matches = [span for span in footprints if span[2] == ghost.part] or \
                 [span for span in footprints if span[3] == ghost.part]
             if not matches:
-                raise _Skip(f"part {_shown(ghost.part)} is not in the board text")
+                raise _Skip(f"part {_show(ghost.part)} is not in the board text")
             if len(matches) > 1:
-                raise _Skip(f"{len(matches)} footprints are named {_shown(ghost.part)}")
+                raise _Skip(f"{len(matches)} footprints are named {_show(ghost.part)}")
             start, stop, _, _ = matches[0]
             if start in moved:
-                raise _Skip(f"another suggestion in this file moves {_shown(ghost.part)}; KiCad checks the first")
+                raise _Skip(f"another suggestion in this file moves {_show(ghost.part)}; KiCad checks the first")
             body = _moved(text[start:stop], ghost)
             moved[start] = gi
             for uid in _UUID.findall(body):

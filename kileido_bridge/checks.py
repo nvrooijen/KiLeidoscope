@@ -1,16 +1,15 @@
-"""The check catalogue of the LLM Visualizer (spec §8): what a review prompt can ask for.
+"""The check catalogue of the LLM Visualizer: what a review prompt can ask for.
 
 Our own ids (`group.name`), independent of any analysis tool. `instruction` and `evidence`
 go into `request.md` word for word (`prompt.request_md`), so they are written for the
-LLM: plain language, what to look for, what to point at. `draws` are the tools that
-exist (`findings.TOOLS`: Stage 1, Stage 2's measured geometry, Stage 3's planes) that show
-the finding today, best first; the prompt offers only the ones Blender draws (`findings.DRAWN`).
-`later` notes the tool of §6 stages 3-6 that will show it better; it is never offered
-until it exists. A check with no `draws` is
-board-wide: the finding is listed, not drawn. `values` are the value keys a finding of the
-check should give (unit in the suffix, `findings.UNITS`); `request.md` lists them, since
-analysis tools often state numbers only in their text. `v1` marks the three checks built
-first (`QUICK`).
+LLM: plain language, what to look for, what to point at. `draws` are the tools of
+`findings.TOOLS` (marks, measured geometry, planes) that show the finding, best first; the
+prompt offers only the ones Blender draws (`findings.DRAWN`). `later` is a note for us: a
+tool not built yet that would show it better; it is never offered. A check with no `draws`
+is board-wide: the finding is listed, not drawn. `values` are the value keys a finding of
+the check should give (unit in the suffix, `findings.UNITS`); `request.md` lists them, since
+analysis tools often state numbers only in their text. `v1` marks the quick checks, ticked
+in Blender's prompt box until the user ticks others.
 
 Kept as Python, not a data file: the add-on ships as one KiCad PCM zip.
 """
@@ -30,7 +29,7 @@ class Check:
     evidence: str  # what the finding should name or give
     draws: tuple[str, ...]  # tools of findings.TOOLS, best first
     v1: bool = False
-    later: tuple[str, ...] = ()  # §6 stage 3-6 tools that will draw it better (note only)
+    later: tuple[str, ...] = ()  # a note for us: tools not built yet that would draw it better; never read
     values: tuple[str, ...] = ()  # value keys a finding should give, unit in the suffix (findings.UNITS)
 
 
@@ -434,15 +433,8 @@ CATALOGUE: tuple[Check, ...] = (
           ("ghost", "label")),
 )
 
-QUICK: tuple[str, ...] = tuple(check.id for check in CATALOGUE if check.v1)
-
 
 def by_id(ids: Iterable[str]) -> tuple[Check, ...]:
     """The checks with these ids, in catalogue order, once each; unknown ids dropped."""
     wanted = {ids} if isinstance(ids, str) else set(ids)
     return tuple(check for check in CATALOGUE if check.id in wanted)
-
-
-def in_group(group: str) -> tuple[Check, ...]:
-    """The checks of one group, in catalogue order."""
-    return tuple(check for check in CATALOGUE if check.group == group)

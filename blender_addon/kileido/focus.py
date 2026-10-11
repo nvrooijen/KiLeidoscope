@@ -1,5 +1,5 @@
 """X-ray mode (panel name; "focus" in code): with a KiCad selection highlighted, a
-finding shown from the DRC column, or a malformed board outline drawn red, everything
+finding shown from the DRC or LLM column, or a malformed board outline drawn red, everything
 else fades. A finding with an isolate draw fades it with the tick box off too.
 
 One shared shader group ("KLS_Focus_v2") sits between each material's surface and

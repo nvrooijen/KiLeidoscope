@@ -1,4 +1,4 @@
-"""The review prompt (spec §3, §4): request.md, the clipboard text, a frozen LLM run."""
+"""The review prompt: request.md, the clipboard text, a frozen LLM run."""
 
 import json
 import sys
@@ -7,11 +7,12 @@ import types
 import pytest
 
 from kileido_bridge import findings, prompt
-from kileido_bridge.checks import CATALOGUE, QUICK, by_id
+from kileido_bridge.checks import CATALOGUE, by_id
 from kileido_bridge.kls_folder import KlsFolder, NotAvailable, stamp
 
 TEXT = "(kicad_pcb (version 20250101)\r\n  (gr_text \"µ\")\n)\n"
 ANSWER = r"C:\proj\.kileidoscope\demo.kls-findings.json"
+QUICK = tuple(check.id for check in CATALOGUE if check.v1)
 
 
 def tools_offered(text: str) -> set[str]:
@@ -110,45 +111,40 @@ def test_every_drawn_tool_has_a_line_and_its_example_parses():
         "- layers [layers: list of copper layers]: only these copper layers shown while the finding is shown")
 
 
-def test_stage2_tools_are_offered_with_the_checks_that_use_them():
-    text = prompt.request_md("1", "00000000", ANSWER, by_id(["hs.bus_match", "fab.clearance", "emc.esd_far"]))
+def test_measuring_tools_are_offered_with_the_checks_that_use_them():
+    def request(*ids):
+        return prompt.request_md("1", "00000000", ANSWER, by_id(ids))
+    text = request("hs.bus_match", "fab.clearance", "emc.esd_far")
     assert tools_offered(text) == {"highlight", "label", "bars", "clearance", "edge_gap", "routed_length",
                                    "distance"}
     assert f"items: list of 1 to {findings.MAX_BARS}" in text and "mm|ps|mv|v|a|ma|pct" in text
     assert "not zones" in text and '"tool": "routed_length", "net": "net:CLK"' in text
     assert ("KiLeidoscope measures distance, clearance, edge_gap, routed_length on the board itself" in text
             and "(distance_mm, length_mm)" in text)
-    stackup = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.stackup"]))
-    assert "KiLeidoscope measures" not in stackup  # nothing measured offered
+    assert "KiLeidoscope measures" not in request("plane.stackup")  # nothing measured offered
     order = [line[2:].split(" [", 1)[0] for line in prompt.drawing_tools_short(findings.DRAWN).splitlines()
              if line.startswith("- ")]
-    assert order[-12:] == ["clearance", "width", "routed_length", "edge_gap", "bars",  # spec §6.2 order,
-                           "return_path", "plane_gap", "layer_change", "plane_islands",  # then §6.3
+    assert order[-12:] == ["clearance", "width", "routed_length", "edge_gap", "bars",  # the measured geometry,
+                           "return_path", "plane_gap", "layer_change", "plane_islands",  # then the plane tools
                            "stitching", "stub", "discontinuity"]
-
-
-def test_stage3_tools_are_offered_with_the_checks_that_use_them():
-    text = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.gap_crossing", "plane.fragmented"]))
-    assert tools_offered(text) == {"highlight", "label", "area", "plane_gap", "return_path", "plane_islands",
-                                   "ghost"}  # a ghost track: a route that stays over the plane
-    assert '"tool": "plane_gap", "plane": "GND@In1.Cu"' in text and "plane: net@layer" in text
-    assert '"kind": "track"' in text and "ghost track (path, layer, net)" in text
-    assert ("KiLeidoscope measures return_path, plane_gap on the board itself" in text
-            and "(length_mm, gap_mm)" in text)
-    vias = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.layer_change_no_return"]))
+    planes = request("plane.gap_crossing", "plane.fragmented")
+    assert tools_offered(planes) == {"highlight", "label", "area", "plane_gap", "return_path", "plane_islands",
+                                     "ghost"}  # a ghost track: a route that stays over the plane
+    assert '"tool": "plane_gap", "plane": "GND@In1.Cu"' in planes and "plane: net@layer" in planes
+    assert '"kind": "track"' in planes and "ghost track (path, layer, net)" in planes
+    assert ("KiLeidoscope measures return_path, plane_gap on the board itself" in planes
+            and "(length_mm, gap_mm)" in planes)
+    vias = request("plane.layer_change_no_return")
     assert "layer_change" in tools_offered(vias) and "default 1.0" in vias
     assert "measures distance, layer_change on the board itself" in vias
-
-
-def test_stage3_wave2_tools_are_offered_with_the_checks_that_use_them():
-    text = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.stitching_sparse", "plane.edge_unstitched"]))
-    assert {"stitching", "ghost", "distance", "edge_gap"} <= tools_offered(text)
-    assert '"tool": "stitching", "along": "GND@In1.Cu", "spacing_mm": 5' in text and "or edge" in text
-    assert '"kind": "via_row"' in text and f"at most {findings.MAX_ROW_VIAS} vias" in text
-    stub = prompt.request_md("1", "00000000", ANSWER, by_id(["hs.stub"]))
+    stitching = request("plane.stitching_sparse", "plane.edge_unstitched")
+    assert {"stitching", "ghost", "distance", "edge_gap"} <= tools_offered(stitching)
+    assert '"tool": "stitching", "along": "GND@In1.Cu", "spacing_mm": 5' in stitching and "or edge" in stitching
+    assert '"kind": "via_row"' in stitching and f"at most {findings.MAX_ROW_VIAS} vias" in stitching
+    stub = request("hs.stub")
     assert tools_offered(stub) == {"stub", "highlight", "label"} and '"tool": "stub", "via": "uuid:5a222dbd"' in stub
     assert "KiLeidoscope measures stub on the board itself" in stub and "(stub_mm)" in stub
-    step = prompt.request_md("1", "00000000", ANSWER, by_id(["hs.impedance_step"]))
+    step = request("hs.impedance_step")
     assert tools_offered(step) == {"discontinuity", "width", "highlight", "label"}
     assert f"at: list of 1 to {findings.MAX_SPOTS} points" in step and '"tool": "discontinuity"' in step
 
@@ -161,7 +157,8 @@ def test_clipboard_is_short_and_names_the_files():
     for name in (prompt.REQUEST, prompt.DIGEST, prompt.BOARD, r"C:\proj\.kileidoscope\runs\7", ANSWER):
         assert name in text, name
     assert "Read request.md first." in text and "Modify nothing else (the progress file excepted)." in text
-    assert [line for line in lines if "progress file" in line][0] ==         "request.md also asks for a small progress file beside the answer; it is optional."
+    assert [line for line in lines if "progress file" in line][0] == (
+        "request.md also asks for a small progress file beside the answer; it is optional.")
     assert "Notes from the user" not in text
     assert prompt.clipboard("7", "5a222dbd", "d", ANSWER, " \n\t\n") == prompt.clipboard("7", "5a222dbd", "d", ANSWER)
 
@@ -246,7 +243,7 @@ def test_make_run_writes_the_three_files_and_returns_the_prompt(tmp_path, fake_d
     # an answer echoing the run and stamp is ours
     echoed = findings.parse(json.dumps({"format": findings.FORMAT, "run": run.id, "stamp": run.stamp,
                                         "findings": []}).encode())
-    context = findings.Context(path=answer, source="file", runs=folder.runs(), live_stamp=run.stamp, states={})
+    context = findings.Context(source="file", runs=folder.runs(), live_stamp=run.stamp, states={})
     assert findings.handshake(echoed, context) == "known"
     stale = findings.parse(json.dumps({"format": findings.FORMAT, "run": run.id, "stamp": "deadbeef"}).encode())
     assert findings.handshake(stale, context) == "other_run"

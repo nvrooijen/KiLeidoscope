@@ -14,10 +14,9 @@ import select
 import socket
 import sys
 import time
+from typing import NamedTuple
 
-from .findings_watch import ACTIONS as FINDINGS_ACTIONS
-from .findings_watch import MAX_CHECKS as MAX_PROMPT_CHECKS  # check ids in one prompt request
-from .findings_watch import MAX_NOTES as MAX_PROMPT_NOTES  # characters of the user's notes in a prompt request
+from . import findings_watch
 from .kls_folder import SOURCES as FINDINGS_SOURCES
 from .protocol import FrameDecoder
 
@@ -33,16 +32,13 @@ MAX_FINDINGS_REQUESTS = 64  # queued between two steps; more are dropped
 RECV_BYTES = 1 << 20
 
 
-class FindingsRequest(tuple):
-    """(action, finding key, source, check ids) of one findings request, compared as that
-    tuple; a prompt's user notes ride along as `notes`."""
-
-    notes: str
-
-    def __new__(cls, action: str, key: str, source: str, checks: tuple[str, ...], notes: str = ""):
-        request = super().__new__(cls, (action, key, source, checks))
-        request.notes = notes
-        return request
+class FindingsRequest(NamedTuple):
+    """One findings request from Blender (`findings_watch.FindingsWatch.request`)."""
+    action: str
+    key: str
+    source: str
+    checks: tuple[str, ...]  # a prompt's check ids
+    notes: str = ""  # a prompt's user notes
 
 
 class BridgeServer:
@@ -143,11 +139,11 @@ class BridgeServer:
             action, key, source = header.get("action"), header.get("key", ""), header.get("source", "drc")
             checks = header.get("checks", [])  # a prompt's check ids; unknown ones are dropped later
             notes = header.get("notes", "")  # a prompt's user notes; made plain text later
-            if (isinstance(action, str) and action in FINDINGS_ACTIONS and isinstance(key, str)
+            if (isinstance(action, str) and action in findings_watch.ACTIONS and isinstance(key, str)
                     and len(key) <= MAX_FINDINGS_KEY and source in FINDINGS_SOURCES
-                    and isinstance(checks, list) and len(checks) <= MAX_PROMPT_CHECKS
+                    and isinstance(checks, list) and len(checks) <= findings_watch.MAX_CHECKS
                     and all(isinstance(check, str) and len(check) <= MAX_CHECK_ID for check in checks)
-                    and isinstance(notes, str) and len(notes) <= MAX_PROMPT_NOTES
+                    and isinstance(notes, str) and len(notes) <= findings_watch.MAX_NOTES
                     and len(self.findings_requests) < MAX_FINDINGS_REQUESTS):
                 self.findings_requests.append(FindingsRequest(action, key, source, tuple(checks), notes))
 
@@ -207,8 +203,7 @@ class BridgeServer:
         return requests
 
     def take_findings_requests(self) -> list[FindingsRequest]:
-        """(action, finding key, source, check ids) of each findings request, oldest first;
-        a prompt's notes in `.notes`."""
+        """The findings requests, oldest first."""
         requests, self.findings_requests = self.findings_requests, []
         return requests
 

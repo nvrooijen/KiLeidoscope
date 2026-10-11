@@ -52,7 +52,7 @@ def kind(record) -> str:
     return _KIND.get(type(record), type(record).__name__.lower())
 
 
-def _mm(nm: float) -> str:
+def _shown_mm(nm: float) -> str:
     return f"{nm / 1e6:.2f} mm"
 
 
@@ -112,7 +112,7 @@ def _pick(index: BoardIndex, target: str, items, layer, point, what: str) -> Res
     if near is None:
         return Resolved(target, (), layer, point, f"{what} has no copper to measure")
     note = "" if near.gap.distance <= SNAP_NM else \
-        f"nearest {kind(near.record)} of {what} is {_mm(near.gap.distance)} from the point"
+        f"nearest {kind(near.record)} of {what} is {_shown_mm(near.gap.distance)} from the point"
     return Resolved(target, (near.record,), layer, point, note)
 
 
@@ -162,10 +162,10 @@ def _resolve(index: BoardIndex, target: str) -> Resolved:
         candidates = index.layer_items(layer) if layer else index.copper
         near = index.nearest(point, candidates, layer, max_distance=SNAP_NM)
         if near is None:
-            return Resolved(target, (), layer, point, f"no copper within {_mm(SNAP_NM)}")
+            return Resolved(target, (), layer, point, f"no copper within {_shown_mm(SNAP_NM)}")
         where = getattr(near.record, "layer", None) if layer is None else None
         note = (f"snapped to {kind(near.record)}" + (f" on {where}" if where else "") +
-                f" {_mm(near.gap.distance)} away") if near.gap.distance or where else ""
+                f" {_shown_mm(near.gap.distance)} away") if near.gap.distance or where else ""
         return Resolved(target, (near.record,), layer, point, note)
     footprints = index.footprints(text)
     if footprints:

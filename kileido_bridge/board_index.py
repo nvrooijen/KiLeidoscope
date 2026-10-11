@@ -202,6 +202,32 @@ def _inside(points: np.ndarray, polygon: tuple[np.ndarray, ...]) -> np.ndarray:
     return inside
 
 
+def polygon_area(rings) -> float:
+    """Area in nm² of a polygon given as its rings ((k, 2) arrays, the outer ring first,
+    then its holes): each ring's unsigned shoelace area (a fractured fill's slits cancel),
+    the holes taken off; 0 without rings."""
+    def shoelace(ring):
+        x, y = ring[:, 0], ring[:, 1]
+        return abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2
+    return shoelace(rings[0]) - sum(shoelace(ring) for ring in rings[1:]) if len(rings) else 0.0
+
+
+def arc_length(start: Point, mid: Point, end: Point) -> float:
+    """Length in nm of the circular arc from `start` through `mid` to `end`."""
+    (x1, y1), (x2, y2), (x3, y3) = start, mid, end
+    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    if d == 0:  # collinear: a straight piece
+        return math.dist(start, end)
+    s1, s2, s3 = x1 * x1 + y1 * y1, x2 * x2 + y2 * y2, x3 * x3 + y3 * y3
+    ux = (s1 * (y2 - y3) + s2 * (y3 - y1) + s3 * (y1 - y2)) / d
+    uy = (s1 * (x3 - x2) + s2 * (x1 - x3) + s3 * (x2 - x1)) / d
+    a1, a2, a3 = (math.atan2(y - uy, x - ux) for x, y in (start, mid, end))
+    sweep = (a3 - a1) % math.tau
+    if (a2 - a1) % math.tau > sweep:  # mid lies the other way round
+        sweep = math.tau - sweep
+    return math.hypot(x1 - ux, y1 - uy) * sweep
+
+
 def _ends(segments: np.ndarray, radii: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Both ends of every segment, with their segment's radius."""
     return np.vstack([segments[:, :2], segments[:, 2:]]), np.concatenate([radii, radii])
@@ -579,7 +605,7 @@ class BoardIndex:
                     [_Piece(record, (*record.start, *record.end))]
                 chords = sum(piece.length for piece in chain)
                 for piece in chain:  # chords are a little shorter than the curve
-                    piece.scale = _arc_length(record) / chords if chords else 1.0
+                    piece.scale = arc_length(record.start, record.mid, record.end) / chords if chords else 1.0
                 for one, other in zip(chain, chain[1:]):  # sampled points are shared: joined end to start
                     graph.join(one.station(graph, one.length), other.station(graph, 0.0), 0.0)
             else:
@@ -663,22 +689,6 @@ class BoardIndex:
 
 
 _CELL = 1_000_000  # nm: grid cell of the route lookup
-
-
-def _arc_length(arc: model.Arc) -> float:
-    """Length of an arc's centre line through start, mid and end."""
-    (x1, y1), (x2, y2), (x3, y3) = arc.start, arc.mid, arc.end
-    determinant = 2 * ((x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1))
-    if determinant == 0:
-        return math.hypot(x2 - x1, y2 - y1) + math.hypot(x3 - x2, y3 - y2)
-    a, b = (x2 - x1) ** 2 + (y2 - y1) ** 2, (x3 - x1) ** 2 + (y3 - y1) ** 2
-    cx = x1 + (a * (y3 - y1) - b * (y2 - y1)) / determinant
-    cy = y1 + (b * (x2 - x1) - a * (x3 - x1)) / determinant
-    first, middle, last = (math.atan2(y - cy, x - cx) for x, y in ((x1, y1), (x2, y2), (x3, y3)))
-    sweep = (last - first) % math.tau
-    if (middle - first) % math.tau > sweep:
-        sweep = math.tau - sweep
-    return math.hypot(x1 - cx, y1 - cy) * sweep
 
 
 class _Grid:

@@ -1,4 +1,4 @@
-"""Board digest (LLM Visualizer spec §3): content, ordering, names that resolve, size."""
+"""Board digest: content, ordering, names that resolve, size."""
 
 import json
 import math

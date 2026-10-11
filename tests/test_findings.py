@@ -36,7 +36,7 @@ def finding(*draws, **fields):
 
 
 def context(source="file", runs=None, live=STAMP, states=None):
-    return Context("x.kls-findings.json", source, {"4": STAMP} if runs is None else runs, live, states or {})
+    return Context(source, {"4": STAMP} if runs is None else runs, live, states or {})
 
 
 def payload(index, *items, ctx=None, **top):
@@ -47,6 +47,13 @@ def only_draw(result):
     (item,) = result["findings"]
     (draw,) = item["draws"]
     return draw
+
+
+def parsed_draws(draws, skipped):
+    """`draws` parsed in one finding, `skipped` of them refused: (the draws kept, its problems)."""
+    item = parse(raw(finding(*draws))).findings[0]
+    assert sum("skipped" in p for p in item.problems) == skipped and len(item.draws) == len(draws) - skipped
+    return item.draws, item.problems
 
 
 # whole-file errors
@@ -147,12 +154,11 @@ def test_bad_enums_fall_back():
     assert item.title == "x" and "no title" in item.problems
 
 
-def test_unknown_or_bad_check_ids_group_under_other(index):
+def test_bad_check_ids_become_other(index):
     result = payload(index, finding(check="my.own_check"), finding(check="plane.gap_crossing"),
                      finding(check="has space"), finding(check="drc.clearance"))
-    groups = [(f["check"], f["group"]) for f in result["findings"]]
-    assert groups == [("my.own_check", "other"), ("plane.gap_crossing", "plane"),
-                      ("other", "other"), ("drc.clearance", "drc")]
+    assert [f["check"] for f in result["findings"]] == ["my.own_check", "plane.gap_crossing", "other",
+                                                        "drc.clearance"]
 
 
 def test_bad_draws_are_skipped_and_the_finding_stays():
@@ -174,8 +180,9 @@ def test_bad_draws_are_skipped_and_the_finding_stays():
              "highlight",
              {"tool": "highlight", "targets": ["U3"], "step": 0, "emphasis": "loud", "label": "ok"}]
     item = parse(raw(finding(*draws))).findings[0]
-    assert len(item.draws) == 1 and item.draws[0].step == 0 and item.draws[0].emphasis == "normal"
+    assert len(item.draws) == 1 and item.draws[0].emphasis == "normal"
     assert sum("skipped" in p for p in item.problems) == len(draws) - 1
+    assert "draw 17 (highlight): step is not a whole number 1..100" in item.problems
     assert any("unknown tool explode" in p for p in item.problems)
 
 
@@ -185,8 +192,9 @@ def test_valid_draw_fields_are_normalised():
              {"tool": "area", "layer": "in1.cu", "polygon": [[0, 0], [1, 0], [1, 1]]},
              {"tool": "layers", "layers": ["f.cu", "In2.Cu"]},
              {"tool": "ghost", "kind": "via", "at": "pt:1,2@F.Cu", "size": 0.6, "emphasis": "strong"}]
-    distance, zone, area, layers, ghost = parse(raw(finding(*draws))).findings[0].draws
-    assert distance.fields["mode"] == "centre" and distance.fields["limit_is"] == "max" and distance.step == 3
+    item = parse(raw(finding(*draws))).findings[0]
+    distance, zone, area, layers, ghost = item.draws
+    assert distance.fields["mode"] == "centre" and distance.fields["limit_is"] == "max" and not item.problems
     assert zone.fields == {"layer": "In1.Cu", "targets": ("uuid:z-gnd",), "polygon": ()} and zone.emphasis == "strong"
     assert area.fields["layer"] == "In1.Cu" and len(area.fields["polygon"]) == 3
     assert layers.fields["layers"] == ("F.Cu", "In2.Cu")
@@ -208,7 +216,7 @@ def test_every_target_form_resolves(index):
                f"uuid:{TRACK[-9:]}", "uuid:z-gnd", "pt:15,10.4@F.Cu", "edge"]
     draw = only_draw(payload(index, finding({"tool": "highlight", "targets": targets})))
     assert draw["ok"] and all(t["found"] for t in draw["targets"])
-    assert draw["outline"] is True
+    assert draw["targets"][-1]["kind"] == "board edge"
     assert {"f-u3", "p-c12-1", TRACK, "arc-1", VIA, "z-gnd"} <= set(draw["ids"])
     assert len(draw["ids"]) == len(set(draw["ids"]))
     assert [t["kind"] for t in draw["targets"]][:2] == ["part", "pad"]
@@ -245,7 +253,8 @@ def test_centre_distance_and_point_ends(index):
 
 def test_distance_to_the_board_edge(index):
     draw = only_draw(payload(index, finding({"tool": "distance", "from": "net:/~{RST}", "to": "edge"})))
-    assert draw["measured_nm"] == 5 * MM - 100_000 and draw["outline"] and draw["ids"] == ["t-weird"]
+    assert draw["measured_nm"] == 5 * MM - 100_000 and draw["ids"] == ["t-weird"]
+    assert draw["targets"][1]["kind"] == "board edge"
     assert draw["points"][1][2] == "F.Cu"  # the edge end on the track's own layer: no line through the board
 
 
@@ -353,11 +362,10 @@ def test_changed_when_the_live_stamp_differs(index):
     same = payload(index, item)
     assert not same["changed"] and same["findings"][0]["draws"]
     assert same["status"] == "ok" and same["connected"] and same["run"] == "4"
-    assert same["stamp"] == same["live_stamp"] == STAMP
     changed = payload(index, item, ctx=context(live="00000000"))
     assert changed["changed"] and changed["findings"][0]["draws"]
     drc = payload(index, item, ctx=context(source="drc", live="00000000"))
-    assert drc["changed"] and drc["source"] == "drc"
+    assert drc["changed"]
     assert not payload(index, item, stamp=None)["changed"]
     assert not payload(index, item, ctx=context(live=""))["changed"]
 
@@ -372,7 +380,7 @@ def test_handshake_known_changed(index):
     changed = payload(index, item, ctx=context(live="00000000"))
     assert changed["handshake"] == "known" and changed["changed"]
     drc = payload(index, item, ctx=context(source="drc", runs={}, live="00000000"))
-    assert drc["handshake"] == "known" and drc["changed"] and drc["source"] == "drc"
+    assert drc["handshake"] == "known" and drc["changed"]
 
 
 @pytest.mark.parametrize("ctx, top", [
@@ -393,7 +401,7 @@ def test_handshake_outside_is_drawn(index):
     item = finding({"tool": "highlight", "targets": ["U3"]})
     result = payload(index, item, run=None, stamp=None, tool="some script")
     assert result["handshake"] == "outside" and not result["changed"]
-    assert result["run"] == "" and result["stamp"] == "" and result["tool"] == "some script"
+    assert result["run"] == "" and result["tool"] == "some script"
     (drawn,) = result["findings"][0]["draws"]
     assert drawn["ok"] and drawn["ids"] and result["findings"][0]["bbox_nm"] is not None
     assert payload(index, item, run=None, stamp=None, ctx=context(source="drc"))["handshake"] == "outside"
@@ -463,13 +471,31 @@ def test_keys_are_unique_and_carry_state(index):
     assert [item["state"] for item in again["findings"]] == ["dismissed", "", "confirmed"]
 
 
-def test_payload_is_json(index):
-    result = payload(index, finding({"tool": "distance", "from": f"uuid:{VIA}", "to": "edge", "limit": 1},
-                                    {"tool": "highlight", "targets": ["net:SIG"]}, values={"x_mm": 1.5}))
-    text = json.dumps(result, allow_nan=False)
-    assert json.loads(text) == result
+@pytest.mark.parametrize("board_name, draws", [
+    ("index", [{"tool": "distance", "from": f"uuid:{VIA}", "to": "edge", "limit": 1},
+               {"tool": "highlight", "targets": ["net:SIG"]}]),
+    ("index", [{"tool": "width", "target": "net:SIG", "required": 0.3},
+               {"tool": "clearance", "a": f"uuid:{VIA}", "b": f"uuid:{TRACK}"},
+               {"tool": "routed_length", "net": "SIG", "from": "U3.4", "to": "C12.1"},
+               {"tool": "edge_gap", "target": "U3"},
+               {"tool": "bars", "items": [{"label": "a", "value": 1}], "at": "C12"}]),
+    ("split", [{"tool": "layer_change", "via": "uuid:via-lvds-0"},
+               {"tool": "plane_gap", "plane": "GND@In1.Cu", "crossing": "net:SATA_P"},
+               {"tool": "return_path", "signal": "net:USB_D+", "plane": "GND@In1.Cu"},
+               {"tool": "plane_islands", "net": "GND"}]),
+    ("stitched", [{"tool": "stitching", "along": "GND@In1.Cu", "spacing_mm": 5},
+                  {"tool": "stub", "via": "uuid:st-0"},
+                  {"tool": "discontinuity", "net": "USB_D+", "at": [[50, 10]]}]),
+    ("index", [{"tool": "ghost", "kind": "part", "part": "C12", "at": "pt:25,30@F.Cu"},
+               {"tool": "ghost", "kind": "track", "net": "SIG", "path": [[22, 5], [26, 8]], "layer": "F.Cu"},
+               {"tool": "ghost", "kind": "via_row", "from": "pt:2,2@F.Cu", "to": "pt:2,12@F.Cu", "pitch": 3}]),
+], ids=["marks", "measured", "planes", "stitching", "ghosts"])
+def test_payload_is_json_and_every_draw_has_every_key(request, board_name, draws):
+    result = payload(request.getfixturevalue(board_name),finding(*draws, values={"x_mm": 1.5}))
+    assert json.loads(json.dumps(result, allow_nan=False)) == result
+    keys = set(findings._empty_draw(findings.Draw("highlight", {})))
+    assert all(set(draw) == keys and draw["ok"] for draw in result["findings"][0]["draws"])
     assert all(isinstance(v, int) for v in result["findings"][0]["bbox_nm"])
-    assert not math.isnan(result["findings"][0]["draws"][0]["measured_nm"])
 
 
 def test_distance_between_items_sharing_a_layer_is_drawn_on_that_layer():
@@ -512,7 +538,7 @@ def test_a_finding_at_a_point_of_a_plane_is_framed_on_the_point(index):
 
 # measured geometry
 
-def test_stage2_fields_are_checked():
+def test_measuring_tool_fields_are_checked():
     draws = [{"tool": "clearance", "a": "U3"},
              {"tool": "clearance", "a": "U3", "b": "C12", "required": -1},
              {"tool": "edge_gap", "target": "U3", "min_mm": "0.5"},
@@ -527,14 +553,13 @@ def test_stage2_fields_are_checked():
              {"tool": "bars", "items": [{"label": "a", "value": 1}], "unit": "furlong"},
              {"tool": "clearance", "a": "U3", "b": "C12", "required": 0.2},
              {"tool": "routed_length", "net": "net:SIG", "from": "U3.4", "to": "C12.1"}]
-    item = parse(raw(finding(*draws))).findings[0]
-    assert [draw.tool for draw in item.draws] == ["clearance", "routed_length"]
-    assert item.draws[0].fields == {"a": "U3", "b": "C12", "required": 0.2} and item.draws[1].fields["net"] == "SIG"
-    assert sum("skipped" in p for p in item.problems) == len(draws) - 2
-    bars = parse(raw(finding({"tool": "bars", "items": [{"label": "x" * 41, "value": 2, "limit": 1.5}],
-                              "unit": "PS"}))).findings[0]
-    assert bars.draws[0].fields == {"items": (("x" * 39 + "…", 2.0, 1.5),), "unit": "ps", "at": None}
-    assert any("cut to 40" in p for p in bars.problems)
+    kept, _ = parsed_draws(draws, len(draws) - 2)
+    assert [draw.tool for draw in kept] == ["clearance", "routed_length"]
+    assert kept[0].fields == {"a": "U3", "b": "C12", "required": 0.2} and kept[1].fields["net"] == "SIG"
+    (bars,), problems = parsed_draws([{"tool": "bars", "items": [{"label": "x" * 41, "value": 2, "limit": 1.5}],
+                                       "unit": "PS"}], 0)
+    assert bars.fields == {"items": (("x" * 39 + "…", 2.0, 1.5),), "unit": "ps", "at": None}
+    assert any("cut to 40" in p for p in problems)
 
 
 def test_clearance_is_measured_like_an_edge_distance(index):
@@ -552,7 +577,7 @@ def test_clearance_is_measured_like_an_edge_distance(index):
 def test_edge_gap_measures_to_the_outline(index):
     draw = only_draw(payload(index, finding({"tool": "edge_gap", "target": "net:/~{RST}", "min_mm": 5})))
     assert draw["what"] == "Edge gap" and draw["measured_nm"] == 5 * MM - 100_000 and draw["over"]
-    assert draw["outline"] and draw["ids"] == ["t-weird"] and draw["limit_is"] == "min"
+    assert draw["ids"] == ["t-weird"] and draw["limit_is"] == "min"
     assert [end[2] for end in draw["points"]] == ["F.Cu", "F.Cu"]
     on_layer = only_draw(payload(index, finding({"tool": "edge_gap", "target": "net:/~{RST}@F.Cu"})))
     assert [end[2] for end in on_layer["points"]] == ["F.Cu", "F.Cu"]  # not Edge.Cuts: no line through the board
@@ -646,37 +671,14 @@ def test_claimed_width_and_length_against_measured(index, values, keys):
     assert [entry["key"] for entry in result["findings"][0]["disagree"]] == keys
 
 
-def test_stage2_payload_is_json(index):
-    result = payload(index, finding({"tool": "width", "target": "net:SIG", "required": 0.3},
-                                    {"tool": "clearance", "a": f"uuid:{VIA}", "b": f"uuid:{TRACK}"},
-                                    {"tool": "routed_length", "net": "SIG", "from": "U3.4", "to": "C12.1"},
-                                    {"tool": "edge_gap", "target": "U3"},
-                                    {"tool": "bars", "items": [{"label": "a", "value": 1}], "at": "C12"}))
-    assert json.loads(json.dumps(result, allow_nan=False)) == result
-    keys = set(findings._empty_draw(findings.Draw("highlight", {})))
-    assert all(set(draw) == keys and draw["ok"] for draw in result["findings"][0]["draws"])
-
-
 # planes and return paths (on the split-plane board, tests/split_board.py)
-
-STAGE3_KEYS = ("planes", "spans_nm", "covered_nm", "edges_nm", "returns", "fits", "islands", "barrel", "marks")
-
 
 @pytest.fixture
 def split():
     return BoardIndex(split_board.board())
 
 
-def test_every_draw_carries_the_stage3_keys_empty(index):
-    empty = findings._empty_draw(findings.Draw("highlight", {}))
-    assert {key: empty[key] for key in STAGE3_KEYS} == {
-        "planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,
-        "islands": [], "barrel": {}, "marks": []}
-    draw = only_draw(payload(index, finding({"tool": "highlight", "targets": ["U3"]})))
-    assert all(draw[key] == empty[key] for key in STAGE3_KEYS)
-
-
-def test_stage3_fields_are_checked():
+def test_plane_tool_fields_are_checked():
     draws = [{"tool": "layer_change"},
              {"tool": "layer_change", "via": "uuid:v", "planes": "GND@In1.Cu"},
              {"tool": "layer_change", "via": "uuid:v", "planes": ["GND@In1.Cu", "GND@In2.Cu", "GND@B.Cu"]},
@@ -695,15 +697,14 @@ def test_stage3_fields_are_checked():
              {"tool": "return_path", "signal": "net:A", "plane": "net: GND @ B.Cu"},
              {"tool": "plane_islands", "net": "net:GND"},
              {"tool": "plane_islands", "net": "GND", "layer": "in2.cu"}]
-    item = parse(raw(finding(*draws))).findings[0]
-    assert sum("skipped" in p for p in item.problems) == 12 and len(item.draws) == 6
-    default, named_planes, gap, path, islands, layer = (draw.fields for draw in item.draws)
+    kept, problems = parsed_draws(draws, 12)
+    default, named_planes, gap, path, islands, layer = (draw.fields for draw in kept)
     assert default == {"via": "uuid:v", "limit": 1.0, "planes": ()}
     assert named_planes["planes"] == (("GND", "In1.Cu"), ("A@B", "In2.Cu")) and named_planes["limit"] == 2
     assert gap == {"plane": ("GND", "In1.Cu"), "crossing": "net:A"}
     assert path == {"signal": "net:A", "plane": ("GND", "B.Cu")}
     assert islands == {"net": "GND", "layer": None} and layer["layer"] == "In2.Cu"
-    assert any("planes[0] is not net@layer (e.g. GND@In1.Cu)" in p for p in item.problems)
+    assert any("planes[0] is not net@layer (e.g. GND@In1.Cu)" in p for p in problems)
 
 
 def test_layer_change_without_a_return_via_is_over_and_suggests_nothing(split):
@@ -891,7 +892,7 @@ def test_plane_islands_problems_and_caps(split, monkeypatch):
 @pytest.mark.parametrize("values, keys", [({"gap_mm": 1.0, "length_mm": 1.0, "distance_mm": 1.0}, []),
                                           ({"gap_mm": 2.0, "length_mm": 0.5, "distance_mm": 3.0},
                                            ["distance_mm", "length_mm", "gap_mm"])])
-def test_claimed_stage3_values_against_measured(values, keys):
+def test_claimed_plane_values_against_measured(values, keys):
     index = BoardIndex(split_board.with_return_via(split_board.board()))
     result = payload(index, finding({"tool": "layer_change", "via": "uuid:via-lvds-0"},
                                     {"tool": "return_path", "signal": "net:SATA_P", "plane": "GND@In1.Cu"},
@@ -900,14 +901,7 @@ def test_claimed_stage3_values_against_measured(values, keys):
     assert [entry["key"] for entry in result["findings"][0]["disagree"]] == keys
 
 
-def test_stage3_payload_is_json_and_framed_on_what_it_found(split):
-    result = payload(split, finding({"tool": "layer_change", "via": "uuid:via-lvds-0"},
-                                    {"tool": "plane_gap", "plane": "GND@In1.Cu", "crossing": "net:SATA_P"},
-                                    {"tool": "return_path", "signal": "net:USB_D+", "plane": "GND@In1.Cu"},
-                                    {"tool": "plane_islands", "net": "GND"}))
-    assert json.loads(json.dumps(result, allow_nan=False)) == result
-    keys = set(findings._empty_draw(findings.Draw("highlight", {})))
-    assert all(set(draw) == keys and draw["ok"] for draw in result["findings"][0]["draws"])
+def test_plane_islands_are_framed_on_the_loose_piece(split):
     alone = payload(split, finding({"tool": "plane_islands", "net": "GND"}))
     assert alone["findings"][0]["bbox_nm"] == [MM, MM, 49_750_000, 39 * MM]  # the loose piece
     assert alone["findings"][0]["key"] == finding_key("test.check", ["title:T"])
@@ -931,7 +925,7 @@ def necked():
         model.Track("neck-1", "F.Cu", "NECK", (70 * MM, 30 * MM), (80 * MM, 30 * MM), 150_000)))
 
 
-def test_stage3_wave2_fields_are_checked():
+def test_stitching_stub_and_discontinuity_fields_are_checked():
     draws = [{"tool": "stitching", "along": "edge", "spacing_mm": 5},
              {"tool": "stitching", "along": "GND@In1.Cu"},
              {"tool": "stitching", "along": "GND@In1.Cu", "spacing_mm": 0},
@@ -949,9 +943,8 @@ def test_stage3_wave2_fields_are_checked():
              {"tool": "stitching", "along": "net:GND@in1.cu", "net": "GND", "spacing_mm": 5, "max_mm": 8},
              {"tool": "stub", "pad": "J1.1"},
              {"tool": "discontinuity", "net": "net:A", "at": [[1.5, -2], "pt:3,4@F.Cu", [0.0000004, 2]]}]
-    item = parse(raw(finding(*draws))).findings[0]
-    assert sum("skipped" in p for p in item.problems) == 13 and len(item.draws) == 4
-    edge, pour, pad, spots = (draw.fields for draw in item.draws)
+    kept, problems = parsed_draws(draws, 13)
+    edge, pour, pad, spots = (draw.fields for draw in kept)
     assert edge == {"along": "edge", "net": "GND", "spacing": 5.0, "max": None}
     assert pour == {"along": ("GND", "In1.Cu"), "net": "GND", "spacing": 5.0, "max": 8.0}
     assert pad == {"via": None, "pad": "J1.1"}
@@ -959,7 +952,7 @@ def test_stage3_wave2_fields_are_checked():
     for text in ("along edge needs net: the stitching net (e.g. GND)", "net VCC is not the pour's net GND",
                  "spacing_mm is not a positive number in mm", "give via or pad (one of them)",
                  "at is not a list of 1 to 20 points or targets", "at[0] is not [x, y]"):
-        assert any(text in p for p in item.problems), text
+        assert any(text in p for p in problems), text
 
 
 def test_stitching_along_a_pour(stitched):
@@ -1108,13 +1101,7 @@ def test_discontinuity_problems(split):
     assert mixed["ok"] and len(mixed["marks"]) == 1 and mixed["problem"] == "at[0]: no item with uuid nope0000"
 
 
-def test_stage3_wave2_payload_is_json_and_framed(stitched):
-    result = payload(stitched, finding({"tool": "stitching", "along": "GND@In1.Cu", "spacing_mm": 5},
-                                       {"tool": "stub", "via": "uuid:st-0"},
-                                       {"tool": "discontinuity", "net": "USB_D+", "at": [[50, 10]]}))
-    assert json.loads(json.dumps(result, allow_nan=False)) == result
-    keys = set(findings._empty_draw(findings.Draw("highlight", {})))
-    assert all(set(draw) == keys and draw["ok"] for draw in result["findings"][0]["draws"])
+def test_a_stub_is_framed_on_its_via_and_each_discontinuity_point_is_keyed(stitched):
     alone = payload(stitched, finding({"tool": "stub", "via": "uuid:st-0"}))
     x0, y0, x1, y1 = alone["findings"][0]["bbox_nm"]
     assert x0 <= 5 * MM <= x1 and y0 <= 2 * MM <= y1 and x1 - x0 < MM  # the via
@@ -1122,11 +1109,12 @@ def test_stage3_wave2_payload_is_json_and_framed(stitched):
     assert spots["findings"][0]["key"] == finding_key("test.check", ["net:USB_D+@F.Cu~50,10"])  # each point keyed
 
 
-
 # ghosts: a part moved, a route, a row of vias (on the board of test_board_index)
 
-GHOST_KEYS = {"part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],
-              "pitch_nm": 0}
+EMPTY = {"planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,  # planes
+         "islands": [], "barrel": {}, "marks": [],
+         "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],  # ghosts
+         "pitch_nm": 0}
 
 
 def ghost(index, **fields):
@@ -1144,11 +1132,11 @@ def with_parts(*extra_pads, side="top"):
     return BoardIndex(replace(snapshot, footprints=(*snapshot.footprints, c7), pads=(*snapshot.pads, *pads, *extra_pads)))
 
 
-def test_every_draw_carries_the_ghost_keys_empty(index):
+def test_every_draw_carries_the_plane_and_ghost_keys_empty(index):
     empty = findings._empty_draw(findings.Draw("highlight", {}))
-    assert {key: empty[key] for key in GHOST_KEYS} == GHOST_KEYS
+    assert {key: empty[key] for key in EMPTY} == EMPTY
     draw = only_draw(payload(index, finding({"tool": "highlight", "targets": ["U3"]})))
-    assert all(draw[key] == value for key, value in GHOST_KEYS.items())
+    assert all(draw[key] == value for key, value in EMPTY.items())
 
 
 def test_ghost_kind_fields_are_checked():
@@ -1173,9 +1161,9 @@ def test_ghost_kind_fields_are_checked():
            ({"kind": "via_row", "to": "pt:2,2", "pitch": 1}, "from missing"),
            ({"kind": "via_row", "from": "pt:1,1", "to": [2], "pitch": 1}, "to is not [x, y]"),
            ({"kind": "via_row", "from": "pt:1,1", "to": "pt:2,2", "pitch": 1, "net": ""}, "net is not a net name")]
-    item = parse(raw(finding(*({"tool": "ghost", **fields} for fields, _ in bad)))).findings[0]
-    assert not item.draws and len(item.problems) == len(bad)
-    for problem, (_, reason) in zip(item.problems, bad):
+    _, problems = parsed_draws([{"tool": "ghost", **fields} for fields, _ in bad], len(bad))
+    assert len(problems) == len(bad)
+    for problem, (_, reason) in zip(problems, bad):
         assert "skipped: " + reason in problem, (problem, reason)
     good = [{"kind": "part", "part": "C12", "at": "pt:1,1@F.Cu"},
             {"kind": "part", "part": "C12", "at": "U3", "rotation": -270},
@@ -1183,8 +1171,8 @@ def test_ghost_kind_fields_are_checked():
              "width": 0.25},
             {"kind": "via_row", "from": [2, 2], "to": "pt:2,12@F.Cu", "pitch": 1.5, "size": 0.4, "net": "GND"},
             {"kind": "via", "at": "pt:1,1@F.Cu"}]
-    part, turned, track, row, via = (draw.fields for draw in parse(raw(finding(
-        *({"tool": "ghost", **fields} for fields in good)))).findings[0].draws)
+    kept, _ = parsed_draws([{"tool": "ghost", **fields} for fields in good], 0)
+    part, turned, track, row, via = (draw.fields for draw in kept)
     assert part["part"] == "C12" and part["rotation"] is None  # a part keeps its own rotation unless given
     assert turned["rotation"] == 90 and turned["at"] == "U3"
     assert track["path"] == ("U3.4", "pt:22,8", "pt:26,8@F.Cu") and track["layer"] == "F.Cu"
@@ -1421,15 +1409,12 @@ def test_a_measuring_bug_costs_its_draw_not_the_file(index, monkeypatch):
     assert highlight["ok"] and highlight["ids"]
 
 
-def test_ghost_kinds_payload_is_json_and_framed(index):
+def test_ghost_kinds_are_framed_on_what_they_show(index):
     result = payload(index, finding({"tool": "ghost", "kind": "part", "part": "C12", "at": "pt:25,30@F.Cu"},
                                     {"tool": "ghost", "kind": "track", "net": "SIG", "path": [[22, 5], [26, 8]],
                                      "layer": "F.Cu"},
                                     {"tool": "ghost", "kind": "via_row", "from": "pt:2,2@F.Cu", "to": "pt:2,12@F.Cu",
                                      "pitch": 3}))
-    assert json.loads(json.dumps(result, allow_nan=False)) == result
-    keys = set(findings._empty_draw(findings.Draw("highlight", {})))
-    assert all(set(draw) == keys and draw["ok"] for draw in result["findings"][0]["draws"])
     x0, y0, x1, y1 = result["findings"][0]["bbox_nm"]
     assert (x0, y0) == (2 * MM, 2 * MM) and (x1, y1) == (26 * MM, 30.5 * MM)  # the row, the route, both places of C12
     assert not result["findings"][0]["passes"] and result["findings"][0]["disagree"] == []

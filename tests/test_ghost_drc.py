@@ -14,7 +14,7 @@ import pytest
 from kileido_bridge import drc_findings, findings, findings_watch, ghost_drc, kls_folder
 from kileido_bridge.board_index import BoardIndex
 from kileido_bridge.ghost_drc import Ghost, Outcome, Verdict
-from kileido_bridge.scrub import _nodes
+from kileido_bridge.scrub import nodes
 from test_board_index import board
 from test_findings import finding, only_draw, payload
 from test_live_link import fixture
@@ -50,7 +50,7 @@ OLD = """(kicad_pcb
 
 def loads(text):
     """The text is one balanced (kicad_pcb ...) node, nothing outside it."""
-    tops = [(start, end, name) for start, end, name, depth in _nodes(text) if depth == 0]
+    tops = [(start, end, name) for start, end, name, depth in nodes(text) if depth == 0]
     assert [name for _, _, name in tops] == ["kicad_pcb"] and text[tops[0][1]:].strip() == "", tops
     return text
 
@@ -531,7 +531,7 @@ def test_an_undone_edit_runs_no_stale_ghost_check(tmp_path, monkeypatch):
     (tmp_path / "board.kicad_pcb").write_text(BOARD_TEXT, encoding="utf-8")
     watch = findings_watch.FindingsWatch(find_cli=lambda hint: "kicad-cli")
     watch.target(str(tmp_path / "board.kicad_pcb"))
-    board = findings_watch._Board(1, None, "a1b2c3d4", BOARD_TEXT)
+    board = findings_watch._LiveBoard(1, None, "a1b2c3d4", BOARD_TEXT)
 
     def show(ghosts):
         with watch._lock:
@@ -591,16 +591,3 @@ def test_a_ghost_run_is_judged_by_the_projects_own_rules(tmp_path):
     outcome = ghost_drc.check(folder, TEXT, [via(0, MM, MM)], "kicad-cli", run=run, lock=threading.Lock())
     assert seen == [["board.kicad_dru", "board.kicad_pcb", "board.kicad_pro", "run.json"]]
     assert outcome.verdicts[(0, 0)].problems == ("clearance 0.20 mm needed, 0.050 mm (Track [SIG] on F.Cu)",)
-
-
-def test_ghost_runs_keep_their_own_count(tmp_path):
-    (tmp_path / "x.kicad_pcb").write_text("saved", encoding="utf-8")
-    folder = kls_folder.KlsFolder(str(tmp_path / "x.kicad_pcb"))
-    prompt = folder.new_run("(kicad_pcb)", "llm")
-    made = [folder.new_run(f"(kicad_pcb {i})", ghost_drc.RUN_KIND).id for i in range(6)]
-    assert sorted(int(p.name) for p in folder.runs_dir.iterdir()) == [1, int(made[-2]), int(made[-1])]
-    assert folder.runs() == {prompt.id: prompt.stamp}
-    for i in range(5):
-        folder.new_run(f"(kicad_pcb drc {i})", "drc")
-    names = sorted(int(p.name) for p in folder.runs_dir.iterdir())
-    assert int(made[-1]) in names and 1 not in names and len(names) == 2 + kls_folder.KEEP_RUNS

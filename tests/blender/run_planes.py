@@ -1,4 +1,4 @@
-"""End to end, Stage 3: an LLM's findings file with every plane tool on the
+"""End to end: an LLM's findings file with every plane tool on the
 split-plane board (tests/split_board.py) goes through the bridge (resolved and measured)
 into Blender, and each finding draws: a layer change's return via measured past its limit,
 the SATA pair's gap in the GND plane, USB_D+ running off its plane over the split, and
@@ -67,9 +67,9 @@ def board():
 
 def findings_frame(index):
     data = {"format": "kls-findings 1", "run": "7", "stamp": STAMP, "tool": "Test LLM", "findings": FINDINGS}
-    context = bridge_findings.Context("x.kls-findings.json", "file", {"7": STAMP}, STAMP, {})
+    context = bridge_findings.Context("file", {"7": STAMP}, STAMP, {})
     payload = bridge_findings.resolve_file(bridge_findings.parse(json.dumps(data).encode("utf-8")), index, context)
-    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, STAMP, {}))
+    drc = bridge_findings.status_payload("none")
     return {"type": "findings", "revision": 1,
             "findings": {"status": "ok", "folder": "C:/boards/.kileidoscope",
                          "drc": {"state": "idle", "error": "", "run": ""}, "sources": {"drc": drc, "file": payload}}}

@@ -1,10 +1,12 @@
-"""The `.kileidoscope` project folder: runs, findings files, dismissed state, write guard."""
+"""The `.kileidoscope` project folder: runs, findings files, dismissed state, write and read guards."""
 
 import hashlib
 import json
+import os
 
 import pytest
 
+from kileido_bridge.ghost_drc import RUN_KIND
 from kileido_bridge.kls_folder import KEEP_RUNS, KlsFolder, NotAvailable, Run, State, stamp
 
 TEXT = "(kicad_pcb (version 20250101)\r\n  (gr_text \"µ\")\n)\n"
@@ -14,6 +16,11 @@ TEXT = "(kicad_pcb (version 20250101)\r\n  (gr_text \"µ\")\n)\n"
 def folder(tmp_path):
     (tmp_path / "x.kicad_pcb").write_text("saved", encoding="utf-8")
     return KlsFolder(str(tmp_path / "x.kicad_pcb"))
+
+
+def states(state):
+    """Finding key -> its state alone."""
+    return {key: entry["state"] for key, entry in state.findings.items()}
 
 
 def test_unsaved_board_has_no_folder():
@@ -65,6 +72,17 @@ def test_runs_count_up_and_prune_to_the_last_five(folder, tmp_path):
     assert sorted(p.name for p in runs.iterdir()) == ["4", "5", "6", "7", "8", "notes"]
 
 
+def test_ghost_runs_keep_their_own_count(folder):
+    prompt = folder.new_run("(kicad_pcb)", "llm")
+    made = [folder.new_run(f"(kicad_pcb {i})", RUN_KIND).id for i in range(6)]
+    assert sorted(int(p.name) for p in folder.runs_dir.iterdir()) == [1, int(made[-2]), int(made[-1])]
+    assert folder.runs() == {prompt.id: prompt.stamp}
+    for i in range(5):
+        folder.new_run(f"(kicad_pcb drc {i})", "drc")
+    names = sorted(int(p.name) for p in folder.runs_dir.iterdir())
+    assert int(made[-1]) in names and 1 not in names and len(names) == 2 + KEEP_RUNS
+
+
 def test_run_files_land_in_the_run_and_spare_the_frozen_board(folder):
     run = folder.new_run(TEXT, "llm")
     path = folder.write_run_file(run, "request.md", "# µ\n")
@@ -92,7 +110,7 @@ def test_dismissed_state_round_trip(folder, tmp_path):
     assert set(raw["findings"]["k1"]) == {"state", "check", "title", "board", "at"} and raw["findings"]["k1"]["at"]
     loaded = folder.load_state()
     assert loaded == state
-    assert loaded.states() == {"k1": "dismissed", "k2": "confirmed"}
+    assert states(loaded) == {"k1": "dismissed", "k2": "confirmed"}
 
 
 def test_a_state_file_from_the_first_drc_release_keeps_its_marks(folder, tmp_path):
@@ -103,7 +121,7 @@ def test_a_state_file_from_the_first_drc_release_keeps_its_marks(folder, tmp_pat
                                                            "d4": {"state": "dismissed", "check": "x.y"}}}),
                     encoding="utf-8")
     loaded = folder.load_state()
-    assert loaded.states() == {"a1": "dismissed", "b2": "confirmed", "d4": "dismissed"}
+    assert states(loaded) == {"a1": "dismissed", "b2": "confirmed", "d4": "dismissed"}
     assert loaded.findings["a1"] == {"state": "dismissed", "check": "", "title": "", "board": "", "at": ""}
     folder.save_state(loaded)  # saved again in today's form, nothing lost
     assert folder.load_state() == loaded
@@ -127,7 +145,7 @@ def test_an_old_state_file_with_accepted_runs_loads(folder, tmp_path):
     path.write_text(json.dumps({"version": 1, "findings": {"a": {"state": "dismissed", "check": "x.y"}},
                                 "accepted_runs": ["4|a1b2c3d4"]}), encoding="utf-8")
     loaded = folder.load_state()
-    assert loaded.states() == {"a": "dismissed"} and loaded.findings["a"]["check"] == "x.y"
+    assert states(loaded) == {"a": "dismissed"} and loaded.findings["a"]["check"] == "x.y"
     folder.save_state(loaded)
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert set(raw) == {"version", "findings"} and list(raw["findings"]) == ["a"]
@@ -194,3 +212,24 @@ def test_discard_tolerates_a_locked_file(folder, monkeypatch):
     monkeypatch.setattr(Path, "unlink", locked)
     folder.discard("drc")  # no error: the next DRC run overwrites the file
     assert folder.drc_findings_path.exists()
+
+
+def test_a_link_out_of_the_folder_is_not_read(folder, tmp_path):
+    folder.ensure()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private", encoding="utf-8")
+    try:
+        os.symlink(secret, folder.findings_path)
+    except (OSError, NotImplementedError):
+        pytest.skip("no symlinks here (Windows without developer mode)")
+    with pytest.raises(ValueError):
+        folder.open_read(folder.findings_path)
+
+
+def test_a_plain_file_of_the_folder_is_read(folder):
+    folder.ensure()
+    folder.findings_path.write_bytes(b"{}")
+    with folder.open_read(folder.findings_path) as handle:
+        assert handle.read() == b"{}"
+    with pytest.raises(FileNotFoundError):
+        folder.open_read(folder.progress_path)

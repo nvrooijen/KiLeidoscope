@@ -1,10 +1,11 @@
-"""Board digest of a review run (`board.kls-board.json`, LLM Visualizer spec §3).
+"""Board digest of a review run (`board.kls-board.json`).
 
 What the LLM reads before the board file: the exact names a findings file must use
-(references, pad numbers, net names, layer names, short uuids, spec §5) and enough
-geometry to reason with, but no fill polygons and no track coordinates. A dump of the
-snapshot, not an analysis. Millimetres with 4 decimals in KiCad's board frame (x right,
-y down), as in the board file. Digest v1: netclasses, zone priority and zone islands are v2.
+(references, pad numbers, net names, layer names, short uuids, as `targets` reads them)
+and enough geometry to reason with, but no fill polygons and no track coordinates. A dump
+of the snapshot, not an analysis. Millimetres with 4 decimals in KiCad's board frame (x
+right, y down), as in the board file. Net classes, zone priority and zone islands are not
+in it.
 
 The bulky records (pads, nets, vias, tracks) are rows whose fields `COLUMNS` names once,
 near the top of the file: about 0.55 kB per part, and every row is one line.
@@ -17,8 +18,10 @@ import math
 import re
 from collections import Counter, defaultdict
 
+import numpy as np
+
 from . import model
-from .board_index import SHORT_ID, BoardIndex, copper_rank
+from .board_index import SHORT_ID, BoardIndex, _inside, arc_length, copper_rank, polygon_area
 
 VERSION = 1
 COLUMNS = {
@@ -55,48 +58,18 @@ def _layer_key(layer: str) -> tuple:
     return (rank if rank is not None else math.inf, layer)
 
 
-def arc_length(start: model.Point, mid: model.Point, end: model.Point) -> float:
-    """Length in nm of the circular arc from `start` through `mid` to `end`."""
-    (x1, y1), (x2, y2), (x3, y3) = start, mid, end
-    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
-    if d == 0:  # collinear: a straight piece
-        return math.dist(start, end)
-    s1, s2, s3 = x1 * x1 + y1 * y1, x2 * x2 + y2 * y2, x3 * x3 + y3 * y3
-    ux = (s1 * (y2 - y3) + s2 * (y3 - y1) + s3 * (y1 - y2)) / d
-    uy = (s1 * (x3 - x2) + s2 * (x1 - x3) + s3 * (x2 - x1)) / d
-    a1, a2, a3 = (math.atan2(y - uy, x - ux) for x, y in (start, mid, end))
-    sweep = (a3 - a1) % math.tau
-    if (a2 - a1) % math.tau > sweep:  # mid lies the other way round
-        sweep = math.tau - sweep
-    return math.hypot(x1 - ux, y1 - uy) * sweep
-
-
-def _ring_area(ring: model.Ring) -> float:
-    """Unsigned area in nm² (shoelace; a fractured fill's slits cancel)."""
-    return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]))) / 2
-
-
 def _polygon_area(polygon: model.Polygon) -> float:
-    return (_ring_area(polygon[0]) - sum(_ring_area(hole) for hole in polygon[1:])) if polygon else 0.0
-
-
-def _inside(point: model.Point, ring: model.Ring) -> bool:
-    x, y = point
-    inside = False
-    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
-        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
-            inside = not inside
-    return inside
+    return polygon_area([np.asarray(ring, dtype=float).reshape(-1, 2) for ring in polygon])
 
 
 def outline_area(outline: model.Outline) -> float:
     """Board area in nm², even-odd over every outline ring: KiCad may hand a cutout over
     as a separate polygon rather than as a hole."""
-    rings = [ring for polygon in outline.polygons for ring in polygon if len(ring) >= 3]
+    rings = [np.asarray(ring, dtype=float) for polygon in outline.polygons for ring in polygon if len(ring) >= 3]
     total = 0.0
     for i, ring in enumerate(rings):
-        depth = sum(_inside(ring[0], other) for j, other in enumerate(rings) if j != i)
-        total += _ring_area(ring) * (-1 if depth % 2 else 1)
+        depth = sum(bool(_inside(ring[:1], (other,))[0]) for j, other in enumerate(rings) if j != i)
+        total += polygon_area((ring,)) * (-1 if depth % 2 else 1)
     return max(total, 0.0)
 
 
@@ -159,7 +132,8 @@ def _pad(pad: model.Pad, all_copper: tuple[str, ...]) -> list:
         size = (_mm(max(p[0] for p in points) - x0), _mm(max(p[1] for p in points) - y0))
     else:  # a plain hole: its drill is its size
         size = (_mm(pad.drill[0]), _mm(pad.drill[1])) if drilled else (0, 0)
-    drill = (_mm(pad.drill[0]) if pad.drill[0] == pad.drill[1] else [_mm(pad.drill[0]), _mm(pad.drill[1])])         if drilled else 0
+    drill = ((_mm(pad.drill[0]) if pad.drill[0] == pad.drill[1] else [_mm(pad.drill[0]), _mm(pad.drill[1])])
+             if drilled else 0)
     return [pad.number, pad.net, *_xy(pad.pos), *size, kind,
             ["*.Cu"] if kind == "th" and tuple(copper) == all_copper else copper, drill, pad.pin_name, pad.pin_type]
 

@@ -5,7 +5,7 @@ project's `.kicad_pro`/`.kicad_dru` copied beside it) and returns the JSON repor
 `convert` turns that report into a `kls-findings 1` file, so DRC output takes the same
 path (parse, resolve, draw) as a tool's or a script's findings file.
 
-What the report gives and lacks (kicad-cli 10.0.3, RESEARCH-01): entries
+What the report gives and lacks (as of kicad-cli 10.0.3): entries
 `{type, description, severity, items[{description, pos, uuid}]}`; every uuid is the
 file's (pads included), `pos` is each item's own anchor (a track's start, a zone's first
 corner), never the marker. Numbers exist only inside the description, in the user's

@@ -3,7 +3,7 @@
 Frames and their order are defined by the bridge (kileido_bridge/protocol.py): a
 snapshot is `snapshot_begin`, `board`, layer data, `footprints`, `stackup`,
 `snapshot_end`; live edits send single layer-data, footprint or selection frames. The
-DRC column's findings come in their own frames, after a snapshot.
+DRC and LLM columns' findings come in their own frames, after a snapshot.
 """
 
 import hashlib
@@ -71,7 +71,7 @@ def apply_frame(header, arrays):
         board.export = header.get("export") or {}
         models.follow_board(board.board_path, board.export)
     elif message_type == "findings":
-        findings.apply_findings(header)  # the DRC column's list, and the finding drawn
+        findings.apply_findings(header)  # the DRC and LLM columns' lists, and the finding drawn
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:

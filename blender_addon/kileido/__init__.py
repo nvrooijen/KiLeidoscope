@@ -1493,7 +1493,7 @@ def _scene_properties():
             description="The kinds of flex check shown in full in the panel, one per line"),
         "kileido_findings_open": StringProperty(
             name="Findings checks toggled", default="",
-            description="The DRC column's groups opened or closed from how they start, one per line"),
+            description="The findings columns' groups opened or closed from how they start, one per line"),
         "kileido_markers": BoolProperty(
             name="Markers", default=True,
             description="Show each finding as an icon on the board (nearby ones share one); click one to show it",
@@ -1507,7 +1507,7 @@ def _scene_properties():
             update=lambda self, context: findings.dismissed_toggled(context.scene)),
         "kileido_prompt_checks": StringProperty(
             name="Prompt checks", default="",
-            description="The checks Copy prompt asks the LLM for, one id per line; empty: the quick (v1) checks"),
+            description="The checks Copy prompt asks the LLM for, one id per line; empty: the quick checks"),
         "kileido_prompt_show": BoolProperty(
             name="Show prompt", default=False,
             description="Show the prompt last copied to the clipboard"),

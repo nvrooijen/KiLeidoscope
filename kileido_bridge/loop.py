@@ -523,9 +523,8 @@ class BridgeRuntime:
             self.server.pump()
             self._take_select_requests()
             requests = self.server.take_findings_requests()
-            for request in requests:
-                action, key, source, checks = request
-                self.findings.request(action, key, source, checks, request.notes)
+            for action, key, source, checks, notes in requests:
+                self.findings.request(action, key, source, checks, notes)
             if requests:
                 self.next_findings_at = 0.0  # Run DRC and a prompt start on the next tick
                 self.wake.set()

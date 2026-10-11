@@ -1,5 +1,5 @@
 """KiCad's selection in Blender: highlighted nets in red-orange, their differential-pair
-partner in blue, selected components boxed. A finding shown from the DRC column
+partner in blue, selected components boxed. A finding shown from the DRC or LLM column
 (findings_draw) highlights its items the same way, as the kind "finding", in its severity's colour.
 
 Highlights are copies of the live copper meshes (so they follow edits), slightly

@@ -618,7 +618,10 @@ def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) 
 
 def _symbol_pin(item) -> tuple[str, str]:
     """(name, type) of the schematic pin a pad carries, as the board file's pinfunction and
-    pintype spell them; ("", "") without one (a KiCad that does not send it, a bare pad)."""
+    pintype spell them; ("", "") without one (a KiCad that does not send it, a bare pad).
+    kipy has no accessor for it: this reads the pad's private `_proto`, and gives ("", "")
+    when a kipy release drops it or its `symbol_pin` (the digest and `mentions` then lack
+    pin names)."""
     proto = getattr(item, "_proto", None)
     if proto is None or not hasattr(proto, "symbol_pin") or not proto.HasField("symbol_pin"):
         return "", ""

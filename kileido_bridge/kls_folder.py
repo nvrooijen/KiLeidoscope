@@ -71,9 +71,6 @@ class State:
     prompt can tell the LLM what the user dismissed (`dismissed`)."""
     findings: dict = field(default_factory=dict)
 
-    def states(self) -> dict[str, str]:
-        return {key: entry["state"] for key, entry in self.findings.items()}
-
     def mark(self, key: str, state: str, check: str = "", title: str = "", board: str = "") -> None:
         """Confirm or dismiss a finding; "" (or "reset") forgets it."""
         if state not in STATES:
@@ -140,7 +137,7 @@ class KlsFolder:
         if not self.available:
             raise NotAvailable("save the board first")
 
-    def _inside(self, relative) -> Path:
+    def _within(self, relative) -> Path:
         """`root / relative`, refused unless it stays strictly inside the root (no `..`,
         no absolute path, no link leading out)."""
         self._check()
@@ -152,7 +149,7 @@ class KlsFolder:
 
     def _write(self, relative, data: bytes) -> Path:
         """The only writer: atomically, and only inside the root."""
-        path = self._inside(relative)
+        path = self._within(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         partial = path.with_name(path.name + ".partial")
         partial.write_bytes(data)
@@ -160,7 +157,7 @@ class KlsFolder:
         return path
 
     def _remove(self, relative) -> None:
-        shutil.rmtree(self._inside(relative), ignore_errors=True)
+        shutil.rmtree(self._within(relative), ignore_errors=True)
 
     def ensure(self) -> None:
         """Make the folder, with a `.gitignore` that keeps all of it out of git."""
@@ -271,14 +268,14 @@ class KlsFolder:
         if not self.available:
             return
         try:
-            self._inside(self.drc_findings_path.name).unlink()
+            self._within(self.drc_findings_path.name).unlink()
         except OSError:  # missing, or locked by an editor: the next run overwrites it anyway
             pass
 
     def open_read(self, path: Path):
         """A file of this folder opened for reading in binary, refused (ValueError) when a
         link leads it out of the folder: an LLM's answer or progress file is read only so."""
-        return self._inside(path.name).open("rb")
+        return self._within(path.name).open("rb")
 
     def write_findings(self, data: dict, source: str = "drc") -> Path:
         """A findings file the bridge made (DRC), written whole or not at all."""
