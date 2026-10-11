@@ -43,7 +43,7 @@ def live(tmp_path, monkeypatch, saved=True, watch=None, snapshot=None):
     copy = LiveBoardCopy(tmp_path / "live", debounce_s=0.0, recheck_s=0.0)
     runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, reconnect_interval_s=60.0,
                             live_copy=copy)
-    runtime.findings = quick(watch or findings_watch.FindingsWatch())
+    runtime.findings = quick(watch or findings_watch.FindingsWatch(find_cli=lambda hint: ""))  # no kicad-cli here
     client = addon_client().SocketClient("127.0.0.1", server.port, "t")
     return runtime, reader, client, project
 
@@ -327,15 +327,18 @@ CATALOGUE = (Check("plane.gap_crossing", "plane", "Signal crossing a plane gap",
              Check("hs.stub", "hs", "Stubs on fast nets", "Find stubs", "net", ("highlight",), False))
 
 
-def stub_modules(monkeypatch, calls, fail=None):
-    """checks and prompt as their interfaces say (they are written alongside this)."""
+def stub_modules(monkeypatch, calls, fail=None, drcs=None):
+    """checks and prompt as their interfaces say (they are written alongside this); what
+    KiCad's DRC gave each prompt goes into `drcs`."""
     checks = types.ModuleType("kileido_bridge.checks")
     checks.CATALOGUE, checks.QUICK = CATALOGUE, ("plane.gap_crossing", "decap.distance")
     checks.GROUPS = (("plane", "Return paths and planes"), ("decap", "Decoupling"), ("hs", "High speed"))
     checks.by_id = lambda ids: tuple(check for check in CATALOGUE if check.id in set(ids))
     prompt = types.ModuleType("kileido_bridge.prompt")
 
-    def make_run(folder, text, snapshot, chosen, notes=""):
+    def make_run(folder, text, snapshot, chosen, notes="", drc=None):
+        if drcs is not None:
+            drcs.append(drc)
         if fail:
             raise fail
         run = folder.new_run(text, "prompt")
@@ -346,6 +349,54 @@ def stub_modules(monkeypatch, calls, fail=None):
     for name, module in (("checks", checks), ("prompt", prompt)):
         monkeypatch.setitem(sys.modules, f"kileido_bridge.{name}", module)
         monkeypatch.setattr(kileido_bridge, name, module, raising=False)
+
+
+def test_a_prompt_runs_kicads_drc_first_and_names_what_it_found(tmp_path, monkeypatch):
+    calls, drcs, texts = [], [], []
+    stub_modules(monkeypatch, calls, drcs=drcs)
+
+    def run_drc(cli, run_dir):
+        texts.append((run_dir / "board.kicad_pcb").read_text(encoding="utf-8"))
+        track = reader.snapshot.tracks[0]
+        return {"kicad_version": "10.0.6", "violations": [{
+            "type": "track_dangling", "severity": "warning", "description": "Track has unconnected end",
+            "items": [{"uuid": track.id, "description": f"Track [{track.net}] on {track.layer}",
+                       "pos": {"x": track.start[0] / 1e6, "y": track.start[1] / 1e6}}]}]}
+
+    watch = findings_watch.FindingsWatch(run_drc=run_drc, find_cli=lambda hint: hint or "kicad-cli")
+    runtime, reader, client, project = live(tmp_path, monkeypatch, watch=watch)
+    try:
+        runtime.step()
+        client.connect()
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        client.request_findings("prompt", "", "file", checks=["decap.distance"])
+        frames = exchange(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f))
+                          and any(p["sources"]["drc"]["status"] == "ok" for p in payloads(f)), limit=LIMIT)
+        assert "running" in [p["drc"]["state"] for p in payloads(frames)]  # the DRC tab shows it running
+        assert texts == [FakeBoard.contents]  # on the same board text as the prompt's run
+        assert len(drcs) == 1 and sum(drcs[0].values()) == 1 and all(k.startswith("drc.") for k in drcs[0])
+        payload = payloads(frames)[-1]
+        assert payload["drc"] == {"state": "idle", "error": "", "run": "1"} and payload["prompt"]["run"] == "2"
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_without_kicad_cli_a_prompt_says_why_drc_did_not_run(tmp_path, monkeypatch):
+    calls, drcs = [], []
+    stub_modules(monkeypatch, calls, drcs=drcs)
+    runtime, reader, client, project = live(tmp_path, monkeypatch)
+    try:
+        runtime.step()
+        client.connect()
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        client.request_findings("prompt", "", "file", checks=["decap.distance"])
+        payload = until_payload(runtime, client, lambda p: p["prompt"]["state"] == "ready")
+        assert payload["prompt"]["run"] == "1" and "kicad-cli not found" in drcs[0]
+        assert payload["drc"]["state"] == "failed"  # the DRC tab says so too
+    finally:
+        client.close()
+        runtime.close()
 
 
 def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):

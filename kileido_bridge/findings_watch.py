@@ -47,6 +47,7 @@ SAVED_ONLY = "saved file, unsaved edits not checked"
 SAVE_FIRST = "Save the board first"
 NO_TEXT = "KiCad did not give the board text; try again once it is idle"
 NO_CHECKS = "None of the chosen checks is known to this bridge: tick at least one"
+DRC_BUSY = "a DRC run was already going; its results are in the DRC tab"
 MAX_CHECKS = 100  # ids in one prompt request
 MAX_NOTES = 500  # characters of a prompt request's notes
 PROGRESS = "progress"  # the progress file, watched beside SOURCES
@@ -125,14 +126,14 @@ def catalogue() -> tuple[list, list] | None:
         return None
 
 
-def make_prompt(folder, text: str, snapshot, ids, notes: str = "") -> tuple[str, str, str]:
+def make_prompt(folder, text: str, snapshot, ids, notes: str = "", drc=None) -> tuple[str, str, str]:
     """(run id, stamp, clipboard prompt) of a new prompt run for the checks `ids` (unknown
-    ones dropped), with the user's `notes`."""
+    ones dropped), with the user's `notes` and what KiCad's DRC found (`prompt._drc_text`)."""
     from . import checks, prompt
     chosen = checks.by_id(ids)
     if not chosen:
         raise ValueError(NO_CHECKS)
-    run, clipboard = prompt.make_run(folder, text, snapshot, chosen, notes=notes)
+    run, clipboard = prompt.make_run(folder, text, snapshot, chosen, notes=notes, drc=drc)
     return run.id, run.stamp, clipboard
 
 
@@ -280,7 +281,7 @@ class FindingsWatch:
                 self._start_drc(folder, snapshot, tools.get("kicad_cli", ""), copy_text)
             if self._prompt_wanted is not None:
                 (ids, notes), self._prompt_wanted = self._prompt_wanted, None
-                self._start_prompt(folder, snapshot, copy_text, ids, notes)
+                self._start_prompt(folder, snapshot, tools.get("kicad_cli", ""), copy_text, ids, notes)
             if not folder.available:
                 context = self._context(folder, "drc", {})
                 unsaved = {source: findings.status_payload("unsaved", replace(context, source=source),
@@ -552,7 +553,9 @@ class FindingsWatch:
                          name="kileido-drc", daemon=True).start()
 
     def _drc_run(self, generation: int, folder, snapshot, hint: str, text: str):
-        run_id = ""
+        """Run KiCad's DRC on `text` and publish it; {check: entries} of the run, or why it
+        failed (a prompt made right after names them, `_prompt_make`)."""
+        run_id, found = "", None
         try:
             note = ""
             if not text:
@@ -569,13 +572,16 @@ class FindingsWatch:
                 data["tool"] = f"{data['tool']}; {note}"
             path = folder.write_findings(data, "drc")
             outcome = drc_state(run=run.id)
+            found = {}
+            for item in data.get("findings", ()):
+                found[item.get("check") or "drc"] = found.get(item.get("check") or "drc", 0) + 1
         except Exception as exc:  # kicad-cli failed, a file could not be written, or a converter bug
             message = str(exc) if isinstance(exc, (drc_findings.DrcFailed, kls_folder.NotAvailable)) \
                 else f"{type(exc).__name__}: {exc}"
             outcome, path = drc_state("failed", message[-300:], run_id), None
         with self._lock:
             if generation != self._generation:
-                return
+                return found if found is not None else outcome["error"]
             self._drc_running = False
             self._drc = outcome
             if path is not None:  # read it now, not after the next settle
@@ -583,26 +589,37 @@ class FindingsWatch:
                 self._job.reload.add("drc")
             self._publish()
             self._kick()
+        return found if found is not None else outcome["error"]
 
     # --- Prompt -------------------------------------------------------------------------
 
-    def _start_prompt(self, folder, snapshot, text: str, ids: tuple, notes: str):
+    def _start_prompt(self, folder, snapshot, hint: str, text: str, ids: tuple, notes: str):
         """In the lock, on the tick that follows a prompt request: the run is made from
-        KiCad's raw board text, so it hashes to the stamp the findings echo."""
+        KiCad's raw board text, so it hashes to the stamp the findings echo. KiCad's DRC
+        runs on the same text first (unless a DRC run is already going), so the request
+        tells the LLM what DRC already found."""
         error = findings.NOT_CONNECTED if snapshot is None else ("" if text else NO_TEXT)
         if error:
             self._prompt = prompt_state("failed", error=error)
             self._publish()
             return
         self._prompt_running = True
-        threading.Thread(target=self._prompt_make, args=(self._generation, folder, snapshot, text, ids, notes),
+        with_drc = not self._drc_running and not self._drc_wanted
+        if with_drc:
+            self._drc_running = True
+            self._drc = drc_state("running", run=self._drc["run"])
+            self._publish()
+        threading.Thread(target=self._prompt_make,
+                         args=(self._generation, folder, snapshot, hint if with_drc else None, text, ids, notes),
                          name="kileido-prompt", daemon=True).start()
 
-    def _prompt_make(self, generation: int, folder, snapshot, text: str, ids: tuple, notes: str):
+    def _prompt_make(self, generation: int, folder, snapshot, hint, text: str, ids: tuple, notes: str):
+        """`hint` None: no DRC first (one was already running)."""
         made = None
+        drc = DRC_BUSY if hint is None else self._drc_run(generation, folder, snapshot, hint, text)
         try:
             with self._runs_lock:
-                run_id, run_stamp, clipboard = self._make_prompt(folder, text, snapshot, ids, notes)
+                run_id, run_stamp, clipboard = self._make_prompt(folder, text, snapshot, ids, notes, drc)
             outcome = prompt_state("ready", str(run_id), clipboard)
             made = (str(run_id), str(run_stamp), time.time())
         except Exception as exc:  # a file could not be written, no checks, or a digest bug

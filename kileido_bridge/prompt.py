@@ -28,6 +28,7 @@ KIND = "llm"  # run.json "kind"
 REQUEST = "request.md"
 DIGEST = "board.kls-board.json"
 BOARD = "board.kicad_pcb"
+MAX_DRC_LISTED = 30  # kinds of KiCad DRC entries named in a request; the rest counted
 ALWAYS = ("highlight", "label")  # offered with any selection of checks
 MAX_NOTES = 500  # characters of the user's notes
 MAX_NOTE_LINES = 8
@@ -213,10 +214,31 @@ def _notes_text(notes: str) -> str:
     return f"\n## {NOTES_HEADING}\n{NOTES_RULE[0].upper()}{NOTES_RULE[1:]}.\n{notes}\n" if notes else ""
 
 
+def _drc_text(drc) -> str:
+    """What KiCad's DRC already found on this board, so the LLM does not repeat it: `drc`
+    is {check id: entries} of a DRC run on the same board text, or why none ran; None
+    (no DRC asked for) says nothing."""
+    if drc is None:
+        return ""
+    if isinstance(drc, str):
+        return (f"\n## KiCad's DRC\nKiCad's DRC could not run for this request ({drc}). Clearances, widths and "
+                "the other design rules\nare KiCad's to check: leave them to it.\n")
+    if not drc:
+        return ("\n## KiCad's DRC\nKiCad's DRC ran on this exact board and found nothing. Do not check its "
+                "design rules\n(clearances, widths, annular rings, ...) again.\n")
+    ordered = sorted(drc.items(), key=lambda item: (-item[1], item[0]))
+    listed = ", ".join(f"{check} {count}" for check, count in ordered[:MAX_DRC_LISTED])
+    more = f", and {len(ordered) - MAX_DRC_LISTED} more kinds" if len(ordered) > MAX_DRC_LISTED else ""
+    return (f"\n## Already found by KiCad's DRC\nKiCad's DRC ran on this exact board: {sum(drc.values())} "
+            f"entries ({listed}{more}).\nThe user sees them in the DRC tab. Do not report them again; spend "
+            "your time on what\na rule check cannot see.\n")
+
+
 def request_md(run: str, stamp: str, findings_path: str, checks: tuple[Check, ...], progress_path: str = "",
-               notes: str = "") -> str:
+               notes: str = "", drc=None) -> str:
     """The request file (spec §4.2) for these checks; with a progress file to keep when
-    `progress_path` is given, and the user's notes at the end."""
+    `progress_path` is given, what KiCad's DRC already found (`_drc_text`), and the
+    user's notes at the end."""
     tools = {tool for check in checks for tool in drawn(check)} | set(ALWAYS)
     units = ", ".join(findings.UNITS)
     also = " (and the\n  progress file below, if you keep one)" if progress_path else ""
@@ -256,6 +278,7 @@ Answer file: {findings_path}
 - Plain text only in all messages. Keep each message under {findings.MAX_TEXT} characters.
   At most {findings.MAX_FINDINGS} findings and {findings.MAX_DRAWS} drawings per finding.
 
+{_drc_text(drc)}
 ## Checks to run
 {_checks_text(checks)}
 
@@ -310,15 +333,17 @@ draws on its 3D view of the board. Everything you need is in {run_dir}:
 """
 
 
-def make_run(folder: KlsFolder, text: str, snapshot, checks: tuple[Check, ...], notes: str = "") -> tuple[Run, str]:
+def make_run(folder: KlsFolder, text: str, snapshot, checks: tuple[Check, ...], notes: str = "",
+             drc=None) -> tuple[Run, str]:
     """Freeze KiCad's raw board `text` as a new LLM run, write its digest and request
-    beside it, and return the run and the clipboard prompt; the user's `notes` go in both.
-    Raises `NotAvailable` for an unsaved board."""
+    beside it, and return the run and the clipboard prompt; the user's `notes` go in both,
+    what KiCad's DRC found (`_drc_text`) in the request. Raises `NotAvailable` for an
+    unsaved board."""
     from .digest import build, dumps  # here: the prompt text needs no digest
 
     run = folder.new_run(text, KIND, clean=scrub.clean)  # the copies without what names the user
     folder.write_run_file(run, DIGEST, dumps(build(snapshot, run.id, run.stamp, board_file=BOARD)))
     answer = str(Path(folder.path_for("file")).absolute())
     progress = str(Path(folder.progress_path).absolute())
-    folder.write_run_file(run, REQUEST, request_md(run.id, run.stamp, answer, checks, progress, notes))
+    folder.write_run_file(run, REQUEST, request_md(run.id, run.stamp, answer, checks, progress, notes, drc))
     return run, clipboard(run.id, run.stamp, str(Path(run.directory).absolute()), answer, notes)

@@ -19,6 +19,25 @@ def tools_offered(text: str) -> set[str]:
     return {line[2:].split(" [", 1)[0] for line in section.splitlines() if line.startswith("- ")}
 
 
+def test_request_lists_what_kicads_drc_already_found():
+    chosen = by_id(QUICK)
+    text = prompt.request_md("7", "5a222dbd", ANSWER, chosen, drc={"drc.clearance": 3, "drc.unconnected_items": 2001})
+    section = text.split("## Already found by KiCad's DRC", 1)[1].split("## Checks to run", 1)[0]
+    assert "2004 entries (drc.unconnected_items 2001, drc.clearance 3)" in section  # most first
+    assert "Do not report them again" in section
+    many = {f"drc.kind_{i:02}": 1 for i in range(35)}
+    assert "and 5 more kinds" in prompt.request_md("7", "5a222dbd", ANSWER, chosen, drc=many)
+
+
+def test_request_says_when_drc_found_nothing_or_could_not_run():
+    chosen = by_id(QUICK)
+    clean = prompt.request_md("7", "5a222dbd", ANSWER, chosen, drc={})
+    assert "## KiCad's DRC\nKiCad's DRC ran on this exact board and found nothing" in clean
+    failed = prompt.request_md("7", "5a222dbd", ANSWER, chosen, drc="kicad-cli not found")
+    assert "could not run for this request (kicad-cli not found)" in failed
+    assert "DRC" not in prompt.request_md("7", "5a222dbd", ANSWER, chosen)  # none asked for: nothing said
+
+
 def test_request_names_run_stamp_rules_and_every_chosen_check():
     chosen = by_id(QUICK + ("hs.stub", "fab.copper_balance"))
     text = prompt.request_md("7", "5a222dbd", ANSWER, chosen)
