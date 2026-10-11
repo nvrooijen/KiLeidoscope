@@ -51,6 +51,7 @@ from .targets import kind as kind_of
 FORMAT = "kls-findings 1"
 MAX_FILE_BYTES = 2 << 20
 MAX_FINDINGS = 300
+MAX_PER_CHECK = 20  # findings of one check kept; the rest only counted (`_kept`)
 MAX_DRAWS = 20
 MAX_TEXT = 300
 MAX_VALUES = 20
@@ -166,6 +167,7 @@ class FindingsFile:
     findings: tuple[Finding, ...]
     skipped: tuple[tuple[str, str], ...]  # (check, reason)
     problems: tuple[str, ...]
+    left_out: tuple[tuple[str, int], ...] = ()  # (check, findings of it not kept: `_kept`)
 
 
 @dataclass(frozen=True)
@@ -606,9 +608,11 @@ def parse(data: bytes) -> FindingsFile:
     if not isinstance(raw_findings, list):
         problems.append("findings is not a list")
         raw_findings = []
-    if len(raw_findings) > MAX_FINDINGS:
-        problems.append(f"{len(raw_findings) - MAX_FINDINGS} findings past {MAX_FINDINGS} left out")
-    findings = [_finding(item, i + 1, problems) for i, item in enumerate(raw_findings[:MAX_FINDINGS])]
+    kept, left_out = _kept(raw_findings)
+    if left_out:
+        problems.append(f"{sum(count for _, count in left_out)} findings not shown: at most {MAX_PER_CHECK} of "
+                        f"each check, {MAX_FINDINGS} in all, the worst first")
+    findings = [_finding(raw_findings[i], i + 1, problems) for i in kept]
     skipped = []
     raw_skipped = raw.get("skipped", [])
     if not isinstance(raw_skipped, list):
@@ -624,7 +628,39 @@ def parse(data: bytes) -> FindingsFile:
         reason = _text(item.get("reason", ""), MAX_TEXT, "skipped reason", problems) or ""
         skipped.append((check, reason))
     return FindingsFile(run or "", stamp, tool or "", tuple(f for f in findings if f is not None),
-                        tuple(skipped), tuple(problems))
+                        tuple(skipped), tuple(problems), left_out)
+
+
+def _kept(raw_findings: list) -> tuple[list[int], tuple[tuple[str, int], ...]]:
+    """Which findings of a file are kept, as indexes in file order, and how many of each
+    check are not: at most MAX_PER_CHECK of each check, errors before warnings before info
+    (file order within a severity), and MAX_FINDINGS in all, shared out one per check in
+    turn, so thousands of one kind never push another kind out."""
+    by_check: dict[str, list[int]] = {}
+    for i, item in enumerate(raw_findings):
+        check = item.get("check") if isinstance(item, dict) else None
+        by_check.setdefault(check if isinstance(check, str) else "", []).append(i)
+
+    def rank(i):
+        severity = raw_findings[i].get("severity") if isinstance(raw_findings[i], dict) else None
+        return SEVERITIES.index(severity) if severity in SEVERITIES else len(SEVERITIES)
+
+    queues = [sorted(indexes, key=rank)[:MAX_PER_CHECK] for indexes in by_check.values()]
+    queues.sort(key=lambda queue: rank(queue[0]))  # the checks with errors take their turn first
+    kept = []
+    for turn in range(MAX_PER_CHECK):
+        for queue in queues:
+            if turn < len(queue) and len(kept) < MAX_FINDINGS:
+                kept.append(queue[turn])
+    chosen = set(kept)
+    counts: dict[str, int] = {}
+    for check, indexes in by_check.items():
+        missing = sum(1 for i in indexes if i not in chosen)
+        if missing:
+            name = check if _CHECK.fullmatch(check) else "other"
+            counts[name] = counts.get(name, 0) + missing
+    left_out = sorted(counts.items(), key=lambda item: -item[1])[:MAX_FINDINGS]  # a file of a thousand kinds
+    return sorted(kept), tuple(left_out)
 
 
 # keys
@@ -1832,7 +1868,7 @@ def status_payload(status: str, context: Context | None = None, error: str = "",
             "source": context.source if context else "", "path": context.path if context else "",
             "run": "", "stamp": "", "live_stamp": context.live_stamp if context else "",
             "handshake": "", "changed": False, "connected": connected, "tool": "", "problems": [],
-            "drc": {"state": "idle", "error": "", "run": ""}, "skipped": [], "findings": []}
+            "drc": {"state": "idle", "error": "", "run": ""}, "skipped": [], "left_out": {}, "findings": []}
 
 
 def _group(check: str) -> str:
@@ -1850,7 +1886,8 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
     payload.update(run=found.run, stamp=found.stamp, handshake=agreed, tool=found.tool,
                    changed=agreed == "known" and bool(context.live_stamp) and context.live_stamp != found.stamp,
                    problems=list(found.problems),
-                   skipped=[{"check": check, "reason": reason} for check, reason in found.skipped])
+                   skipped=[{"check": check, "reason": reason} for check, reason in found.skipped],
+                   left_out=dict(found.left_out))
     board = _Board(index)
     keys: dict[str, int] = {}
     for finding in found.findings:

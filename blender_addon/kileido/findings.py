@@ -473,8 +473,10 @@ def _draw_source(layout, scene, wrap, name, title, data):
     ordered = sorted(groups.items(), key=lambda item: min(SEVERITY_ORDER.get(f.get("severity"), 1) for f in item[1]))
     toggled = set(scene.kileido_findings_open.split("\n"))
     folded = len(visible) > FOLD_PAST
+    left_out = data.get("left_out") or {}  # check -> findings the bridge kept back (the worst are shown)
     for check, members in ordered:
-        if len(members) == 1:
+        more = left_out.get(check, 0)
+        if len(members) == 1 and not more:
             _draw_finding(box, wrap, name, members[0])
             continue
         tag = f"{name}:{check}"
@@ -482,7 +484,8 @@ def _draw_source(layout, scene, wrap, name, title, data):
         worst = min(members, key=lambda f: SEVERITY_ORDER.get(f.get("severity"), 1)).get("severity")
         header = box.row(align=True)
         header.alert = worst == "error"
-        operator = header.operator(KILEIDO_OT_findings_group.bl_idname, text=f"{check} ({len(members)})", emboss=False,
+        count = f"{len(members)} of {len(members) + more:,}" if more else f"{len(members)}"
+        operator = header.operator(KILEIDO_OT_findings_group.bl_idname, text=f"{check} ({count})", emboss=False,
                                    icon="DISCLOSURE_TRI_DOWN" if opened else "DISCLOSURE_TRI_RIGHT")
         operator.group = tag
         if opened:
@@ -491,6 +494,9 @@ def _draw_source(layout, scene, wrap, name, title, data):
             column = indent.column()
             for finding in members:
                 _draw_finding(column, wrap, name, finding)
+            if more:
+                where = "all in KiCad's DRC dialog" if name == "drc" else "all in the findings file"
+                _lines(column, wrap, f"{more:,} more not shown: {where}", "INFO")
     skipped = data.get("skipped") or []
     if skipped:
         inner = box.box()

@@ -83,11 +83,41 @@ def test_huge_number_is_not_a_value():
 # limits and plain text
 
 def test_findings_and_draws_past_the_limits_are_dropped():
-    found = parse(raw(*[finding() for _ in range(301)]))
-    assert len(found.findings) == 300 and any("past 300" in p for p in found.problems)
+    found = parse(raw(*[finding(check=f"test.c{i % 30}") for i in range(400)]))
+    assert len(found.findings) == 300 and any("100 findings not shown" in p for p in found.problems)
+    assert sum(count for _, count in found.left_out) == 100
     draws = [{"tool": "highlight", "targets": ["U3"]}] * 21
     found = parse(raw(finding(*draws)))
     assert len(found.findings[0].draws) == 20 and any("past 20" in p for p in found.findings[0].problems)
+
+
+def test_one_check_keeps_its_worst_twenty_and_counts_the_rest():
+    many = [finding(check="drc.unconnected_items", severity="warning", title=f"U{i}") for i in range(2000)]
+    few = [finding(check="drc.clearance", title=f"C{i}") for i in range(3)]
+    found = parse(raw(*many, finding(check="drc.unconnected_items", title="the error"), *few))
+    checks = [item.check for item in found.findings]
+    assert checks.count("drc.unconnected_items") == 20 and checks.count("drc.clearance") == 3  # never pushed out
+    assert "the error" in [item.title for item in found.findings]  # errors first, wherever they are in the file
+    assert dict(found.left_out) == {"drc.unconnected_items": 1981}
+    payload = resolve_file(found, None, context())
+    assert payload["left_out"] == {"drc.unconnected_items": 1981}
+
+
+def test_the_total_is_shared_out_one_check_at_a_time():
+    items = [finding(check=f"test.c{c}", severity="info" if c else "error", title=f"{c}.{i}")
+             for c in range(40) for i in range(20)]  # 800 findings of 40 checks
+    found = parse(raw(*items))
+    counts = {}
+    for item in found.findings:
+        counts[item.check] = counts.get(item.check, 0) + 1
+    assert len(found.findings) == 300 and len(counts) == 40  # every check is shown
+    assert max(counts.values()) - min(counts.values()) <= 1 and counts["test.c0"] == 8
+
+
+def test_a_file_within_the_limits_loses_nothing_and_keeps_its_order():
+    items = [finding(check="test.b", severity="info", title="1"), finding(check="test.a", title="2")]
+    found = parse(raw(*items))
+    assert [item.title for item in found.findings] == ["1", "2"] and found.left_out == ()
 
 
 def test_text_is_cut_and_controls_become_spaces():

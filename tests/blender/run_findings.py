@@ -1232,7 +1232,14 @@ def check_column(scene):
     order = [text for kind, text, _ in drawn if kind == "operator" and text in ("Tracks too close",
                                                                                  "plane.gap_crossing (2)", "Gone")]
     assert order == ["Tracks too close", "plane.gap_crossing (2)", "Gone"], order  # errors first
-    warning, unknown = (next(iter(findings.severity_icon(kind).values())) for kind in ("warning", "unknown"))
+    # Findings the bridge kept back: counted in the group's header, said where they are.
+    source = state.board.findings["sources"]["file"]
+    source["left_out"] = {"plane.gap_crossing": 1205, "fab.clearance": 3}
+    kept_back = column(scene, tabs=("LLM",))
+    assert ("operator", "plane.gap_crossing (2 of 1,207)", "DISCLOSURE_TRI_DOWN") in kept_back, kept_back
+    assert ("label", "1,205 more not shown: all in the findings file", "INFO") in kept_back, kept_back
+    source["left_out"] = {}
+    warning, unknown =(next(iter(findings.severity_icon(kind).values())) for kind in ("warning", "unknown"))
     assert ("operator", "A second gap", warning) in drawn
     # Not confirmed, a "?": its items gone.
     assert ("operator", "Gone", unknown) in drawn and findings_draw.mark(finding_named("Gone")) == "unknown"
