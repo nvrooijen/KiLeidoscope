@@ -47,7 +47,7 @@ from .board_index import BoardIndex, Gap, _bbox_gap, _inside, centre, copper_ran
 from .board_index import gap as shapes_gap
 from .board_index import top_layer, union
 from .geometry import sample_arc
-from .targets import SNAP_NM, Resolved, copper_layer, resolve
+from .targets import MAX_MM, SNAP_NM, Resolved, copper_layer, point_problem, resolve
 from .targets import kind as kind_of
 
 FORMAT = "kls-findings 1"
@@ -92,7 +92,6 @@ MAX_BARS = 12
 MAX_BAR_LABEL = 40
 MAX_BAR_VALUE = 1e12
 BAR_UNITS = ("mm", "ps", "mv", "v", "a", "ma", "pct")
-MAX_MM = 10_000.0  # coordinates and sizes past 10 m are not a board
 DISAGREE = 0.10  # claimed vs measured, relative
 DISAGREE_FLOOR_MM = 0.001  # KiCad prints 4 decimals; closer than 1 µm always agrees
 KEY_GRID_NM = 500_000  # anchors in keys rounded to 0.5 mm
@@ -101,7 +100,7 @@ TOOLS = frozenset({"highlight", "isolate", "label", "arrow", "distance", "ghost"
                    "clearance", "width", "routed_length", "edge_gap", "bars",  # measured geometry, charts
                    "return_path", "plane_gap", "layer_change", "plane_islands", "stitching", "stub",  # planes
                    "discontinuity"})
-DRAWN = TOOLS - {"layers"}  # what Blender draws in this version
+DRAWN = TOOLS  # what Blender draws in this version
 WHAT = {"clearance": "Clearance", "edge_gap": "Edge gap", "width": "Width", "routed_length": "Routed length",
         "layer_change": "Return via", "plane_gap": "Gap", "return_path": "Without plane", "plane_islands": "Islands",
         "stitching": "Stitching gap", "stub": "Stub", "discontinuity": "Discontinuity"}
@@ -232,11 +231,17 @@ def _need(raw: dict, key: str):
 
 
 def _target(value, what: str) -> str:
+    """A target string, cleaned; refused when it is not text, too long, or gives a point
+    past MAX_MM (`targets.point_problem`)."""
     if not isinstance(value, str) or not value.strip():
         raise _Bad(f"{what} is not a target")
     if len(value) > MAX_TARGET_TEXT:
         raise _Bad(f"{what} is longer than {MAX_TARGET_TEXT} characters")
-    return _CONTROL.sub(" ", value).strip()
+    text = _CONTROL.sub(" ", value).strip()
+    far = point_problem(text)
+    if far:
+        raise _Bad(f"{what}: {far}")
+    return text
 
 
 def _targets(value, what: str = "targets") -> tuple[str, ...]:
@@ -354,10 +359,11 @@ def _ghost_fields(raw: dict) -> dict:
     net = raw.get("net")
     if net is not None and (not isinstance(net, str) or not net.strip()):
         raise _Bad("net is not a net name")
+    net = _net(net) if net is not None else ""
     rotation = _number(raw["rotation"]) if raw.get("rotation") is not None else None
     if raw.get("rotation") is not None and rotation is None:
         raise _Bad("rotation is not a number of degrees")
-    fields = {"kind": ghost, "size": size, "net": net.strip().removeprefix("net:").strip() if net else "",
+    fields = {"kind": ghost, "size": size, "net": net,
               "rotation": rotation % 360 if rotation is not None else None if ghost == "part" else 0.0}
     if ghost == "part":
         return {**fields, "part": _target(_need(raw, "part"), "part"), "at": _target(_need(raw, "at"), "at")}
@@ -875,14 +881,15 @@ def _empty_draw(draw: Draw) -> dict:
             "pitch_nm": 0, "net": "", "touches": [], "kicad_drc": None}
 
 
-def kicad_drc_state(out: dict) -> dict:
+def kicad_drc_state(out: dict, kept=(), kept_row=()) -> dict:
     """A ghost's `kicad_drc` before KiCad's DRC has judged it: "skipped" (not asked), with
     the quick check's verdict kept (`quick_fits`, `quick_problem`, a row's `quick_row`) so
     KiCad's can replace it and fall back to it; `kept` holds reasons KiCad's DRC does not
-    judge (a via outside a layer change's reach), which stand whatever it finds."""
+    judge (a suggestion not inside the board, a via outside a layer change's reach), which
+    stand whatever it finds, and `kept_row` the row's vias they hold back."""
     return {"state": "skipped", "problems": [], "notes": [], "error": "", "quick_fits": out["fits"],
             "quick_problem": out["problem"], "quick_row": [bool(spot[2]) for spot in out["row"] if len(spot) > 2],
-            "kept": []}
+            "kept": list(kept), "kept_row": list(kept_row)}
 
 
 def _measured(out: dict, measured: float, limit_mm: float | None, limit_is: str) -> None:
@@ -1370,18 +1377,22 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
             out["kind"] = fields["kind"]
             out["size_nm"] = round(fields["size"] * 1e6) if fields["size"] else 0
             out["net"] = fields["net"] if fields["kind"] != "part" else ""
+            kept, kept_row = [], []  # not inside the board: KiCad's DRC does not judge it
             if fields["kind"] == "part":
-                _ghost_part(board, out, by_role["part"], by_role["at"], fields["rotation"])
+                _ghost_part(board, out, by_role["part"], by_role["at"], fields["rotation"], kept)
             elif fields["kind"] == "track":
                 _ghost_track(board, out, [found for (role, _), found in zip(roles, resolved) if role == "path"],
-                             fields)
+                             fields, kept)
             elif fields["kind"] == "via_row":
-                _via_row(board, out, by_role["from"], by_role["to"], fields)
+                _via_row(board, out, by_role["from"], by_role["to"], fields, kept, kept_row)
             else:
                 out["points"] = [_anchor(by_role["at"], "at")]
                 out["rotation_deg"] = fields["rotation"]
-                _fit_ghost(board, out, fields["net"])
-            out["kicad_drc"] = kicad_drc_state(out)
+                _fit_ghost(board, out, fields["net"], kept)
+            out["kicad_drc"] = kicad_drc_state(out, kept, kept_row)
+            if kept:
+                out["fits"] = False
+                out["problem"] = "; ".join(filter(None, (out["problem"], *kept)))
         elif tool == "arrow":
             out["points"] = _anchor_pair(board.index, by_role["from"], by_role["to"])
         elif tool == "distance":
@@ -1438,6 +1449,9 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
         out.update(ok=False, problem=str(error), ids=[], outline=False)
     except _Bad as error:
         out["ok"], out["problem"] = False, str(error)
+    except Exception as error:  # a measuring bug costs this draw, never the file; nothing half-measured is kept
+        out = {**_empty_draw(draw), "targets": out["targets"], "what": out["what"], "ok": False,
+               "problem": f"could not measure ({type(error).__name__}: {_show(str(error), 120)}); please report it"}
     board.ids += len(out["ids"])
     return out, resolved
 
@@ -1517,14 +1531,15 @@ def _touch(out: dict, member: int, record, gap: float) -> None:
         out["touches"].append([member, record.net])
 
 
-def _fit_ghost(board: _Board, out: dict, net: str) -> None:
+def _fit_ghost(board: _Board, out: dict, net: str, kept: list) -> None:
     """Does a suggested via or pad fit where the LLM put it: `fits` False, and why in
     `problem`, when its copper comes within GHOST_CLEAR_NM of fixed copper (tracks, arcs,
     vias, pads) of another net, or of any net when it names none. A via spans every
-    layer; a pad its own. Zones refill around it and never clash. A cap: `_fit_cap`. A
-    part moved, a track, a row of vias: `_ghost_part`, `_ghost_track`, `_via_row`."""
+    layer; a pad its own. Zones refill around it and never clash. One not inside the
+    board outline says so in `kept`. A cap: `_fit_cap`. A part moved, a track, a row of
+    vias: `_ghost_part`, `_ghost_track`, `_via_row`."""
     if out["kind"] == "cap" and board.index is not None:
-        _fit_cap(board.index, out)
+        _fit_cap(board.index, out, kept)
     if out["kind"] not in ("via", "pad") or board.index is None:
         return
     x, y, layer = out["points"][0]
@@ -1536,6 +1551,12 @@ def _fit_ghost(board: _Board, out: dict, net: str) -> None:
         what, how = _clash_text(near.record, gap)
         out["problem"] = f"clashes with {what} ({how})"
         _touch(out, 0, near.record, gap)
+    kept.extend(filter(None, [_off_board(board.index, _disc((x, y), radius))]))
+
+
+def _disc(point, radius: float):
+    """The shape of a round via or pad of `radius` at `point`."""
+    return shape_of(model.Track("ghost", "F.Cu", "", point, point, 2 * radius))
 
 
 def _via_near(index: BoardIndex, point, layer: str, radius: float, net: str, kind: str, copper):
@@ -1617,12 +1638,14 @@ def _turner(origin, to, degrees: float):
     return move
 
 
-def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotation: float | None) -> None:
+def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotation: float | None,
+                kept: list) -> None:
     """A part moved to `at` (its anchor, KiCad's footprint position) and turned to
     `rotation` (None: as it is): its pads' copper and its body (`_body`) moved with it. It
-    does not fit (`fits` False, why in `problem`) where it is not inside the board outline,
-    where a pad comes within GHOST_CLEAR_NM of fixed copper of another net on that pad's
-    layer (its own pads aside), or where its body lands on another part's on its side.
+    does not fit (`fits` False, why in `problem`) where a pad comes within GHOST_CLEAR_NM
+    of fixed copper of another net on that pad's layer (its own pads aside), or where its
+    body lands on another part's on its side; one not inside the board outline says so in
+    `kept`.
     Sent: the moved pads per layer (outer copper, else their first layer; none past
     MAX_GHOST_PADS, which is noted), the body as `polygon_nm`, `from` its place now,
     `moved_nm` how far."""
@@ -1659,7 +1682,8 @@ def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotati
         out["pads_nm"] = [{"layer": name, "polygon_nm": [list(point) for point in polygon[0]]}
                           for pad, by_layer in moved for name in _shown_layers(by_layer)
                           for polygon in by_layer[name]]
-    reasons = [_off_board(index, whole)] if len(whole.segments) else []
+    kept.extend(filter(None, [_off_board(index, whole)] if len(whole.segments) else []))
+    reasons = []
     candidates = _near_box(index, whole.bbox, GHOST_CLEAR_NM) if len(whole.segments) else []
     for pad, name, shape in shapes:
         found = _clash(index, shape, name, pad.net, candidates, skip=part.id)
@@ -1693,12 +1717,13 @@ def _usual_width(index: BoardIndex, net: str) -> int:
     return max(counts, key=lambda width: (counts[width], width)) if counts else GHOST_TRACK_NM
 
 
-def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict) -> None:
+def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict, kept: list) -> None:
     """A suggested route for `net`: straight segments through the path's points on one
     copper layer (the draw's, else the one every point names), `width` (else the net's
     usual one, `_usual_width`). It does not fit (`fits` False, why in `problem`) where it
-    comes within GHOST_CLEAR_NM of fixed copper of another net on that layer, or leaves the
-    board outline. Zones refill and never clash. Sent: `path_nm`, `width_nm`, `length_nm`."""
+    comes within GHOST_CLEAR_NM of fixed copper of another net on that layer; one that
+    leaves the board outline says so in `kept`. Zones refill and never clash. Sent:
+    `path_nm`, `width_nm`, `length_nm`."""
     index = board.index
     net = fields["net"]
     if net not in index.nets:
@@ -1727,17 +1752,18 @@ def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict) -
         what, how = _clash_text(found[1], found[0])
         reasons.append(f"clashes with {what} ({how})")
         _touch(out, 0, found[1], found[0])
-    reasons.append(_off_board(index, shape))
-    reasons = [reason for reason in reasons if reason]
+    kept.extend(filter(None, [_off_board(index, shape)]))
     out["fits"] = not reasons
     out["problem"] = "; ".join(reasons)
 
 
-def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: dict) -> None:
+def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: dict, kept: list,
+             kept_row: list) -> None:
     """A row of suggested vias from `start` to `end`, both ends included, spaced evenly and
     no further apart than `pitch`; each checked as a via ghost is (`_via_near`). More than
     MAX_ROW_VIAS refuses the draw. Sent: `row` [x, y, fits] per via, `pitch_nm` the spacing
-    used; `fits` False when any via clashes, `problem` how many and the first."""
+    used; `fits` False when any via clashes, `problem` how many and the first. Vias not
+    inside the board outline: in `kept_row`, how many and the first in `kept`."""
     index = board.index
     a, b = _anchor(start, "from"), _anchor(end, "to")
     length = math.dist(a[:2], b[:2])
@@ -1752,10 +1778,14 @@ def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: d
     copper = [record for record in index.copper
               if isinstance(record, FIXED) and _bbox_gap(row_box, (*centre(record), *centre(record)))
               < radius + GHOST_CLEAR_NM + GHOST_NEAR_NM]
-    row, first, clashing = [], None, 0
+    row, first, clashing, first_off = [], None, 0, ""
     for member, (x, y) in enumerate(spots):
         near = _via_near(index, (x, y), a[2], radius, fields["net"], "via", copper)
-        row.append([int(round(x)), int(round(y)), near is None])
+        off = _off_board(index, _disc((x, y), radius))
+        row.append([int(round(x)), int(round(y)), near is None and not off])
+        if off:
+            kept_row.append(member)
+            first_off = first_off or off
         if near is not None:
             clashing += 1
             gap = max(0.0, near.gap.distance - radius)
@@ -1765,6 +1795,8 @@ def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: d
                fits=not clashing)
     if clashing:
         out["problem"] = f"{clashing} of {len(row)} vias clash (first: {first[0]} {first[1]})"
+    if kept_row:
+        kept.append(f"{len(kept_row)} of {len(row)} vias not inside the board (first: {first_off})")
 
 
 def _box(centre_nm, length: float, width: float, degrees: float, frame: tuple[float, float] = (1.0, 0.0)) -> tuple:
@@ -1796,15 +1828,17 @@ def _body(footprint: model.Footprint, pads: list) -> tuple | None:
     return _box(centre_nm, max(along) - min(along), max(across) - min(across), 0.0, (math.cos(r), math.sin(r)))
 
 
-def _fit_cap(index: BoardIndex, out: dict) -> None:
+def _fit_cap(index: BoardIndex, out: dict, kept: list) -> None:
     """A suggested cap (its body, `size` long and half as wide, turned `rotation_deg`)
     must land clear of other parts on its side: of their pads by GHOST_CLEAR_NM, and of
-    their bodies (`_body`). `fits` False, and why in `problem`, when it does not."""
+    their bodies (`_body`). `fits` False, and why in `problem`, when it does not; one not
+    inside the board outline says so in `kept`."""
     x, y, layer = out["points"][0]
     layer = layer if copper_rank(layer or "") is not None else "F.Cu"
     length = out["size_nm"] or CAP_GHOST_NM
     ghost = model.CopperGraphic("ghost", "", layer, ((_box((x, y), length, length / 2, out["rotation_deg"]),),))
     shape = shape_of(ghost)
+    kept.extend(filter(None, [_off_board(index, shape)]))
     near = [pad for pad in index.snapshot.pads if math.dist(pad.pos, (x, y)) < GHOST_NEAR_NM]
     for pad in near:
         if on_layer(pad, layer) and len(index.shape(pad, layer).segments) and \

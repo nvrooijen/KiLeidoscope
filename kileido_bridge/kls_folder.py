@@ -66,40 +66,51 @@ class Run:
 
 @dataclass
 class State:
-    """dismissed.json: finding key -> {"state", "check", "targets", "title", "at"}."""
+    """dismissed.json: finding key -> {"state", "check", "title", "board", "at"}: the
+    finding's check id and title, the board (file stem) it was marked on and when, so a
+    prompt can tell the LLM what the user dismissed (`dismissed`)."""
     findings: dict = field(default_factory=dict)
 
     def states(self) -> dict[str, str]:
         return {key: entry["state"] for key, entry in self.findings.items()}
 
-    def mark(self, key: str, state: str, check: str = "", targets=(), title: str = "") -> None:
+    def mark(self, key: str, state: str, check: str = "", title: str = "", board: str = "") -> None:
         """Confirm or dismiss a finding; "" (or "reset") forgets it."""
         if state not in STATES:
             self.findings.pop(key, None)
             return
-        self.findings[key] = {"state": state, "check": check, "targets": list(targets), "title": title,
+        self.findings[key] = {"state": state, "check": check, "title": title, "board": board,
                               "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+
+    def dismissed(self, board: str) -> list[tuple[str, str]]:
+        """(check, title) of the findings dismissed on `board`, the latest first; entries
+        that name neither are left out."""
+        entries = [entry for entry in self.findings.values()
+                   if entry["state"] == "dismissed" and entry["board"] == board and (entry["check"] or entry["title"])]
+        entries.sort(key=lambda entry: entry["at"], reverse=True)
+        return [(entry["check"], entry["title"]) for entry in entries]
+
+
+def _text_of(entry: dict, name: str) -> str:
+    return entry[name] if isinstance(entry.get(name), str) else ""
 
 
 def _state_from(raw) -> State:
     """A State from dismissed.json's JSON, keeping only well-formed entries; other keys
-    are ignored."""
+    are ignored. An entry that is the state alone ("confirmed" or "dismissed", as the
+    first DRC release saved them) loads as that state with nothing else known."""
     state = State()
     if not isinstance(raw, dict) or raw.get("version") != STATE_VERSION:
         return state
     entries = raw.get("findings")
     for key, entry in list(entries.items())[:MAX_STATE_ENTRIES] if isinstance(entries, dict) else ():
+        if isinstance(entry, str):
+            entry = {"state": entry}
         if not (isinstance(key, str) and len(key) <= 64 and isinstance(entry, dict)
                 and entry.get("state") in STATES):
             continue
-        targets = entry.get("targets")
-        state.findings[key] = {
-            "state": entry["state"],
-            "check": entry["check"] if isinstance(entry.get("check"), str) else "",
-            "targets": [t for t in targets if isinstance(t, str)] if isinstance(targets, list) else [],
-            "title": entry["title"] if isinstance(entry.get("title"), str) else "",
-            "at": entry["at"] if isinstance(entry.get("at"), str) else "",
-        }
+        state.findings[key] = {"state": entry["state"], **{name: _text_of(entry, name)
+                                                           for name in ("check", "title", "board", "at")}}
     return state
 
 

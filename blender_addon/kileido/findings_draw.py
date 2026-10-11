@@ -22,25 +22,26 @@ the copper thickness toggle), so it always sits on the copper as drawn now.
   moved (translucent copies of its pads, a thin outline of its body, a thin arrow from
   where it is); a route (a flat translucent ribbon at its width on its layer's copper); a
   row of vias (each as a via ghost). One that does not fit is in the "over" red and its
-  label says so ("does not fit"); a row's clashing vias alone are red. The label and the
-  column say whose verdict it is: "checking with KiCad DRC…" while KiCad's DRC runs on a
+  label says so ("does not fit"); a row's vias that do not fit alone are red, each
+  crossed out by a thin X on both faces of the board. The label and the column say whose verdict it is: "checking with KiCad DRC…" while KiCad's DRC runs on a
   copy with the suggestions written in, "fits (KiCad DRC)" or "does not fit (KiCad DRC):
   …" once it is in, the bridge's "(quick check)" when KiCad could not run.
-- layers: listed in the column only.
+- layers: a layer filter while the finding is shown: only the copper layers it names are
+  shown (layers.set_filter), the others come back as their eyes say once it is hidden.
 - clearance, edge_gap: as distance, between the two closest points the bridge measured;
   an edge gap's outline end has a longer tick, along the edge.
 - width: the segments as ribbons at their real width just out from their copper, the
   narrow ones in the "over" red, and a light dimension across the thinnest.
-- routed_length: a tube along the copper path the bridge traced, stepping through the
-  board at a via, dots at its ends, its label at the path's middle.
+- routed_length: a thin line along the copper path the bridge traced, stepping through
+  the board at a via, dots at its ends, its label at the path's middle.
 - bars: a small bar chart on a label's plate, under its title, facing the view as the
   labels do (label_place puts it): heights to the largest value or limit, the limit as a
   light line across, bars past it in the "over" red, values over the bars, names under.
 
-Planes and return paths, measured by the bridge; never colour alone, each colour also has
-a shape or words:
-- layer_change: the via highlighted, a measured tube to the nearest return via, the other
-  return vias ringed, a ghost via where one should go.
+Planes and return paths, measured by the bridge, in thin lines (hairlines, a little
+thicker for `emphasis: strong`); never colour alone, each colour also has a shape or words:
+- layer_change: the via highlighted, a measured line to the nearest return via, the other
+  return vias ringed.
 - plane_gap: the plane's edges near the gap lit up on its layer (the broken part of the
   plane, not the track), the crossing's stretches without plane under them as "over" red
   ribbons with a tick across each end, the gap labelled at the longest.
@@ -49,9 +50,8 @@ a shape or words:
 - plane_islands: each piece a translucent area on its layer in its own colour (a fixed
   list), one not tied outlined in the "over" red; numbered labels with area and state, the
   largest first, the main plane's "main", and one for the count.
-- stitching: the line followed as a thin tube on its layer, the stitching vias ringed, a
-  ghost via at each missing spot, the largest spacing as a measured tube between the two
-  neighbouring vias furthest apart (red past the limit).
+- stitching: the stitching vias ringed on its layer, each stretch of the line wider than
+  the limit a thin line with a tick at each end (red past the limit), the widest labelled.
 - stub: the via's barrel, the unused part (the stub) a red cylinder between its layers'
   copper and the used part a faint one; labelled with the stub's length, or "none".
 - discontinuity: a small marker per mark on its layer, its shape by kind (a bar for a
@@ -78,7 +78,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from . import components, focus, fold, highlight, hole_cut, label_place, materials, transform
+from . import components, focus, fold, highlight, hole_cut, label_place, layers, materials, transform
 from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, outline_bounds, shown_views,
                       view3d_spaces)
 from .placement import outward
@@ -132,6 +132,7 @@ GHOST_COPPER_M = 35e-6
 GHOST_HEAD = 4.0  # of a thin line's radius: a moved part's arrow head, its width
 GHOST_NAMES = {"part": "part move", "track": "route", "via_row": "via row"}  # in the column, by kind
 RING = 1.5  # of a return via's radius: its ring's
+CROSS = 1.3  # of a via ghost's radius: the arms of the X on a row's via that does not fit
 RING_SEGMENTS = 24
 SPAN_TICK = 1.6  # of a span's half width: its end ticks either side
 # plane_islands: a piece's colour by its index, none of them the "over" red
@@ -331,6 +332,8 @@ def refresh():
         highlight.refresh()
         focus.refresh()
     _state["folded"] = fold.folded()
+    keep = {layer for draw in draws if draw["tool"] == "layers" for layer in draw.get("layers") or ()}
+    layers.set_filter(keep if finding is not None and not _state["folded"] else None)
     _state["labels"], _state["layout"], _state["reach"], _state["parts"] = [], None, None, None
     if finding is not None and not bpy.app.timers.is_registered(_follow):
         bpy.app.timers.register(_follow, first_interval=FOLLOW_S)  # on a folded board too: it draws on unfolding
@@ -483,6 +486,7 @@ def uninstall():
     if board.collection is not None:
         try:
             _clear_objects()
+            layers.set_filter(None)  # a shown finding's layer filter lifted
         except ReferenceError:
             pass
 
@@ -608,7 +612,8 @@ def _label(text, anchor, unit, name, finding, material, strong=False, icon=None)
     curve.materials.append(_plain("text"))
     obj = _new(name, curve, finding)
     obj.show_in_front = True  # in the viewport, never behind the copper it names
-    _state["labels"].append({"name": name, "anchor": anchor.copy(), "material": material, "icon": icon})
+    # the name Blender gave it: another object of that name (a leftover) makes it ".001"
+    _state["labels"].append({"name": obj.name, "anchor": anchor.copy(), "material": material, "icon": icon})
     return obj
 
 
@@ -935,6 +940,11 @@ def _hairline(unit):
     return max(TUBE_MIN_M, unit * TUBE_SHARE * LEADER)
 
 
+def _thin(unit, draw):
+    """A drawn line's radius: a hairline, STRONG times it for `emphasis: strong`."""
+    return _hairline(unit) * (STRONG if draw.get("emphasis") == "strong" else 1.0)
+
+
 def _tube_radius(unit, length, draw):
     radius = unit * TUBE_SHARE * (STRONG if draw.get("emphasis") == "strong" else 1.0)
     return max(TUBE_MIN_M, min(radius, length / 6) if length > 0 else radius)
@@ -1188,26 +1198,27 @@ def _part_top(draw, up):
     return None
 
 
-def _ends(draw, unit, points=None):
-    """The two points of an arrow or a distance, lifted onto their surfaces by the tube's radius."""
+def _ends(draw, unit, points=None, thin=False):
+    """The two points of an arrow or a distance, lifted onto their surfaces by the tube's
+    radius (a hairline's when `thin`)."""
     points = points or draw["points"]
     (a, up), (b, _) = _point(points[0]), _point(points[1])
-    radius = _tube_radius(unit, (b - a).length, draw)
+    radius = _thin(unit, draw) if thin else _tube_radius(unit, (b - a).length, draw)
     (a, up), (b, _) = _point(points[0], radius), _point(points[1], radius)
     return a, b, up, radius
 
 
-def _draw_distance(draw, unit, name, finding):
-    """A distance, clearance or edge gap: a tube between its two points, a tick across each
-    end, red past its limit. An edge gap's outline end (its Edge.Cuts point, else the
-    second) sits on the copper end's layer, its tick longer: along the edge, as the
-    closest gap meets the outline square."""
+def _draw_distance(draw, unit, name, finding, thin=False):
+    """A distance, clearance or edge gap: a tube between its two points (a hairline when
+    `thin`), a tick across each end, red past its limit. An edge gap's outline end (its
+    Edge.Cuts point, else the second) sits on the copper end's layer, its tick longer:
+    along the edge, as the closest gap meets the outline square."""
     points, edge = list(draw["points"][:2]), None
     if draw.get("tool") == "edge_gap":
         edge = next((i for i, point in enumerate(points) if len(point) > 2 and point[2] == "Edge.Cuts"), 1)
         copper = points[1 - edge]
         points[edge] = [*points[edge][:2], copper[2] if len(copper) > 2 else ""]
-    a, b, up, radius = _ends(draw, unit, points)
+    a, b, up, radius = _ends(draw, unit, points, thin)
     material = _material(_judged(draw, finding))
     along = b - a
     side = along.cross(Vector((0.0, 0.0, 1.0)))
@@ -1337,7 +1348,8 @@ def _ghost_route(draw, unit, name, finding):
 
 def _ghost_row(draw, unit, name, finding):
     """A row of suggested vias, each through the board as a via ghost is: those that fit in
-    one object, those that clash in another in the "over" red; one label for the row at
+    one object, those that do not in another in the "over" red, each of those crossed out
+    on both faces of the board by a thin X (never colour alone); one label for the row at
     its middle."""
     spots = [spot for spot in draw.get("row") or () if len(spot) >= 2]
     if not spots:
@@ -1348,13 +1360,20 @@ def _ghost_row(draw, unit, name, finding):
         members = [spot[:2] for spot in spots if (len(spot) > 2 and spot[2] is False) == clash]
         if not members:
             continue
+        centres = transform.xy_m(members, board.origin_nm)
 
-        def vias(bm, centres=transform.xy_m(members, board.origin_nm)):
+        def vias(bm, centres=centres):
             for x, y in centres:
                 bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=radius, radius2=radius, depth=depth,
                                       matrix=Matrix.Translation((float(x), float(y), 0.0)))
         _mesh(name + (" over" if clash else ""), vias, Matrix.Translation((0.0, 0.0, (top + bottom) / 2)), finding,
               _material("over" if clash else finding.get("severity"), GHOST_ALPHA))
+        if clash:
+            thin = _thin(unit, draw)
+            arm = radius * CROSS
+            crosses = [[Vector((float(x) - dx * arm, float(y) - arm, z)), Vector((float(x) + dx * arm, float(y) + arm, z))]
+                       for x, y in centres for z in (top + thin, bottom - thin) for dx in (1.0, -1.0)]
+            _tube(name + " over marks", crosses, thin, finding, _material("over"))
     layer = next((point[2] for point in draw.get("points") or () if len(point) > 2 and point[2]), "F.Cu")
     ends = (spots[0], spots[-1])
     middle = _point([(ends[0][0] + ends[1][0]) / 2, (ends[0][1] + ends[1][1]) / 2, layer])[0]
@@ -1489,13 +1508,12 @@ def _along(line, share):
 
 
 def _draw_routed_length(draw, unit, name, finding):
-    """A tube along the copper path just out from it, through the board at a via, a dot at
-    each end, its length labelled at the path's middle."""
+    """A thin line along the copper path just out from it, through the board at a via, a
+    dot at each end, its length labelled at the path's middle."""
     points = [point for point in draw.get("path_nm") or () if len(point) >= 2]
     if len(points) < 2:
         return
-    flat = _path(points, 0.0)
-    radius = _tube_radius(unit, sum((b - a).length for a, b in zip(flat, flat[1:])), draw)
+    radius = _thin(unit, draw)
     line = _path(points, radius)
     material = _material(_judged(draw, finding))
     _tube(name, [line], radius, finding, material)
@@ -1530,8 +1548,8 @@ def _draw_bars(draw, unit, name, finding):
 
 
 def _draw_layer_change(draw, unit, name, finding):
-    """The via (highlighted, `highlighted`) and a measured tube on its layer to the nearest
-    return via, red past the limit; the other return vias ringed; a thin circle of the limit
+    """The via (highlighted, `highlighted`) and a measured thin line on its layer to the
+    nearest return via, red past the limit; the other return vias ringed; a thin circle of the limit
     round the via: where a return via must be. Without one, its label at the via says none
     was found. Where one should go is the LLM's to suggest (a ghost)."""
     points = [point for point in draw.get("points") or () if len(point) >= 2]
@@ -1540,7 +1558,7 @@ def _draw_layer_change(draw, unit, name, finding):
     via, strong = points[0], draw.get("emphasis") == "strong"
     layer = via[2] if len(via) > 2 else ""
     if len(points) > 1:  # the return via on the via's layer: the distance across the board, not through it
-        _draw_distance(dict(draw, points=[via, [*points[1][:2], layer]]), unit, name, finding)
+        _draw_distance(dict(draw, points=[via, [*points[1][:2], layer]]), unit, name, finding, thin=True)
     else:
         _label(f"{what_text(draw)}\nnone found", _point(via)[0], unit, name + " label", finding, _material("over"),
                strong)
@@ -1558,12 +1576,12 @@ def _draw_layer_change(draw, unit, name, finding):
 
 
 def _via_rings(vias, layer, unit, draw, name, finding):
-    """Vias [x_nm, y_nm, size_nm, id] ringed on `layer` (RING times their radius), one tube."""
+    """Vias [x_nm, y_nm, size_nm, id] ringed on `layer` (RING times their radius), thin lines."""
     rings = [(found[:2], (found[2] * 1e-9 if len(found) > 2 and found[2] else VIA_GHOST_M) / 2 * RING)
              for found in vias]
     if not rings:
         return
-    radius = _tube_radius(unit, min(ring for _, ring in rings) * 2, draw)
+    radius = _thin(unit, draw)
     lines = []
     for xy, ring in rings:
         centre, _ = _point([*xy, layer], radius)
@@ -1601,7 +1619,7 @@ def _gap_spans(draw, unit, name, finding):
     lift = AREA_LIFT_M * 1.5
     ribbon = _mesh(name + " spans", _ribbons(spans, lift), Matrix.Identity(4), finding, material)
     ribbon.show_in_front = True  # an inner layer's too, as the tubes
-    radius = _tube_radius(unit, min(span[5] for span in spans) * 1e-9, draw)
+    radius = _thin(unit, draw)
     ticks = []
     for x0, y0, x1, y1, layer, width in (span[:6] for span in spans):
         a, b = _point([x0, y0, layer], lift + radius)[0], _point([x1, y1, layer], lift + radius)[0]
@@ -1771,7 +1789,7 @@ def _draw_discontinuity(draw, unit, name, finding):
     short bar for a width step, a ring for a layer change, a diamond for a reference change
     (any other kind); the first MARK_LABELS labelled with their kind over their text."""
     half = unit * MARK / 2
-    radius = _tube_radius(unit, half * 2, draw)
+    radius = _thin(unit, draw)
     material = _material(finding.get("severity"))
     labelled = 0
     for number, mark in enumerate(draw.get("marks") or (), start=1):
@@ -1796,7 +1814,7 @@ def _draw_discontinuity(draw, unit, name, finding):
 
 
 # highlight, isolate and an area on targets are the finding's highlight (`highlighted`):
-# nothing of their own; layers is listed in the column only
+# nothing of their own; layers is a layer filter (`refresh`, layers.set_filter)
 _BUILDERS = {"label": _draw_label, "distance": _draw_distance, "arrow": _draw_arrow, "ghost": _draw_ghost,
              "area": _draw_area, "clearance": _draw_distance, "edge_gap": _draw_distance, "width": _draw_width,
              "routed_length": _draw_routed_length, "bars": _draw_bars, "layer_change": _draw_layer_change,

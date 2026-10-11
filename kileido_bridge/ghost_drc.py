@@ -41,7 +41,8 @@ ghost's uuid back to that ghost:
 "error"; with KiCad's verdict in, `fits` and `problem` are KiCad's (its word wins over the
 quick check's, which a note keeps), else the quick check's. A touch the quick check saw
 stays a short whatever KiCad says (it cannot report it), and reasons KiCad does not judge
-(`kicad_drc["kept"]`) stand. Everything taken from the findings file is untrusted: net
+(`kicad_drc["kept"]`: not inside the board, outside a layer change's reach) stand, with
+the row's vias they name (`kept_row`). Everything taken from the findings file is untrusted: net
 names go into the copy only when they cannot break out of their quotes.
 """
 
@@ -653,7 +654,7 @@ def _judged(draw: dict, outcome: Outcome | None, key: tuple[int, int]) -> dict:
                 notes.append(f"the quick check said: {quick_problem}; KiCad's rules allow it")
             fits = not problems and not reasons
             problem = "; ".join(filter(None, ("KiCad DRC: " + "; ".join(problems) if problems else "", *reasons)))
-            bad = set(verdict.bad) | {member for member, _ in touched}
+            bad = set(verdict.bad) | {member for member, _ in touched} | set(kd.get("kept_row") or ())
             if draw.get("kind") in COVERED:
                 for member, spot in enumerate(row):
                     if len(spot) > 2:

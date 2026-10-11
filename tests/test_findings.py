@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 
 import split_board
-from kileido_bridge import findings, model
+from kileido_bridge import findings, ghost_drc, model
 from kileido_bridge.board_index import BoardIndex
 from kileido_bridge.findings import Context, FindingsError, finding_key, named, parse, resolve_file
 from kileido_bridge.targets import resolve
@@ -1340,6 +1340,85 @@ def test_a_row_past_its_cap_is_refused_not_cut(index, monkeypatch):
     monkeypatch.setattr(findings, "MAX_ROW_VIAS", 4)
     draw = ghost(index, kind="via_row", **{"from": "pt:2,2@F.Cu", "to": "pt:2,12@F.Cu", "pitch": 3})
     assert not draw["ok"] and draw["problem"].startswith("5 vias at 3 mm pitch")
+
+
+FAR = "9" * 150
+
+
+@pytest.mark.parametrize("draw, role", [
+    ({"tool": "ghost", "kind": "via", "at": f"pt:{FAR},5@F.Cu"}, "at"),
+    ({"tool": "label", "at": f"pt:5,-{FAR}", "text": "x"}, "at"),
+    ({"tool": "highlight", "targets": ["U3", "net:SIG@F.Cu~20000,1"]}, "targets[1]"),
+    ({"tool": "ghost", "kind": "track", "net": "SIG", "path": ["pt:1,1@F.Cu", "PT: 10000.5, 1 @F.Cu"]}, "path[1]"),
+])
+def test_a_point_past_ten_metres_is_refused(index, draw, role):
+    item = parse(raw(finding(draw))).findings[0]
+    assert not item.draws
+    assert item.problems == (f"draw 1 ({draw['tool']}) skipped: {role}: a coordinate past 10000 mm (10 m) is not on "
+                             "a board",)
+    edge = parse(raw(finding({"tool": "label", "at": "pt:10000,-10000@F.Cu", "text": "x"}))).findings[0]
+    assert edge.draws and not edge.problems  # 10 m itself is still a coordinate
+
+
+def test_a_target_past_ten_metres_resolves_to_nothing(index):
+    for target in (f"pt:{FAR},5@F.Cu", "pt:20000,5", "net:SIG@F.Cu~-20000,1"):
+        found = resolve(index, target)
+        assert not found.found and found.note == "a coordinate past 10000 mm (10 m) is not on a board", target
+
+
+@pytest.mark.parametrize("fields, problem", [
+    ({"kind": "via", "at": "pt:60,10@F.Cu"}, "outside the board"),
+    ({"kind": "via", "at": "pt:45,10@F.Cu"}, "crosses the board edge"),
+    ({"kind": "pad", "at": "pt:60,10@F.Cu"}, "outside the board"),
+    ({"kind": "cap", "at": "pt:60,10@F.Cu"}, "outside the board"),
+    ({"kind": "cap", "at": "pt:44.8,10@F.Cu", "rotation": 0}, "crosses the board edge"),
+])
+def test_a_suggestion_off_the_board_does_not_fit(index, fields, problem):
+    draw = ghost(index, **fields)
+    assert draw["ok"] and draw["fits"] is False and draw["problem"] == problem
+    assert draw["kicad_drc"]["kept"] == [problem] and draw["kicad_drc"]["quick_fits"] is True  # KiCad never judges it
+    inside = ghost(index, **{**fields, "at": "pt:30,30@F.Cu"})
+    assert inside["fits"] is True and inside["kicad_drc"]["kept"] == []
+
+
+def test_a_rows_vias_off_the_board_are_held_back(index):
+    draw = ghost(index, kind="via_row", **{"from": "pt:40,30@F.Cu", "to": "pt:50,30@F.Cu", "pitch": 2.5})
+    assert [fits for _, _, fits in draw["row"]] == [True, True, False, False, False]
+    assert draw["fits"] is False and draw["problem"] == "3 of 5 vias not inside the board (first: crosses the board edge)"
+    assert draw["kicad_drc"]["kept_row"] == [2, 3, 4] and draw["kicad_drc"]["quick_fits"] is True
+    judged = ghost_drc.apply({"findings": [{"draws": [draw]}]}, ghost_drc.Outcome({(0, 0): ghost_drc.Verdict("done")}))
+    after = judged["findings"][0]["draws"][0]  # KiCad's DRC found nothing: the vias off the board still do not fit
+    assert after["fits"] is False and [fits for _, _, fits in after["row"]] == [True, True, False, False, False]
+    assert after["problem"] == "3 of 5 vias not inside the board (first: crosses the board edge)"
+
+
+def test_off_the_board_stands_after_kicads_drc_for_moves_and_routes(index):
+    for draw in (ghost(index, kind="part", part="C12", at="pt:60,10@F.Cu"),
+                 ghost(index, kind="track", net="SIG", path=["pt:50,30@F.Cu", "pt:60,30@F.Cu"])):
+        assert draw["fits"] is False and draw["problem"] == "outside the board"
+        judged = ghost_drc.apply({"findings": [{"draws": [draw]}]},
+                                 ghost_drc.Outcome({(0, 0): ghost_drc.Verdict("done")}))["findings"][0]["draws"][0]
+        assert judged["fits"] is False and judged["problem"] == "outside the board"
+
+
+def test_a_ghosts_net_is_cleaned_and_capped():
+    item = parse(raw(finding({"tool": "ghost", "kind": "via", "at": "pt:1,1@F.Cu", "net": " net:G\x00N‮D "},
+                             {"tool": "ghost", "kind": "via", "at": "pt:1,1@F.Cu", "net": "N" * 201}))).findings[0]
+    (draw,) = item.draws
+    assert draw.fields["net"] == "G N D"
+    assert item.problems == ("draw 2 (ghost) skipped: net is not a net name",)
+
+
+def test_a_measuring_bug_costs_its_draw_not_the_file(index, monkeypatch):
+    def broken(*args):
+        raise TypeError("unsupported operand")
+    monkeypatch.setattr(findings, "_width", broken)
+    result = payload(index, finding({"tool": "width", "target": "net:SIG", "required": 0.15},
+                                    {"tool": "highlight", "targets": ["U3"]}))
+    width, highlight = result["findings"][0]["draws"]
+    assert not width["ok"] and width["problem"] == "could not measure (TypeError: unsupported operand); please report it"
+    assert width["ids"] == [] and width["measured_nm"] is None and width["what"] == "Width"
+    assert highlight["ok"] and highlight["ids"]
 
 
 def test_ghost_kinds_payload_is_json_and_framed(index):

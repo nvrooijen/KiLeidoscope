@@ -82,17 +82,43 @@ def test_run_files_land_in_the_run_and_spare_the_frozen_board(folder):
 def test_dismissed_state_round_trip(folder, tmp_path):
     assert folder.load_state() == State()
     state = State()
-    state.mark("k1", "dismissed", "drc.clearance", ["U3.4", "net:SIG@F.Cu~15,10"], "Clearance")
+    state.mark("k1", "dismissed", "drc.clearance", "Clearance", "x")
     state.mark("k2", "confirmed")
     state.mark("k3", "dismissed")
     state.mark("k3", "")
     folder.save_state(state)
     raw = json.loads((tmp_path / ".kileidoscope" / "dismissed.json").read_text(encoding="utf-8"))
     assert set(raw) == {"version", "findings"} and raw["version"] == 1
-    assert raw["findings"]["k1"]["targets"] == ["U3.4", "net:SIG@F.Cu~15,10"] and raw["findings"]["k1"]["at"]
+    assert set(raw["findings"]["k1"]) == {"state", "check", "title", "board", "at"} and raw["findings"]["k1"]["at"]
     loaded = folder.load_state()
     assert loaded == state
     assert loaded.states() == {"k1": "dismissed", "k2": "confirmed"}
+
+
+def test_a_state_file_from_the_first_drc_release_keeps_its_marks(folder, tmp_path):
+    """It saved each entry as the state alone, with the same version."""
+    folder.ensure()
+    path = tmp_path / ".kileidoscope" / "dismissed.json"
+    path.write_text(json.dumps({"version": 1, "findings": {"a1": "dismissed", "b2": "confirmed", "c3": "maybe",
+                                                           "d4": {"state": "dismissed", "check": "x.y"}}}),
+                    encoding="utf-8")
+    loaded = folder.load_state()
+    assert loaded.states() == {"a1": "dismissed", "b2": "confirmed", "d4": "dismissed"}
+    assert loaded.findings["a1"] == {"state": "dismissed", "check": "", "title": "", "board": "", "at": ""}
+    folder.save_state(loaded)  # saved again in today's form, nothing lost
+    assert folder.load_state() == loaded
+
+
+def test_dismissed_lists_this_boards_dismissals_latest_first():
+    state = State({"old": {"state": "dismissed", "check": "plane.gap", "title": "Old gap", "board": "x",
+                           "at": "2026-10-01T10:00:00+02:00"},
+                   "new": {"state": "dismissed", "check": "hs.stub", "title": "Stub", "board": "x",
+                           "at": "2026-10-11T10:00:00+02:00"},
+                   "kept": {"state": "confirmed", "check": "a.b", "title": "Real", "board": "x", "at": ""},
+                   "other": {"state": "dismissed", "check": "a.b", "title": "Elsewhere", "board": "y", "at": ""},
+                   "bare": {"state": "dismissed", "check": "", "title": "", "board": "x", "at": ""}})
+    assert state.dismissed("x") == [("hs.stub", "Stub"), ("plane.gap", "Old gap")]
+    assert state.dismissed("z") == []
 
 
 def test_an_old_state_file_with_accepted_runs_loads(folder, tmp_path):
@@ -113,7 +139,7 @@ def test_broken_state_files_load_empty_or_partly(folder, tmp_path):
     path.write_text("{oops", encoding="utf-8")
     assert folder.load_state() == State()
     path.write_text(json.dumps({"version": 1, "findings": {"a": {"state": "dismissed"}, "b": {"state": "maybe"},
-                                                           "c": "x"}}), encoding="utf-8")
+                                                           "c": "x", "d": 5, "e" * 65: "dismissed"}}), encoding="utf-8")
     loaded = folder.load_state()
     assert list(loaded.findings) == ["a"]
     path.write_text(json.dumps({"version": 2, "findings": {"a": {"state": "dismissed"}}}), encoding="utf-8")

@@ -48,6 +48,7 @@ NOTES_LINES = 8  # lines the bridge takes
 NOTES_TAG = "notes"  # the Notes sub-section opened (kileido_findings_open)
 STALE_S = 300  # no word from the LLM for this long: it may have stalled, or wait for the user
 PROGRESS_TICK_S = 1.0  # the ages redrawn this often while the LLM works
+MAKING = "\n"  # board.prompt_wait once the bridge says it is making the prompt asked for (never a run id)
 LIVE = ("waiting", "working")  # progress states that age
 ICON_PX = 32  # a severity icon's size, drawn 4 x 4 times finer and averaged
 _icons = None  # bpy.utils.previews: the severity icons, made on first use
@@ -90,24 +91,42 @@ def release_icons():
 
 def apply_findings(header):
     """A `findings` frame: the newest list replaces the last; the shown finding is drawn
-    again from it (or hidden, when it is gone). A prompt asked for, ready: to the clipboard."""
-    board.findings = header.get("findings") or {}
-    findings_draw.refresh()  # the board's markers placed again too
-    hole_cut.follow(findings_draw.shown_finding())  # a hole finding gone: the user's cut back
+    again from it only when it changed there (a frame that only says how far the LLM is
+    redraws nothing), or hidden when it is gone; the board's markers are placed again. A
+    prompt asked for, ready: to the clipboard."""
+    from . import findings_markers  # it imports this module
+    found = header.get("findings") or {}
+    if found.get("folder") != (board.findings or {}).get("folder"):  # another board: its runs are numbered apart
+        board.prompt_wait, board.prompt_copied = None, ""
+    before = findings_draw.shown_finding()
+    board.findings = found
+    shown = findings_draw.shown_finding()
+    if shown is None or shown != before:
+        findings_draw.refresh()  # the board's markers placed again too
+    else:
+        findings_markers.invalidate()
+    hole_cut.follow(shown)  # a hole finding gone: the user's cut back
     _take_prompt()
     _follow_progress()
 
 
 def _take_prompt():
-    """The prompt of a new run, once Copy prompt asked for one: copied once. A run already
-    shown when it was pressed, or copied before, is not (a resync sends the payload again)."""
+    """The prompt of a new run, once Copy prompt asked for one: copied once, and no other
+    after it until Copy prompt is pressed again (a resync sends the payload again). Until
+    the bridge says it is making the prompt, the prompt shown when it was pressed is not
+    taken for the new one (`prompt_wait` holds its run); once it has said so, the next
+    ready run is the new one whatever its number, and a failure ends the wait."""
     prompt = (board.findings or {}).get("prompt") or {}
-    run = prompt.get("run") or ""
-    if board.prompt_wait is None or prompt.get("state") != "ready" or run in ("", board.prompt_wait,
-                                                                             board.prompt_copied):
+    run, state = prompt.get("run") or "", prompt.get("state")
+    if board.prompt_wait is None:
         return
-    set_clipboard(prompt.get("text") or "")
-    board.prompt_copied, board.prompt_wait = run, None
+    if state == "making":
+        board.prompt_wait = MAKING
+    elif state == "failed" and board.prompt_wait == MAKING:
+        board.prompt_wait = None
+    elif state == "ready" and run not in ("", board.prompt_wait):
+        set_clipboard(prompt.get("text") or "")
+        board.prompt_copied, board.prompt_wait = run, None
 
 
 def notes(scene):
@@ -544,10 +563,14 @@ def _draw_finding(layout, wrap, source_name, finding):
 
 
 def _unit(name):
-    """(label, unit) of a value name: "distance_mm" -> ("distance", "mm")."""
+    """(label, unit) of a value name: "distance_mm" -> ("distance", "mm"); a rate reads
+    "per" its unit: "via_density_per_cm2" -> ("via density", "per cm²")."""
     for suffix, unit in UNITS:
         if name.endswith(suffix):
-            return name[:-len(suffix)].replace("_", " "), unit
+            label = name[:-len(suffix)]
+            if label.endswith("_per") and len(label) > 4:
+                return label[:-4].replace("_", " "), f"per {unit}"
+            return label.replace("_", " "), unit
     return name.replace("_", " "), ""
 
 
@@ -556,8 +579,9 @@ def _number(value):
 
 
 def _draw_bars(box, wrap, draw):
-    """A bars draw as lines: "CLK_P: 12.3 mm", red past its limit; the shared limit once,
-    else each bar's after its value."""
+    """A bars draw as lines: "CLK_P: 12.3 mm"; one past its limit red, with an icon and
+    "over the limit" (never colour alone); the shared limit once, else each bar's after
+    its value."""
     bars = draw.get("bars") or []
     unit = draw.get("unit") or ""
     shared = findings_draw.common_limit(bars)
@@ -565,9 +589,11 @@ def _draw_bars(box, wrap, draw):
         _lines(box, wrap, draw["what"])
     for bar in bars:
         own = f" (limit {_number(bar['limit'])})" if shared is None and bar.get("limit") is not None else ""
+        over = findings_draw.bar_over(bar)
         line = box.row()
-        line.alert = findings_draw.bar_over(bar)
-        line.label(text=f"{bar.get('label') or '?'}: {_number(bar.get('value'))} {unit}".rstrip() + own)
+        line.alert = over
+        line.label(text=f"{bar.get('label') or '?'}: {_number(bar.get('value'))} {unit}".rstrip() + own +
+                   (", over the limit" if over else ""), icon="ERROR" if over else "BLANK1")
     if shared is not None:
         box.label(text=f"limit: {_number(shared)} {unit}".rstrip())
 
@@ -627,8 +653,8 @@ def _draw_detail(box, wrap, source_name, finding):
     for name, text in (finding.get("values_text") or {}).items():
         _lines(box, wrap, f"{name.replace('_', ' ')}: {text}")
     for draw in finding.get("draws") or ():
-        tool = draw.get("tool", "")
-        if not draw.get("ok", True):
+        tool, ok = draw.get("tool", ""), draw.get("ok", True)
+        if not ok:
             _lines(box, wrap, f"{tool} not drawn: {draw.get('problem') or 'not found'}", "ERROR")
         elif tool == "ghost":  # the LLM's suggestion: whether it fits, whose verdict that is, what was measured
             for text, icon, alert in findings_draw.ghost_lines(draw):
@@ -642,8 +668,11 @@ def _draw_detail(box, wrap, source_name, finding):
                 line = box.column()
                 line.active = False
                 _lines(line, wrap, f"{target.get('text')}: {target.get('note') or 'not found on board'}", "QUESTION")
+        if not ok:
+            continue  # nothing was measured: none of its tool's facts
         if tool == "layers" and draw.get("layers"):
-            _lines(box, wrap, f"Layers: {', '.join(draw['layers'])}", "RENDERLAYERS")
+            _lines(box, wrap, f"Layers shown: {', '.join(draw['layers'])} (other copper hidden while shown)",
+                   "RENDERLAYERS")
         no_stub = tool == "stub" and not findings_draw.stubbed(draw)
         measured = findings_draw.measured_text(draw) if tool in MEASURED and not no_stub else ""
         if measured:  # "Clearance: 0.080 mm < 0.20 mm min"; without a `what`, "Measured …"
@@ -651,11 +680,11 @@ def _draw_detail(box, wrap, source_name, finding):
             line.alert = bool(draw.get("over"))
             line.label(text=f"{draw['what']}: {measured}" if draw.get("what") else f"Measured {measured}",
                        icon="DRIVER_DISTANCE")
-        if tool == "layer_change" and draw.get("ok", True) and len(draw.get("points") or ()) < 2:  # no return via
+        if tool == "layer_change" and len(draw.get("points") or ()) < 2:  # no return via
             line = box.row()
             line.alert = True
             line.label(text=f"{findings_draw.what_text(draw)}: none found", icon="DRIVER_DISTANCE")
-        if no_stub and draw.get("ok", True):  # its barrel all used
+        if no_stub:  # its barrel all used
             box.label(text=f"{findings_draw.what_text(draw)}: none", icon="DRIVER_DISTANCE")
         if tool == "return_path" and findings_draw.covered_text(draw):
             box.label(text=findings_draw.covered_text(draw))

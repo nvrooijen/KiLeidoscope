@@ -31,7 +31,9 @@ class BoardState:
         self.findings_shown = ("", "")  # (source, key) of the finding drawn, ("", "") for none
         self.findings_isolate = False  # the drawn finding has an isolate draw: X-ray on whatever the tick box
         self.finding_severity = "error"  # its colour (materials.FINDING_COLORS)
-        self.prompt_wait = None  # Copy prompt pressed: the run shown then ("" none); None: not asked
+        self.layer_filter = None  # copper layers its `layers` draws leave shown (layers.set_filter); None: all
+        self.prompt_wait = None  # Copy prompt pressed: the run shown then ("" none), findings.MAKING once the
+        # bridge is making it; None: not asked
         self.prompt_copied = ""  # the run whose prompt went to the clipboard
 
         # Shared display resources.

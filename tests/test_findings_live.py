@@ -2,6 +2,7 @@
 
 import json
 import sys
+import time
 import types
 from collections import namedtuple
 from dataclasses import replace
@@ -132,7 +133,7 @@ def test_dismiss_is_saved_and_sent_again(tmp_path, monkeypatch):
             raise AssertionError("dismissed.json was not written")
         entry = saved["findings"][findings_watch.state_key("file", key)]
         assert entry["state"] == "dismissed" and entry["check"] == "hs.stub"
-        assert entry["targets"] == [f"uuid:{reader.snapshot.tracks[0].id}"]
+        assert entry["title"] == "Stub on the clock" and entry["board"] == "board"
         request(client, "dismiss", key)  # a DRC finding by that key: there is none, nothing changes
         request(client, "reset", key, source="file")
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "")
@@ -325,18 +326,20 @@ CATALOGUE = (Check("plane.gap_crossing", "plane", "Signal crossing a plane gap",
              Check("hs.stub", "hs", "Stubs on fast nets", "Find stubs", "net", ("highlight",), False))
 
 
-def stub_modules(monkeypatch, calls, fail=None, drcs=None):
+def stub_modules(monkeypatch, calls, fail=None, drcs=None, dismissals=None):
     """checks and prompt as their interfaces say (they are written alongside this); what
-    KiCad's DRC gave each prompt goes into `drcs`."""
+    KiCad's DRC gave each prompt goes into `drcs`, what the user dismissed into `dismissals`."""
     checks = types.ModuleType("kileido_bridge.checks")
     checks.CATALOGUE, checks.QUICK = CATALOGUE, ("plane.gap_crossing", "decap.distance")
     checks.GROUPS = (("plane", "Return paths and planes"), ("decap", "Decoupling"), ("hs", "High speed"))
     checks.by_id = lambda ids: tuple(check for check in CATALOGUE if check.id in set(ids))
     prompt = types.ModuleType("kileido_bridge.prompt")
 
-    def make_run(folder, text, snapshot, chosen, notes="", drc=None):
+    def make_run(folder, text, snapshot, chosen, notes="", drc=None, dismissed=()):
         if drcs is not None:
             drcs.append(drc)
+        if dismissals is not None:
+            dismissals.append(list(dismissed))
         if fail:
             raise fail
         run = folder.new_run(text, "prompt")
@@ -611,6 +614,61 @@ def test_the_server_queues_only_well_formed_findings_requests():
         assert len(server.take_findings_requests()) == MAX_FINDINGS_REQUESTS
     finally:
         server.close()
+
+
+def test_a_prompt_names_what_the_user_dismissed_on_this_board(tmp_path, monkeypatch):
+    calls, dismissals = [], []
+    stub_modules(monkeypatch, calls, dismissals=dismissals)
+    runtime, reader, client, project = live(tmp_path, monkeypatch)
+    write(project, tool_file(reader.snapshot.tracks[0]))
+    try:
+        runtime.step()
+        client.connect()
+        payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
+        request(client, "dismiss", file_rows(payload)[0]["key"], source="file")
+        until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "dismissed")
+        request(client, "prompt", source="file", checks=["hs.stub"])
+        until_payload(runtime, client, lambda p: p["prompt"]["state"] == "ready")
+        assert dismissals == [[("hs.stub", "Stub on the clock")]]
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_a_bug_in_one_job_never_ends_the_findings_thread(tmp_path):
+    (tmp_path / "board.kicad_pcb").write_text(FakeBoard.contents, encoding="utf-8")
+    watch = findings_watch.FindingsWatch(find_cli=lambda hint: "")
+    watch.target(str(tmp_path / "board.kicad_pcb"))
+    done, work = [], watch._work
+
+    def flaky(*args):
+        done.append(len(done))
+        if len(done) == 1:
+            raise RuntimeError("an odd snapshot")
+        return work(*args)
+    watch._work = flaky
+
+    def job():
+        with watch._lock:
+            watch._job.save = True
+            watch._kick()
+
+    def until(test):
+        for _ in range(LIMIT):
+            if test():
+                return
+            time.sleep(0.001)
+        raise AssertionError("not reached")
+    job()
+    until(lambda: watch.result()[1] is not None)
+    payload = watch.result()[1]
+    for source in ("drc", "file"):
+        assert payload["sources"][source]["status"] == "error"
+        assert payload["sources"][source]["error"] == ("could not read the findings (RuntimeError: an odd snapshot); "
+                                                       "please report it")
+    job()  # the thread still takes work
+    until(lambda: len(done) == 2)
+    until(lambda: (tmp_path / ".kileidoscope" / "dismissed.json").is_file())
 
 
 def test_a_drc_file_from_an_earlier_session_is_discarded(tmp_path, monkeypatch):

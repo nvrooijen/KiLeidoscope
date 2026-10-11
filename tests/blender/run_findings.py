@@ -35,8 +35,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import (apply, columns, cut, findings, findings_draw, focus, hole_cut, label_place, live,  # noqa: E402
-                     state, transform)
+from kileido import (apply, columns, cut, findings, findings_draw, focus, hole_cut, label_place, layers,  # noqa: E402
+                     live, state, transform)
 from kileido.objects import read_coordinates  # noqa: E402
 from kileido_bridge import findings as bridge_findings  # noqa: E402
 from kileido_bridge import ghost_drc  # noqa: E402
@@ -309,7 +309,17 @@ def check_suggestions(scene, index):
     mentions, the claimed value against the measured one (the grey "?"); isolate's X-ray;
     a part moved, a route and a row of vias (`check_moves`)."""
     apply.apply_frame(frame(with_second_pad(index), extra=SUGGESTED), {})
+    copper = [obj for obj in state.board.collection.all_objects if layers.row_of(obj) in state.board.heights
+              and any(kind in obj.name for kind in (" tracks", " pads", " zone "))]
+    shown_before = {obj.name for obj in copper if not obj.hide_get()}
     found = show("Suggested fixes")
+    # Layers: only F.Cu and In1.Cu shown while it is (the others hidden, their eyes left as they are).
+    assert state.board.layer_filter == {"F.Cu", "In1.Cu"}
+    others = [obj for obj in copper if layers.row_of(obj) not in ("F.Cu", "In1.Cu") and obj.name in shown_before]
+    assert others and all(obj.hide_get() and obj.hide_render for obj in others), [obj.name for obj in others]
+    assert all(not obj.hide_get() for obj in copper if layers.row_of(obj) in ("F.Cu", "In1.Cu")
+               and obj.name in shown_before)
+    assert all(getattr(scene, layers.property_name(row)) for row in state.board.heights)
     drawn = objects()
     assert {"KLS finding 2 distance", "KLS finding 5 ghost", "KLS finding 5 ghost label", "KLS finding 6 area",
             findings_draw.EYE} <= set(drawn), sorted(drawn)
@@ -335,7 +345,8 @@ def check_suggestions(scene, index):
     assert [kind for kind, _ in chips] == ["operator", "operator", "label"] and \
         chips[2][1] == "420d87bb: not on the board", chips
     assert "distance: claimed 1 mm, measured 5.3 mm" in texts, texts
-    assert "Layers: F.Cu, In1.Cu" in texts and "Measured 5.30 mm < 6.00 mm min" in texts, texts
+    assert "Layers shown: F.Cu, In1.Cu (other copper hidden while shown)" in texts, texts
+    assert "Measured 5.30 mm < 6.00 mm min" in texts, texts
     # Not confirmed, a "?": the bridge measured the distance differently (1.0 claimed, 5.3 mm).
     unknown = next(iter(findings.severity_icon("unknown").values()))
     assert ("operator", "Suggested fixes", unknown) in drawn
@@ -344,6 +355,9 @@ def check_suggestions(scene, index):
     amount = bpy.data.node_groups[focus.GROUP].nodes["Amount"].outputs[0]
     show("Plane isolated")
     assert state.board.findings_isolate and amount.default_value == 1.0
+    # Another finding shown, without layers: every copper layer back as its eye says.
+    assert state.board.layer_filter is None
+    assert {obj.name for obj in copper if not obj.hide_get()} == shown_before
     zone = state.board.collection.all_objects[f"KLS In1.Cu zone {ZONE}"]
     assert zone["kls_zone_highlight"] == "finding"
     show("Plane isolated")  # a second click hides it
@@ -463,6 +477,17 @@ def check_moves(scene):
             near = xy[np.hypot(*(xy - centre).T) < 1e-3]
             assert len(near) and np.allclose(near.mean(axis=0), centre, atol=1e-7), (obj.name, y_mm)
     assert drawn["KLS finding 3 ghost label"].data.body == "4 vias, 2.00 mm pitch\ndoes not fit: 2 clash"
+    # Each clashing via crossed out by a thin X on both faces of the board, not by colour alone.
+    marks = drawn["KLS finding 3 ghost over marks"]
+    assert marks.type == "CURVE" and marks.data.materials[0].name == "KLS finding over"
+    assert marks.data.bevel_depth == drawn["KLS finding 3 ghost label leader"].data.bevel_depth  # a hairline
+    lines = [spline_points(marks, i) for i in range(len(marks.data.splines))]
+    assert len(lines) == 2 * 2 * 2, len(lines)  # two vias, two faces, two strokes
+    for y_mm in (6, 8):
+        centre = blender_xy([5 * MM, y_mm * MM])
+        crossing = [line for line in lines if np.allclose(line.mean(axis=0)[:2], centre, atol=1e-7)]
+        assert len(crossing) == 4, (y_mm, len(crossing))
+        assert {bool(line[0, 2] > top) for line in crossing} == {True, False}  # over the top, under the bottom
     # The column: whether each fits, and what the bridge measured.
     texts = [text for _, text, _ in column(scene)]
     for wanted in ("Suggested part move (by the LLM): fits", "Move J3: 5.10 mm", "Suggested route does not fit:",
@@ -956,13 +981,18 @@ def check_routed(scene, index):
         assert local[:, 2].max() > 0  # stands out of the plate, towards the eye
     check_labels(found, 2)  # the path's label and the chart's, beside the box, above the board, apart on screen
     texts = [text for _, text, _ in column(scene)]
-    for line in ("Routed length: 23.40 mm", "Length mismatch", "CLK_P: 12 mm", "CLK_N: 8 mm", "DATA0: 5 mm",
-                 "limit: 10 mm"):
+    for line in ("Routed length: 23.40 mm", "Length mismatch", "CLK_N: 8 mm", "DATA0: 5 mm", "limit: 10 mm"):
         assert line in texts, (line, texts)
+    # The bar past its limit: red, with an icon and words (never colour alone); the others without.
+    assert ("label", "CLK_P: 12 mm, over the limit", "ERROR") in column(scene) and "CLK_P: 12 mm" not in texts
     bars_column = []
     findings._draw_bars(Layout(bars_column), wrap, {"unit": "ps", "bars": [{"label": "A", "value": 3.5, "limit": 2},
                                                                            {"label": "B", "value": 1.0}]})
-    assert [text for _, text, _ in bars_column] == ["A: 3.5 ps (limit 2)", "B: 1 ps"], bars_column
+    assert bars_column == [("label", "A: 3.5 ps (limit 2), over the limit", "ERROR"), ("label", "B: 1 ps", "BLANK1")], \
+        bars_column
+    # A thin line, as a label's leader (never a fat tube).
+    assert drawn["KLS finding 1 routed_length"].data.bevel_depth == \
+        drawn["KLS finding 1 routed_length label leader"].data.bevel_depth
     show("Routed and charted")
     apply.apply_frame(frame(index), {})
 
@@ -1048,7 +1078,14 @@ def check_planes(scene, index):
     limit = drawn["KLS finding 1 layer_change limit"]
     circle, centre = spline_points(limit), blender_xy([8 * MM, 8 * MM])
     assert np.allclose(np.hypot(circle[:, 0] - centre[0], circle[:, 1] - centre[1]), 1e-3, atol=1e-7)
-    assert np.all(circle[:, 2] > top) and limit.data.bevel_depth < tube.data.bevel_depth
+    assert np.all(circle[:, 2] > top)
+    # Thin lines all: the measured line, the rings, the limit and the span ends are hairlines, as a label's leader;
+    # `emphasis: strong` a little thicker, never a fat tube.
+    hairline = drawn["KLS finding 1 layer_change label leader"].data.bevel_depth
+    for part in (tube, rings, limit, drawn["KLS finding 2 plane_gap span ends"], drawn["KLS finding 2 plane_gap edges"]):
+        assert part.data.bevel_depth == hairline, (part.name, part.data.bevel_depth, hairline)
+    strong = findings_draw._thin(1.0, {"emphasis": "strong"})
+    assert strong == findings_draw._hairline(1.0) * findings_draw.STRONG < findings_draw._tube_radius(1.0, 10.0, {})
     assert "KLS finding 1 layer_change ghost" not in drawn  # suggesting one is the LLM's (a ghost draw)
     # Plane gap: the plane's edges on In1.Cu, named; the spans red on the track with a tick across each end.
     edges = drawn["KLS finding 2 plane_gap edges"]
@@ -1191,7 +1228,9 @@ def check_vias_and_steps(scene, index):
     assert np.allclose(ends[:, :2], [blender_xy([6 * MM, 2 * MM]), blender_xy([9_200_000, 2 * MM])], atol=1e-7), ends
     assert np.all(np.abs(ends[:, 2] - inner) < 1e-4) and np.all(ends[:, 2] < top)
     assert len(spline_points(tube, 1)) == 3  # along the pour edge round its corner
-    assert tube.data.bevel_depth < rings.data.bevel_depth  # a hairline, as a label's leader
+    hairline = drawn["KLS finding 1 stitching label leader"].data.bevel_depth  # thin lines all, as a label's leader
+    assert tube.data.bevel_depth == rings.data.bevel_depth == hairline
+    assert all(drawn[f"KLS finding 3 discontinuity mark {n}"].data.bevel_depth == hairline for n in (1, 2, 3))
     assert drawn["KLS finding 1 stitching label"].data.body == "Stitching gap\n3.20 mm > 2.00 mm max"
     # Stub: red from In1.Cu down to B.Cu, the used part faint from F.Cu to In1.Cu, just around the via.
     stub, used = drawn["KLS finding 2 stub"], drawn["KLS finding 2 stub used"]
@@ -1563,6 +1602,101 @@ def check_progress(scene, index):
     assert findings.progress_lines() == [] and not bpy.app.timers.is_registered(ticking)
 
 
+def check_prompt_runs(scene, index):
+    """A prompt is copied once the press it answers is made, whatever its run number: board
+    B's run 2 after board A's copied run 2, a run 1 again after the runs folder was cleared;
+    a run shown when Copy prompt was pressed, sent again before the bridge took the press,
+    is not; a failure ends the wait."""
+    copied = []
+    findings.set_clipboard = copied.append
+
+    def answer(*states, folder="C:/boards/.kileidoscope"):
+        for prompt in states:
+            header = prompt_frame(index, *prompt)
+            header["findings"]["folder"] = folder
+            apply.apply_frame(header, {})
+
+    def press():
+        assert bpy.ops.kileido.findings_prompt() == {"FINISHED"}
+
+    answer(())
+    press()
+    answer(("making",), ("ready", "2", "board A"))
+    assert copied == ["board A"]
+    answer((), folder="D:/other/.kileidoscope")  # board B: its runs numbered from 1 again
+    assert state.board.prompt_copied == "" and state.board.prompt_wait is None
+    press()
+    answer(("making",), ("ready", "2", "board B"), folder="D:/other/.kileidoscope")
+    assert copied == ["board A", "board B"]
+    assert "Prompt for run 2 copied — paste it into your LLM tool" in [t for _, t, _ in column(scene)]
+    press()  # the runs folder cleared meanwhile: the new run is 2 again
+    answer(("ready", "2", "board B"), folder="D:/other/.kileidoscope")  # the shown run, sent again: not the new one
+    assert copied == ["board A", "board B"]
+    answer(("making",), ("ready", "2", "board B, again"), folder="D:/other/.kileidoscope")
+    assert copied == ["board A", "board B", "board B, again"]
+    press()
+    answer(("making",), ("failed", "", "", "disk full"), folder="D:/other/.kileidoscope")
+    assert state.board.prompt_wait is None  # nothing more is waited for
+    answer(("ready", "3", "not asked"), folder="D:/other/.kileidoscope")
+    assert len(copied) == 3
+    apply.apply_frame(frame(index), {})
+
+
+FAILED = {  # draws the bridge could not measure: only why, none of their tools' facts
+    "key": "failed-1", "check": "plane.fragmented", "severity": "warning", "title": "Not measured", "state": "",
+    "values": {"via_density_per_cm2": 3.2}, "bbox_nm": None,
+    "draws": [plane_draw("plane_islands", "Islands", ok=False, problem="GND has no zone fill"),
+              measured_draw("bars", "Values", ok=False, problem="no target on the board to stand at; give at",
+                            bars=[{"label": "A", "value": 1.0}], unit="mm")]}
+
+
+def check_column_facts(scene, index):
+    """A draw not drawn says why and nothing of its tool (no "Islands: 0 pieces", no bars'
+    heading); a rate reads "per cm²"."""
+    header = frame(index)
+    header["findings"]["sources"]["file"]["findings"].append(FAILED)
+    apply.apply_frame(header, {})
+    show("Not measured")
+    texts = [text for _, text, _ in column(scene)]
+    assert "plane_islands not drawn: GND has no zone fill" in texts, texts
+    assert "bars not drawn: no target on the board to stand at; give at" in texts, texts
+    assert not any(text.startswith(("Islands", "Values", "A: 1")) for text in texts), texts
+    assert "via density: 3.2 per cm²" in texts, texts
+    assert findings._unit("via_density_per_cm2") == ("via density", "per cm²")
+    assert findings._unit("distance_mm") == ("distance", "mm") and findings._unit("per_mm") == ("per", "mm")
+    show("Not measured")
+    apply.apply_frame(frame(index), {})
+
+
+def check_redraws(scene, index):
+    """A frame that only says how far the LLM is leaves the shown finding's objects as they
+    are; one that changes the finding draws it again. A leftover object of a label's name:
+    the label takes the name Blender gives it and is placed all the same."""
+    apply.apply_frame(progress_frame(index), {})
+    show("Tracks too close")
+    objects()["KLS finding 2 distance"]["kls_test_kept"] = 1
+    apply.apply_frame(progress_frame(index, state="working", run="4", updated_unix=NOW), {})
+    apply.apply_frame(progress_frame(index, state="working", run="4", done=1, total=2, updated_unix=NOW), {})
+    assert objects()["KLS finding 2 distance"].get("kls_test_kept") == 1  # not made again
+    changed = progress_frame(index, state="working", run="4", done=1, total=2, updated_unix=NOW)
+    next(f for f in changed["findings"]["sources"]["file"]["findings"] if f["title"] == "Tracks too close")[
+        "message"] = "Edited"
+    apply.apply_frame(changed, {})
+    assert objects()["KLS finding 2 distance"].get("kls_test_kept") is None  # made again
+    show("Tracks too close")
+    leftover = bpy.data.objects.new("KLS finding 3 label", None)  # not on the board: only its name is taken
+    try:
+        found = show("Tracks too close")
+        drawn = objects()
+        assert drawn["KLS finding 3 label.001"].data.body == "J1 feeds this", sorted(drawn)
+        assert "KLS finding 3 label.001 leader" in drawn and "KLS finding 3 label.001 plate" in drawn
+        check_labels(found, 3)
+        show("Tracks too close")
+    finally:
+        bpy.data.objects.remove(leftover)
+    apply.apply_frame(frame(index), {})
+
+
 def cut_settings(scene):
     """Everything the cut uses, and each view's direction, as plain values."""
     views = [(tuple(space.region_3d.view_rotation), space.region_3d.view_perspective)
@@ -1758,6 +1892,9 @@ def main():
         check_prompt(scene, index)
         check_notes(scene, index)
         check_progress(scene, index)
+        check_prompt_runs(scene, index)
+        check_column_facts(scene, index)
+        check_redraws(scene, index)
         # Run DRC: asked of the bridge, the button says so until the bridge answers.
         assert bpy.ops.kileido.findings_run_drc() == {"FINISHED"} and sent[-1] == ("run_drc", "", "drc")
         assert ("operator", "Running KiCad DRC…", "TIME") in column(scene)

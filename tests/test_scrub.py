@@ -64,6 +64,34 @@ def test_a_board_with_nothing_to_remove_is_unchanged():
     assert scrub.board(text) == text
 
 
+DATASHEETS = {  # a footprint's Datasheet as KiCad writes it -> what the LLM run's copy keeps
+    "https://www.ti.com/lit/ds/symlink/lm317.pdf": "https://www.ti.com/lit/ds/symlink/lm317.pdf",
+    "http://example.com/a.pdf": "http://example.com/a.pdf",
+    "~": "~",
+    "": "",
+    "www.ti.com/lit/ds/lm317.pdf": "www.ti.com/lit/ds/lm317.pdf",
+    "C:/Users/jane/Acme/datasheets/lm317.pdf": "",
+    "C:\\\\Users\\\\jane\\\\lm317.pdf": "",
+    "file:///C:/Users/jane/lm317.pdf": "",
+    "FILE://server/share/lm317.pdf": "",
+    "/home/jane/acme/lm317.pdf": "",
+    "\\\\\\\\server\\\\share\\\\lm317.pdf": "",
+    "~/datasheets/lm317.pdf": "",
+    "../datasheets/lm317.pdf": "",
+    "${ACME_DOCS}/lm317.pdf": "",
+}
+
+
+@pytest.mark.parametrize("given, kept", DATASHEETS.items())
+def test_a_datasheet_that_is_a_local_file_is_emptied(given, kept):
+    text = (f'(kicad_pcb\n\t(footprint "R"\n\t\t(property "Datasheet" "{given}"\n\t\t\t(at 0 0)\n\t\t)\n'
+            f'\t\t(property "Reference" "C:/Users/jane"\n\t\t)\n\t)\n)\n')
+    clean = scrub.board(text)
+    assert f'(property "Datasheet" "{kept}"\n' in clean
+    assert '(property "Reference" "C:/Users/jane"' in clean  # only the Datasheet is read so
+    assert "jane" not in clean.replace('"C:/Users/jane"', "")
+
+
 def test_the_project_keeps_only_the_review_sections():
     raw = {"meta": {"filename": "acme_secret.kicad_pro", "version": 3}, "board": {"design_settings": {}},
            "net_settings": {"classes": [{"name": "Default"}]}, "text_variables": {"COMPANY": "Acme"},

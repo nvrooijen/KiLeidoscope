@@ -21,7 +21,7 @@ own DRC on a copy of the board with every ghost written in (`ghost_drc`), run on
 (ghosts as resolved, board text) in a thread of its own, one at a time, the newest asked
 for next. Its outcome is kept for that key and put on the payload (`ghost_drc.apply`):
 "pending" until it is in; a file or board edit that changes the key makes it pending
-again, and a result that comes back for an older key is kept but never shown. Without
+again, and a result that comes back for an older key is dropped. Without
 kicad-cli, or when it fails, the ghosts say so and keep the quick check's verdict.
 
 While the LLM works it may keep `<stem>.kls-progress.json` (`kls_folder.PROGRESS_FORMAT`).
@@ -134,14 +134,15 @@ def catalogue() -> tuple[list, list] | None:
         return None
 
 
-def make_prompt(folder, text: str, snapshot, ids, notes: str = "", drc=None) -> tuple[str, str, str]:
+def make_prompt(folder, text: str, snapshot, ids, notes: str = "", drc=None, dismissed=()) -> tuple[str, str, str]:
     """(run id, stamp, clipboard prompt) of a new prompt run for the checks `ids` (unknown
-    ones dropped), with the user's `notes` and what KiCad's DRC found (`prompt._drc_text`)."""
+    ones dropped), with the user's `notes`, what KiCad's DRC found (`prompt._drc_text`) and
+    what the user dismissed on this board (`kls_folder.State.dismissed`)."""
     from . import checks, prompt
     chosen = checks.by_id(ids)
     if not chosen:
         raise ValueError(NO_CHECKS)
-    run, clipboard = prompt.make_run(folder, text, snapshot, chosen, notes=notes, drc=drc)
+    run, clipboard = prompt.make_run(folder, text, snapshot, chosen, notes=notes, drc=drc, dismissed=dismissed)
     return run.id, run.stamp, clipboard
 
 
@@ -158,12 +159,6 @@ def _signature(path: Path):
     except OSError:
         return None
     return info.st_mtime_ns, info.st_size
-
-
-def _target_texts(finding: findings.Finding) -> list[str]:
-    """Every target a finding's draws name, as written, once each."""
-    texts = [text for draw in finding.draws for _, text in findings._roles(draw)]  # every tool's roles
-    return list(dict.fromkeys(texts))
 
 
 def _with_states(payload: dict, states: dict) -> dict:
@@ -243,7 +238,6 @@ class FindingsWatch:
         self._parsed = {}  # source -> FindingsFile, FindingsError or None (no file)
         self._sources = {}  # source -> source payload
         self._good = {}  # source -> last payload of a file that parsed
-        self._targets = {}  # source -> finding key -> its targets as written (for dismissed.json)
         self._drc = drc_state()
         self._drc_wanted = False
         self._drc_running = False
@@ -374,9 +368,8 @@ class FindingsWatch:
             row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
             if row is None and action != "reset":
                 return  # not a finding Blender was sent
-            targets = self._targets.get(source, {}).get(key, [])
-            self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "", targets,
-                             row["title"] if row else "")
+            self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "",
+                             row["title"] if row else "", folder.stem)
             states = self._states(source)
             if payload is not None:
                 self._sources[source] = _with_states(payload, states)
@@ -446,6 +439,8 @@ class FindingsWatch:
     # --- the findings thread ------------------------------------------------------------
 
     def _loop(self):
+        """The findings thread: one job at a time, for the whole session. A bug in one job
+        is published on both sources and the thread goes on to the next."""
         while True:
             self._wake.wait()
             self._wake.clear()
@@ -453,8 +448,24 @@ class FindingsWatch:
                 job, self._job = self._job, _Job()
                 generation, folder, board = self._generation, self.folder, self._board
                 state = kls_folder.State(dict(self._state.findings))
-            if job:
+            if not job:
+                continue
+            try:
                 self._work(job, generation, folder, board, state)
+            except Exception as exc:  # a bug costs this job's files, never the thread
+                self._failed(generation, folder, f"could not read the findings ({type(exc).__name__}: {exc}); "
+                                                  "please report it")
+
+    def _failed(self, generation: int, folder, error: str):
+        """A job's error on both sources: a listed file keeps its findings, with the error."""
+        with self._lock:
+            if generation != self._generation:
+                return
+            for source in SOURCES:
+                shown = self._sources.get(source) or findings.status_payload(
+                    "error", self._context(folder, source, {}), connected=self._board.revision is not None)
+                self._sources[source] = {**shown, "status": "error", "error": error[:findings.MAX_TEXT]}
+            self._publish()
 
     def _work(self, job: _Job, generation: int, folder, board: _Board, state):
         if job.save:
@@ -490,8 +501,6 @@ class FindingsWatch:
                 payload = self._with_ghosts(source, payload, board, folder)
                 if parsed:
                     self._good[source] = payload
-                    self._targets[source] = {row["key"]: _target_texts(finding) for row, finding
-                                             in zip(payload["findings"], self._parsed[source].findings)}
                 elif payload["status"] == "none":
                     self._good.pop(source, None)
                 self._sources[source] = payload
@@ -555,7 +564,8 @@ class FindingsWatch:
     def _with_ghosts(self, source: str, payload: dict, board: _Board, folder) -> dict:
         """In the lock: `payload` with KiCad's DRC on its ghosts. The outcome kept for these
         ghosts on this board text when there is one; else "pending", and a run asked for
-        (the newest ask replaces an older one; the run going is never asked again)."""
+        (the newest ask replaces an older one; the run going is never asked again, and an
+        older ask for this source is dropped when the payload is back at the run going)."""
         ghosts = ghost_drc.collect(payload)
         if not ghosts:
             self._ghost_key.pop(source, None)
@@ -568,7 +578,9 @@ class FindingsWatch:
         if done is not None and done[0] == key:
             self._ghost_want.pop(source, None)
             return ghost_drc.apply(payload, done[1])
-        if self._ghost_running != (source, key):
+        if self._ghost_running == (source, key):
+            self._ghost_want.pop(source, None)  # back at the run going (an edit undone): no other run wanted
+        else:
             self._ghost_want[source] = (key, ghosts, board.text, board.hint, folder)
             self._start_ghosts()
         return ghost_drc.apply(payload, None)
@@ -585,7 +597,8 @@ class FindingsWatch:
 
     def _ghost_run(self, generation: int, source: str, key, folder, ghosts, text: str, hint: str):
         """KiCad's DRC on a copy of `text` (else the saved file) with `ghosts` written in;
-        the outcome is kept under `key` and shown when the payload still shows that key."""
+        the outcome is kept under `key` and shown while the payload still shows that key,
+        and dropped when it no longer does (it would only push out a newer key's)."""
         try:
             if not text:
                 text = Path(folder.board_path).read_text(encoding="utf-8")
@@ -601,8 +614,8 @@ class FindingsWatch:
             if generation != self._generation:
                 return
             self._ghost_running = None
-            self._ghost_done[source] = (key, outcome)
             if self._ghost_key.get(source) == key:
+                self._ghost_done[source] = (key, outcome)
                 for store in (self._sources, self._good):
                     if source in store:
                         store[source] = ghost_drc.apply(store[source], outcome)
@@ -666,7 +679,7 @@ class FindingsWatch:
         """In the lock, on the tick that follows a prompt request: the run is made from
         KiCad's raw board text, so it hashes to the stamp the findings echo. KiCad's DRC
         runs on the same text first (unless a DRC run is already going), so the request
-        tells the LLM what DRC already found."""
+        tells the LLM what DRC already found, and what the user dismissed on this board."""
         error = findings.NOT_CONNECTED if snapshot is None else ("" if text else NO_TEXT)
         if error:
             self._prompt = prompt_state("failed", error=error)
@@ -678,17 +691,19 @@ class FindingsWatch:
             self._drc_running = True
             self._drc = drc_state("running", run=self._drc["run"])
             self._publish()
+        dismissed = self._state.dismissed(folder.stem)
         threading.Thread(target=self._prompt_make,
-                         args=(self._generation, folder, snapshot, hint if with_drc else None, text, ids, notes),
-                         name="kileido-prompt", daemon=True).start()
+                         args=(self._generation, folder, snapshot, hint if with_drc else None, text, ids, notes,
+                               dismissed), name="kileido-prompt", daemon=True).start()
 
-    def _prompt_make(self, generation: int, folder, snapshot, hint, text: str, ids: tuple, notes: str):
+    def _prompt_make(self, generation: int, folder, snapshot, hint, text: str, ids: tuple, notes: str, dismissed):
         """`hint` None: no DRC first (one was already running)."""
         made = None
         drc = DRC_BUSY if hint is None else self._drc_run(generation, folder, snapshot, hint, text)
         try:
             with self._runs_lock:
-                run_id, run_stamp, clipboard = self._make_prompt(folder, text, snapshot, ids, notes, drc)
+                run_id, run_stamp, clipboard = self._make_prompt(folder, text, snapshot, ids, notes, drc,
+                                                                 dismissed=dismissed)
             outcome = prompt_state("ready", str(run_id), clipboard)
             made = (str(run_id), str(run_stamp), time.time())
         except Exception as exc:  # a file could not be written, no checks, or a digest bug

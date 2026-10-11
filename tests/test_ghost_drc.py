@@ -363,7 +363,7 @@ def test_resolve_marks_ghosts_with_the_quick_verdict_and_touches():
     on = only_draw(payload(index, finding({"tool": "ghost", "kind": "via", "at": "pt:15,10@F.Cu", "net": "GND"})))
     assert on["fits"] is False and on["net"] == "GND" and on["touches"] == [[0, "SIG"]]
     assert on["kicad_drc"] == {"state": "skipped", "problems": [], "notes": [], "error": "", "quick_fits": False,
-                               "quick_problem": on["problem"], "quick_row": [], "kept": []}
+                               "quick_problem": on["problem"], "quick_row": [], "kept": [], "kept_row": []}
     near = only_draw(payload(index, finding({"tool": "ghost", "kind": "via", "at": "pt:15,10.45@F.Cu", "net": "GND",
                                              "size": 0.6})))  # 0.05 mm from the track
     assert near["fits"] is False and near["touches"] == []  # close, not touching
@@ -511,6 +511,58 @@ def test_a_board_edit_drops_a_stale_result(tmp_path):
     draw = until(watch, snapshot, lambda d: d["kicad_drc"]["state"] == "done", text=edited, revision=2)
     assert draw["fits"] is True and draw["problem"] == ""  # the edited board's verdict, never the stale clash
     assert len(gate.texts) == 2 and gate.texts[1].startswith(edited.rstrip()[:-1])
+
+
+def test_an_undone_edit_runs_no_stale_ghost_check(tmp_path, monkeypatch):
+    """While KiCad checks the ghosts of key K1, an edit asks for K2 and an undo goes back
+    to K1: K2 is never run, and K1's outcome is kept and shown. An outcome for a key the
+    payload no longer shows is dropped."""
+    gates, ran = {}, []
+
+    def check(folder, text, ghosts, cli, run, lock):
+        ran.append(ghosts)
+        assert gates.setdefault(ghosts, threading.Event()).wait(10)
+        return Outcome({("verdict", ghosts): Verdict("done")})
+
+    monkeypatch.setattr(ghost_drc, "check", check)
+    monkeypatch.setattr(ghost_drc, "collect", lambda payload: payload["ghosts"])
+    monkeypatch.setattr(ghost_drc, "digest", lambda ghosts: ghosts)
+    monkeypatch.setattr(ghost_drc, "apply", lambda payload, outcome: {**payload, "outcome": outcome})
+    (tmp_path / "board.kicad_pcb").write_text(BOARD_TEXT, encoding="utf-8")
+    watch = findings_watch.FindingsWatch(find_cli=lambda hint: "kicad-cli")
+    watch.target(str(tmp_path / "board.kicad_pcb"))
+    board = findings_watch._Board(1, None, "a1b2c3d4", BOARD_TEXT)
+
+    def show(ghosts):
+        with watch._lock:
+            return watch._with_ghosts("file", {"ghosts": ghosts}, board, watch.folder)
+
+    def idle():
+        end = time.monotonic() + 10
+        while time.monotonic() < end:
+            with watch._lock:
+                if watch._ghost_running is None and not watch._ghost_want:
+                    return
+            time.sleep(0.005)
+        raise AssertionError("still running")
+
+    assert show("K1")["outcome"] is None  # pending; K1 runs
+    show("K2")  # an edit: K2 asked for while K1 runs
+    show("K1")  # undone
+    gates.setdefault("K1", threading.Event()).set()
+    idle()
+    assert ran == ["K1"] and watch._ghost_done["file"][0][1] == "K1"
+    assert show("K1")["outcome"] is not None  # shown, never run again
+    show("K3")  # K3 runs; meanwhile the payload moves on to K4
+    show("K4")
+    gates.setdefault("K3", threading.Event()).set()
+    end = time.monotonic() + 10
+    while watch._ghost_running != ("file", ("a1b2c3d4", "K4")) and time.monotonic() < end:
+        time.sleep(0.005)
+    assert watch._ghost_done["file"][0][1] == "K1"  # K3's outcome dropped: the payload shows K4
+    gates.setdefault("K4", threading.Event()).set()
+    idle()
+    assert ran == ["K1", "K3", "K4"] and watch._ghost_done["file"][0][1] == "K4"
 
 
 def test_without_kicad_cli_or_when_it_fails_the_quick_verdict_stays(tmp_path):
