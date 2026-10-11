@@ -49,7 +49,7 @@ from . import drc_findings, findings, ghost_drc, kls_folder
 from .board_index import BoardIndex
 from .kls_folder import SOURCES
 
-ACTIONS = frozenset({"confirm", "dismiss", "reset", "accept", "run_drc", "prompt"})
+ACTIONS = frozenset({"confirm", "dismiss", "reset", "run_drc", "prompt"})
 MARKS = {"confirm": "confirmed", "dismiss": "dismissed", "reset": ""}
 SAVED_ONLY = "saved file, unsaved edits not checked"
 SAVE_FIRST = "Save the board first"
@@ -180,7 +180,7 @@ def _with_states(payload: dict, states: dict) -> dict:
 class _Job:
     """Work for the thread; merged until it takes it."""
     reload: set = field(default_factory=set)  # sources whose file changed, and PROGRESS
-    resolve: set = field(default_factory=set)  # sources to resolve again (board change, accept)
+    resolve: set = field(default_factory=set)  # sources to resolve again (board change)
     save: bool = False  # dismissed.json
 
     def __bool__(self) -> bool:
@@ -338,9 +338,8 @@ class FindingsWatch:
     # --- Blender's requests -------------------------------------------------------------
 
     def request(self, action: str, key: str = "", source: str = "drc", checks=(), notes: str = "") -> None:
-        """confirm | dismiss | reset a finding of `source` by its key, accept `source`'s
-        file from an unknown run, run_drc, or make a prompt for the check ids `checks`
-        with the user's `notes`."""
+        """confirm | dismiss | reset a finding of `source` by its key, run_drc, or make a
+        prompt for the check ids `checks` with the user's `notes`."""
         if action not in ACTIONS:
             return
         source = source if source in SOURCES else "drc"
@@ -371,26 +370,19 @@ class FindingsWatch:
                 return
             if not folder.available:
                 return
-            if action == "accept":
-                found = self._parsed.get(source)
-                if not isinstance(found, findings.FindingsFile):
-                    return
-                self._state.accept(findings.accept_key(found.run, found.stamp))
-                self._job.resolve.add(source)
-            else:
-                payload = self._sources.get(source)
-                row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
-                if row is None and action != "reset":
-                    return  # not a finding Blender was sent
-                targets = self._targets.get(source, {}).get(key, [])
-                self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "", targets,
-                                 row["title"] if row else "")
-                states = self._states(source)
-                if payload is not None:
-                    self._sources[source] = _with_states(payload, states)
-                if source in self._good:
-                    self._good[source] = _with_states(self._good[source], states)
-                self._publish()
+            payload = self._sources.get(source)
+            row = next((row for row in payload["findings"] if row["key"] == key), None) if payload else None
+            if row is None and action != "reset":
+                return  # not a finding Blender was sent
+            targets = self._targets.get(source, {}).get(key, [])
+            self._state.mark(state_key(source, key), MARKS[action], row["check"] if row else "", targets,
+                             row["title"] if row else "")
+            states = self._states(source)
+            if payload is not None:
+                self._sources[source] = _with_states(payload, states)
+            if source in self._good:
+                self._good[source] = _with_states(self._good[source], states)
+            self._publish()
             self._job.save = True
             self._kick()
 
@@ -403,7 +395,7 @@ class FindingsWatch:
 
     def _context(self, folder, source: str, runs: dict) -> findings.Context:
         return findings.Context(path=str(folder.path_for(source)) if folder.available else "", source=source,
-                                runs=runs, accepted=self._state.accepted(), live_stamp=self._board.live_stamp,
+                                runs=runs, live_stamp=self._board.live_stamp,
                                 states=self._states(source))
 
     def _progress_payload(self) -> dict:
@@ -460,7 +452,7 @@ class FindingsWatch:
             with self._lock:
                 job, self._job = self._job, _Job()
                 generation, folder, board = self._generation, self.folder, self._board
-                state = kls_folder.State(dict(self._state.findings), list(self._state.accepted_runs))
+                state = kls_folder.State(dict(self._state.findings))
             if job:
                 self._work(job, generation, folder, board, state)
 

@@ -93,7 +93,8 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
         (row,) = file_rows(payload)
         assert row["title"] == "Stub on the clock" and row["state"] == "" and not row["faded"]
         source = payload["sources"]["file"]
-        assert source["status"] == "ok" and source["connected"] and source["handshake"] == "unknown_run"
+        assert source["status"] == "ok" and source["connected"] and source["handshake"] == "outside"
+        assert row["draws"][0]["ids"] == [track.id]  # another tool's file: drawn straight away
         assert source["path"] == str(project / ".kileidoscope" / "board.kls-findings.json")
         assert payload["sources"]["drc"]["status"] == "none"
         types = [h["type"] for h, _ in frames]
@@ -135,9 +136,6 @@ def test_dismiss_is_saved_and_sent_again(tmp_path, monkeypatch):
         request(client, "dismiss", key)  # a DRC finding by that key: there is none, nothing changes
         request(client, "reset", key, source="file")
         payload = until_payload(runtime, client, lambda p: file_rows(p) and file_rows(p)[0]["state"] == "")
-        assert not file_rows(payload)[0]["draws"]  # an unknown run: listed, not drawn
-        request(client, "accept", source="file")
-        payload = until_payload(runtime, client, lambda p: p["sources"]["file"]["handshake"] == "accepted")
         assert file_rows(payload)[0]["draws"][0]["ids"] == [reader.snapshot.tracks[0].id]
     finally:
         client.close()

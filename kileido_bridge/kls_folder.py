@@ -17,7 +17,7 @@ file. A `.gitignore` holding `*` keeps the folder out of the user's repository.
 - `<stem>.drc.kls-findings.json`: the bridge's DRC findings.
 - `<stem>.kls-progress.json`: how far an LLM is with a prompt run (optional, `PROGRESS_FORMAT`,
   rewritten whole after each check); only read here.
-- `dismissed.json`: confirmed and dismissed findings, and unknown runs the user accepted.
+- `dismissed.json`: confirmed and dismissed findings.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ SIDE_RUNS = {"ghost_drc": 2}  # kind -> runs of it kept; they count only against
 STATE_FILE = "dismissed.json"
 STATE_VERSION = 1
 MAX_STATE_ENTRIES = 10_000
-MAX_ACCEPTED = 1_000
 SOURCES = ("drc", "file")
 STATES = ("confirmed", "dismissed")
 PROGRESS_FORMAT = "kls-progress 1"
@@ -67,16 +66,11 @@ class Run:
 
 @dataclass
 class State:
-    """dismissed.json: finding key -> {"state", "check", "targets", "title", "at"}, plus
-    `accept_key`s of unknown runs the user accepted."""
+    """dismissed.json: finding key -> {"state", "check", "targets", "title", "at"}."""
     findings: dict = field(default_factory=dict)
-    accepted_runs: list = field(default_factory=list)
 
     def states(self) -> dict[str, str]:
         return {key: entry["state"] for key, entry in self.findings.items()}
-
-    def accepted(self) -> frozenset[str]:
-        return frozenset(self.accepted_runs)
 
     def mark(self, key: str, state: str, check: str = "", targets=(), title: str = "") -> None:
         """Confirm or dismiss a finding; "" (or "reset") forgets it."""
@@ -86,14 +80,10 @@ class State:
         self.findings[key] = {"state": state, "check": check, "targets": list(targets), "title": title,
                               "at": datetime.now().astimezone().isoformat(timespec="seconds")}
 
-    def accept(self, run_key: str) -> None:
-        if run_key not in self.accepted_runs:
-            self.accepted_runs.append(run_key)
-            del self.accepted_runs[:-MAX_ACCEPTED]
-
 
 def _state_from(raw) -> State:
-    """A State from dismissed.json's JSON, keeping only well-formed entries."""
+    """A State from dismissed.json's JSON, keeping only well-formed entries; other keys
+    are ignored."""
     state = State()
     if not isinstance(raw, dict) or raw.get("version") != STATE_VERSION:
         return state
@@ -110,9 +100,6 @@ def _state_from(raw) -> State:
             "title": entry["title"] if isinstance(entry.get("title"), str) else "",
             "at": entry["at"] if isinstance(entry.get("at"), str) else "",
         }
-    accepted = raw.get("accepted_runs")
-    if isinstance(accepted, list):
-        state.accepted_runs = [item for item in accepted if isinstance(item, str) and len(item) <= 64][-MAX_ACCEPTED:]
     return state
 
 
@@ -262,7 +249,7 @@ class KlsFolder:
 
     def save_state(self, state: State) -> None:
         self.ensure()
-        data = {"version": STATE_VERSION, "findings": state.findings, "accepted_runs": state.accepted_runs}
+        data = {"version": STATE_VERSION, "findings": state.findings}
         self._write(STATE_FILE, json.dumps(data, indent=1, ensure_ascii=False).encode("utf-8"))
 
     def discard(self, source: str = "drc") -> None:

@@ -127,7 +127,7 @@ class SocketClient:
 
     def request_findings(self, action, key="", source="drc", checks=None, notes=None):
         """Ask the bridge to act on its findings: "confirm", "dismiss" or "reset" the finding
-        `key`, "accept" an unknown run, "run_drc", or make a "prompt" for the check ids
+        `key`, "run_drc", or make a "prompt" for the check ids
         `checks` with the user's `notes` (plain text, a prompt's only); `source` is the file
         ("drc" or "file")."""
         if self.state == "connected":

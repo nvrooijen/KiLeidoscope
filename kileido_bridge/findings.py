@@ -26,8 +26,9 @@ Every measured draw names what it measured in `what`, so Blender labels them all
 a finding whose every measured limit is met `passes`, and a claimed value the bridge
 measured too is listed in `disagree` when the two are far apart. Confirm/dismiss state is
 keyed on the check and the named targets (`named`, `finding_key`), so it survives
-re-routing that changes uuids. A file from a run the bridge made (`handshake`) has its
-`stamp` compared with the live board's: `changed` says the board was edited since.
+re-routing that changes uuids. Every file is drawn; `handshake` says where it came from:
+a run the bridge made, another run, or outside any run. A file from a run the bridge made
+has its `stamp` compared with the live board's: `changed` says the board was edited since.
 """
 
 from __future__ import annotations
@@ -178,7 +179,6 @@ class Context:
     path: str
     source: str  # "drc" | "file"
     runs: dict  # known run id -> stamp (KlsFolder.runs())
-    accepted: frozenset  # accept_key(run, stamp) of files the user accepted
     live_stamp: str  # stamp of KiCad's raw board text now, "" if unknown
     states: dict  # finding key -> "confirmed" | "dismissed"
 
@@ -710,11 +710,6 @@ def finding_key(check: str, names: Iterable[str]) -> str:
     """Confirm/dismiss key of a finding: its check and its named targets, order-free."""
     text = check + "|" + "|".join(sorted(set(names)))
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
-
-
-def accept_key(run: str, stamp: str) -> str:
-    """What `Context.accepted` holds for a file from an unknown run the user accepted."""
-    return f"{run}|{stamp}"
 
 
 # resolving
@@ -1883,13 +1878,14 @@ def _place_bars(board: _Board, drawn: list[tuple[dict, list[Resolved]]], resolve
 
 
 def handshake(found: FindingsFile, context: Context) -> str:
-    """"known" (our run and its stamp; or our own DRC file), "accepted" (the user
-    accepted it) or "unknown_run" (listed, not drawn)."""
+    """Where the file came from: "known" (a run this bridge made, with that run's stamp;
+    or our own DRC file), "other_run" (it names a run or stamp, but not one of ours: an
+    older or foreign run) or "outside" (no run: another tool or script wrote it)."""
     if found.stamp and (context.runs.get(found.run) == found.stamp or context.source == "drc"):
         return "known"
-    if accept_key(found.run, found.stamp) in context.accepted:
-        return "accepted"
-    return "unknown_run"
+    if found.run or found.stamp:
+        return "other_run"
+    return "outside"
 
 
 def status_payload(status: str, context: Context | None = None, error: str = "",
@@ -1909,9 +1905,9 @@ def _group(check: str) -> str:
 
 def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context) -> dict:
     """The `findings` payload. `index` None: KiCad is not connected; the findings are
-    listed and every target says so. A file from an unknown run (`handshake`) is listed,
-    not drawn. `changed`: a file of a known run whose stamp differs from the live board's
-    (the board was edited since the run)."""
+    listed and every target says so. `handshake`: where the file came from (`handshake()`);
+    every file is drawn. `changed`: a file of a known run whose stamp differs from the live
+    board's (the board was edited since the run)."""
     payload = status_payload("ok", context, connected=index is not None)
     agreed = handshake(found, context)
     payload.update(run=found.run, stamp=found.stamp, handshake=agreed, tool=found.tool,
@@ -1928,7 +1924,7 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
         keys[key] = keys.get(key, 0) + 1
         if keys[key] > 1:  # the same finding twice in one file: keys stay unique
             key = f"{key}-{keys[key]}"
-        drawn = [_resolve_draw(board, draw) for draw in finding.draws] if agreed != "unknown_run" else []
+        drawn = [_resolve_draw(board, draw) for draw in finding.draws]
         _place_bars(board, drawn, resolved)
         _ghosts_in_reach(drawn)
         draws = [draw for draw, _ in drawn]

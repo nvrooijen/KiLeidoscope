@@ -178,10 +178,10 @@ def findings_file(extra=()):
 def frame(index, drop=(), extra=()):
     """The bridge's findings frame: the findings file resolved (the board as it is, a known
     run), no DRC run yet."""
-    context = bridge_findings.Context("x.kls-findings.json", "file", {"4": STAMP}, frozenset(), STAMP, {})
+    context = bridge_findings.Context("x.kls-findings.json", "file", {"4": STAMP}, STAMP, {})
     payload = bridge_findings.resolve_file(bridge_findings.parse(findings_file(extra)), index, context)
     payload["findings"] = [f for f in payload["findings"] if f["title"] not in drop]
-    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, frozenset(), STAMP, {}))
+    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, STAMP, {}))
     return {"type": "findings", "revision": 1,
             "findings": {"status": "ok", "folder": "C:/boards/.kileidoscope",
                          "drc": {"state": "idle", "error": "", "run": ""}, "sources": {"drc": drc, "file": payload}}}
@@ -1340,6 +1340,51 @@ def check_drc_header(scene, index):
     assert "2 library notices left out" in texts and "Saved file, unsaved edits not checked" in texts, texts
     apply.apply_frame(frame(index), {})
     assert not any(text.startswith("KiCad DRC 10") for _, text, _ in column(scene))
+
+
+def origin_frame(index, **top):
+    """`frame` with the findings file's top-level fields changed (`run`, `stamp`, `tool`)."""
+    data = json.loads(findings_file())
+    data.update(top)
+    context = bridge_findings.Context("x.kls-findings.json", "file", {"4": STAMP}, STAMP, {})
+    header = frame(index)
+    header["findings"]["sources"]["file"] = bridge_findings.resolve_file(
+        bridge_findings.parse(json.dumps(data).encode("utf-8")), index, context)
+    return header
+
+
+def check_origin(scene, index):
+    """A file not from one of our prompt runs is drawn straight away; the source header
+    says where it came from (nothing extra for our own run)."""
+    cases = [
+        ({}, "known", ""),
+        ({"run": None, "stamp": None, "tool": "A script"}, "outside", "From A script, not from a KiLeidoscope prompt"),
+        ({"run": None, "stamp": None, "tool": ""}, "outside", "Not from a KiLeidoscope prompt"),
+        ({"run": "9"}, "other_run",
+         "Answer to run 9, not one this board's KiLeidoscope made (or the board has changed since)"),
+        ({"stamp": "ffffffff"}, "other_run",
+         "Answer to run 4, not one this board's KiLeidoscope made (or the board has changed since)"),
+    ]
+    for top, origin, line in cases:
+        apply.apply_frame(origin_frame(index, **top), {})
+        source = findings.source("file")
+        assert source["handshake"] == origin and findings.origin_line(source) == line, (top, source["handshake"])
+        drawn = column(scene, tabs=("LLM",))
+        texts = [text for _, text, _ in drawn]
+        assert "Accept" not in texts and not any("accept" in text.lower() for text in texts), texts
+        if line:
+            first, *rest = wrap(line)
+            at = drawn.index(("label", first, "INFO"))
+            assert drawn[at + 1:at + 1 + len(rest)] == [("label", part, "BLANK1") for part in rest], drawn
+        else:
+            assert not any("KiLeidoscope prompt" in text or "made (or" in text for text in texts), texts
+        found = show("Tracks too close")  # drawn without any further step
+        assert all(draw["ok"] for draw in found["draws"]) and "KLS finding 2 distance" in objects()
+        show("Tracks too close")  # a second click hides it
+        assert state.board.findings_shown == ("", "") and not objects()
+    apply.apply_frame(frame(index), {})
+
+
 def check_prompt(scene, index):
     """The LLM prompt box above the LLM's findings: v1 checks ticked to start with, groups
     folded, Quick and All, Copy prompt sends the ticked ids, a ready prompt is copied once."""
@@ -1697,6 +1742,7 @@ def main():
         assert columns.tab_state("DRC") == "off"
         check_column(scene)
         check_drc_header(scene, index)
+        check_origin(scene, index)
         check_markers(scene)
         check_drawing(scene)
         check_pull()

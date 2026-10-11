@@ -67,10 +67,9 @@ def board():
 
 def findings_frame(index):
     data = {"format": "kls-findings 1", "run": "7", "stamp": STAMP, "tool": "Test LLM", "findings": FINDINGS}
-    context = bridge_findings.Context("x.kls-findings.json", "file", {"7": STAMP}, frozenset(), STAMP, {})
+    context = bridge_findings.Context("x.kls-findings.json", "file", {"7": STAMP}, STAMP, {})
     payload = bridge_findings.resolve_file(bridge_findings.parse(json.dumps(data).encode("utf-8")), index, context)
-    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, frozenset(), STAMP,
-                                                                         {}))
+    drc = bridge_findings.status_payload("none", bridge_findings.Context("x.drc.json", "drc", {}, STAMP, {}))
     return {"type": "findings", "revision": 1,
             "findings": {"status": "ok", "folder": "C:/boards/.kileidoscope",
                          "drc": {"state": "idle", "error": "", "run": ""}, "sources": {"drc": drc, "file": payload}}}

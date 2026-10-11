@@ -443,7 +443,7 @@ def watched(tmp_path, run, cli="kicad-cli"):
     watch.CHECK_S = watch.SETTLE_S = watch.RESOLVE_DEBOUNCE_S = 0.0
     watch.target(str(board))
     folder = watch.folder
-    prompt = folder.new_run(BOARD_TEXT, "llm")  # the run the answer echoes: drawn without an accept
+    prompt = folder.new_run(BOARD_TEXT, "llm")  # the run the answer echoes: a known run
     data = {"format": "kls-findings 1", "run": prompt.id, "stamp": prompt.stamp, "tool": "t", "findings": [
         {"check": "plane.return", "severity": "warning", "title": "Return via",
          "draw": [{"tool": "ghost", "kind": "via", "at": "pt:20,2@F.Cu", "net": "GND"}]}]}

@@ -35,9 +35,8 @@ def finding(*draws, **fields):
             "message": "m", "draw": list(draws), **fields}
 
 
-def context(source="file", runs=None, accepted=(), live=STAMP, states=None):
-    return Context("x.kls-findings.json", source, {"4": STAMP} if runs is None else runs,
-                   frozenset(accepted), live, states or {})
+def context(source="file", runs=None, live=STAMP, states=None):
+    return Context("x.kls-findings.json", source, {"4": STAMP} if runs is None else runs, live, states or {})
 
 
 def payload(index, *items, ctx=None, **top):
@@ -365,22 +364,39 @@ def test_changed_when_the_live_stamp_differs(index):
 
 # handshake
 
-def test_handshake_known_changed_unknown_accepted(index):
+def test_handshake_known_changed(index):
     item = finding({"tool": "highlight", "targets": ["U3"]})
     known = payload(index, item)
     assert known["handshake"] == "known" and not known["changed"] and known["findings"][0]["draws"]
     assert known["status"] == "ok" and known["connected"] and known["run"] == "4"
     changed = payload(index, item, ctx=context(live="00000000"))
     assert changed["handshake"] == "known" and changed["changed"]
-    unknown = payload(index, item, ctx=context(runs={"4": "ffffffff"}))
-    assert unknown["handshake"] == "unknown_run" and unknown["findings"][0]["draws"] == []
-    assert unknown["findings"][0]["bbox_nm"] is None and unknown["findings"][0]["title"] == "T"
-    accepted = payload(index, item, ctx=context(runs={}, accepted=[findings.accept_key("4", STAMP)]))
-    assert accepted["handshake"] == "accepted" and accepted["findings"][0]["draws"]
-    assert not accepted["changed"]
     drc = payload(index, item, ctx=context(source="drc", runs={}, live="00000000"))
     assert drc["handshake"] == "known" and drc["changed"] and drc["source"] == "drc"
-    assert payload(index, item, stamp=None)["handshake"] == "unknown_run"
+
+
+@pytest.mark.parametrize("ctx, top", [
+    ({"runs": {"4": "ffffffff"}}, {}),  # our run id, another stamp
+    ({"runs": {}}, {}),  # a run this bridge never made
+    ({}, {"stamp": None}),  # a run id but no stamp
+    ({}, {"run": None}),  # a stamp but no run id
+])
+def test_handshake_other_run_is_drawn(index, ctx, top):
+    item = finding({"tool": "highlight", "targets": ["U3"]})
+    result = payload(index, item, ctx=context(**ctx), **top)
+    assert result["handshake"] == "other_run" and not result["changed"]
+    (drawn,) = result["findings"][0]["draws"]
+    assert drawn["ok"] and drawn["ids"] and result["findings"][0]["bbox_nm"] is not None
+
+
+def test_handshake_outside_is_drawn(index):
+    item = finding({"tool": "highlight", "targets": ["U3"]})
+    result = payload(index, item, run=None, stamp=None, tool="some script")
+    assert result["handshake"] == "outside" and not result["changed"]
+    assert result["run"] == "" and result["stamp"] == "" and result["tool"] == "some script"
+    (drawn,) = result["findings"][0]["draws"]
+    assert drawn["ok"] and drawn["ids"] and result["findings"][0]["bbox_nm"] is not None
+    assert payload(index, item, run=None, stamp=None, ctx=context(source="drc"))["handshake"] == "outside"
 
 
 def test_not_connected_lists_findings_with_a_note():

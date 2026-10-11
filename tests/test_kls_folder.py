@@ -86,16 +86,25 @@ def test_dismissed_state_round_trip(folder, tmp_path):
     state.mark("k2", "confirmed")
     state.mark("k3", "dismissed")
     state.mark("k3", "")
-    state.accept("4|a1b2c3d4")
-    state.accept("4|a1b2c3d4")
     folder.save_state(state)
     raw = json.loads((tmp_path / ".kileidoscope" / "dismissed.json").read_text(encoding="utf-8"))
-    assert raw["version"] == 1 and raw["accepted_runs"] == ["4|a1b2c3d4"]
+    assert set(raw) == {"version", "findings"} and raw["version"] == 1
     assert raw["findings"]["k1"]["targets"] == ["U3.4", "net:SIG@F.Cu~15,10"] and raw["findings"]["k1"]["at"]
     loaded = folder.load_state()
     assert loaded == state
     assert loaded.states() == {"k1": "dismissed", "k2": "confirmed"}
-    assert loaded.accepted() == frozenset({"4|a1b2c3d4"})
+
+
+def test_an_old_state_file_with_accepted_runs_loads(folder, tmp_path):
+    folder.ensure()
+    path = tmp_path / ".kileidoscope" / "dismissed.json"
+    path.write_text(json.dumps({"version": 1, "findings": {"a": {"state": "dismissed", "check": "x.y"}},
+                                "accepted_runs": ["4|a1b2c3d4"]}), encoding="utf-8")
+    loaded = folder.load_state()
+    assert loaded.states() == {"a": "dismissed"} and loaded.findings["a"]["check"] == "x.y"
+    folder.save_state(loaded)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert set(raw) == {"version", "findings"} and list(raw["findings"]) == ["a"]
 
 
 def test_broken_state_files_load_empty_or_partly(folder, tmp_path):
@@ -104,9 +113,9 @@ def test_broken_state_files_load_empty_or_partly(folder, tmp_path):
     path.write_text("{oops", encoding="utf-8")
     assert folder.load_state() == State()
     path.write_text(json.dumps({"version": 1, "findings": {"a": {"state": "dismissed"}, "b": {"state": "maybe"},
-                                                           "c": "x"}, "accepted_runs": ["1|x", 5]}), encoding="utf-8")
+                                                           "c": "x"}}), encoding="utf-8")
     loaded = folder.load_state()
-    assert list(loaded.findings) == ["a"] and loaded.accepted_runs == ["1|x"]
+    assert list(loaded.findings) == ["a"]
     path.write_text(json.dumps({"version": 2, "findings": {"a": {"state": "dismissed"}}}), encoding="utf-8")
     assert folder.load_state() == State()
 

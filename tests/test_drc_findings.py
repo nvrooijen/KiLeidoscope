@@ -316,7 +316,7 @@ def test_a_dangling_via_is_highlighted_labelled_and_its_barrel_drawn_as_a_stub()
     assert tools(dangling) == ["highlight", "stub", "label"]
     assert draw(dangling, "highlight")["targets"] == [f"uuid:{via_id}"]
     assert draw(dangling, "label") == {"tool": "label", "at": "pt:5,5@F.Cu", "text": "Unconnected via"}
-    context = findings.Context("drc.kls-findings.json", "drc", {}, frozenset(), "00000000", {})
+    context = findings.Context("drc.kls-findings.json", "drc", {}, "00000000", {})
     payload = findings.resolve_file(findings.parse(json.dumps(convert(report, board, "1", "00000000")).encode()),
                                     board, context)
     lit, drawn, label = payload["findings"][0]["draws"]
@@ -373,7 +373,7 @@ def test_converted_file_resolves_and_measures_what_drc_says(converted, index):
     draws, measured over its limit as KiCad says, and the bridge's measurement agrees with
     KiCad's "actual" (no disagreement)."""
     from kileido_bridge import findings
-    context = findings.Context("drc.kls-findings.json", "drc", {}, frozenset(), "a1b2c3d4", {})
+    context = findings.Context("drc.kls-findings.json", "drc", {}, "a1b2c3d4", {})
     payload = findings.resolve_file(findings.parse(json.dumps(converted).encode()), index, context)
     measured = [d for f in payload["findings"] for d in f["draws"] if d["tool"] in ("clearance", "edge_gap", "width")]
     assert sorted(d["tool"] for d in measured) == ["clearance"] * 3 + ["edge_gap"]
@@ -445,7 +445,7 @@ def test_isolated_copper_of_a_zone_on_the_board_lights_the_zone_and_draws_its_is
     assert draw(island, "highlight") == {"tool": "highlight", "targets": [f"uuid:{zone_id}"]}
     assert draw(island, "plane_islands") == {"tool": "plane_islands", "net": "GND", "layer": "In1.Cu"}
     assert draw(island, "label") == {"tool": "label", "at": "pt:21,1@In1.Cu", "text": "Isolated copper"}
-    context = findings.Context("drc.kls-findings.json", "drc", {}, frozenset(), "00000000", {})
+    context = findings.Context("drc.kls-findings.json", "drc", {}, "00000000", {})
     payload = findings.resolve_file(findings.parse(json.dumps(convert(report, board, "1", "00000000")).encode()),
                                     board, context)
     lit, drawn, label = payload["findings"][0]["draws"]

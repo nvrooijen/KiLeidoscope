@@ -222,11 +222,10 @@ def test_make_run_writes_the_three_files_and_returns_the_prompt(tmp_path, fake_d
     # an answer echoing the run and stamp is ours
     echoed = findings.parse(json.dumps({"format": findings.FORMAT, "run": run.id, "stamp": run.stamp,
                                         "findings": []}).encode())
-    context = findings.Context(path=answer, source="file", runs=folder.runs(), accepted=frozenset(),
-                               live_stamp=run.stamp, states={})
+    context = findings.Context(path=answer, source="file", runs=folder.runs(), live_stamp=run.stamp, states={})
     assert findings.handshake(echoed, context) == "known"
     stale = findings.parse(json.dumps({"format": findings.FORMAT, "run": run.id, "stamp": "deadbeef"}).encode())
-    assert findings.handshake(stale, context) == "unknown_run"
+    assert findings.handshake(stale, context) == "other_run"
 
 
 def test_make_run_needs_a_saved_board(fake_digest):

@@ -442,11 +442,28 @@ def _source_line(name, title, data, findings):
     return text + (f", {dismissed} dismissed" if dismissed else ""), [note for note in notes if note]
 
 
+def origin_line(data):
+    """Where a findings file came from (the bridge's `handshake`), in plain words: "" for
+    an answer to a run this board's KiLeidoscope made."""
+    origin = data.get("handshake")
+    if origin == "outside":
+        tool = (data.get("tool") or "").strip()
+        return f"From {tool}, not from a KiLeidoscope prompt" if tool else "Not from a KiLeidoscope prompt"
+    if origin == "other_run":
+        run = data.get("run")
+        named = f"run {run}" if run else "a run"
+        return f"Answer to {named}, not one this board's KiLeidoscope made (or the board has changed since)"
+    return ""
+
+
 def _draw_source(layout, scene, wrap, name, title, data):
     findings = data.get("findings") or []
     box = layout.box()
     line, notes = _source_line(name, title, data, findings)
     _lines(box, wrap, line)
+    origin = origin_line(data)
+    if origin:
+        _lines(box, wrap, origin, "INFO")
     for note in notes:
         _lines(box, wrap, note[:1].upper() + note[1:], "INFO")
     status = data.get("status")
@@ -454,10 +471,6 @@ def _draw_source(layout, scene, wrap, name, title, data):
         _lines(box, wrap, data.get("error") or "The findings file could not be read", "ERROR")
     if data.get("changed"):
         _lines(box, wrap, "Board changed since this check: run it again to be sure", "INFO")
-    if data.get("handshake") == "unknown_run":
-        _lines(box, wrap, "This run is not one KiLeidoscope made (or its board differs): accept it to draw "
-                          "its findings", "QUESTION")
-        box.operator(KILEIDO_OT_findings_accept.bl_idname, text="Accept", icon="CHECKMARK").source = name
     if status == "ok" and not data.get("connected", True):
         _lines(box, wrap, "KiCad not connected: targets are found once it is", "INFO")
     problems = data.get("problems") or []
@@ -613,9 +626,6 @@ def _draw_detail(box, wrap, source_name, finding):
             line.label(text=f"{label}: {_number(value)} {unit}".rstrip())
     for name, text in (finding.get("values_text") or {}).items():
         _lines(box, wrap, f"{name.replace('_', ' ')}: {text}")
-    source_data = source(source_name)
-    if source_data.get("handshake") == "unknown_run":
-        _lines(box, wrap, "Accept the run above to draw this finding", "INFO")
     for draw in finding.get("draws") or ():
         tool = draw.get("tool", "")
         if not draw.get("ok", True):
@@ -922,29 +932,6 @@ class KILEIDO_OT_prompt_preset(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class KILEIDO_OT_findings_accept(bpy.types.Operator):
-    bl_idname = "kileido.findings_accept"
-    bl_label = "Accept"
-    bl_description = ("Draw the findings of a run KiLeidoscope did not make, or made for a different board. "
-                      "Its targets are still checked against the board")
-
-    source: StringProperty()
-
-    @classmethod
-    def poll(cls, context):
-        from . import live
-        if not live.linked():
-            cls.poll_message_set("Not live with KiCad")
-            return False
-        return True
-
-    def execute(self, context):
-        from . import live
-        live.request_findings("accept", "", self.source)
-        source(self.source)["handshake"] = "accepted"  # the bridge sends it again with its draws
-        return {"FINISHED"}
-
-
 class KILEIDO_OT_findings_group(bpy.types.Operator):
     bl_idname = "kileido.findings_group"
     bl_label = "Show or hide"
@@ -969,4 +956,4 @@ class KILEIDO_OT_findings_group(bpy.types.Operator):
 
 CLASSES = (KILEIDO_OT_finding_show, KILEIDO_OT_finding_kicad, KILEIDO_OT_finding_mention, KILEIDO_OT_finding_state,
            KILEIDO_OT_findings_run_drc, KILEIDO_OT_findings_prompt, KILEIDO_OT_prompt_check, KILEIDO_OT_prompt_preset,
-           KILEIDO_OT_findings_accept, KILEIDO_OT_findings_group)
+           KILEIDO_OT_findings_group)
