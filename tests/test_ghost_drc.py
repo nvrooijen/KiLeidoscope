@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -249,6 +250,36 @@ def test_a_row_says_which_vias():
     assert verdict.bad == {0, 1, 3, 4, 5, 6, 7}
 
 
+def test_each_part_move_gets_a_copy_of_its_own():
+    via = Ghost(0, 0, "via", "GND", ((MM, MM),))
+    track = Ghost(1, 0, "track", "GND", ((MM, MM), (2 * MM, MM)), "F.Cu")
+    moves = [Ghost(2 + i, 0, "part", "", ((MM, MM),), part=f"R{i}") for i in range(ghost_drc.MAX_MOVE_COPIES + 2)]
+    groups = ghost_drc.copies([via, moves[0], track, *moves[1:]])
+    assert groups[0] == [via, track]  # the rest share one copy
+    assert groups[1:] == [[move] for move in moves[:ghost_drc.MAX_MOVE_COPIES]]
+    assert ghost_drc.copies([via]) == [[via]] and ghost_drc.copies([]) == []
+
+
+def test_check_runs_kicad_once_per_copy_and_says_which_moves_it_left(tmp_path):
+    class Folder:
+        made = []
+
+        def new_run(self, text, kind):
+            directory = tmp_path / str(len(self.made))
+            directory.mkdir()
+            self.made.append(text)
+            return types.SimpleNamespace(directory=directory)
+
+    folder = Folder()
+    via = Ghost(0, 0, "via", "GND", ((MM, MM),))
+    moves = [Ghost(1 + i, 0, "part", "", ((MM, MM),), part="R1") for i in range(ghost_drc.MAX_MOVE_COPIES + 1)]
+    outcome = ghost_drc.check(folder, TEXT, [via, *moves], "kicad-cli", run=lambda cli, run_dir: {})
+    assert len(folder.made) == 1 + ghost_drc.MAX_MOVE_COPIES  # one shared copy, one per move
+    assert all(text.count(r'"R1"') <= TEXT.count(r'"R1"') for text in folder.made)  # never R1 twice
+    assert outcome.verdicts[(0, 0)].state == "done" and outcome.verdicts[(1, 0)].state == "done"
+    assert outcome.verdicts[(ghost_drc.MAX_MOVE_COPIES + 1, 0)] == Verdict("skipped", error=ghost_drc.TOO_MANY_MOVES)
+
+
 def test_skipped_ghosts_say_why_and_empty_runs_need_no_kicad():
     placement, _ = placed(Ghost(0, 0, "pad", "GND", ((MM, MM),), "In1.Cu", 600_000))
     assert not placement.members
@@ -370,8 +401,10 @@ def test_kicad_judges_ghosts_on_the_drc_fixture(tmp_path):
                                              for line in verdicts[(4, 0)].problems)
     assert verdicts[(5, 0)] == Verdict("done")
     runs = folder.root / "runs"
-    (run,) = runs.iterdir()
-    assert json.loads((run / "run.json").read_text(encoding="utf-8"))["kind"] == ghost_drc.RUN_KIND
+    made = sorted(runs.iterdir())
+    assert len(made) == min(len(ghost_drc.copies(ghosts)), 2)  # one per copy; ghost runs keep their last 2
+    assert all(json.loads((run / "run.json").read_text(encoding="utf-8"))["kind"] == ghost_drc.RUN_KIND
+               for run in made)  # the shared copy and each part move's own
     assert folder.runs() == {}  # no answer echoes a ghost run
 
 

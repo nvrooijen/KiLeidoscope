@@ -1,8 +1,10 @@
 """KiCad's own DRC on the LLM's suggestions (ghosts), on top of the bridge's quick fit check.
 
 `collect` takes the ghosts a findings payload drew (`findings.resolve_file`: resolved on
-the live board, nm, KiCad's frame). `build` writes every one of them into ONE copy of
-KiCad's raw board text, each item with a fresh uuid:
+the live board, nm, KiCad's frame). `build` writes ghosts into a copy of KiCad's raw
+board text, each item with a fresh uuid; `copies` decides which go together: every part
+move in a copy of its own (a part one suggestion moves still stands for the others), all
+other ghosts in one shared copy:
 
 - a via: through (F.Cu to B.Cu), its drill as the board's vias of that size have it
   (else from the board's usual annular ring, else half its size); a row: every via of it;
@@ -67,6 +69,8 @@ MAX_LINES = 6  # problem lines per ghost; the rest counted
 MAX_ITEM_TEXT = 80
 NOT_CHECKED = "not in the board copy KiCad checked"
 NO_CLI = "kicad-cli not found; set KILEIDO_KICAD_CLI to it"
+MAX_MOVE_COPIES = 8  # part moves KiCad checks, each in a copy of its own (`copies`)
+TOO_MANY_MOVES = f"KiCad checks the first {MAX_MOVE_COPIES} moved parts of a file, each on its own"
 FIT = frozenset({
     "clearance", "hole_clearance", "hole_to_hole", "holes_co_located", "copper_edge_clearance", "shorting_items",
     "tracks_crossing", "items_not_allowed", "solder_mask_bridge", "courtyards_overlap", "pth_inside_courtyard",
@@ -575,16 +579,32 @@ def run_drc(cli: str, run_dir) -> dict:
     return drc_findings.run_drc(cli, run_dir, refill_zones=True)
 
 
+def copies(ghosts: list[Ghost]) -> list[list[Ghost]]:
+    """The ghosts as KiCad checks them: every part move in a copy of its own, so a part
+    one suggestion moves still stands where it is for the others; all other ghosts share
+    one copy. Past MAX_MOVE_COPIES moves, the rest are not checked by KiCad."""
+    moves = [ghost for ghost in ghosts if ghost.kind == "part"]
+    shared = [ghost for ghost in ghosts if ghost.kind != "part"]
+    return ([shared] if shared else []) + [[move] for move in moves[:MAX_MOVE_COPIES]]
+
+
 def check(folder, text: str, ghosts: list[Ghost], cli: str, run=run_drc, lock=None) -> Outcome:
-    """Write the ghosts into a copy of `text`, freeze it as a run of `folder` (under
-    `lock`, which numbers runs), run KiCad's DRC on it and judge the report. Raises when
-    kicad-cli fails (`drc_findings.DrcFailed`) or the run cannot be written."""
-    copy, placement = build(text, ghosts)
-    if not placement.members:  # none KiCad could take: nothing to run
-        return judge({}, placement)
-    with lock if lock is not None else nullcontext():
-        made = folder.new_run(copy, RUN_KIND)
-    return judge(run(cli, made.directory), placement)
+    """Write the ghosts into copies of `text` (`copies`), freeze each as a run of `folder`
+    (under `lock`, which numbers runs), run KiCad's DRC on each in turn and judge the
+    reports. Raises when kicad-cli fails (`drc_findings.DrcFailed`) or a run cannot be
+    written."""
+    verdicts = {}
+    for group in copies(ghosts):
+        copy, placement = build(text, group)
+        if not placement.members:  # none KiCad could take: nothing to run
+            verdicts.update(judge({}, placement).verdicts)
+            continue
+        with lock if lock is not None else nullcontext():
+            made = folder.new_run(copy, RUN_KIND)
+        verdicts.update(judge(run(cli, made.directory), placement).verdicts)
+    for ghost in [ghost for ghost in ghosts if ghost.kind == "part"][MAX_MOVE_COPIES:]:
+        verdicts[(ghost.finding, ghost.draw)] = Verdict("skipped", error=TOO_MANY_MOVES)
+    return Outcome(verdicts)
 
 
 # the payload
