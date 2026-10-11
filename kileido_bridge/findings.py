@@ -9,7 +9,8 @@ in nm, KiCad's board frame (y down).
 
 The draw tools (`TOOLS`) mark and annotate: `highlight`, `isolate`, `label`, `arrow`,
 `distance`, `ghost` (a suggested via, cap or pad, a part moved, a route, a row of vias:
-each checked for fit where the file puts it, never moved), `area` (copper
+each checked for fit where the file puts it, never moved; KiCad's own DRC judges it too,
+`ghost_drc`, from the quick verdict kept in its `kicad_drc`), `area` (copper
 items or a polygon on one layer), `layers`, and `bars` (the file's own numbers as a
 chart). The measured ones: `clearance` and `edge_gap` (closest copper points), `width`
 (every track segment with its width), `routed_length` (the copper path between two pads,
@@ -71,6 +72,7 @@ MAX_PLANES = 2
 MAX_STITCHES = 500  # stitching: vias drawn
 MAX_GAPS = 200  # stitching: stretches over the limit drawn
 GHOST_CLEAR_NM = 100_000  # a suggested via or pad this close to another net's copper clashes
+TOUCH_NM = 1  # a suggestion's copper this close to another net's touches it: a short
 GHOST_VIA_NM = 600_000  # a suggested via without a size
 GHOST_NEAR_NM = 10_000_000  # copper whose centre is further than this from a suggested via is never near it
 CAP_GHOST_NM = 1_000_000  # a cap without a size: an 0402's body (1.0 x 0.5 mm), as Blender draws it
@@ -875,7 +877,17 @@ def _empty_draw(draw: Draw) -> dict:
             "planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,
             "islands": [], "barrel": {}, "marks": [], "rotation_deg": 0.0,
             "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],
-            "pitch_nm": 0}
+            "pitch_nm": 0, "net": "", "touches": [], "kicad_drc": None}
+
+
+def kicad_drc_state(out: dict) -> dict:
+    """A ghost's `kicad_drc` before KiCad's DRC has judged it: "skipped" (not asked), with
+    the quick check's verdict kept (`quick_fits`, `quick_problem`, a row's `quick_row`) so
+    KiCad's can replace it and fall back to it; `kept` holds reasons KiCad's DRC does not
+    judge (a via outside a layer change's reach), which stand whatever it finds."""
+    return {"state": "skipped", "problems": [], "notes": [], "error": "", "quick_fits": out["fits"],
+            "quick_problem": out["problem"], "quick_row": [bool(spot[2]) for spot in out["row"] if len(spot) > 2],
+            "kept": []}
 
 
 def _measured(out: dict, measured: float, limit_mm: float | None, limit_is: str) -> None:
@@ -1362,6 +1374,7 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
         elif tool == "ghost":
             out["kind"] = fields["kind"]
             out["size_nm"] = round(fields["size"] * 1e6) if fields["size"] else 0
+            out["net"] = fields["net"] if fields["kind"] != "part" else ""
             if fields["kind"] == "part":
                 _ghost_part(board, out, by_role["part"], by_role["at"], fields["rotation"])
             elif fields["kind"] == "track":
@@ -1373,6 +1386,7 @@ def _resolve_draw(board: _Board, draw: Draw) -> tuple[dict, list[Resolved]]:
                 out["points"] = [_anchor(by_role["at"], "at")]
                 out["rotation_deg"] = fields["rotation"]
                 _fit_ghost(board, out, fields["net"])
+            out["kicad_drc"] = kicad_drc_state(out)
         elif tool == "arrow":
             out["points"] = _anchor_pair(board.index, by_role["from"], by_role["to"])
         elif tool == "distance":
@@ -1500,6 +1514,14 @@ def _clash_text(record, gap: float) -> tuple[str, str]:
             f"{gap / 1e6:.2f} mm from its copper, {GHOST_CLEAR_NM / 1e6:.2f} mm needed")
 
 
+def _touch(out: dict, member: int, record, gap: float) -> None:
+    """Note in `touches` ([member, net]) that a ghost's copper (a row's via `member`, else 0)
+    touches copper of another net: a short. KiCad merges a touching via or track into the
+    net it touches, so its DRC cannot report that; the quick check's word stands."""
+    if gap <= TOUCH_NM and record.net and [member, record.net] not in out["touches"]:
+        out["touches"].append([member, record.net])
+
+
 def _fit_ghost(board: _Board, out: dict, net: str) -> None:
     """Does a suggested via or pad fit where the LLM put it: `fits` False, and why in
     `problem`, when its copper comes within GHOST_CLEAR_NM of fixed copper (tracks, arcs,
@@ -1515,8 +1537,10 @@ def _fit_ghost(board: _Board, out: dict, net: str) -> None:
     near = _via_near(board.index, (x, y), layer, radius, net, out["kind"], board.index.copper)
     out["fits"] = near is None
     if near is not None:
-        what, how = _clash_text(near.record, max(0.0, near.gap.distance - radius))
+        gap = max(0.0, near.gap.distance - radius)
+        what, how = _clash_text(near.record, gap)
         out["problem"] = f"clashes with {what} ({how})"
+        _touch(out, 0, near.record, gap)
 
 
 def _via_near(index: BoardIndex, point, layer: str, radius: float, net: str, kind: str, copper):
@@ -1647,6 +1671,7 @@ def _ghost_part(board: _Board, out: dict, target: Resolved, at: Resolved, rotati
         if found is not None:
             what, how = _clash_text(found[1], found[0])
             reasons.append(f"{part.reference}.{pad.number} clashes with {what} ({how})")
+            _touch(out, 0, found[1], found[0])
             break
     if body_shape is not None:
         under = _part_under(index, body_shape, layer, _pads_near(index, body_shape.bbox), skip=part.id)
@@ -1706,6 +1731,7 @@ def _ghost_track(board: _Board, out: dict, path: list[Resolved], fields: dict) -
     if found is not None:
         what, how = _clash_text(found[1], found[0])
         reasons.append(f"clashes with {what} ({how})")
+        _touch(out, 0, found[1], found[0])
     reasons.append(_off_board(index, shape))
     reasons = [reason for reason in reasons if reason]
     out["fits"] = not reasons
@@ -1732,12 +1758,14 @@ def _via_row(board: _Board, out: dict, start: Resolved, end: Resolved, fields: d
               if isinstance(record, FIXED) and _bbox_gap(row_box, (*centre(record), *centre(record)))
               < radius + GHOST_CLEAR_NM + GHOST_NEAR_NM]
     row, first, clashing = [], None, 0
-    for x, y in spots:
+    for member, (x, y) in enumerate(spots):
         near = _via_near(index, (x, y), a[2], radius, fields["net"], "via", copper)
         row.append([int(round(x)), int(round(y)), near is None])
         if near is not None:
             clashing += 1
-            first = first or _clash_text(near.record, max(0.0, near.gap.distance - radius))
+            gap = max(0.0, near.gap.distance - radius)
+            first = first or _clash_text(near.record, gap)
+            _touch(out, member, near.record, gap)
     out.update(row=row, points=[a, b], layer=a[2], pitch_nm=int(round(length / gaps)) if gaps else 0,
                fits=not clashing)
     if clashing:
@@ -1822,7 +1850,8 @@ def _part_under(index: BoardIndex, shape, layer: str, near: list, skip: str = ""
 
 
 def _ghosts_in_reach(drawn: list[tuple[dict, list[Resolved]]]) -> None:
-    """A suggested via in a finding with a layer change must sit within that via's limit."""
+    """A suggested via in a finding with a layer change must sit within that via's limit
+    (a reason KiCad's DRC does not judge: kept in `kicad_drc`)."""
     reach = next((draw for draw, _ in drawn if draw["tool"] == "layer_change" and draw["ok"] and draw["points"]),
                  None)
     if reach is None:
@@ -1832,9 +1861,11 @@ def _ghosts_in_reach(drawn: list[tuple[dict, list[Resolved]]]) -> None:
         if draw["tool"] == "ghost" and draw["kind"] == "via" and draw["ok"] and draw["points"]:
             apart = math.dist(draw["points"][0][:2], (vx, vy))
             if apart > reach["limit_nm"]:
+                reason = f"{apart / 1e6:.2f} mm from the via, outside its {reach['limit_nm'] / 1e6:.2f} mm limit"
                 draw["fits"] = False
-                draw["problem"] = "; ".join(filter(None, (draw["problem"], (
-                    f"{apart / 1e6:.2f} mm from the via, outside its {reach['limit_nm'] / 1e6:.2f} mm limit"))))
+                draw["problem"] = "; ".join(filter(None, (draw["problem"], reason)))
+                if draw["kicad_drc"] is not None:
+                    draw["kicad_drc"]["kept"].append(reason)
 
 
 def _place_bars(board: _Board, drawn: list[tuple[dict, list[Resolved]]], resolved: list[Resolved]) -> None:

@@ -126,21 +126,25 @@ def _installed() -> list[Path]:
     return [Path("/usr/bin/kicad-cli"), Path("/usr/local/bin/kicad-cli")]
 
 
-def drc_command(cli: str, board, output) -> list[str]:
-    """No zone refill (DRC sees the fills the user sees), no schematic parity (no schematic
-    in a run folder), no excluded entries (the user's exclusions stand). --all-track-errors
-    makes the report deterministic (without it a track reports one error, counts vary)."""
+def drc_command(cli: str, board, output, refill_zones: bool = False) -> list[str]:
+    """No zone refill (DRC sees the fills the user sees) unless `refill_zones` (a copy with
+    suggestions written in: the pours make room for them and join their own net), no
+    schematic parity (no schematic in a run folder), no excluded entries (the user's
+    exclusions stand). --all-track-errors makes the report deterministic (without it a
+    track reports one error, counts vary)."""
     return [str(cli), "pcb", "drc", "--format", "json", "--units", "mm", "--all-track-errors",
+            *(["--refill-zones"] if refill_zones else []),
             "--severity-error", "--severity-warning", "--output", str(output), str(board)]
 
 
-def run_drc(cli: str, run_dir) -> dict:
+def run_drc(cli: str, run_dir, refill_zones: bool = False) -> dict:
     """The DRC report of `run_dir`/board.kicad_pcb (a fresh run folder), written beside it
     as drc.json. kicad-cli exits 0 with violations; anything else raises `DrcFailed`."""
     run_dir = Path(run_dir)
     output = run_dir / REPORT
     try:
-        result = subprocess.run(drc_command(cli, run_dir / BOARD, output), capture_output=True, text=True,
+        command = drc_command(cli, run_dir / BOARD, output, refill_zones)
+        result = subprocess.run(command, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=TIMEOUT_S,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:

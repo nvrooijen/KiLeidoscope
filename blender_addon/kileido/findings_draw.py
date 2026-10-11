@@ -22,7 +22,10 @@ the copper thickness toggle), so it always sits on the copper as drawn now.
   moved (translucent copies of its pads, a thin outline of its body, a thin arrow from
   where it is); a route (a flat translucent ribbon at its width on its layer's copper); a
   row of vias (each as a via ghost). One that does not fit is in the "over" red and its
-  label says so ("does not fit"); a row's clashing vias alone are red.
+  label says so ("does not fit"); a row's clashing vias alone are red. The label and the
+  column say whose verdict it is: "checking with KiCad DRC…" while KiCad's DRC runs on a
+  copy with the suggestions written in, "fits (KiCad DRC)" or "does not fit (KiCad DRC):
+  …" once it is in, the bridge's "(quick check)" when KiCad could not run.
 - layers: listed in the column only.
 - clearance, edge_gap: as distance, between the two closest points the bridge measured;
   an edge gap's outline end has a longer tick, along the edge.
@@ -67,6 +70,7 @@ from the side it is on, the eye kept out of part models.
 
 import json
 import math
+import re
 from contextlib import contextmanager
 
 import bmesh
@@ -1045,15 +1049,58 @@ def ghost_clashing(draw):
     return sum(1 for spot in draw.get("row") or () if len(spot) > 2 and spot[2] is False)
 
 
+def ghost_check(draw):
+    """What KiCad's DRC made of a ghost (the bridge's `kicad_drc`): "pending", "done",
+    "failed", "skipped" with a reason; "" when it was not asked (the quick check alone)."""
+    check = draw.get("kicad_drc") or {}
+    state = check.get("state") or ""
+    return "" if state == "skipped" and not check.get("error") else state
+
+
+def _kicad_reason(draw, room):
+    """KiCad's first reason a ghost does not fit, without the item it names ("clearance
+    0.20 mm needed, 0.075 mm"), its rule alone ("clearance") past `room` characters (the
+    column has it whole); "" when KiCad found none (another reason holds it back)."""
+    problems = (draw.get("kicad_drc") or {}).get("problems") or ()
+    reason = problems[0].split(" (")[0] if problems else ""
+    return reason if len(reason) <= room else re.split(r" \d", reason)[0]
+
+
+def ghost_verdict(draw):
+    """Whose verdict on a ghost, and what, short enough for a label line: "fits (KiCad
+    DRC)", "does not fit (KiCad DRC): clearance", "checking with KiCad DRC…", "does not fit
+    (quick check)" when KiCad could not run; "" with no KiCad check asked."""
+    state, fits, clashing = ghost_check(draw), draw.get("fits"), ghost_clashing(draw)
+    count = f": {clashing} clash" if clashing else ""
+    if state == "done":
+        if fits is not False:
+            return "fits (KiCad DRC)"
+        said = "does not fit (KiCad DRC): "
+        reason = _kicad_reason(draw, LABEL_CHARS - len(said))
+        if not reason:  # not KiCad's: a reason it does not judge
+            return f"does not fit: {(draw.get('problem') or '').split(' (')[0]}".rstrip(": ")
+        return said[:-2] + count if count else said + reason
+    if state == "pending":
+        return "checking with KiCad DRC…" + (" (quick: does not fit)" if fits is False else "")
+    if state:  # failed, or skipped with a reason: the quick check's word
+        return f"does not fit (quick check){count}" if fits is False else "fits (quick check)" if fits else ""
+    return ""
+
+
 def ghost_label(draw):
     """A ghost's label: the LLM's label, else what it suggests ("Move C12", "Suggested
-    route", a row's "12 vias, 1.50 mm pitch"), over what the bridge measured; "does not
-    fit" in its place when it does not (never colour alone)."""
+    route", a row's "12 vias, 1.50 mm pitch"), over what the bridge measured and whose
+    verdict it is (`ghost_verdict`); "does not fit" in its place when it does not (never
+    colour alone)."""
     kind, measure = draw.get("kind"), ghost_measure(draw)
     title = draw.get("label") or (f"Move {draw.get('part') or 'part'}" if kind == "part" else
                                   "Suggested route" if kind == "track" else
                                   measure if kind == "via_row" and measure else f"Suggested {kind or 'item'}")
-    if draw.get("fits") is False:
+    verdict = ghost_verdict(draw)
+    if verdict:
+        shown = measure if measure and measure != title and draw.get("fits") is not False else ""
+        second = ", ".join(filter(None, (shown, verdict)))
+    elif draw.get("fits") is False:
         clashing = ghost_clashing(draw)
         second = "does not fit" + (f": {clashing} clash" if clashing else "")
     elif measure and measure != title:
@@ -1061,6 +1108,45 @@ def ghost_label(draw):
     else:
         second = "" if draw.get("label") else "by the LLM"
     return f"{title}\n{second}" if second else title
+
+
+def ghost_lines(draw):
+    """A ghost's lines in the column, (text, icon, alert) each: whether it fits and whose
+    verdict that is, KiCad's reasons and notes, why KiCad's DRC did not run."""
+    name, fits, problem = ghost_name(draw), draw.get("fits"), draw.get("problem") or ""
+    check, state = draw.get("kicad_drc") or {}, ghost_check(draw)
+    lines = []
+    if state == "pending":
+        lines.append((f"Suggested {name} (by the LLM): checking with KiCad DRC…", "SORTTIME", False))
+        if fits is False:
+            lines.append((f"Quick check: does not fit: {problem}", "ERROR", True))
+        return lines
+    if state == "done":
+        problems = check.get("problems") or []
+        if fits is not False:
+            lines.append((f"Suggested {name} (by the LLM): fits (KiCad DRC)", "CHECKMARK", False))
+        elif problems:
+            said = "KiCad DRC: " + "; ".join(problems)
+            lines.append((f"Suggested {name} does not fit (KiCad DRC): {'; '.join(problems)}", "ERROR", True))
+            rest = problem[len(said):].lstrip("; ") if problem.startswith(said) else ""
+            if rest:  # what KiCad does not judge, standing too
+                lines.append((rest, "ERROR", True))
+        else:
+            lines.append((f"Suggested {name} does not fit: {problem}", "ERROR", True))
+        return lines + [(f"KiCad DRC: {note}", "INFO", False) for note in check.get("notes") or ()]
+    if fits is False:
+        lines.append((f"Suggested {name} does not fit" + (" (quick check)" if state else "") + f": {problem}",
+                      "ERROR", True))
+    else:
+        lines.append((f"Suggested {name} (by the LLM)" + ((": fits (quick check)" if state else ": fits") if fits
+                                                          else ""), "LIGHT", False))
+        if problem:  # a note, e.g. a large part drawn by its body alone
+            lines.append((problem, "INFO", False))
+    if state == "failed":
+        lines.append((f"KiCad DRC could not run: {check.get('error') or 'unknown error'}", "INFO", False))
+    elif state:
+        lines.append((f"Not checked by KiCad DRC: {check.get('error')}", "INFO", False))
+    return lines
 
 
 def ghost_line(draw):

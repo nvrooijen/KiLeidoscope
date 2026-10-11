@@ -10,7 +10,9 @@ file. A `.gitignore` holding `*` keeps the folder out of the user's repository.
   `<stem>.kicad_pro` / `<stem>.kicad_dru` as `board.*` (net classes, rule severities,
   exclusions, custom rules) for kicad-cli. An LLM run's copies are scrubbed of what names
   the user (`scrub.py`) and it adds `board.kls-board.json` (the digest) and `request.md`
-  (`prompt.make_run`). The last `KEEP_RUNS` runs are kept.
+  (`prompt.make_run`). The last `KEEP_RUNS` runs are kept. A ghost DRC run
+  (`ghost_drc`) freezes a copy with the LLM's suggestions written in; the last two of
+  those are kept besides.
 - `<stem>.kls-findings.json`: an LLM's (or any tool's) answer; only read here.
 - `<stem>.drc.kls-findings.json`: the bridge's DRC findings.
 - `<stem>.kls-progress.json`: how far an LLM is with a prompt run (optional, `PROGRESS_FORMAT`,
@@ -31,6 +33,7 @@ from pathlib import Path
 
 FOLDER = ".kileidoscope"
 KEEP_RUNS = 5
+SIDE_RUNS = {"ghost_drc": 2}  # kind -> runs of it kept; they count only against each other
 STATE_FILE = "dismissed.json"
 STATE_VERSION = 1
 MAX_STATE_ENTRIES = 10_000
@@ -180,10 +183,21 @@ class KlsFolder:
             return []
         return sorted(int(name) for name in names if _RUN_ID.fullmatch(name))
 
+    def _kind(self, number: int) -> str:
+        """The kind a run's run.json names, "" when it cannot be read."""
+        try:
+            info = json.loads((self.runs_dir / str(number) / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        kind = info.get("kind") if isinstance(info, dict) else None
+        return kind if isinstance(kind, str) else ""
+
     def new_run(self, text: str, kind: str, clean=None) -> Run:
         """Freeze KiCad's raw board text as the next run; older runs past KEEP_RUNS go.
+        A side kind (`SIDE_RUNS`, a board copy with suggestions written in) keeps its own
+        count and never pushes another run out, so the run an LLM's answer echoes stays.
         `clean(suffix, data)` gives each copy as written (None: left out), for an LLM run
-        (`scrub.clean`); the stamp is always the raw text's."""
+        (`scrub.clean`); the stamp is always the given text's."""
         self.ensure()
         numbers = self._run_numbers()
         number = (numbers[-1] if numbers else 0) + 1
@@ -202,7 +216,9 @@ class KlsFolder:
         info = {"run": run_id, "stamp": run_stamp, "board": f"{self.stem}.kicad_pcb", "kind": kind,
                 "made": datetime.now().astimezone().isoformat(timespec="seconds")}
         self._write(f"{directory}/run.json", json.dumps(info, indent=1).encode("utf-8"))
-        for old in [*numbers, number][:-KEEP_RUNS]:
+        side = kind in SIDE_RUNS
+        family = [old for old in numbers if (self._kind(old) == kind if side else self._kind(old) not in SIDE_RUNS)]
+        for old in [*family, number][:-SIDE_RUNS.get(kind, KEEP_RUNS)]:
             self._remove(f"runs/{old}")
         return Run(run_id, run_stamp, self.runs_dir / run_id)
 
@@ -216,7 +232,8 @@ class KlsFolder:
         return self._write(f"runs/{run.id}/{name}", text.encode("utf-8"))
 
     def runs(self) -> dict[str, str]:
-        """Run id -> stamp of every run on disk with a readable run.json, oldest first."""
+        """Run id -> stamp of every run on disk with a readable run.json, oldest first; side
+        runs (`SIDE_RUNS`) aside: no findings file answers them."""
         if not self.available:
             return {}
         known = {}
@@ -226,6 +243,9 @@ class KlsFolder:
             except (OSError, ValueError):
                 continue
             run_stamp = info.get("stamp") if isinstance(info, dict) else None
+            kind = info.get("kind") if isinstance(info, dict) else None
+            if isinstance(kind, str) and kind in SIDE_RUNS:
+                continue
             if isinstance(run_stamp, str) and _STAMP.fullmatch(run_stamp):
                 known[str(number)] = run_stamp
         return known

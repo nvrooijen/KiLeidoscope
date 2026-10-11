@@ -16,6 +16,14 @@ A prompt (`request("prompt", checks=ids)`) freezes a run the same way, with
 the board digest and `request.md` beside it (`prompt.make_run`), and hands Blender the
 clipboard prompt that points an LLM at it, with the user's notes in it.
 
+A file's suggestions (ghosts) are judged twice: the resolve's quick fit check, and KiCad's
+own DRC on a copy of the board with every ghost written in (`ghost_drc`), run once per
+(ghosts as resolved, board text) in a thread of its own, one at a time, the newest asked
+for next. Its outcome is kept for that key and put on the payload (`ghost_drc.apply`):
+"pending" until it is in; a file or board edit that changes the key makes it pending
+again, and a result that comes back for an older key is kept but never shown. Without
+kicad-cli, or when it fails, the ghosts say so and keep the quick check's verdict.
+
 While the LLM works it may keep `<stem>.kls-progress.json` (`kls_folder.PROGRESS_FORMAT`).
 It is read like the findings files (settled, capped, never trusted) and gives the payload's
 "progress": "waiting" once a prompt is ready, "working" while a progress file for that run
@@ -37,7 +45,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from . import drc_findings, findings, kls_folder
+from . import drc_findings, findings, ghost_drc, kls_folder
 from .board_index import BoardIndex
 from .kls_folder import SOURCES
 
@@ -184,6 +192,8 @@ class _Board:
     revision: int | None  # None: KiCad not connected
     snapshot: object
     live_stamp: str
+    text: str = ""  # KiCad's raw board text ("": not given; the saved file stands in)
+    hint: str = ""  # the running KiCad's kicad-cli
 
 
 class FindingsWatch:
@@ -199,7 +209,8 @@ class FindingsWatch:
     "stamp", "live_stamp", "handshake", "changed", "connected", "tool", "problems", "drc",
     "skipped", "findings"}, each finding {"key", "check", "group", "severity",
     "confidence", "title", "message", "fix", "values", "values_text", "state", "faded",
-    "problems", "bbox_nm", "disagree", "passes", "mentions", "draws"}. "none": neither
+    "problems", "bbox_nm", "disagree", "passes", "mentions", "draws"}; a ghost draw's
+    "kicad_drc" says what KiCad's DRC made of it (`ghost_drc.apply`). "none": neither
     file exists yet."""
 
     CHECK_S = 1.0  # between file checks
@@ -207,8 +218,9 @@ class FindingsWatch:
     RESOLVE_DEBOUNCE_S = 1.0  # at most one resolve for board edits per this long
 
     def __init__(self, run_drc=drc_findings.run_drc, find_cli=drc_findings.find_kicad_cli,
-                 make_prompt=make_prompt, catalogue=catalogue):
+                 make_prompt=make_prompt, catalogue=catalogue, run_ghost_drc=ghost_drc.run_drc):
         self._run_drc = run_drc
+        self._run_ghost_drc = run_ghost_drc
         self._find_cli = find_cli
         self._make_prompt = make_prompt
         self._catalogue_of = catalogue
@@ -245,6 +257,10 @@ class FindingsWatch:
         self._resolved = None  # board key the payload was resolved for
         self._resolved_at = -float("inf")
         self._index = (None, None)  # (revision, BoardIndex)
+        self._ghost_key = {}  # source -> key of the ghosts its payload shows (`_with_ghosts`)
+        self._ghost_done = {}  # source -> (key, ghost_drc.Outcome) of its last ghost DRC run
+        self._ghost_want = {}  # source -> (key, ghosts, text, hint, folder) of the run asked for next
+        self._ghost_running = None  # (source, key) of the ghost DRC run going
 
     # --- the KiCad worker's side --------------------------------------------------------
 
@@ -275,7 +291,8 @@ class FindingsWatch:
         with self._lock:
             if folder is not self.folder:
                 return
-            self._board = _Board(revision if connected else None, snapshot, live_stamp)
+            self._board = _Board(revision if connected else None, snapshot, live_stamp, copy_text,
+                                 tools.get("kicad_cli", ""))
             if self._drc_wanted:
                 self._drc_wanted = False
                 self._start_drc(folder, snapshot, tools.get("kicad_cli", ""), copy_text)
@@ -478,6 +495,7 @@ class FindingsWatch:
                 return
             for source, (payload, parsed) in resolved.items():
                 payload = _with_states(payload, self._states(source))  # a click while this ran
+                payload = self._with_ghosts(source, payload, board, folder)
                 if parsed:
                     self._good[source] = payload
                     self._targets[source] = {row["key"]: _target_texts(finding) for row, finding
@@ -539,6 +557,65 @@ class FindingsWatch:
         except Exception as exc:  # a resolver bug costs this file, never the bridge
             error = f"could not resolve this file ({type(exc).__name__}: {exc}); please report it"
             return findings.status_payload("error", context, error=error, connected=connected), False
+
+    # --- KiCad's DRC on the ghosts ----------------------------------------------------------
+
+    def _with_ghosts(self, source: str, payload: dict, board: _Board, folder) -> dict:
+        """In the lock: `payload` with KiCad's DRC on its ghosts. The outcome kept for these
+        ghosts on this board text when there is one; else "pending", and a run asked for
+        (the newest ask replaces an older one; the run going is never asked again)."""
+        ghosts = ghost_drc.collect(payload)
+        if not ghosts:
+            self._ghost_key.pop(source, None)
+            self._ghost_want.pop(source, None)
+            return payload
+        on = board.live_stamp if board.text else f"saved@{board.revision}"
+        key = (on, ghost_drc.digest(ghosts))
+        self._ghost_key[source] = key
+        done = self._ghost_done.get(source)
+        if done is not None and done[0] == key:
+            self._ghost_want.pop(source, None)
+            return ghost_drc.apply(payload, done[1])
+        if self._ghost_running != (source, key):
+            self._ghost_want[source] = (key, ghosts, board.text, board.hint, folder)
+            self._start_ghosts()
+        return ghost_drc.apply(payload, None)
+
+    def _start_ghosts(self):
+        """In the lock: the next ghost DRC run asked for, unless one is going."""
+        if self._ghost_running is not None or not self._ghost_want:
+            return
+        source = next(iter(self._ghost_want))
+        key, ghosts, text, hint, folder = self._ghost_want.pop(source)
+        self._ghost_running = (source, key)
+        threading.Thread(target=self._ghost_run, args=(self._generation, source, key, folder, ghosts, text, hint),
+                         name="kileido-ghost-drc", daemon=True).start()
+
+    def _ghost_run(self, generation: int, source: str, key, folder, ghosts, text: str, hint: str):
+        """KiCad's DRC on a copy of `text` (else the saved file) with `ghosts` written in;
+        the outcome is kept under `key` and shown when the payload still shows that key."""
+        try:
+            if not text:
+                text = Path(folder.board_path).read_text(encoding="utf-8")
+            cli = self._find_cli(hint)
+            if not cli:
+                raise drc_findings.DrcFailed(ghost_drc.NO_CLI)
+            outcome = ghost_drc.check(folder, text, ghosts, cli, self._run_ghost_drc, self._runs_lock)
+        except Exception as exc:  # kicad-cli failed, the run could not be written, a bug: the quick check stands
+            message = str(exc) if isinstance(exc, (drc_findings.DrcFailed, kls_folder.NotAvailable)) \
+                else f"{type(exc).__name__}: {exc}"
+            outcome = ghost_drc.Outcome(error=message[-300:] or "KiCad's DRC failed")
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._ghost_running = None
+            self._ghost_done[source] = (key, outcome)
+            if self._ghost_key.get(source) == key:
+                for store in (self._sources, self._good):
+                    if source in store:
+                        store[source] = ghost_drc.apply(store[source], outcome)
+                self._publish()
+            self._start_ghosts()
 
     # --- DRC ----------------------------------------------------------------------------
 

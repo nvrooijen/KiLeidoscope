@@ -620,18 +620,11 @@ def _draw_detail(box, wrap, source_name, finding):
         tool = draw.get("tool", "")
         if not draw.get("ok", True):
             _lines(box, wrap, f"{tool} not drawn: {draw.get('problem') or 'not found'}", "ERROR")
-        elif tool == "ghost":  # the LLM's suggestion: whether it fits where it was put, and what was measured
-            fit = draw.get("fits")
-            if fit is False:
+        elif tool == "ghost":  # the LLM's suggestion: whether it fits, whose verdict that is, what was measured
+            for text, icon, alert in findings_draw.ghost_lines(draw):
                 line = box.column()
-                line.alert = True
-                _lines(line, wrap, f"Suggested {findings_draw.ghost_name(draw)} does not fit: {draw.get('problem')}",
-                       "ERROR")
-            else:
-                _lines(box, wrap, f"Suggested {findings_draw.ghost_name(draw)} (by the LLM)" +
-                       (": fits" if fit else ""), "LIGHT")
-                if draw.get("problem"):  # a note, e.g. a large part drawn by its body alone
-                    _lines(box, wrap, draw["problem"], "INFO")
+                line.alert = alert
+                _lines(line, wrap, text, icon)
             if findings_draw.ghost_line(draw):
                 box.label(text=findings_draw.ghost_line(draw), icon="DRIVER_DISTANCE")
         for target in draw.get("targets") or ():

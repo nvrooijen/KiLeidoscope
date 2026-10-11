@@ -3,7 +3,8 @@ state, the column lists both sources by check, a shown finding draws its tools a
 right Blender coordinates (highlight, label, distance, arrow), confirm and dismiss update
 the rows, a hole finding cuts the board open through both holes and puts the user's cut
 back after, and a loaded file purges the drawing. What an LLM's file adds: isolate,
-ghosts checked to fit (a via, a part moved, a route, a row of vias), a polygon area,
+ghosts checked to fit (a via, a part moved, a route, a row of vias) and what KiCad's DRC
+made of them (checking, its verdict, the quick check's when it could not run), a polygon area,
 layers, the fix and the names it mentions, a value
 the bridge measured differently; the LLM prompt box ticks checks, sends Copy prompt with
 the user's notes, copies a ready prompt once and shows how far the LLM is (waiting,
@@ -38,6 +39,7 @@ from kileido import (apply, columns, cut, findings, findings_draw, focus, hole_c
                      state, transform)
 from kileido.objects import read_coordinates  # noqa: E402
 from kileido_bridge import findings as bridge_findings  # noqa: E402
+from kileido_bridge import ghost_drc  # noqa: E402
 from kileido_bridge.board_index import BoardIndex  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -348,6 +350,61 @@ def check_suggestions(scene, index):
     assert state.board.findings_shown == ("", "") and amount.default_value == 0.0 and not objects()
     assert zone["kls_zone_highlight"] == ""
     check_moves(scene)
+    apply.apply_frame(frame(index), {})
+
+
+def check_kicad_drc(scene, index):
+    """KiCad's DRC on the ghosts, as each label and the column say it: "checking with KiCad
+    DRC…" while it runs (the quick check's word beside it), its verdict and reasons once in
+    (its word over the quick check's), the quick check's, said so, when it could not run."""
+    base = frame(with_second_pad(index), extra=SUGGESTED)
+    file = base["findings"]["sources"]["file"]
+    fixes = next(i for i, found in enumerate(file["findings"]) if found["title"] == "Suggested fixes")
+    moves = next(i for i, found in enumerate(file["findings"]) if found["title"] == "Moves and routes")
+    via = next(i for i, draw in enumerate(file["findings"][fixes]["draws"]) if draw["tool"] == "ghost")
+    assert file["findings"][fixes]["draws"][via]["kicad_drc"]["state"] == "skipped"  # as resolved: not asked yet
+    clash = "clearance 0.20 mm needed, 0.050 mm (Arc [RF_A] on F.Cu)"
+    cases = [  # (outcome, via label, part label, row label, column lines the via's and the part's start with)
+        (None, "Suggested via\nchecking with KiCad DRC… (quick: does not fit)",
+         "Move J3\n5.10 mm, checking with KiCad DRC…", "4 vias, 2.00 mm pitch\nchecking with KiCad DRC… (quick: does "
+         "not fit)", ["Suggested via (by the LLM): checking with KiCad DRC…", "Quick check: does not fit: "
+                      "clashes with RF_A", "Suggested part move (by the LLM): checking with KiCad DRC…"]),
+        (ghost_drc.Outcome({(fixes, via): ghost_drc.Verdict("done", problems=(clash,)),
+                            (moves, 0): ghost_drc.Verdict("done", notes=("an end reaches no RF_B copper",)),
+                            (moves, 2): ghost_drc.Verdict("done", problems=("vias 1, 2: clearance",),
+                                                          bad=frozenset({0, 1}))}),
+         "Suggested via\ndoes not fit (KiCad DRC): clearance",  # the numbers: in the column
+         "Move J3\n5.10 mm, fits (KiCad DRC)", "4 vias, 2.00 mm pitch\ndoes not fit (KiCad DRC): 4 clash",
+         ["Suggested via does not fit (KiCad DRC): clearance 0.20 mm needed,", "Suggested part move (by the LLM): "
+          "fits (KiCad DRC)", "KiCad DRC: an end reaches no RF_B copper"]),
+        (ghost_drc.Outcome(error="kicad-cli not found; set KILEIDO_KICAD_CLI to it"),
+         "Suggested via\ndoes not fit (quick check)", "Move J3\n5.10 mm, fits (quick check)",
+         "4 vias, 2.00 mm pitch\ndoes not fit (quick check): 2 clash",
+         ["Suggested via does not fit (quick check): clashes with RF_A", "KiCad DRC could not run: kicad-cli not "
+          "found", "Suggested part move (by the LLM): fits (quick check)"]),
+    ]
+    for outcome, via_label, part_label, row_label, wanted in cases:
+        header = json.loads(json.dumps(base))
+        header["findings"]["sources"]["file"] = ghost_drc.apply(header["findings"]["sources"]["file"], outcome)
+        apply.apply_frame(header, {})
+        show("Suggested fixes")
+        body = objects()["KLS finding 5 ghost label"].data.body
+        assert body == via_label, body
+        texts = [text for _, text, _ in column(scene)]
+        show("Moves and routes")  # the other one shown, the first hidden
+        drawn = objects()
+        assert drawn["KLS finding 1 ghost label"].data.body == part_label, drawn["KLS finding 1 ghost label"].data.body
+        assert drawn["KLS finding 3 ghost label"].data.body == row_label, drawn["KLS finding 3 ghost label"].data.body
+        texts += [text for _, text, _ in column(scene)]
+        for line in wanted:
+            assert any(text.startswith(line[:70]) for text in texts), (line, texts)
+        show("Moves and routes")
+        row = finding_named("Moves and routes")["draws"][2]
+        if outcome is not None and not outcome.error:  # KiCad's word on the first two vias, the quick check's
+            # touch on the last two (KiCad merges a touching via into the net it touches: it cannot say so)
+            assert [spot[2] for spot in row["row"]] == [False] * 4, row["row"]
+            assert row["kicad_drc"]["problems"] == ["vias 1, 2: clearance", "via 3: touches RF_A copper: a short",
+                                                    "via 4: touches RF_A copper: a short"], row["kicad_drc"]
     apply.apply_frame(frame(index), {})
 
 
@@ -1649,6 +1706,7 @@ def main():
         check_measured(scene, index)
         check_routed(scene, index)
         check_suggestions(scene, index)
+        check_kicad_drc(scene, index)
         check_planes(scene, index)
         check_vias_and_steps(scene, index)
         check_prompt(scene, index)
