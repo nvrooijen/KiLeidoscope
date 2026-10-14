@@ -54,7 +54,8 @@ CATALOGUE: tuple[Check, ...] = (
           "on the next layer). Draw plane_gap with the plane as net@layer and the track as crossing "
           "(net@layer~x,y at the crossing itself); KiLeidoscope finds where it has no plane under it. "
           "If you only know how much of the track has plane under it, not where it crosses, give "
-          "coverage_pct and length_mm in values and draw return_path for the net and plane. To suggest a "
+          "coverage_pct (the share with plane under it) and length_mm (the whole track) in values and "
+          "draw return_path for the net and plane. To suggest a "
           "route that stays over the plane, add a ghost track (path, layer, net); KiLeidoscope checks it fits.",
           "net, track as net@layer~x,y at the crossing, plane as net@layer, gap_mm, or coverage_pct and "
           "length_mm",

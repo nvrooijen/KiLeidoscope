@@ -846,6 +846,21 @@ def test_return_path_splits_the_track_into_covered_and_not(split):
                                               "plane": "+3V3@In1.Cu"})))
     assert other["measured_nm"] == 40_250_000  # the other side of the split
     assert other["covered_nm"][0][:4] == [50_250_000, 10 * MM, 90 * MM, 10 * MM]
+    assert draw["whole_nm"] == 80 * MM
+
+
+@pytest.mark.parametrize("values, keys", [
+    ({"length_mm": 40.25}, []),  # alone: the length without plane
+    ({"length_mm": 80.0}, ["length_mm"]),
+    ({"coverage_pct": 49.7, "length_mm": 80.0}, []),  # beside coverage_pct: the whole track
+    ({"coverage_pct": 49.7, "length_mm": 40.25}, ["length_mm"]),
+    ({"coverage_pct": 54.0}, []),  # 4.3 points off
+    ({"coverage_pct": 56.0}, ["coverage_pct"]),
+])
+def test_claimed_coverage_against_return_path(split, values, keys):
+    result = payload(split, finding({"tool": "return_path", "signal": "net:USB_D+", "plane": "GND@In1.Cu"},
+                                    values=values))
+    assert [entry["key"] for entry in result["findings"][0]["disagree"]] == keys
 
 
 def test_stretches_are_capped(split, monkeypatch):

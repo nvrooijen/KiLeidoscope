@@ -101,6 +101,7 @@ MAX_BAR_VALUE = 1e12
 BAR_UNITS = ("mm", "ps", "mv", "v", "a", "ma", "pct")
 DISAGREE = 0.10  # claimed vs measured, relative
 DISAGREE_FLOOR_MM = 0.001  # KiCad prints 4 decimals; closer than 1 µm always agrees
+DISAGREE_POINTS = 5.0  # coverage_pct: claimed vs measured, in percentage points
 KEY_GRID_NM = 500_000  # anchors in keys rounded to 0.5 mm
 UNITS = ("_mm2", "_cm2", "_mm", "_ps", "_mv", "_a", "_pct")  # longest first
 TOOLS = frozenset({"highlight", "isolate", "label", "arrow", "distance", "ghost", "area", "layers",  # marks
@@ -114,9 +115,10 @@ WHAT = {"clearance": "Clearance", "edge_gap": "Edge gap", "width": "Width", "rou
 OWN_IDS = frozenset({"width", "layer_change", "plane_gap", "return_path", "plane_islands", "stitching", "stub",
                      "discontinuity"})  # ids: what they measure
 UNTARGETED = ("plane_islands", "stitching")  # measure the board with no target named
-# claimed value -> the tools that measure it (both shown when > 10 % apart)
+# claimed value -> the tools that measure it (both shown when > 10 % apart, coverage > DISAGREE_POINTS)
 CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change")), ("width_mm", ("width",)),
-          ("length_mm", ("routed_length", "return_path")), ("gap_mm", ("plane_gap",)), ("stub_mm", ("stub",)))
+          ("length_mm", ("routed_length", "return_path")), ("gap_mm", ("plane_gap",)), ("stub_mm", ("stub",)),
+          ("coverage_pct", ("return_path",)))
 ROUTE_LIMIT = "tracks, arcs and vias are followed, zones are not"
 ROLES = ("at", "from", "to", "a", "b", "target", "via", "pad", "crossing", "signal", "part",
          "path")  # draw fields with targets
@@ -888,7 +890,7 @@ def _empty_draw(draw: Draw) -> dict:
     judges them); they ride along to Blender unread."""
     return {"tool": draw.tool, "emphasis": draw.emphasis, "label": draw.label, "text": "",
             "ok": True, "problem": "", "targets": [], "ids": [], "points": [],
-            "measured_nm": None, "limit_nm": None, "limit_is": "", "over": False,
+            "measured_nm": None, "whole_nm": None, "limit_nm": None, "limit_is": "", "over": False,
             "polygon_nm": [], "layer": "", "layers": [], "kind": "", "size_nm": 0,
             "what": "", "segments_nm": [], "narrow": [], "min_nm": None, "path_nm": [], "bars": [], "unit": "",
             "planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,
@@ -1059,13 +1061,15 @@ def _plane_gap(board: _Resolver, out: dict, crossing: Resolved, plane: tuple[str
 
 
 def _return_path(board: _Resolver, out: dict, signal: Resolved, plane: tuple[str, str]) -> None:
-    """The signal's stretches with and without the plane under them, and the length without."""
+    """The signal's stretches with and without the plane under them, the length without
+    (`measured_nm`) and the whole length (`whole_nm`)."""
     tracks, _, stretches = _coverage(board, out, signal, "signal", plane)
     spans = [stretch for stretch in stretches if not stretch.covered]
     _stretches(out, "covered_nm", [stretch for stretch in stretches if stretch.covered])
     _stretches(out, "spans_nm", spans)
     longest = max(spans, key=lambda stretch: stretch.length, default=None)
     out["points"] = [[*longest.middle, longest.layer]] if longest else [_at_track(tracks[0])]
+    out["whole_nm"] = int(round(sum(stretch.length for stretch in stretches)))
     out["measured_nm"] = int(round(sum(stretch.length for stretch in spans)))
 
 
@@ -1498,21 +1502,38 @@ def _bbox(board: _Resolver, drawn: list[tuple[dict, list[Resolved]]]) -> list[in
     return [int(math.floor(x0)), int(math.floor(y0)), int(math.ceil(x1)), int(math.ceil(y1))]
 
 
+def _measured_value(key: str, draw: dict, finding: Finding) -> float | None:
+    """What `draw` measured for the claimed value `key`, in its unit; None when nothing.
+    A return_path's length_mm is the whole track when the finding gives coverage_pct too
+    (a share of that length, as plane.gap_crossing asks), else the length without plane."""
+    measured, whole = draw["measured_nm"], draw["whole_nm"]
+    if measured is None:
+        return None
+    if draw["tool"] != "return_path":
+        return measured / 1e6
+    if key == "coverage_pct":
+        return 100 * (whole - measured) / whole if whole else None
+    return (whole if "coverage_pct" in finding.values else measured) / 1e6
+
+
 def _disagree(finding: Finding, draws: list[dict]) -> list[dict]:
     """Each claimed value the bridge measures too (`CLAIMS`: distance_mm, width_mm,
-    length_mm, gap_mm, stub_mm) against the first draw that measured it, when > 10 % apart."""
+    length_mm, gap_mm, stub_mm, coverage_pct) against the first draw that measured it,
+    when > 10 % apart (coverage_pct: more than DISAGREE_POINTS)."""
     out = []
     for key, tools in CLAIMS:
         claimed = finding.values.get(key)
-        measured = next((draw["measured_nm"] for draw in draws
-                         if draw["tool"] in tools and draw["measured_nm"] is not None), None)
+        measured = next((value for draw in draws if draw["tool"] in tools
+                         for value in (_measured_value(key, draw, finding),) if value is not None), None)
         if claimed is None or measured is None:
             continue
-        measured_mm = measured / 1e6
-        gap = abs(claimed - measured_mm)
-        if gap <= DISAGREE_FLOOR_MM or gap <= DISAGREE * max(abs(claimed), abs(measured_mm)):
+        gap = abs(claimed - measured)
+        if key == "coverage_pct":
+            if gap <= DISAGREE_POINTS:
+                continue
+        elif gap <= DISAGREE_FLOOR_MM or gap <= DISAGREE * max(abs(claimed), abs(measured)):
             continue
-        out.append({"key": key, "claimed": claimed, "measured": round(measured_mm, 4)})
+        out.append({"key": key, "claimed": claimed, "measured": round(measured, 4)})
     return out
 
 

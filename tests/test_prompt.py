@@ -133,7 +133,7 @@ def test_measuring_tools_are_offered_with_the_checks_that_use_them():
     assert '"tool": "plane_gap", "plane": "GND@In1.Cu"' in planes and "plane: net@layer" in planes
     assert '"kind": "track"' in planes and "ghost track (path, layer, net)" in planes
     assert ("KiLeidoscope measures return_path, plane_gap on the board itself" in planes
-            and "(length_mm, gap_mm)" in planes)
+            and "(length_mm, gap_mm, coverage_pct)" in planes)
     vias = request("plane.layer_change_no_return")
     assert "layer_change" in tools_offered(vias) and "default 1.0" in vias
     assert "measures distance, layer_change on the board itself" in vias
