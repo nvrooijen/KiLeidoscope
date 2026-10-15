@@ -66,6 +66,7 @@ MAX_VALUES = 20
 MAX_SKIPPED = 300
 MAX_CLEAN = 300  # checks run with nothing found
 MAX_TARGETS = 50  # per list
+MAX_TEXT_TARGETS = 12  # a finding with no drawing: the parts and pads its text names, highlighted
 MAX_TARGET_TEXT = 200
 MAX_LAYER_TEXT = 40  # characters of a non-copper layer a `pt:` names
 SHOWN = 80  # characters of a name or an error quoted in a problem
@@ -136,7 +137,7 @@ RULE_TEXT = {  # per rule (RULES; checks.Check.rules names them): what the promp
     "diff_pair": "the pair's nets named (net:...) must be a differential pair by KiCad's naming (+/- or P/N); "
                  "other nets named, such as the plane's, are left aside"}
 # claimed value -> the tools that measure it (both shown when > 10 % apart, coverage > DISAGREE_POINTS)
-CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change")), ("width_mm", ("width",)),
+CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change", "layers")), ("width_mm", ("width",)),
           ("length_mm", ("routed_length", "return_path")), ("gap_mm", ("plane_gap",)), ("stub_mm", ("stub",)),
           ("coverage_pct", ("return_path",)))
 ROUTE_LIMIT = "tracks, arcs and vias are followed, zones are not"
@@ -952,7 +953,7 @@ def _empty_draw(draw: Draw) -> dict:
             "edges_nm": [], "returns": [], "fits": None,
             "islands": [], "barrel": {}, "marks": [], "rotation_deg": 0.0,
             "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],
-            "pitch_nm": 0, "net": "", "touches": [], "kicad_drc": None}
+            "pitch_nm": 0, "net": "", "touches": [], "kicad_drc": None, "stack": [], "from_text": False}
 
 
 def kicad_drc_state(out: dict, kept=(), kept_row=()) -> dict:
@@ -1457,6 +1458,18 @@ def _discontinuity(board: _Resolver, out: dict, net: str, spots: list[Resolved])
     out["problem"] = "; ".join(notes)
 
 
+def _stack(index: BoardIndex, layers) -> list[list]:
+    """[upper, lower, dielectric nm] for each two copper layers named that are neighbours in
+    the stackup, top first; none when the stackup gives no thicknesses (`copper_order`
+    would only spread the layers evenly: no measurement)."""
+    names, gaps, exact = planes.copper_order(index.snapshot)
+    if not exact:
+        return []
+    named = set(layers)
+    return [[upper, lower, int(gap)] for upper, lower, gap in zip(names, names[1:], gaps)
+            if upper in named and lower in named]
+
+
 def _resolve_draw(board: _Resolver, draw: Draw) -> tuple[dict, list[Resolved]]:
     """The payload of one draw, and its resolved targets."""
     out = _empty_draw(draw)
@@ -1554,6 +1567,8 @@ def _resolve_draw(board: _Resolver, draw: Draw) -> tuple[dict, list[Resolved]]:
             out["polygon_nm"] = [[int(round(x * 1e6)), int(round(y * 1e6))] for x, y in fields["polygon"]]
         elif tool == "layers":
             out["layers"] = list(fields["layers"])
+            if board.index is not None:
+                out["stack"] = _stack(board.index, fields["layers"])
     except _TooMany as error:
         out.update(ok=False, problem=str(error), ids=[])
     except _Bad as error:
@@ -1605,6 +1620,10 @@ def _measured_value(key: str, draw: dict, finding: Finding) -> float | None:
     """What `draw` measured for the claimed value `key`, in its unit; None when nothing.
     A return_path's length_mm is the whole track when the finding gives coverage_pct too
     (a share of that length, as plane.gap_crossing asks), else the length without plane."""
+    if draw["tool"] == "layers":  # the stackup distance nearest the claim (`_stack`)
+        claimed = finding.values.get(key)
+        gaps = [gap for _, _, gap in draw.get("stack") or ()]
+        return min(gaps, key=lambda gap: abs(gap / 1e6 - claimed)) / 1e6 if gaps and claimed is not None else None
     measured, whole = draw["measured_nm"], draw["whole_nm"]
     if measured is None:
         return None
@@ -1783,8 +1802,21 @@ def _rules(board: _Resolver, finding: Finding, names, drawn: list) -> list[dict]
     return out
 
 
+def measures(draw: dict, values) -> bool:
+    """A draw that measured the board: a MEASURING tool's, or a `layers` draw whose stackup
+    distances (`stack`) checked a distance_mm the finding claims."""
+    return draw["ok"] and (draw["tool"] in MEASURING or
+                           (draw["tool"] == "layers" and bool(draw.get("stack")) and "distance_mm" in values))
+
+
+def measurable(draws, values) -> bool:
+    """A check whose findings can be measured: it draws with a MEASURING tool Blender draws,
+    or with `layers` and claims distance_mm (the stackup checks it)."""
+    return bool(set(draws) & MEASURING & DRAWN) or ("layers" in draws and "distance_mm" in values)
+
+
 def _verdict(connected: bool, severity: str, faded: bool, draws: list[dict], disagree: list, passes: bool,
-             rules: list) -> str:
+             rules: list, values=()) -> str:
     """What the board says about a finding (VERDICTS). "mismatch": something it names is not
     on the board, a value it claims is far from the one measured (`disagree`), a rule of its
     check fails (`_rules`), a draw could not be resolved, or a suggestion does not fit. "refuted": a problem (error or warning)
@@ -1801,7 +1833,7 @@ def _verdict(connected: bool, severity: str, faded: bool, draws: list[dict], dis
         return "mismatch"
     if passes and severity in ("error", "warning"):
         return "refuted"
-    if any(draw["ok"] and draw["tool"] in MEASURING for draw in draws):
+    if any(measures(draw, values) for draw in draws):
         return "measured"
     return "unchecked"
 
@@ -1810,7 +1842,7 @@ def verdict_of(row: dict, connected: bool) -> str:
     """`_verdict` again from a finding's payload row: KiCad's DRC on its ghosts
     (`ghost_drc.apply`) can change whether a suggestion fits after the resolve."""
     return _verdict(connected, row.get("severity", ""), bool(row.get("faded")), row.get("draws") or [],
-                    row.get("disagree") or [], bool(row.get("passes")), row.get("rules") or [])
+                    row.get("disagree") or [], bool(row.get("passes")), row.get("rules") or [], row.get("values") or {})
 
 
 def _clash_text(record, gap: float) -> tuple[str, str]:
@@ -2210,6 +2242,21 @@ def _place_bars(board: _Resolver, drawn: list[tuple[dict, list[Resolved]]], reso
             draw["points"] = [_anchor(first, "at")]
 
 
+def _from_text(index: BoardIndex | None, finding: Finding) -> tuple[Draw, ...]:
+    """A finding the LLM drew nothing for (a board-wide check, or one it left bare): a
+    highlight of the parts and pads its title, message and fix name (`mentions`), so it
+    has a place on the board; none when they name none. Nets are left out: a rail's
+    hundreds of items would light up half the board. Its key is the finding's own (the
+    file's draws, none here), so confirm and dismiss do not move."""
+    if index is None:
+        return ()
+    named = [mention["text"] for mention in mentions.find(index, finding.title, finding.message, finding.fix)
+             if mention["found"] and mention["kind"] in ("part", "pad")]
+    if not named:
+        return ()
+    return (Draw("highlight", {"targets": tuple(named[:MAX_TEXT_TARGETS])}),)
+
+
 def handshake(found: FindingsFile, context: Context) -> str:
     """Where the file came from: "known" (a run this bridge made, with that run's stamp;
     or our own DRC file), "other_run" (it names a run or stamp, but not one of ours: an
@@ -2249,7 +2296,10 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
         keys[key] = keys.get(key, 0) + 1
         if keys[key] > 1:  # the same finding twice in one file: keys stay unique
             key = f"{key}-{keys[key]}"
-        drawn = [_resolve_draw(board, draw) for draw in finding.draws]
+        draws_given = finding.draws or _from_text(index, finding)
+        drawn = [_resolve_draw(board, draw) for draw in draws_given]
+        for (draw, _), given in zip(drawn, draws_given):
+            draw["from_text"] = given is not None and not finding.draws
         _place_bars(board, drawn, resolved)
         _ghosts_in_reach(drawn)
         draws = [draw for draw, _ in drawn]
@@ -2267,7 +2317,8 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
             "bbox_nm": _bbox(board, drawn),
             "disagree": disagree,
             "passes": passes,
-            "verdict": _verdict(index is not None, finding.severity, faded, draws, disagree, passes, rules),
+            "verdict": _verdict(index is not None, finding.severity, faded, draws, disagree, passes, rules,
+                                finding.values),
             "rules": rules,
             "mentions": mentions.find(index, finding.title, finding.message, finding.fix),
             "draws": draws,

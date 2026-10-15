@@ -1157,7 +1157,8 @@ def test_a_stub_is_framed_on_its_via_and_each_discontinuity_point_is_keyed(stitc
 
 # ghosts: a part moved, a route, a row of vias (on the board of test_board_index)
 
-EMPTY = {"planes": [], "spans_nm": [], "bare_nm": [], "backed_nm": [], "sides": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,  # planes
+EMPTY = {"stack": [], "from_text": False,
+         "planes": [], "spans_nm": [], "bare_nm": [], "backed_nm": [], "sides": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,  # planes
          "islands": [], "barrel": {}, "marks": [],
          "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],  # ghosts
          "pitch_nm": 0}
@@ -1584,6 +1585,42 @@ def test_diff_pair_rule(split):
         {"rule": "diff_pair", "ok": True, "text": "LVDS_P and LVDS_N are a pair"}]
     assert nets("net:GND", "net:LVDS_P")[0]["ok"] is True
     assert nets("net:GND", "net:VCC")[0]["text"].startswith("GND is not a differential pair net")
+
+
+def test_a_layers_draw_checks_a_stackup_distance(split):
+    """`layers` naming two neighbouring copper layers gets their dielectric from the
+    stackup (`stack`); a distance_mm claim is checked against it: measured or mismatch."""
+    layers = {"tool": "layers", "layers": ["In1.Cu", "In2.Cu"]}
+    good = payload(split, finding(layers, check="plane.stackup", values={"distance_mm": 1.0}))["findings"][0]
+    assert good["draws"][0]["stack"] == [["In1.Cu", "In2.Cu", MM]]
+    assert good["verdict"] == "measured" and good["disagree"] == []
+    off = payload(split, finding(layers, check="plane.stackup", values={"distance_mm": 0.5}))["findings"][0]
+    assert off["verdict"] == "mismatch" and off["disagree"] == [{"key": "distance_mm", "claimed": 0.5, "measured": 1.0}]
+    three = {"tool": "layers", "layers": ["F.Cu", "In1.Cu", "In2.Cu"]}  # the claim meets the nearest of two
+    near = payload(split, finding(three, values={"distance_mm": 0.21}))["findings"][0]
+    assert near["draws"][0]["stack"] == [["F.Cu", "In1.Cu", 200_000], ["In1.Cu", "In2.Cu", MM]]
+    assert near["verdict"] == "measured"
+    bare = payload(split, finding(layers))["findings"][0]  # nothing claimed: the layers only shown
+    assert bare["draws"][0]["stack"] == [["In1.Cu", "In2.Cu", MM]] and bare["verdict"] == "unchecked"
+    apart = only_draw(payload(split, finding({"tool": "layers", "layers": ["F.Cu", "In2.Cu"]})))
+    assert apart["stack"] == []  # not neighbours
+    assert findings.measurable(("layers", "highlight"), ("distance_mm",))
+    assert not findings.measurable(("layers", "highlight"), ())
+
+
+def test_a_finding_with_no_drawing_lights_the_parts_its_text_names(index):
+    """No draw (a board-wide check, a bare finding): its text's parts and pads highlighted,
+    so it has a place on the board; its key stays the one it had (nothing named)."""
+    bare = finding(message="U3 is fed from net GND through C12.1 only")
+    item = payload(index, bare)["findings"][0]
+    (draw,) = item["draws"]
+    assert draw["tool"] == "highlight" and draw["from_text"] is True and draw["ok"]
+    assert [target["text"] for target in draw["targets"]] == ["U3", "C12.1"]  # no nets
+    assert item["bbox_nm"] is not None and item["verdict"] == "unchecked"
+    assert item["key"] == findings.finding_key("test.check", ["title:T"])
+    assert payload(index, finding(message="nothing named here"))["findings"][0]["draws"] == []
+    given = only_draw(payload(index, finding({"tool": "highlight", "targets": ["U3"]}, message="C12.1 too")))
+    assert given["from_text"] is False  # the LLM's own drawing stands
 
 
 def test_a_target_entry_names_its_net(index):

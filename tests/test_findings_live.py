@@ -292,7 +292,7 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
         assert payload["sources"]["drc"]["findings"]  # the last run's findings stay listed
 
 
-Check = namedtuple("Check", "id group title instruction evidence draws v1")
+Check = namedtuple("Check", "id group title instruction evidence draws v1 values", defaults=((),))
 CATALOGUE = (Check("plane.gap_crossing", "plane", "Signal crossing a plane gap", "Find them", "net", ("highlight",),
                    True),
              Check("decap.distance", "decap", "Decoupling cap far from its pin", "Measure", "cap", ("distance",),

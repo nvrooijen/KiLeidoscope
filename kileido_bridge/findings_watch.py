@@ -109,13 +109,13 @@ def parse_progress(data: bytes) -> dict | None:
 
 def catalogue() -> tuple[list, list] | None:
     """(checks, groups) for Blender's check list: {"id", "group", "title", "v1", "measurable"} per
-    check (measurable: a findings.MEASURING tool draws it, so its findings can be judged) and
+    check (measurable: `findings.measurable`, so its findings can be judged) and
     {"id", "title"} per group, so Blender needs no bridge import; None without `checks`
     (or with a broken one: the findings never wait on the catalogue)."""
     try:
         from . import checks
         rows = [{"id": check.id, "group": check.group, "title": check.title, "v1": bool(check.v1),
-                 "measurable": bool(set(check.draws) & findings.MEASURING & findings.DRAWN)}
+                 "measurable": findings.measurable(check.draws, check.values)}
                 for check in checks.CATALOGUE]
         return rows, [{"id": group, "title": checks.GROUP_TITLES.get(group, group)} for group in checks.GROUPS]
     except Exception:

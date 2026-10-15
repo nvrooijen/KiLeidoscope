@@ -28,11 +28,15 @@ def test_rows_are_filled_and_draw_only_with_known_tools():
         assert len(check.title) <= 40 and "\n" not in check.instruction, check.id
         assert set(check.draws) <= findings.TOOLS and len(set(check.draws)) == len(check.draws), check.id
         assert not set(check.later) & findings.TOOLS, check.id  # tools not built yet only
-    board_wide = [check.id for check in CATALOGUE if not check.draws]
-    assert board_wide == ["plane.plane_spacing", "decap.pdn_impedance", "emc.emission_estimate",
-                          "fab.copper_balance"]
-    for check_id in board_wide:
-        assert "Board-wide: no drawing needed." in by_id(check_id)[0].instruction, check_id
+    no_drawing = [check.id for check in CATALOGUE if not check.draws]
+    assert no_drawing == ["decap.pdn_impedance", "emc.emission_estimate", "fab.copper_balance"]
+    for check_id in no_drawing[:2]:  # about parts: named in the message, highlighted from it
+        assert "name the parts it concerns in the message" in by_id(check_id)[0].instruction, check_id
+    assert "Board-wide: no drawing needed." in by_id("fab.copper_balance")[0].instruction  # the whole board
+    for check_id in ("plane.stackup", "plane.plane_spacing"):  # the stackup measures their distance
+        check = by_id(check_id)[0]
+        assert "layers" in check.draws and "checks it against the stackup" in check.instruction, check_id
+        assert findings.measurable(check.draws, check.values), check_id
 
 
 def test_value_keys_carry_a_unit_the_findings_file_accepts():

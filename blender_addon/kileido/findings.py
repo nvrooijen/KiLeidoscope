@@ -47,6 +47,7 @@ VERDICT_LINES = {  # the detail's first line per verdict; refuted has its own li
     "measured": ("Measured: found on the board, nothing against it", "DRIVER_DISTANCE"),
     "mismatch": ("Mismatch: the board says otherwise (below)", "ERROR"),
     "unchecked": ("Unchecked: the LLM's word only", "INFO")}
+REFUTED_LINE = "Refuted: measured within the limit, so the measurement does not support it"
 PAIR_TOOLS = ("distance", "clearance", "arrow")  # two ends: the detail names each end's net
 MEASURED = ("distance", "clearance", "edge_gap", "width", "routed_length", "layer_change", "plane_gap",
             "return_path", "stitching", "stub")  # a measured value against a limit
@@ -669,8 +670,10 @@ def _draw_source(layout, scene, wrap, name, title, data):
 
 
 def _draw_finding(layout, wrap, source_name, finding):
-    """One row: severity, title (shows it), the verdict (LLM tab), select in KiCad, confirm,
-    dismiss; the shown one opens below with everything the file says about it."""
+    """One row: severity, title (shows it), select in KiCad, confirm, dismiss; the shown one
+    opens below with everything the file says about it. The verdict takes no room of its
+    own (LLM tab): a mismatch or refuted finding has the grey "?" icon, an unchecked one a
+    greyed title, and the title's tooltip and the detail's first line say which."""
     key = finding.get("key", "")
     state = finding.get("state", "")
     shown = board.findings_shown == (source_name, key)
@@ -678,16 +681,11 @@ def _draw_finding(layout, wrap, source_name, finding):
     row.active = not finding.get("faded") and state != "dismissed"
     title = row.row(align=True)
     title.alert = finding.get("severity") == "error" and state != "confirmed"
+    title.active = source_name == "drc" or finding.get("verdict") != "unchecked"
     icon = {"icon": "CHECKMARK"} if state == "confirmed" else severity_icon(findings_draw.mark(finding))
     text = (wrap(finding.get("title") or finding.get("check") or "?") or ["?"])[0]
     operator = title.operator(KILEIDO_OT_finding_show.bl_idname, text=text, emboss=shown, depress=shown, **icon)
     operator.source, operator.key = source_name, key
-    verdict = finding.get("verdict")
-    if source_name != "drc" and verdict in VERDICTS:  # the board's word on it, in a word; greyed: unchecked
-        word = row.row(align=True)
-        word.active = verdict != "unchecked"
-        word.alignment = "RIGHT"
-        word.label(text=verdict)
     buttons = row.row(align=True)
     operator = buttons.operator(KILEIDO_OT_finding_kicad.bl_idname, text="", icon="RESTRICT_SELECT_OFF", emboss=False)
     operator.source, operator.key = source_name, key
@@ -779,7 +777,7 @@ def _draw_detail(box, wrap, source_name, finding):
     if finding.get("confidence"):
         box.label(text=f"LLM confidence: {finding['confidence']}")
     if findings_draw.refuted(finding):
-        _lines(box, wrap, "Measured within the limit: the measurement does not support this finding", "CHECKMARK")
+        _lines(box, wrap, REFUTED_LINE, "CHECKMARK")
     disagree = {entry.get("key"): entry for entry in finding.get("disagree") or ()}
     for name, value in (finding.get("values") or {}).items():
         label, unit = _unit(name)
@@ -789,9 +787,9 @@ def _draw_detail(box, wrap, source_name, finding):
             line.label(text=f"{label}: claimed {figure(disagree[name]['claimed'])} {unit}, measured "
                             f"{figure(disagree[name]['measured'])} {unit}".replace("  ", " "), icon="ERROR")
         else:
-            line.label(text=f"{label}: {figure(value)} {unit}".rstrip())
+            line.label(text=f"{label} (LLM): {figure(value)} {unit}".rstrip())
     for name, text in (finding.get("values_text") or {}).items():
-        _lines(box, wrap, f"{name.replace('_', ' ')}: {text}")
+        _lines(box, wrap, f"{name.replace('_', ' ')} (LLM): {text}")
     for draw in finding.get("draws") or ():
         _draw_facts(box, wrap, draw)
     for problem in finding.get("problems") or ():
@@ -820,9 +818,13 @@ def _draw_facts(box, wrap, draw):
             _lines(line, wrap, f"{target.get('text')}: {target.get('note') or 'not found on board'}", "QUESTION")
     if not ok:
         return  # nothing was measured: none of its tool's facts
+    if draw.get("from_text"):  # the LLM drew nothing: the bridge lit what its text names
+        _lines(box, wrap, "No drawing given: the parts its text names are highlighted", "INFO")
     if tool == "layers" and draw.get("layers"):
         _lines(box, wrap, f"Layers shown: {', '.join(draw['layers'])} (other copper hidden while shown)",
                "RENDERLAYERS")
+    for upper, lower, gap in (entry for entry in draw.get("stack") or () if len(entry) >= 3):
+        _lines(box, wrap, f"Stackup: {upper} to {lower}, {gap / 1e6:.3f} mm", "DRIVER_DISTANCE")
     no_stub = tool == "stub" and not findings_draw.stubbed(draw)
     measured = findings_draw.measured_text(draw) if tool in MEASURED and not no_stub else ""
     if measured:  # "Clearance: 0.080 mm < 0.20 mm min"; without a `what`, "Measured …"
@@ -869,6 +871,15 @@ class KILEIDO_OT_finding_show(bpy.types.Operator):
 
     source: StringProperty()
     key: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        """The verdict first (the row shows it only by its icon and shade), then what a click does."""
+        finding = find(properties.source, properties.key) or {}
+        line = VERDICT_LINES.get(finding.get("verdict")) if properties.source != "drc" else None
+        if finding.get("verdict") == "refuted" and properties.source != "drc":
+            line = (REFUTED_LINE, "")
+        return (f"{line[0]}.\n" if line else "") + cls.bl_description
 
     def execute(self, context):
         from . import live

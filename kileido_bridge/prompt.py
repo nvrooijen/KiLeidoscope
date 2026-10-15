@@ -180,26 +180,33 @@ def _checks_text(checks: tuple[Check, ...]) -> str:
         if check.values:
             lines.append(f"  Values: {', '.join(check.values)}")
         lines.append(f"  Draw with: {', '.join(tools)}" if tools else
-                     "  Draw with: nothing; a board-wide result, leave draw empty")
+                     "  Draw with: nothing; leave draw empty and name the parts it concerns in the message "
+                     "(KiLeidoscope highlights them)")
         rules = [findings.RULE_TEXT[name] for name in getattr(check, "rules", ()) if name in findings.RULE_TEXT]
         if rules:
             lines.append(f"  Checked by KiLeidoscope: {'; '.join(rules)}")
     return "\n".join(lines)
 
 
-def _measured_rule(tools: set[str]) -> str:
+def _measured_rule(tools: set[str], stackup: bool = False) -> str:
     """The rules on measuring: the verdict KiLeidoscope gives each finding (`findings.VERDICTS`)
     and the measuring tools offered, then the claimed values (`findings.CLAIMS`) when an
     offered tool measures one. Checks nothing measures are told so: unchecked, whatever is said."""
     measuring = [tool for tool in sorted(tools) if tool in findings.MEASURING]
+    if "layers" in tools and stackup:
+        measuring.append("layers with distance_mm")
     if not measuring:
         return ("- KiLeidoscope cannot measure these checks yet: every finding of them is listed\n"
                 "  as unchecked, your word only.\n")
     text = ("- KiLeidoscope gives each finding a verdict from the board: measured, refuted,\n"
             "  mismatch or unchecked. Draw every finding with a measuring tool where one is\n"
             f"  offered ({', '.join(measuring)}); highlight and label alone leave it unchecked.\n")
-    claims = [(key, [tool for tool in measured if tool in tools]) for key, measured in findings.CLAIMS]
+    claims = [(key, [tool for tool in measured if tool in tools and tool in findings.MEASURING])
+              for key, measured in findings.CLAIMS]
     claims = [(key, measured) for key, measured in claims if measured]
+    if "layers" in tools and stackup:
+        text += ("- A layers draw naming two neighbouring copper layers, with distance_mm in values,\n"
+                 "  is checked against the board's stackup.\n")
     if not claims:
         return text
     names = ", ".join(dict.fromkeys(tool for _, measured in claims for tool in measured))
@@ -313,7 +320,8 @@ Answer file: {findings_path}
   distance_mm, length_mm, width_mm, area_mm2, skew_ps, drop_mv, current_a.
   Unit suffixes: {units}. Each check lists the keys it expects under
   "Values"; give those you know, also when your tool states them only in text.
-{_measured_rule(tools)}- For a problem outside the listed checks, use an id of your own: group.name.
+{_measured_rule(tools, any(findings.measurable(("layers",), check.values) for check in checks
+                           if "layers" in drawn(check)))}- For a problem outside the listed checks, use an id of your own: group.name.
 - Plain text only in all messages. Keep each message under {findings.MAX_TEXT} characters.
   At most {findings.MAX_FINDINGS} findings and {findings.MAX_DRAWS} drawings per finding.
 

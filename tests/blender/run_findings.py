@@ -25,6 +25,7 @@ import json
 import sys
 import textwrap
 from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 
 import blf
@@ -288,7 +289,7 @@ def check_drawing(scene):
     # The column: the shown finding opens with its message, values and measurements.
     drawn = column(scene)
     texts = [text for _, text, _ in drawn]
-    assert "RF_A runs close to itself near J1 (via 420d87bb)" in texts and "distance: 5.3 mm" in texts, texts
+    assert "RF_A runs close to itself near J1 (via 420d87bb)" in texts and "distance (LLM): 5.3 mm" in texts, texts
     assert "Measured 5.30 mm < 6.00 mm min" in texts, texts
     # A zone and a via highlighted; a plane finding: X-ray mode ticked for it.
     show("Plane under the via")
@@ -1053,6 +1054,7 @@ NO_RETURN = {
 
 STRIP = {  # a stripline: In3.Cu between In2.Cu (named, 0.11 mm) and In4.Cu GND (0.55 mm)
     "key": "planes-4", "check": "plane.edge_run", "severity": "warning", "title": "Stripline", "state": "",
+    "verdict": "measured",
     "bbox_nm": [5 * MM, 14 * MM, 15 * MM, 16 * MM],
     "draws": [plane_draw("return_path", "Without plane", layer="In2.Cu", ids=[OTHER], planes=["+1V8@In2.Cu"],
                          covered_nm=[[5 * MM, 15 * MM, 11 * MM, 15 * MM, "F.Cu", 200_000]],
@@ -1064,14 +1066,26 @@ STRIP = {  # a stripline: In3.Cu between In2.Cu (named, 0.11 mm) and In4.Cu GND 
                          measured_nm=4 * MM)]}
 
 
+STACK = {  # a stackup finding the bridge measured, and one the LLM drew nothing for (lit from its text)
+    "key": "stack-1", "check": "plane.stackup", "severity": "warning", "title": "Stackup", "state": "",
+    "verdict": "unchecked", "bbox_nm": [5 * MM, 4 * MM, 13 * MM, 6 * MM],
+    "draws": [plane_draw("layers", "", layers=["In2.Cu", "In3.Cu"], stack=[["In2.Cu", "In3.Cu", 108_800]]),
+              plane_draw("highlight", "", ids=[TRACK], from_text=True)]}
+
+
 def check_stripline(scene, index):
     """A stripline's stretches without the named plane: those with the plane on its other
     side faded red, the rest solid red; the label and the column name the other plane and
     both distances."""
     header = frame(index)
-    header["findings"]["sources"]["file"]["findings"] += [STRIP]
+    header["findings"]["sources"]["file"]["findings"] += [STRIP, STACK]
     apply.apply_frame(header, {})
     show("Stripline")
+    # The row has no verdict word (its icon and shade say it); the title's tooltip does.
+    texts = [text for _, text, _ in column(scene, ("LLM",))]
+    assert not {"measured", "mismatch", "unchecked", "refuted"} & set(texts), texts
+    tip = findings.KILEIDO_OT_finding_show.description(bpy.context, SimpleNamespace(source="file", key="planes-4"))
+    assert tip.startswith("Measured: found on the board, nothing against it.\n"), tip
     drawn = objects()
     over = "KLS finding over"
     assert drawn["KLS finding 1 return_path spans"].data.materials[0].name == over
@@ -1084,6 +1098,11 @@ def check_stripline(scene, index):
     nearer = {**STRIP["draws"][0]["sides"][0], "other_nm": 100_000, "backed_nm": 4 * MM}
     assert findings_draw.side_text(nearer) == "In4.Cu GND under all of it, 0.10 mm away: nearer than In2.Cu (0.11 mm)"
     assert findings_draw.side_text({**nearer, "backed_nm": 0}) == "No plane on In4.Cu under it either"
+    findings.hide_shown()
+    show("Stackup")  # the stackup's distance, and a highlight from the text, said in the column
+    texts = [text for _, text, _ in column(scene, ("LLM",))]
+    assert "Stackup: In2.Cu to In3.Cu, 0.109 mm" in texts, texts
+    assert "No drawing given: the parts its text names are highlighted" in texts, texts
     findings.hide_shown()
 
 
@@ -1777,7 +1796,7 @@ def check_column_facts(scene, index):
     assert "plane_islands not drawn: GND has no zone fill" in texts, texts
     assert "bars not drawn: no target on the board to stand at; give at" in texts, texts
     assert not any(text.startswith(("Islands", "Values", "A: 1")) for text in texts), texts
-    assert "via density: 3.2 per cm²" in texts, texts
+    assert "via density (LLM): 3.2 per cm²" in texts, texts
     assert findings._unit("via_density_per_cm2") == ("via density", "per cm²")
     assert findings._unit("distance_mm") == ("distance", "mm") and findings._unit("per_mm") == ("per", "mm")
     show("Not measured")

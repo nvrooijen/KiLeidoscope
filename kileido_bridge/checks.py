@@ -108,15 +108,17 @@ CATALOGUE: tuple[Check, ...] = (
     Check("plane.stackup", "plane", "Stackup without reference",
           "Check the stackup for two signal layers next to each other with no plane between them, or a "
           "signal layer far from any plane. Skip 2-layer boards: F.Cu next to B.Cu is all they have, "
-          "so do not report it there.",
+          "so do not report it there. Draw layers with the two neighbouring layers and give their "
+          "dielectric in distance_mm: KiLeidoscope checks it against the stackup.",
           "the layer pair, dielectric thickness in distance_mm",
           ("layers", "highlight"),
           values=("distance_mm",)),
     Check("plane.plane_spacing", "plane", "Plane pair far apart",
           "Check power and ground plane pairs for a thick dielectric between them, which gives little "
-          "interplane capacitance (rule of thumb: over about 0.2 mm). Board-wide: no drawing needed.",
+          "interplane capacitance (rule of thumb: over about 0.2 mm). Draw layers with the two plane "
+          "layers and give their dielectric in distance_mm: KiLeidoscope checks it against the stackup.",
           "the plane layer pair, dielectric thickness in distance_mm",
-          (),
+          ("layers",),
           values=("distance_mm",)),
     Check("plane.stitching_sparse", "plane", "Sparse ground stitching",
           "Find areas where ground stitching vias between plane layers are too far apart for the "
@@ -176,7 +178,8 @@ CATALOGUE: tuple[Check, ...] = (
     Check("decap.pdn_impedance", "decap", "PDN impedance",
           "Estimate each power rail's impedance from its regulator and decoupling caps against a target "
           "impedance (allowed ripple over the transient current; state both) and report anti-resonance "
-          "peaks above the target. Board-wide: no drawing needed.",
+          "peaks above the target. No drawing fits: name the parts it concerns "
+          "in the message; KiLeidoscope highlights them.",
           "rail net, regulator reference, target and peak impedance with their frequencies in the "
           "message, transient current_a",
           (),
@@ -362,7 +365,8 @@ CATALOGUE: tuple[Check, ...] = (
     Check("emc.emission_estimate", "emc", "Emission estimate",
           "Estimate where the board is likely to emit: cavity resonances of the board's plane pair "
           "(from its size and dielectric) and the harmonic envelope of switching regulators and clocks "
-          "against the emissions test band. Board-wide: no drawing needed.",
+          "against the emissions test band. No drawing fits: name the parts it concerns "
+          "in the message; KiLeidoscope highlights them.",
           "board size, the frequencies and the parts behind them, in the message",
           ()),
     # Analog and clocks
