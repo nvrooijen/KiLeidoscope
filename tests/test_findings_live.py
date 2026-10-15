@@ -370,8 +370,9 @@ def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):
         assert payload["progress"] == {"state": "none", "run": "", "done": 0, "total": 0, "check": "", "note": "",
                                        "updated_unix": 0.0, "made_unix": 0.0}
         assert payload["catalogue"][0] == {"id": "plane.gap_crossing", "group": "plane",
-                                           "title": "Signal crossing a plane gap", "v1": True}
+                                           "title": "Signal crossing a plane gap", "v1": True, "measurable": False}
         assert [row["v1"] for row in payload["catalogue"]] == [True, True, False]
+        assert [row["measurable"] for row in payload["catalogue"]] == [False, True, False]  # distance measures
         assert payload["groups"][1] == {"id": "decap", "title": "Decoupling"}
         client.request_findings("prompt", "", "file", checks=["decap.distance", "not.a_check", "hs.stub"])
         frames = exchange(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f)),

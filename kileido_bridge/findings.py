@@ -24,7 +24,10 @@ fill of that net on that layer.
 
 Every measured draw names what it measured in `what`, so Blender labels them all alike;
 a finding whose every measured limit is met `passes`, and a claimed value the bridge
-measured too is listed in `disagree` when the two are far apart. Confirm/dismiss state is
+measured too is listed in `disagree` when the two are far apart; the rules its check carries
+(RULES, named by the catalogue: a decoupling pair shares a net, a pair's nets pair) are
+applied and listed in `rules`; from all this each finding gets its `verdict` (VERDICTS:
+measured, refuted, mismatch, unchecked). Confirm/dismiss state is
 keyed on the check and the named targets (`named`, `finding_key`), so it survives
 re-routing that changes uuids. Every file is drawn; `handshake` says where it came from:
 a run the bridge made, another run, or outside any run. A file from a run the bridge made
@@ -37,7 +40,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 import numpy as np
@@ -47,6 +50,7 @@ from .board_index import BoardIndex, Gap, _bbox_gap, _inside, centre, copper_ran
 from .board_index import gap as shapes_gap
 from .board_index import top_layer, union
 from .geometry import sample_arc
+from .selection import diff_pair_partner
 from .targets import MAX_MM, SNAP_NM, Resolved, copper_layer, point_problem, resolve
 from .targets import kind as kind_of
 
@@ -60,6 +64,7 @@ MAX_RUN = 32  # characters of a file's run id
 MAX_CHECK = 64  # characters of a check id
 MAX_VALUES = 20
 MAX_SKIPPED = 300
+MAX_CLEAN = 300  # checks run with nothing found
 MAX_TARGETS = 50  # per list
 MAX_TARGET_TEXT = 200
 MAX_LAYER_TEXT = 40  # characters of a non-copper layer a `pt:` names
@@ -115,6 +120,20 @@ WHAT = {"clearance": "Clearance", "edge_gap": "Edge gap", "width": "Width", "rou
 OWN_IDS = frozenset({"width", "layer_change", "plane_gap", "return_path", "plane_islands", "stitching", "stub",
                      "discontinuity"})  # ids: what they measure
 UNTARGETED = ("plane_islands", "stitching")  # measure the board with no target named
+MEASURING = frozenset({"distance", "clearance", "width", "routed_length", "edge_gap", "layer_change", "plane_gap",
+                       "return_path", "plane_islands", "stitching", "stub",
+                       "discontinuity"})  # tools that measure the board (`bars` only charts the file's own numbers)
+VERDICTS = ("measured", "refuted", "mismatch", "unchecked")  # what the board says about a finding (`_verdict`)
+BUG = "could not measure ("  # a draw's problem when measuring it raised: our bug, not the file's
+PAIR_ENDS = {"distance": ("from", "to"), "clearance": ("a", "b"), "arrow": ("from", "to")}  # tools joining two ends
+UNCONNECTED = "unconnected-"  # KiCad's net name prefix for a pin on no net
+PLANE_VIA_REACH = 2  # via diameters: fill of the via's own net this near on a neighbouring layer makes it a return via
+RULE_TEXT = {  # per rule (RULES; checks.Check.rules names them): what the prompt says KiLeidoscope checks
+    "decap_pair": "the cap pad and the IC pin the distance or arrow joins must be connected: the pin's net on "
+                  "one of the cap's pads",
+    "same_net": "the two pads the distance or arrow joins must be on the same net",
+    "signal_via": "the via must carry a signal, not a plane net",
+    "diff_pair": "the nets named (net:...) must be a differential pair by KiCad's naming (+/- or P/N)"}
 # claimed value -> the tools that measure it (both shown when > 10 % apart, coverage > DISAGREE_POINTS)
 CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change")), ("width_mm", ("width",)),
           ("length_mm", ("routed_length", "return_path")), ("gap_mm", ("plane_gap",)), ("stub_mm", ("stub",)),
@@ -176,6 +195,7 @@ class FindingsFile:
     skipped: tuple[tuple[str, str], ...]  # (check, reason)
     problems: tuple[str, ...]
     left_out: tuple[tuple[str, int], ...] = ()  # (check, findings of it not kept: `_kept`)
+    clean: tuple[tuple[str, str], ...] = ()  # (check, note): checks run with nothing found
 
 
 @dataclass(frozen=True)
@@ -185,6 +205,7 @@ class Context:
     runs: dict  # known run id -> stamp (KlsFolder.runs())
     live_stamp: str  # stamp of KiCad's raw board text now, "" if unknown
     states: dict  # finding key -> "confirmed" | "dismissed"
+    rules: dict = field(default_factory=dict)  # check id -> the RULES names its catalogue entry carries
 
 
 # parsing
@@ -639,8 +660,34 @@ def parse(data: bytes) -> FindingsFile:
         check = _text(item.get("check", ""), MAX_CHECK, "skipped check", problems) or ""
         reason = _text(item.get("reason", ""), MAX_TEXT, "skipped reason", problems) or ""
         skipped.append((check, reason))
+    clean = _clean(raw.get("clean", []), {f.check for f in findings if f is not None}, problems)
     return FindingsFile(run or "", stamp, tool or "", tuple(f for f in findings if f is not None),
-                        tuple(skipped), tuple(problems), left_out)
+                        tuple(skipped), tuple(problems), left_out, clean)
+
+
+def _clean(raw_clean, reported: set, problems: list) -> tuple[tuple[str, str], ...]:
+    """The checks run with nothing found: (check, note) each, from a check id or
+    {"check", "note"}; a check that also has findings is not clean (the findings stand)."""
+    if not isinstance(raw_clean, list):
+        problems.append("clean is not a list")
+        return ()
+    if len(raw_clean) > MAX_CLEAN:
+        problems.append(f"clean entries past {MAX_CLEAN} left out")
+    clean: dict[str, str] = {}
+    for item in raw_clean[:MAX_CLEAN]:
+        if isinstance(item, str):
+            item = {"check": item}
+        if not isinstance(item, dict):
+            problems.append("a clean entry is not a check id or an object")
+            continue
+        check = _text(item.get("check", ""), MAX_CHECK, "clean check", problems) or ""
+        if not check:
+            problems.append("a clean entry names no check")
+        elif check in reported:
+            problems.append(f"{check} is listed clean and has findings: the findings stand")
+        elif check not in clean:
+            clean[check] = _text(item.get("note", ""), MAX_TEXT, "clean note", problems) or ""
+    return tuple(clean.items())
 
 
 def _kept(raw_findings: list) -> tuple[list[int], tuple[tuple[str, int], ...]]:
@@ -763,6 +810,13 @@ def _target_layer(resolved: Resolved) -> str:
     if text.lower().startswith("pt:") and "@" in text:
         return text.partition("@")[2].strip()[:MAX_LAYER_TEXT]
     return top_layer(resolved.items[0]) if resolved.items else ""
+
+
+def _target_net(resolved: Resolved) -> str:
+    """The net a target is on when every item it names shares one; "" for a part, the edge, a
+    point, or items of several nets."""
+    nets = {getattr(item, "net", None) for item in resolved.items}
+    return (nets.pop() or "") if len(nets) == 1 and None not in nets else ""
 
 
 def _found(resolved: Resolved, role: str) -> None:
@@ -1367,7 +1421,8 @@ def _resolve_draw(board: _Resolver, draw: Draw) -> tuple[dict, list[Resolved]]:
     resolved = [board.target(draw.tool, role, text) for role, text in roles]
     by_role = {role: found for (role, _), found in zip(roles, resolved)}
     out["targets"] = [{"text": found.target.strip(), "found": found.found, "note": found.note,
-                       "kind": kind_of(found.items[0]) if found.items else ("point" if found.found else "")}
+                       "kind": kind_of(found.items[0]) if found.items else ("point" if found.found else ""),
+                       "net": _target_net(found)}
                       for found in resolved]
     tool = draw.tool
     out["what"] = draw.label if tool == "distance" else WHAT.get(tool, "")
@@ -1461,7 +1516,7 @@ def _resolve_draw(board: _Resolver, draw: Draw) -> tuple[dict, list[Resolved]]:
         out["ok"], out["problem"] = False, str(error)
     except Exception as error:  # a measuring bug costs this draw, never the file; nothing half-measured is kept
         out = {**_empty_draw(draw), "targets": out["targets"], "what": out["what"], "ok": False,
-               "problem": f"could not measure ({type(error).__name__}: {_show(str(error), 120)}); please report it"}
+               "problem": f"{BUG}{type(error).__name__}: {_show(str(error), 120)}); please report it"}
     board.ids += len(out["ids"])
     return out, resolved
 
@@ -1542,6 +1597,163 @@ def _passes(draws: list[dict]) -> bool:
     back the finding up, e.g. an edge gap of 1.91 mm against a 0.50 mm minimum."""
     judged = [draw for draw in draws if draw["ok"] and draw["limit_nm"] is not None]
     return bool(judged) and not any(draw["over"] for draw in judged)
+
+
+def _ends(draw: Draw, resolved: list[Resolved]) -> tuple[Resolved, Resolved] | None:
+    """A distance's, clearance's or arrow's two ends (PAIR_ENDS), both resolved; None for other tools."""
+    roles = PAIR_ENDS.get(draw.tool)
+    if roles is None:
+        return None
+    by_role = dict(zip((role for role, _ in _roles(draw)), resolved))
+    ends = tuple(by_role.get(role) for role in roles)
+    return ends if all(end is not None for end in ends) else None
+
+
+def _one_pad(found: Resolved) -> model.Pad | None:
+    """The pad a target names: one pad, or the pads of one number on one part (a thermal pad's pieces)."""
+    pads = found.items
+    if pads and all(isinstance(pad, model.Pad) for pad in pads) and len({(p.footprint_id, p.net) for p in pads}) == 1:
+        return pads[0]
+    return None
+
+
+def _pad_pair(draws: tuple[Draw, ...], drawn: list) -> tuple[model.Pad, model.Pad, str, str] | None:
+    """The first drawn pair whose two ends are pads: (pad a, pad b, text a, text b)."""
+    for draw, (_, resolved) in zip(draws, drawn):
+        ends = _ends(draw, resolved)
+        if ends is None:
+            continue
+        pads = [_one_pad(end) for end in ends]
+        if all(pads):
+            return pads[0], pads[1], ends[0].target.strip(), ends[1].target.strip()
+    return None
+
+
+def _rule_decap_pair(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
+    """The cap (the part with fewer pads) must connect to the pin's net on one of its pads."""
+    pair = _pad_pair(draws, drawn)
+    if pair is None:
+        return None
+    a, b, text_a, text_b = pair
+    index = board.index
+    if len(index.part_pads(a.footprint_id)) > len(index.part_pads(b.footprint_id)):
+        a, b, text_a, text_b = b, a, text_b, text_a  # the cap first
+    cap = text_a.partition(".")[0]
+    if not b.net or b.net.startswith(UNCONNECTED):
+        return False, f"{text_b} is not connected: nothing to decouple"
+    if b.net in {pad.net for pad in index.part_pads(a.footprint_id)}:
+        return True, f"{cap} and {text_b} share {b.net}"
+    return False, (f"{text_a} is on {a.net or 'no net'}, {text_b} on {b.net}: {cap} does not connect to {b.net}, "
+                   f"not a decoupling pair")
+
+
+def _rule_same_net(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
+    """The two pads must be connected, and on the same net."""
+    pair = _pad_pair(draws, drawn)
+    if pair is None:
+        return None
+    a, b, text_a, text_b = pair
+    for pad, text in ((a, text_a), (b, text_b)):
+        if not pad.net or pad.net.startswith(UNCONNECTED):
+            return False, f"{text} is not connected"
+    if a.net == b.net:
+        return True, f"{text_a} and {text_b} share {a.net}"
+    return False, f"{text_a} is on {a.net}, {text_b} on {b.net}: not the same net"
+
+
+def _plane_of_via(index: BoardIndex, via: model.Via) -> str:
+    """The copper layer next to one the via's net meets where fill of that same net sits at
+    the via (within PLANE_VIA_REACH diameters of its centre): the via is in its own plane, a
+    return or stitching via. "" when there is none: a signal via."""
+    layers = planes.via_layers(index, via) or (via.layer_top, via.layer_bottom)
+    for layer in layers:
+        for side in planes.next_to(index.snapshot, layer):
+            fills = [record for record in index.net_items(via.net, side) if isinstance(record, model.ZoneFill)]
+            if fills and index.nearest(via.pos, fills, side, max_distance=PLANE_VIA_REACH * via.diameter) is not None:
+                return side
+    return ""
+
+
+def _rule_signal_via(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
+    """A layer_change's via must carry a signal: not sit in its own net's plane (`_plane_of_via`)."""
+    for draw, (_, resolved) in zip(draws, drawn):
+        if draw.tool != "layer_change":
+            continue
+        by_role = dict(zip((role for role, _ in _roles(draw)), resolved))
+        via = by_role.get("via")
+        if via is None or not via.items or not isinstance(via.items[0], model.Via):
+            continue
+        record, text = via.items[0], via.target.strip()
+        layer = _plane_of_via(board.index, record)
+        if layer:
+            return False, f"{text} is on {record.net}, the plane on {layer} next to it: a return via, not a signal via"
+        return True, f"{text} is on {record.net}, no plane of its net next to it"
+    return None
+
+
+def _rule_diff_pair(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
+    """The nets named as net:... must be a differential pair (KiCad's +/- or P/N naming)."""
+    nets = list(dict.fromkeys(_target_net(found) for _, resolved in drawn for found in resolved
+                              if found.target.strip().lower().startswith("net:") and _target_net(found)))
+    if not nets:
+        return None
+    partners = {net: diff_pair_partner(net, board.index.nets) for net in nets}
+    for net, partner in partners.items():
+        if partner is None:
+            return False, f"{net} is not a differential pair net: no partner named like it (+/- or P/N)"
+    if len(nets) == 1:
+        return True, f"{nets[0]} pairs with {partners[nets[0]]}"
+    if len(nets) == 2:
+        if partners[nets[0]] == nets[1]:
+            return True, f"{nets[0]} and {nets[1]} are a pair"
+        return False, f"{nets[0]} and {nets[1]} are not a pair ({nets[0]} pairs with {partners[nets[0]]})"
+    return False, f"{len(nets)} nets named ({', '.join(nets)}): a pair is two"
+
+
+RULES = {"decap_pair": _rule_decap_pair, "same_net": _rule_same_net, "signal_via": _rule_signal_via,
+         "diff_pair": _rule_diff_pair}  # name -> rule(board, draws, drawn) -> (ok, text), or None: does not apply
+
+
+def _rules(board: _Resolver, finding: Finding, names, drawn: list) -> list[dict]:
+    """The finding's check's rules (RULES, named by the catalogue) applied: {"rule", "ok", "text"}
+    for each that applies; `ok` None when the rule itself raised (our bug, said so)."""
+    out = []
+    if board.index is None:
+        return out
+    for name in names:
+        rule = RULES.get(name)
+        if rule is None:
+            continue
+        try:
+            result = rule(board, finding.draws, drawn)
+        except Exception as error:  # a rule's bug never costs the finding
+            result = (None, f"{name}: could not check ({type(error).__name__}); please report it")
+        if result is not None:
+            out.append({"rule": name, "ok": result[0], "text": result[1]})
+    return out
+
+
+def _verdict(connected: bool, severity: str, faded: bool, draws: list[dict], disagree: list, passes: bool,
+             rules: list) -> str:
+    """What the board says about a finding (VERDICTS). "mismatch": something it names is not
+    on the board, a value it claims is far from the one measured (`disagree`), a rule of its
+    check fails (`_rules`), a draw could not be resolved, or a suggestion does not fit. "refuted": a problem (error or warning)
+    whose every measured limit is met; an info finding may well report a value within its
+    limit. "measured": a MEASURING draw found what the finding points at and nothing
+    contradicts it. "unchecked": nothing was measured (marks only, KiCad not connected, or
+    only a draw our own bug lost, `BUG`): the file's word alone."""
+    if not connected:
+        return "unchecked"
+    sound = [draw for draw in draws if draw["ok"] or not draw["problem"].startswith(BUG)]
+    broken = any(not draw["ok"] or draw["fits"] is False or
+                 not all(target.get("found", True) for target in draw["targets"]) for draw in sound)
+    if faded or disagree or broken or any(rule["ok"] is False for rule in rules):
+        return "mismatch"
+    if passes and severity in ("error", "warning"):
+        return "refuted"
+    if any(draw["ok"] and draw["tool"] in MEASURING for draw in draws):
+        return "measured"
+    return "unchecked"
 
 
 def _clash_text(record, gap: float) -> tuple[str, str]:
@@ -1955,7 +2167,7 @@ def handshake(found: FindingsFile, context: Context) -> str:
 def status_payload(status: str, error: str = "", connected: bool = False) -> dict:
     """A payload with no findings: "none" (no file), "unsaved", "error", "unknown_format"."""
     return {"status": status, "error": error, "run": "", "handshake": "", "changed": False, "connected": connected,
-            "tool": "", "problems": [], "skipped": [], "left_out": {}, "findings": []}
+            "tool": "", "problems": [], "skipped": [], "clean": [], "left_out": {}, "findings": []}
 
 
 def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context) -> dict:
@@ -1969,6 +2181,7 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
                    changed=agreed == "known" and bool(context.live_stamp) and context.live_stamp != found.stamp,
                    problems=list(found.problems),
                    skipped=[{"check": check, "reason": reason} for check, reason in found.skipped],
+                   clean=[{"check": check, "note": note} for check, note in found.clean],
                    left_out=dict(found.left_out))
     board = _Resolver(index)
     keys: dict[str, int] = {}
@@ -1983,17 +2196,22 @@ def resolve_file(found: FindingsFile, index: BoardIndex | None, context: Context
         _place_bars(board, drawn, resolved)
         _ghosts_in_reach(drawn)
         draws = [draw for draw, _ in drawn]
+        faded = index is not None and bool(resolved) and not any(item.found for item in resolved)
+        disagree, passes = _disagree(finding, draws), _passes(draws)
+        rules = _rules(board, finding, context.rules.get(finding.check, ()), drawn)
         payload["findings"].append({
             "key": key, "check": finding.check,
             "severity": finding.severity, "confidence": finding.confidence,
             "title": finding.title, "message": finding.message, "fix": finding.fix,
             "values": dict(finding.values), "values_text": dict(finding.values_text),
             "state": context.states.get(key, ""),
-            "faded": index is not None and bool(resolved) and not any(item.found for item in resolved),
+            "faded": faded,
             "problems": list(finding.problems),
             "bbox_nm": _bbox(board, drawn),
-            "disagree": _disagree(finding, draws),
-            "passes": _passes(draws),
+            "disagree": disagree,
+            "passes": passes,
+            "verdict": _verdict(index is not None, finding.severity, faded, draws, disagree, passes, rules),
+            "rules": rules,
             "mentions": mentions.find(index, finding.title, finding.message, finding.fix),
             "draws": draws,
         })

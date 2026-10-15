@@ -253,3 +253,33 @@ def test_make_run_needs_a_saved_board(fake_digest):
     with pytest.raises(NotAvailable):
         prompt.make_run(KlsFolder(""), TEXT, None, by_id(QUICK))
     assert fake_digest == []
+
+
+def test_request_says_how_findings_are_judged():
+    """The verdict rule names the measuring tools offered; checks nothing measures say so."""
+    text = prompt.request_md("1", "00000000", ANSWER, by_id(["decap.distance"]))
+    assert ("- KiLeidoscope gives each finding a verdict from the board: measured, refuted,\n"
+            "  mismatch or unchecked. Draw every finding with a measuring tool where one is\n"
+            "  offered (distance); highlight and label alone leave it unchecked.\n"
+            "- KiLeidoscope measures distance on the board itself.") in text
+    plain = prompt.request_md("1", "00000000", ANSWER, by_id(["fab.copper_balance"]))
+    assert "- KiLeidoscope cannot measure these checks yet: every finding of them is listed\n  as unchecked" in plain
+    assert "verdict from the board" not in plain and "KiLeidoscope measures" not in plain
+
+
+def test_request_says_what_rule_kileidoscope_applies():
+    text = prompt.request_md("1", "00000000", ANSWER, by_id(["decap.distance", "hs.stub"]))
+    assert ("  Draw with: distance, highlight, ghost\n  Checked by KiLeidoscope: the cap pad and the IC pin the distance "
+            "or arrow joins must be connected: the pin's net on one of the cap's pads\n- hs.stub:") in text
+    assert text.count("Checked by KiLeidoscope") == 1  # hs.stub carries no rule
+
+
+def test_request_asks_for_clean_checks_not_findings_to_show_work():
+    text = prompt.request_md("7", "5a222dbd", ANSWER, by_id(["decap.distance"]))
+    assert ("- Only report what you checked. A check you ran and found nothing wrong under\n"
+            '  goes in "clean": a clean check is a result, shown as checked, nothing found.\n') in text
+    assert "A finding is for a problem: never one per check to show work." in text
+    assert ('  "skipped": [ { "check": "<id>", "reason": "<why>" } ],\n'
+            '  "clean": [ "<check id run, nothing found>", { "check": "<id>", "note": "<optional: what you looked at>" } ]\n'
+            "}") in text
+    assert "do not report it; its check goes in clean." in text

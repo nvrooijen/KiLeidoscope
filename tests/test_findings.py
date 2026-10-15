@@ -227,7 +227,7 @@ def test_missing_targets_are_noted_and_the_rest_is_drawn(index):
                                     {"tool": "label", "at": "U99", "text": "here"}))
     highlight, label = result["findings"][0]["draws"]
     assert highlight["ok"] and highlight["targets"][1] == {"text": "U99", "found": False,
-                                                          "note": "U99 not found on board", "kind": ""}
+                                                          "note": "U99 not found on board", "kind": "", "net": ""}
     assert not label["ok"] and label["problem"] == "at: U99 not found on board"
     assert result["findings"][0]["faded"] is False
 
@@ -310,7 +310,7 @@ def test_a_ghost_at_a_point_is_that_point_not_the_copper_near_it(index):
                                     {"tool": "label", "at": "pt:15,10.4@F.Cu", "text": "here"}))
     ghost, label = result["findings"][0]["draws"]
     assert ghost["ok"] and ghost["points"] == [[15 * MM, 10_400_000, "F.Cu"]] and ghost["ids"] == []
-    assert ghost["targets"] == [{"text": "pt:15,10.4@F.Cu", "found": True, "note": "", "kind": "point"}]
+    assert ghost["targets"] == [{"text": "pt:15,10.4@F.Cu", "found": True, "note": "", "kind": "point", "net": ""}]
     assert label["targets"][0]["note"].startswith("snapped to track")  # other tools still snap, and say so
     assert label["ids"] == [TRACK] and not result["findings"][0]["faded"]
     alone = payload(index, finding({"tool": "ghost", "kind": "via", "at": "pt:15,10.4@F.Cu"}))
@@ -1205,7 +1205,7 @@ def test_a_moved_part_carries_its_pads_and_fits(index):
                                                                 [25.5 * MM, 10.5 * MM], [24.5 * MM, 10.5 * MM]]}]
     assert draw["polygon_nm"] == []  # one pad: no body
     assert draw["ids"] == ["f-c12"] and draw["targets"][0] == {"text": "pt:25,10@F.Cu", "found": True, "note": "",
-                                                              "kind": "point"}
+                                                              "kind": "point", "net": ""}
     same_net = ghost(index, kind="part", part="C12", at="pt:15,10.6@F.Cu")  # its pad on its own net's track
     assert same_net["fits"] is True
 
@@ -1433,3 +1433,120 @@ def test_ghost_kinds_are_framed_on_what_they_show(index):
     x0, y0, x1, y1 = result["findings"][0]["bbox_nm"]
     assert (x0, y0) == (2 * MM, 2 * MM) and (x1, y1) == (26 * MM, 30.5 * MM)  # the row, the route, both places of C12
     assert not result["findings"][0]["passes"] and result["findings"][0]["disagree"] == []
+
+
+def test_verdict_is_what_the_board_says(index, split):
+    """`verdict`: measured (a measuring draw, nothing against it), refuted (a problem whose
+    limits are all met; not an info finding), mismatch (a claim far off, a target not on the
+    board, a suggestion that does not fit), unchecked (marks only, or KiCad not connected)."""
+    def verdict(board, *draws, **fields):
+        return payload(board, finding(*draws, **fields))["findings"][0]["verdict"]
+    over = {"tool": "distance", "from": f"uuid:{VIA}", "to": f"uuid:{TRACK}", "limit": 5, "limit_is": "min"}  # 4.6 mm
+    met = dict(over, limit=4)
+    highlight = {"tool": "highlight", "targets": [f"uuid:{TRACK}"]}
+    assert verdict(index, over) == "measured"
+    assert verdict(index, over, highlight) == "measured"
+    assert verdict(index, met) == "refuted"
+    assert verdict(index, met, severity="info") == "measured"
+    assert verdict(index, over, values={"distance_mm": 9.0}) == "mismatch"  # claimed 9, measured 4.6
+    assert verdict(index, {"tool": "highlight", "targets": ["uuid:00000000"]}) == "mismatch"  # not on the board
+    assert verdict(index, over, {"tool": "label", "at": "uuid:00000000", "text": "x"}) == "mismatch"
+    assert verdict(index, highlight) == "unchecked"
+    assert verdict(index, {"tool": "bars", "unit": "mm", "items": [["a", 1.0, None]]}) == "unchecked"  # its own numbers
+    assert verdict(index) == "unchecked"
+    assert verdict(None, over) == "unchecked"
+    change = {"tool": "layer_change", "via": "uuid:via-lvds-0"}
+    assert verdict(split, change, {"tool": "ghost", "kind": "via", "at": "pt:20,19.2@F.Cu", "net": "GND"}) == "measured"
+    assert verdict(split, change, {"tool": "ghost", "kind": "via", "at": "pt:20,18.5@F.Cu", "net": "GND"}) == "mismatch"
+
+
+def ruled(board, rule, *draws, **fields):
+    """The payload's one finding with `rule` applied to its check."""
+    ctx = Context("file", {"4": STAMP}, STAMP, {}, {"test.check": (rule,)})
+    return payload(board, finding(*draws, **fields), ctx=ctx)["findings"][0]
+
+
+def test_decap_pair_rule_wants_the_cap_on_the_pins_net(index):
+    """The part with fewer pads is the cap; the pin's net must be on one of its pads."""
+    good = ruled(index, "decap_pair", {"tool": "distance", "from": "C12.1", "to": "U3.4", "limit": 2})
+    assert good["rules"] == [{"rule": "decap_pair", "ok": True, "text": "C12 and U3.4 share SIG"}]
+    assert good["verdict"] == "measured"  # 10 mm, over the 2 mm limit; the pair is right
+    bad = ruled(index, "decap_pair", {"tool": "distance", "from": "C12.1", "to": "U3.EP", "limit": 2})
+    assert bad["rules"] == [{"rule": "decap_pair", "ok": False, "text":
+                             "C12.1 is on SIG, U3.EP on GND: C12 does not connect to GND, not a decoupling pair"}]
+    assert bad["verdict"] == "mismatch"
+    swapped = ruled(index, "decap_pair", {"tool": "arrow", "from": "U3.EP", "to": "C12.1"})  # the IC named first
+    assert swapped["rules"][0]["ok"] is False and swapped["rules"][0]["text"].startswith("C12.1 is on SIG")
+    snapshot = board()
+    loose = replace(snapshot.pads[0], id="p-u3-7", number="7", net="unconnected-(U3-Pad7)")
+    spare = BoardIndex(replace(snapshot, pads=snapshot.pads + (loose,)))
+    assert ruled(spare, "decap_pair", {"tool": "distance", "from": "C12.1", "to": "U3.7"})["rules"][0] == {
+        "rule": "decap_pair", "ok": False, "text": "U3.7 is not connected: nothing to decouple"}
+    assert ruled(index, "decap_pair", {"tool": "distance", "from": "C12", "to": "U3"})["rules"] == []  # parts: no pads
+    assert ruled(index, "decap_pair", {"tool": "highlight", "targets": ["C12"]})["rules"] == []
+    assert ruled(index, "no_such_rule", {"tool": "highlight", "targets": ["C12"]})["rules"] == []
+    assert payload(None, finding({"tool": "distance", "from": "C12.1", "to": "U3.4"}),
+                   ctx=Context("file", {"4": STAMP}, STAMP, {}, {"test.check": ("decap_pair",)}))["findings"][0]["rules"] == []
+
+
+def test_same_net_rule(index):
+    same = ruled(index, "same_net", {"tool": "distance", "from": "U3.4", "to": "C12.1"})
+    assert same["rules"] == [{"rule": "same_net", "ok": True, "text": "U3.4 and C12.1 share SIG"}]
+    other = ruled(index, "same_net", {"tool": "clearance", "a": "U3.4", "b": "U3.EP"})
+    assert other["rules"] == [{"rule": "same_net", "ok": False, "text": "U3.4 is on SIG, U3.EP on GND: not the same net"}]
+    assert other["verdict"] == "mismatch"
+
+
+def test_signal_via_rule(split):
+    change = {"tool": "layer_change", "via": "uuid:via-lvds-0"}
+    assert ruled(split, "signal_via", change)["rules"] == [
+        {"rule": "signal_via", "ok": True, "text": "uuid:via-lvds-0 is on LVDS_P, no plane of its net next to it"}]
+    snapshot = split_board.board()  # a GND via in the GND fill of both planes
+    gnd_via = model.Via("via-gnd-2", "GND", (20 * MM, 10 * MM), 600_000, 300_000, "F.Cu", "B.Cu")
+    returned = BoardIndex(replace(snapshot, vias=snapshot.vias + (gnd_via,)))
+    plane_via = ruled(returned, "signal_via", {"tool": "layer_change", "via": "uuid:via-gnd-2"})
+    (rule,) = plane_via["rules"]
+    assert rule["rule"] == "signal_via" and rule["ok"] is False
+    assert rule["text"].startswith("uuid:via-gnd-2 is on GND, the plane on In") and \
+        rule["text"].endswith(" next to it: a return via, not a signal via")
+    assert plane_via["verdict"] == "mismatch"
+    assert ruled(split, "signal_via", {"tool": "highlight", "targets": ["uuid:via-lvds-0"]})["rules"] == []
+
+
+def test_diff_pair_rule(split):
+    def nets(*targets):
+        return ruled(split, "diff_pair", {"tool": "highlight", "targets": list(targets)})["rules"]
+    assert nets("net:LVDS_P", "net:LVDS_N@F.Cu") == [{"rule": "diff_pair", "ok": True, "text": "LVDS_P and LVDS_N are a pair"}]
+    assert nets("net:LVDS_P") == [{"rule": "diff_pair", "ok": True, "text": "LVDS_P pairs with LVDS_N"}]
+    assert nets("net:LVDS_P", "net:ETH_N") == [{"rule": "diff_pair", "ok": False, "text":
+                                                "LVDS_P and ETH_N are not a pair (LVDS_P pairs with LVDS_N)"}]
+    assert nets("net:GND") == [{"rule": "diff_pair", "ok": False, "text":
+                                "GND is not a differential pair net: no partner named like it (+/- or P/N)"}]
+    assert nets("net:LVDS_P", "net:LVDS_N", "net:ETH_P")[0]["text"] == "3 nets named (LVDS_P, LVDS_N, ETH_P): a pair is two"
+    assert nets("uuid:via-lvds-0") == []  # no net named as such
+
+
+def test_a_target_entry_names_its_net(index):
+    draw = only_draw(payload(index, finding({"tool": "distance", "from": "U3.4", "to": "U3"})))
+    assert [target["net"] for target in draw["targets"]] == ["SIG", ""]  # a pad's net; a part has none
+    draw = only_draw(payload(index, finding({"tool": "highlight", "targets": ["net:GND", f"uuid:{VIA}", "edge"]})))
+    assert [target["net"] for target in draw["targets"]] == ["GND", "SIG", ""]
+
+
+def test_clean_checks_are_kept_apart_from_findings(index):
+    """`clean`: check ids or {"check", "note"}, deduplicated, capped; a check with findings
+    stays a finding; the payload lists them beside `skipped`."""
+    found = parse(raw(finding({"tool": "highlight", "targets": ["U3"]}, check="decap.distance"),
+                      clean=["hs.stub", {"check": "dp.skew", "note": "both pairs within 0.1 mm"}, "hs.stub",
+                             {"check": "decap.distance"}, 7, {"note": "no check"}]))
+    assert found.clean == (("hs.stub", ""), ("dp.skew", "both pairs within 0.1 mm"))
+    assert [p for p in found.problems if "clean" in p] == [
+        "decap.distance is listed clean and has findings: the findings stand",
+        "a clean entry is not a check id or an object", "a clean entry names no check"]
+    assert parse(raw(clean="hs.stub")).clean == () and "clean is not a list" in parse(raw(clean="hs.stub")).problems
+    many = parse(raw(clean=[f"g.c{n}" for n in range(findings.MAX_CLEAN + 5)]))
+    assert len(many.clean) == findings.MAX_CLEAN and any("left out" in p for p in many.problems)
+    assert parse(raw()).clean == ()
+    result = resolve_file(found, index, context())
+    assert result["clean"] == [{"check": "hs.stub", "note": ""}, {"check": "dp.skew", "note": "both pairs within 0.1 mm"}]
+    assert findings.status_payload("none")["clean"] == []

@@ -31,6 +31,7 @@ class Check:
     v1: bool = False
     later: tuple[str, ...] = ()  # a note for us: tools not built yet that would draw it better; never read
     values: tuple[str, ...] = ()  # value keys a finding should give, unit in the suffix (findings.UNITS)
+    rules: tuple[str, ...] = ()  # findings.RULES the bridge applies to its findings; the prompt says so
 
 
 GROUPS = ("plane", "decap", "power", "dc", "hs", "dp", "emc", "analog", "thermal", "fab")
@@ -71,7 +72,7 @@ CATALOGUE: tuple[Check, ...] = (
           "with its net; KiLeidoscope checks it fits.",
           "signal via uuid, nearest return via uuid and distance_mm, both plane nets and layers",
           ("layer_change", "highlight", "distance", "ghost"), v1=True,
-          values=("distance_mm",)),
+          values=("distance_mm",), rules=("signal_via",)),
     Check("plane.edge_run", "plane", "Track past plane edge",
           "Find signal tracks that run along or past the edge of their reference plane, with no plane "
           "copper under part of their length. Draw return_path for the net and its plane.",
@@ -143,12 +144,12 @@ CATALOGUE: tuple[Check, ...] = (
           "the move as a ghost part (part, at, rotation); KiLeidoscope checks it fits.",
           "cap reference, IC pad, distance_mm, loop length_mm or area_mm2 if measured",
           ("distance", "highlight", "ghost"), v1=True, later=("decap_loop",),
-          values=("distance_mm", "length_mm", "area_mm2")),
+          values=("distance_mm", "length_mm", "area_mm2"), rules=("decap_pair",)),
     Check("decap.long_return", "decap", "Long cap return",
           "Find decoupling caps that reach the plane through a long track or a via shared with others.",
           "cap reference, via uuids, track length_mm",
           ("highlight", "distance", "label"), later=("decap_loop",),
-          values=("length_mm",)),
+          values=("length_mm",), rules=("decap_pair",)),
     Check("decap.missing", "decap", "Missing decoupling",
           "Find IC power pins with no decoupling cap nearby. Ghost a cap where one should be.",
           "IC pad",
@@ -157,11 +158,11 @@ CATALOGUE: tuple[Check, ...] = (
           "Find power pins whose track reaches the plane via before the cap, so the cap hangs off the "
           "side instead of sitting in the current path.",
           "IC pad, cap reference, via uuid",
-          ("highlight", "arrow", "label"), later=("decap_loop",)),
+          ("highlight", "arrow", "label"), later=("decap_loop",), rules=("decap_pair",)),
     Check("decap.shared_via", "decap", "Caps sharing a via",
           "Find several decoupling caps sharing one ground via.",
           "cap references, via uuid",
-          ("highlight", "arrow"), later=("decap_link",)),
+          ("highlight", "arrow"), later=("decap_link",), rules=("decap_pair",)),
     Check("decap.no_bulk", "decap", "No bulk capacitor",
           "Find regulator inputs or outputs with no bulk capacitor near them. Ghost a cap where one is missing.",
           "regulator reference and pad",
@@ -201,7 +202,7 @@ CATALOGUE: tuple[Check, ...] = (
           "better place for the cap is a ghost part (part, at).",
           "cap reference, IC pad, distance_mm",
           ("distance", "highlight", "ghost"),
-          values=("distance_mm",)),
+          values=("distance_mm",), rules=("decap_pair",)),
     # DC and current
     Check("dc.trace_width", "dc", "Power track width",
           "Find power tracks narrower than their current needs (state the current you assume) or than "
@@ -267,7 +268,7 @@ CATALOGUE: tuple[Check, ...] = (
           "A better place for the resistor is a ghost part (part, at).",
           "resistor reference, driver pad, distance_mm",
           ("distance", "highlight", "ghost"),
-          values=("distance_mm",)),
+          values=("distance_mm",), rules=("same_net",)),
     Check("hs.bus_match", "hs", "Bus length match",
           "Find bus members that are not length matched within tolerance (state the tolerance). Draw "
           "the lengths as bars (unit mm, limit on each: the longest allowed) next to the driver.",
@@ -291,32 +292,32 @@ CATALOGUE: tuple[Check, ...] = (
           "Draw the two lengths as bars (unit mm, or ps for skew).",
           "p and n nets, mismatch in length_mm, skew_ps if known",
           ("bars", "highlight", "label"), later=("skew",),
-          values=("length_mm", "skew_ps")),
+          values=("length_mm", "skew_ps"), rules=("diff_pair",)),
     Check("dp.uncoupled", "dp", "Uncoupled sections",
           "Find sections where a pair splits apart (around vias, pads or obstacles), often on one side only.",
           "p and n nets, where as net@layer~x,y",
-          ("highlight", "label"), later=("pair", "pair_gap")),
+          ("highlight", "label"), later=("pair", "pair_gap"), rules=("diff_pair",)),
     Check("dp.gap_change", "dp", "Pair gap change",
           "Find places where the spacing within a pair changes along the route.",
           "p and n nets, where, nominal and actual gap in distance_mm",
           ("highlight", "label", "distance"), later=("pair_gap",),
-          values=("distance_mm",)),
+          values=("distance_mm",), rules=("diff_pair",)),
     Check("dp.via_asymmetry", "dp", "Pair via asymmetry",
           "Find pair vias placed asymmetrically, or without return vias next to them at a layer change.",
           "via uuids",
-          ("highlight", "distance", "ghost"), later=("pair_vias",)),
+          ("highlight", "distance", "ghost"), later=("pair_vias",), rules=("diff_pair",)),
     Check("dp.ref_change", "dp", "Pair reference change",
           "Find pairs that cross a plane split or switch reference plane. Draw plane_gap with the "
           "plane and each net of the pair as crossing.",
           "pair nets, vias, both planes as net@layer",
-          ("plane_gap", "highlight", "area", "label"), later=("pair_vias",)),
+          ("plane_gap", "highlight", "area", "label"), later=("pair_vias",), rules=("diff_pair",)),
     Check("dp.outer_layer", "dp", "Pair on outer layer",
           "Find fast differential pairs routed mostly on an outer layer when an inner (stripline) layer "
           "is available. Highlight the pair on its outer layer (net@layer) and label the share routed "
           "outside.",
           "p and n nets as net@layer, share of length on outer layers in outer_pct",
           ("highlight", "label"),
-          values=("outer_pct",)),
+          values=("outer_pct",), rules=("diff_pair",)),
     # Connectors, ESD, EMC
     Check("emc.esd_far", "emc", "ESD part far",
           "Find ESD protection placed far from its connector, or after the track has fanned out. Draw "
@@ -324,7 +325,7 @@ CATALOGUE: tuple[Check, ...] = (
           "limit_is max).",
           "connector reference, ESD reference, signal net, length_mm or distance_mm",
           ("routed_length", "distance", "highlight"),
-          values=("length_mm", "distance_mm")),
+          values=("length_mm", "distance_mm"), rules=("same_net",)),
     Check("emc.esd_ground", "emc", "ESD ground path",
           "Find ESD parts whose ground return is thin or long. Draw the ground tracks with width, or "
           "routed_length to the ground pin when the return is a track (it does not follow pours).",
@@ -368,7 +369,7 @@ CATALOGUE: tuple[Check, ...] = (
           "Find crystals far from their IC, with long tracks, no ground ring or tracks beneath them.",
           "crystal reference, IC pads, distance_mm",
           ("distance", "isolate", "highlight"),
-          values=("distance_mm",)),
+          values=("distance_mm",), rules=("same_net",)),
     Check("analog.sensitive_near_noise", "analog", "Sensitive node near noise",
           "Find sensitive nodes (ADC reference, op-amp inputs) routed beside a noisy track. Draw the "
           "gap as a clearance between the two, with required if you have a rule.",

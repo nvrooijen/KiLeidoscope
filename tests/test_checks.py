@@ -94,3 +94,19 @@ def test_by_id_keeps_catalogue_order_and_drops_unknown_ids():
     found = by_id(["decap.distance", "nope.x", "plane.gap_crossing", "decap.distance"])
     assert [check.id for check in found] == ["plane.gap_crossing", "decap.distance"]
     assert by_id("hs.stub")[0].id == "hs.stub" and by_id([]) == ()
+
+
+def test_rules_are_the_bridges_and_sit_on_the_pair_checks():
+    """Every rule a check names exists in findings.RULES (and has prompt text); the pair checks carry them."""
+    for check in CATALOGUE:
+        for rule in check.rules:
+            assert rule in findings.RULES and rule in findings.RULE_TEXT, (check.id, rule)
+    by_rule = {}
+    for check in CATALOGUE:
+        for rule in check.rules:
+            by_rule.setdefault(rule, []).append(check.id)
+    assert by_rule == {
+        "decap_pair": ["decap.distance", "decap.long_return", "decap.via_first", "decap.shared_via", "power.boot_cap_far"],
+        "same_net": ["hs.termination_far", "emc.esd_far", "analog.crystal"],
+        "signal_via": ["plane.layer_change_no_return"],
+        "diff_pair": ["dp.skew", "dp.uncoupled", "dp.gap_change", "dp.via_asymmetry", "dp.ref_change", "dp.outer_layer"]}
