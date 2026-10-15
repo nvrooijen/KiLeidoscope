@@ -8,7 +8,9 @@ the copper thickness toggle), so it always sits on the copper as drawn now.
 - highlight, area: their items as KiCad's selection is highlighted (highlight.py kind
   "finding"), parts boxed, in the severity's colour; an area given as a polygon instead
   of items: a translucent n-gon just out from its layer.
-- isolate: as highlight, and X-ray on (focus.py) whatever the tick box says.
+- isolate: as highlight, and X-ray mode ticked (focus.py) while it is shown, unticked
+  again when it goes (when the box was ticked for it); unticking it leaves X-ray. A
+  reference-plane finding (check "plane.…") that draws anything gets X-ray the same way.
 - label: near-white text on a dark plate, the severity's icon at its left (a red circle
   "!", a yellow triangle "!", a blue circle "i"), facing the view. A Track To constraint
   turns every label to one empty, "KLS finding eye", which follows the first 3D view's
@@ -184,6 +186,30 @@ def item_ids(finding, tools=None):
     return list(ids)
 
 
+def xray_wanted(finding, draws):
+    """A finding shown in X-ray: one with an isolate draw, or a reference-plane finding
+    (check "plane.…": the plane under the copper is the point) that draws anything (a
+    plane gap lights no items of its own: its edges and spans are the finding's objects)."""
+    return finding is not None and (any(draw["tool"] == "isolate" for draw in draws) or
+                                    (str(finding.get("check") or "").startswith("plane.") and bool(draws)))
+
+
+def _follow_xray(wanted):
+    """X-ray mode ticked when a finding that wants it is shown (once per finding: unticked
+    by the user, it stays off for it), and unticked when it goes if it was ticked for it."""
+    scene = bpy.context.scene
+    if wanted and board.xray_for_finding != board.findings_shown:
+        board.xray_for_finding = board.findings_shown
+        if not getattr(scene, "kileido_focus", True):
+            board.xray_ticked = True
+            scene.kileido_focus = True
+    elif not wanted and board.xray_for_finding is not None:
+        board.xray_for_finding = None
+        if board.xray_ticked:
+            board.xray_ticked = False
+            scene.kileido_focus = False
+
+
 def highlighted(finding):
     """Item ids a finding's highlight shows: its highlight, isolate and area draws' items,
     and a layer change's via (its first id; not its return vias, which are ringed)."""
@@ -194,9 +220,16 @@ def highlighted(finding):
 
 
 def confirmed(finding):
-    """False when KiLeidoscope could not confirm a finding: its items gone from the board,
-    a target or a draw not found, a value the bridge measured differently, a problem whose
-    every measurement meets its limit, or a suggestion (a ghost) that does not fit."""
+    """False when KiLeidoscope could not confirm a finding: the bridge's `verdict` is refuted
+    or mismatch. Without a verdict (an older payload) it is judged here from the parts: its
+    items gone from the board, a target or a draw not found, a value the bridge measured
+    differently, a problem whose every measurement meets its limit, or a suggestion (a
+    ghost) that does not fit."""
+    verdict = finding.get("verdict")
+    if verdict in ("measured", "unchecked"):
+        return True
+    if verdict in ("refuted", "mismatch"):
+        return False
     if finding.get("faded") or finding.get("disagree") or refuted(finding):
         return False
     if any(draw.get("fits") is False for draw in finding.get("draws") or ()):
@@ -334,7 +367,7 @@ def refresh():
         board.findings_shown = ("", "")
     draws = [draw for draw in (finding or {}).get("draws", ()) if draw.get("ok")]
     chosen = highlighted(finding) if finding else set()
-    isolate = any(draw["tool"] == "isolate" for draw in draws)
+    isolate = xray_wanted(finding, draws)
     if finding is not None and board.finding_severity != (finding.get("severity") or "warning"):
         board.finding_severity = finding.get("severity") or "warning"
         if board.materials:
@@ -343,6 +376,7 @@ def refresh():
         board.highlight["finding"], board.findings_isolate = chosen, isolate
         highlight.refresh()
         focus.refresh()
+    _follow_xray(isolate)
     _state["folded"] = fold.folded()
     keep = {layer for draw in draws if draw["tool"] == "layers" for layer in draw.get("layers") or ()}
     layers.set_filter(keep if finding is not None and not _state["folded"] else None)

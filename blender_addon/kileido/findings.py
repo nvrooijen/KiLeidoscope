@@ -33,12 +33,22 @@ TABS = {"drc": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS
 MENTION_ICONS = {"part": "MESH_CUBE", "pad": "MESH_PLANE", "net": "LINKED", "via": "RADIOBUT_OFF"}  # by kind
 SEVERITY_ICONS = {"error": "ERROR", "warning": "ERROR", "info": "INFO", "unknown": "QUESTION"}  # without previews
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+SEVERITY_FILTERS = (("error", "kileido_findings_errors", "Errors"),
+                    ("warning", "kileido_findings_warnings", "Warnings"),
+                    ("info", "kileido_findings_info", "Info"))  # (severity, scene toggle, its button), as KiCad's DRC
 FOLD_PAST = 20  # a source with more findings starts with its groups folded
 INDENT = 0.04  # of the column's width: an opened group's rows indented
 PROBLEM_LINES = 3  # a file's problems shown; the rest counted
 UNITS = (("_mm2", "mm²"), ("_cm2", "cm²"), ("_mm", "mm"), ("_ps", "ps"), ("_mv", "mV"),
          ("_a", "A"), ("_pct", "%"))  # longest first; as the bridge's findings.UNITS
 STATES = {"confirm": "confirmed", "dismiss": "dismissed"}
+VERDICTS = ("measured", "refuted", "mismatch", "unchecked")  # the bridge's `verdict`, in the order the header counts
+VERDICT_LINES = {  # the detail's first line per verdict; refuted has its own line under the confidence
+    "measured": ("Measured on the board: KiLeidoscope found what this points at, and nothing contradicts it",
+                 "DRIVER_DISTANCE"),
+    "mismatch": ("Mismatch with the board: see below what KiLeidoscope found differently", "ERROR"),
+    "unchecked": ("Unchecked: nothing here was measured, the LLM's word only", "INFO")}
+PAIR_TOOLS = ("distance", "clearance", "arrow")  # two ends: the detail names each end's net
 MEASURED = ("distance", "clearance", "edge_gap", "width", "routed_length", "layer_change", "plane_gap",
             "return_path", "stitching", "stub")  # a measured value against a limit
 ISLAND_LINES = 16  # plane pieces listed; the rest counted
@@ -49,6 +59,9 @@ NOTE_TOGGLES = (  # (scene property, the sentence sent): ready-made notes for th
 NOTES_MAX = 500  # characters the bridge takes
 NOTES_LINES = 8  # lines the bridge takes
 NOTES_TAG = "notes"  # the Notes sub-section opened (kileido_findings_open)
+CHECKS_TAG = "checks"  # the prompt's check groups and notes opened
+TOOL_CUTS = (" (", " with ", ";", ",", ":")  # the LLM's tool name ends at the first of these in the header
+TOOL_CHARS = 32  # a longer name is cut with "…" (the whole text is under About this run)
 STALE_S = 300  # no word from the LLM for this long: it may have stalled, or wait for the user
 PROGRESS_TICK_S = 1.0  # the ages redrawn this often while the LLM works
 MAKING = "\n"  # board.prompt_wait once the bridge says it is making the prompt asked for (never a run id)
@@ -259,36 +272,58 @@ def catalogue():
     return (board.findings or {}).get("catalogue") or []
 
 
+def default_checks():
+    """The checks ticked while nothing is stored: those KiLeidoscope can measure ("measurable"),
+    so every finding can be judged; the quick ones ("v1") from a bridge without that key."""
+    rows = catalogue()
+    if any("measurable" in row for row in rows):
+        return [row for row in rows if row.get("measurable")]
+    return [row for row in rows if row.get("v1")]
+
+
 def chosen(scene):
-    """The ticked check ids: the scene's list, or the quick checks (the catalogue's "v1") while it is ""."""
+    """The ticked check ids: the scene's list, or `default_checks` while it is ""."""
     stored = scene.kileido_prompt_checks
     if not stored:
-        return {row.get("id") for row in catalogue() if row.get("v1")}
+        return {row.get("id") for row in default_checks()}
     return set(filter(None, stored.split("\n")))
 
 
 def open_group(scene, source_name, check):
     """Unfold a check's group in a source's list (a long list starts with its groups folded)."""
-    visible = _visible(scene, source(source_name).get("findings") or ())
+    visible = _visible(scene, source(source_name).get("findings") or (), source_name)
     tag = f"{source_name}:{check}"
     toggled = _toggled(scene)
     toggled = toggled | {tag} if len(visible) > FOLD_PAST else toggled - {tag}  # toggled: the other way
     scene.kileido_findings_open = "\n".join(sorted(toggled))
 
 
-def dismissed_toggled(scene):
-    """"Show dismissed" switched: a shown finding the list now hides is hidden with it. The
-    list redraws on its own; nothing drawn changes otherwise."""
-    if scene.kileido_findings_dismissed:
-        return
+def passes(scene, source_name, finding):
+    """The filter row lets a finding through: its severity's toggle on (no severity: a
+    warning), and an LLM finding the bridge could not measure only while Unchecked is on;
+    KiCad's own findings are never held back for that. Dismissed is the caller's."""
+    severity = finding.get("severity") if finding.get("severity") in SEVERITY_ORDER else "warning"
+    toggle = next(name for kind, name, _ in SEVERITY_FILTERS if kind == severity)
+    return (getattr(scene, toggle, True) and
+            (getattr(scene, "kileido_markers_unchecked", True) or source_name == "drc" or
+             finding.get("verdict") != "unchecked"))
+
+
+def filter_toggled(scene):
+    """A filter toggle switched (a severity, Unchecked, Show dismissed): a shown finding the
+    list now hides is hidden with it, and the markers follow. The list redraws on its own."""
+    from . import findings_markers  # it imports this module
+    findings_markers.invalidate()
     finding = findings_draw.shown_finding()
-    if finding is not None and finding.get("state") == "dismissed":
+    name = board.findings_shown[0]
+    if finding is not None and not any(shown is finding for shown in
+                                       _visible(scene, source(name).get("findings") or (), name)):
         findings_draw.clear()
         hole_cut.restore(scene)
 
 
 def choose(scene, ids):
-    """Tick exactly these checks ("\n" holds none: "" would be Quick again)."""
+    """Tick exactly these checks ("\n" holds none: "" would be the default, Measured, again)."""
     scene.kileido_prompt_checks = "\n".join(sorted(ids)) or "\n"
 
 
@@ -314,9 +349,11 @@ def _toggled(scene):
     return set(filter(None, scene.kileido_findings_open.split("\n")))
 
 
-def _visible(scene, findings):
-    """The findings the list shows: the dismissed ones too only with Show dismissed."""
-    return [finding for finding in findings if scene.kileido_findings_dismissed or finding.get("state") != "dismissed"]
+def _visible(scene, findings, source_name):
+    """The findings the list shows: those the filter row lets through (`passes`), the
+    dismissed ones too only with Show dismissed."""
+    return [finding for finding in findings if (scene.kileido_findings_dismissed or finding.get("state") != "dismissed")
+            and passes(scene, source_name, finding)]
 
 
 def _indented(layout, align=False):
@@ -364,12 +401,10 @@ def draw_column(layout, scene, wrap, tab):
                      icon="TIME" if running else "PLAY")
         if drc.get("state") == "failed":
             _lines(box, wrap, f"DRC failed: {drc.get('error') or 'no report'}", "ERROR")
-    box.prop(scene, "kileido_findings_dismissed", text="Show dismissed")
-    markers = box.row(align=True)
-    markers.prop(scene, "kileido_markers", text="Markers")
-    level = markers.row(align=True)
-    level.active = scene.kileido_markers
-    level.prop(scene, "kileido_markers_level", expand=True)
+    _draw_filter(box, scene, tab)
+    row = box.row()
+    row.prop(scene, "kileido_findings_dismissed", text="Show dismissed")
+    row.prop(scene, "kileido_markers", text="Markers")
     if tab_state(tab) == "on" and fold.folded():
         _lines(box, wrap, "The drawing is hidden while the board is folded: set Fold to 0", "INFO")
     if tab == "LLM":
@@ -387,38 +422,46 @@ def draw_column(layout, scene, wrap, tab):
                f"No findings yet. Copy the prompt into your LLM tool; its answer lands in {folder}")
 
 
+def _draw_filter(box, scene, tab):
+    """The filter row, as KiCad's DRC dialog: a toggle per severity with its count in this
+    tab (dismissed ones left out), and Unchecked on the LLM tab. The list and the markers
+    both follow it."""
+    counts = {kind: 0 for kind, _, _ in SEVERITY_FILTERS}
+    for name, _ in SOURCES:
+        if TABS[name] != tab:
+            continue
+        for finding in source(name).get("findings") or ():
+            if finding.get("state") != "dismissed":
+                severity = finding.get("severity")
+                counts[severity if severity in counts else "warning"] += 1
+    row = box.row(align=True)
+    for kind, toggle, text in SEVERITY_FILTERS:
+        row.prop(scene, toggle, text=f"{text} ({counts[kind]})", toggle=True, **severity_icon(kind))
+    if tab == "LLM":  # KiCad's own findings carry no verdict to filter on
+        row.prop(scene, "kileido_markers_unchecked", text="Unchecked", toggle=True)
+
+
 def _draw_prompt(layout, scene, wrap, found, linked):
-    """The LLM prompt box: checks by group (folded), Quick / All, notes (folded), Copy prompt
-    and its state, then how far the LLM is."""
+    """The LLM prompt box: Quick / Measured / All, then one fold, "Checks (37 of 64)", holding
+    the checks by group (each folded) and the notes (folded); Copy prompt and its state, then
+    how far the LLM is."""
     rows = catalogue()
     ticked = chosen(scene) & {row.get("id") for row in rows}
     prompt = found.get("prompt") or {}
     making = prompt.get("state") == "making"
     box = layout.box()
     head = box.row(align=True)
-    head.label(text=f"LLM prompt: {len(ticked)} of {len(rows)} checks" if rows else "LLM prompt")
-    for preset, text in (("quick", "Quick"), ("all", "All")):
+    for preset, text in (("quick", "Quick"), ("measured", "Measured"), ("all", "All")):
         head.operator(KILEIDO_OT_prompt_preset.bl_idname, text=text).preset = preset
     if not rows:
         _lines(box, wrap, "The checks come from the bridge once KiCad is connected", "INFO")
     toggled = _toggled(scene)
-    titles = {group.get("id"): group.get("title") or group.get("id") for group in found.get("groups") or ()}
-    for group in dict.fromkeys([*titles, *(row.get("group") for row in rows)]):  # the bridge's order
-        members = [row for row in rows if row.get("group") == group]
-        if not members:
-            continue
-        tag = f"prompt:{group}"
-        opened = tag in toggled  # folded until opened
-        count = sum(1 for row in members if row.get("id") in ticked)
-        _fold_button(box, f"{titles.get(group) or group} ({count}/{len(members)})", tag, opened)
-        if opened:
-            column = _indented(box, align=True)
-            for row in members:
-                text = (wrap(row.get("title") or row.get("id") or "?") or ["?"])[0]
-                operator = column.operator(KILEIDO_OT_prompt_check.bl_idname, text=text, emboss=False,
-                                           icon="CHECKBOX_HLT" if row.get("id") in ticked else "CHECKBOX_DEHLT")
-                operator.check = row.get("id") or ""
-    _draw_notes(box, scene, toggled)
+    noted = notes_count(scene)
+    opened = CHECKS_TAG in toggled
+    _fold_button(box, f"Checks ({len(ticked)} of {len(rows)})" +
+                 (f", {noted} note{'' if noted == 1 else 's'}" if noted else ""), CHECKS_TAG, opened)
+    if opened:
+        _draw_checks(_indented(box), scene, wrap, found, rows, ticked, toggled)
     row = box.row()
     row.enabled = linked and found.get("status") != "unsaved" and not making and bool(ticked)
     row.operator(KILEIDO_OT_findings_prompt.bl_idname, text="Making prompt…" if making else "Copy prompt",
@@ -441,6 +484,33 @@ def _draw_prompt(layout, scene, wrap, found, linked):
                     _lines(inner, wrap, line)
                 else:
                     inner.label(text="")
+
+
+def _draw_checks(box, scene, wrap, found, rows, ticked, toggled):
+    """Inside the Checks fold: the checks by group, each folded until opened, then the notes."""
+    titles = {group.get("id"): group.get("title") or group.get("id") for group in found.get("groups") or ()}
+    for group in dict.fromkeys([*titles, *(row.get("group") for row in rows)]):  # the bridge's order
+        members = [row for row in rows if row.get("group") == group]
+        if not members:
+            continue
+        tag = f"prompt:{group}"
+        opened = tag in toggled  # folded until opened
+        count = sum(1 for row in members if row.get("id") in ticked)
+        _fold_button(box, f"{titles.get(group) or group} ({count}/{len(members)})", tag, opened)
+        if opened:
+            column = _indented(box, align=True)
+            for row in members:
+                text = (wrap(row.get("title") or row.get("id") or "?") or ["?"])[0]
+                line = column.row(align=True)
+                operator = line.operator(KILEIDO_OT_prompt_check.bl_idname, text=text, emboss=False,
+                                         icon="CHECKBOX_HLT" if row.get("id") in ticked else "CHECKBOX_DEHLT")
+                operator.check = row.get("id") or ""
+                if row.get("measurable") is False:  # no tool measures it: its findings come back unchecked
+                    note = line.row(align=True)
+                    note.active = False
+                    note.alignment = "RIGHT"
+                    note.label(text="unchecked")
+    _draw_notes(box, scene, toggled)
 
 
 def _draw_notes(box, scene, toggled):
@@ -470,18 +540,40 @@ def _draw_progress(box, wrap, found):
             _lines(box, wrap, text, icon)
 
 
+def short_tool(tool):
+    """The LLM's tool name for the header: "Claude Code (claude-opus-5-5) with custom Python
+    …" -> "Claude Code" (up to the first of TOOL_CUTS), at most TOOL_CHARS."""
+    cut = min((tool.find(mark) for mark in TOOL_CUTS if tool.find(mark) > 0), default=len(tool))
+    name = tool[:cut].strip()
+    return name if len(name) <= TOOL_CHARS else name[:TOOL_CHARS - 1].rstrip() + "…"
+
+
 def _source_line(name, title, data, findings):
-    """The header ("KiCad DRC 10.0.6, run 3: 34 findings, 2 dismissed") and the notes the
-    bridge put after the DRC tool's name ("2 library notices left out", "saved file,
-    unsaved edits not checked"), each shown on a line of its own under it."""
+    """The header ("KiCad DRC 10.0.6, run 3: 34 findings, 2 dismissed"; an LLM's tool by its
+    short name, `short_tool`), the lines under it (the notes the bridge put after the DRC
+    tool's name: "2 library notices left out", "saved file, unsaved edits not checked"), and
+    for the other sources About this run's lines: the tool's whole text when cut, and the
+    verdict counts ("Measured 18, refuted 9, mismatch 4, unchecked 26")."""
     dismissed = sum(1 for finding in findings if finding.get("state") == "dismissed")
-    tool = data.get("tool") or title
-    head, *remarks = [part.strip() for part in tool.split(";")] if name == "drc" else [tool]
+    tool = (data.get("tool") or title).strip()
+    about = []
+    if name == "drc":
+        head, *remarks = [part.strip() for part in tool.split(";")]
+    else:  # KiCad's own findings need no verdict
+        head, remarks = short_tool(tool), []
+        if head != tool:
+            about.append(tool)
+        counts = [(verdict, sum(1 for finding in findings if finding.get("verdict") == verdict))
+                  for verdict in VERDICTS]
+        line = ", ".join(f"{verdict} {count}" for verdict, count in counts if count)
+        if line:
+            about.append(line[:1].upper() + line[1:])
     head = head or title
     if data.get("run"):
         head += f", run {data['run']}"
     text = f"{head}: {len(findings)} finding{'' if len(findings) == 1 else 's'}"
-    return text + (f", {dismissed} dismissed" if dismissed else ""), [remark for remark in remarks if remark]
+    remarks = [remark for remark in remarks if remark]
+    return text + (f", {dismissed} dismissed" if dismissed else ""), remarks, about
 
 
 def origin_line(data):
@@ -501,7 +593,7 @@ def origin_line(data):
 def _draw_source(layout, scene, wrap, name, title, data):
     findings = data.get("findings") or []
     box = layout.box()
-    line, remarks = _source_line(name, title, data, findings)
+    line, remarks, about = _source_line(name, title, data, findings)
     _lines(box, wrap, line)
     origin = origin_line(data)
     if origin:
@@ -520,7 +612,7 @@ def _draw_source(layout, scene, wrap, name, title, data):
         _lines(box, wrap, problem, "INFO")
     if len(problems) > PROBLEM_LINES:
         box.label(text=f"… and {len(problems) - PROBLEM_LINES} more problems in the file", icon="BLANK1")
-    visible = _visible(scene, findings)
+    visible = _visible(scene, findings, name)
     groups = {}
     for finding in visible:  # one check together, in the order they come
         groups.setdefault(finding.get("check") or "other", []).append(finding)
@@ -529,6 +621,7 @@ def _draw_source(layout, scene, wrap, name, title, data):
     folded = len(visible) > FOLD_PAST
     left_out = data.get("left_out") or {}  # check -> findings the bridge kept back (the worst are shown)
     for check, members in ordered:
+        members = sorted(members, key=lambda f: f.get("verdict") == "unchecked")  # the unchecked last
         more = left_out.get(check, 0)
         if len(members) == 1 and not more:
             _draw_finding(box, wrap, name, members[0])
@@ -548,16 +641,37 @@ def _draw_source(layout, scene, wrap, name, title, data):
                 where = "all in KiCad's DRC dialog" if name == "drc" else "all in the findings file"
                 _lines(column, wrap, f"{more:,} more not shown: {where}", "INFO")
     skipped = data.get("skipped") or []
-    if skipped:
-        inner = box.box()
-        inner.label(text=f"Not checked ({len(skipped)})", icon="INFO")
-        for entry in skipped:
-            _lines(inner, wrap, f"{entry.get('check') or '?'}: {entry.get('reason') or ''}".rstrip(": "))
+    if skipped:  # the checks the LLM left out, with why: folded
+        tag = f"{name}:skipped"
+        opened = tag in toggled
+        _fold_button(box, f"Not checked ({len(skipped)})", tag, opened)
+        if opened:
+            column = _indented(box)
+            for entry in skipped:
+                _lines(column, wrap, f"{entry.get('check') or '?'}: {entry.get('reason') or ''}".rstrip(": "))
+    clean = data.get("clean") or []
+    if clean:  # the checks the LLM ran and found nothing under: a result too, folded
+        tag = f"{name}:clean"
+        opened = tag in toggled
+        _fold_button(box, f"Checked, nothing found ({len(clean)})", tag, opened)
+        if opened:
+            column = _indented(box)
+            for entry in clean:
+                _lines(column, wrap, f"{entry.get('check') or '?'}: {entry.get('note') or ''}".rstrip(": "),
+                       "CHECKMARK")
+    if about:  # the LLM's whole tool text and the verdict counts: folded
+        tag = f"{name}:about"
+        opened = tag in toggled
+        _fold_button(box, "About this run", tag, opened)
+        if opened:
+            column = _indented(box)
+            for text in about:
+                _lines(column, wrap, text)
 
 
 def _draw_finding(layout, wrap, source_name, finding):
-    """One row: severity, title (shows it), select in KiCad, confirm, dismiss; the shown one
-    opens below with everything the file says about it."""
+    """One row: severity, title (shows it), the verdict (LLM tab), select in KiCad, confirm,
+    dismiss; the shown one opens below with everything the file says about it."""
     key = finding.get("key", "")
     state = finding.get("state", "")
     shown = board.findings_shown == (source_name, key)
@@ -569,6 +683,12 @@ def _draw_finding(layout, wrap, source_name, finding):
     text = (wrap(finding.get("title") or finding.get("check") or "?") or ["?"])[0]
     operator = title.operator(KILEIDO_OT_finding_show.bl_idname, text=text, emboss=shown, depress=shown, **icon)
     operator.source, operator.key = source_name, key
+    verdict = finding.get("verdict")
+    if source_name != "drc" and verdict in VERDICTS:  # the board's word on it, in a word; greyed: unchecked
+        word = row.row(align=True)
+        word.active = verdict != "unchecked"
+        word.alignment = "RIGHT"
+        word.label(text=verdict)
     buttons = row.row(align=True)
     operator = buttons.operator(KILEIDO_OT_finding_kicad.bl_idname, text="", icon="RESTRICT_SELECT_OFF", emboss=False)
     operator.source, operator.key = source_name, key
@@ -646,12 +766,19 @@ def _draw_mentions(box, source_name, finding):
 
 
 def _draw_detail(box, wrap, source_name, finding):
+    if source_name != "drc" and finding.get("verdict") in VERDICT_LINES:
+        _lines(box, wrap, *VERDICT_LINES[finding["verdict"]])
+    for rule in finding.get("rules") or ():  # the check's rules the bridge applied: a wrong pair, a non-pair
+        line = box.column()
+        line.alert = rule.get("ok") is False
+        _lines(line, wrap, rule.get("text") or rule.get("rule") or "?",
+               "ERROR" if rule.get("ok") is False else "CHECKMARK" if rule.get("ok") else "INFO")
     for label, text in (("", finding.get("message")), ("Fix: ", finding.get("fix"))):
         if text:
             _lines(box, wrap, label + text)
     _draw_mentions(box, source_name, finding)
     if finding.get("confidence"):
-        box.label(text=f"Confidence: {finding['confidence']}")
+        box.label(text=f"LLM confidence: {finding['confidence']}")
     if findings_draw.refuted(finding):
         _lines(box, wrap, "Measured within the limit: the measurement does not support this finding", "CHECKMARK")
     disagree = {entry.get("key"): entry for entry in finding.get("disagree") or ()}
@@ -704,6 +831,10 @@ def _draw_facts(box, wrap, draw):
         line.alert = bool(draw.get("over"))
         line.label(text=f"{draw['what']}: {measured}" if draw.get("what") else f"Measured {measured}",
                    icon="DRIVER_DISTANCE")
+    if tool in PAIR_TOOLS and any(target.get("net") for target in draw.get("targets") or ()):
+        ends = [f"{target.get('text')} ({target['net']})" if target.get("net") else str(target.get("text", ""))
+                for target in draw["targets"] if target.get("found", True)]
+        _lines(box, wrap, f"Ends: {', '.join(ends)}", "LINKED")
     if tool == "layer_change" and len(draw.get("points") or ()) < 2:  # no return via
         line = box.row()
         line.alert = True
@@ -741,8 +872,7 @@ class KILEIDO_OT_finding_show(bpy.types.Operator):
     def execute(self, context):
         from . import live
         if board.findings_shown == (self.source, self.key):
-            findings_draw.clear()
-            hole_cut.restore()
+            hide_shown()
             if live.linked():
                 live.request_select([], False)  # hidden: KiCad's selection of it goes too
             return {"FINISHED"}
@@ -761,6 +891,16 @@ class KILEIDO_OT_finding_show(bpy.types.Operator):
         if fold.folded():
             self.report({"INFO"}, "KiLeidoscope: the drawing shows on the flat board (Fold at 0)")
         return {"FINISHED"}
+
+
+def hide_shown():
+    """Hide the shown finding, if any (its drawing, highlight, X-ray and cut go with it):
+    a click on its title again, or on bare board. True when one was shown."""
+    if findings_draw.shown_finding() is None:
+        return False
+    findings_draw.clear()
+    hole_cut.restore()
+    return True
 
 
 def frame(finding):
@@ -936,7 +1076,10 @@ class KILEIDO_OT_prompt_check(bpy.types.Operator):
     @classmethod
     def description(cls, context, properties):
         row = next((row for row in catalogue() if row.get("id") == properties.check), {})
-        return f"{row.get('title') or properties.check} ({properties.check}): ask the LLM to check it, or not"
+        text = f"{row.get('title') or properties.check} ({properties.check}): ask the LLM to check it, or not"
+        if row.get("measurable") is False:
+            text += ". KiLeidoscope cannot measure this one yet: its findings are listed as unchecked"
+        return text
 
     def execute(self, context):
         choose(context.scene, chosen(context.scene) ^ {self.check})
@@ -948,18 +1091,23 @@ class KILEIDO_OT_prompt_preset(bpy.types.Operator):
     bl_label = "Checks preset"
     bl_options = {"INTERNAL"}
 
-    preset: EnumProperty(items=(("quick", "Quick", "The quick checks: a short review"),
+    preset: EnumProperty(items=(("quick", "Quick", "The three quick checks: a short review"),
+                                ("measured", "Measured", "The checks KiLeidoscope can measure (the default)"),
                                 ("all", "All", "Every check in the catalogue")))
 
     @classmethod
     def description(cls, context, properties):
         if properties.preset == "quick":
-            return "Tick the quick checks only (a short review)"
-        return "Tick every check (a long review: the LLM takes much longer)"
+            return "Tick the three quick checks only (a short review)"
+        if properties.preset == "measured":
+            return "Tick the checks KiLeidoscope can measure, so every finding can be judged (the default)"
+        return "Tick every check, the ones nothing measures too (a long review: the LLM takes much longer)"
 
     def execute(self, context):
-        if self.preset == "quick":
-            context.scene.kileido_prompt_checks = ""
+        if self.preset == "measured":
+            context.scene.kileido_prompt_checks = ""  # the default
+        elif self.preset == "quick":
+            choose(context.scene, {row.get("id") for row in catalogue() if row.get("v1")})
         else:
             choose(context.scene, {row.get("id") for row in catalogue()})
         return {"FINISHED"}
@@ -978,6 +1126,10 @@ class KILEIDO_OT_findings_group(bpy.types.Operator):
             return "Show or hide the checks of this group"
         if properties.group == NOTES_TAG:
             return "Show or hide the notes sent to the LLM with the prompt"
+        if properties.group == CHECKS_TAG:
+            return "Show or hide the checks the prompt asks for, by group, and the notes"
+        if properties.group.endswith((":skipped", ":clean", ":about")):
+            return "Show or hide these lines"
         return "Show or hide the findings of this check"
 
     def execute(self, context):

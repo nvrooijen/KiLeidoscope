@@ -1,6 +1,7 @@
 """X-ray mode (panel name; "focus" in code): with a KiCad selection highlighted, a
 finding shown from the DRC or LLM column, or a malformed board outline drawn red, everything
-else fades. A finding with an isolate draw fades it with the tick box off too.
+else fades. A finding that wants X-ray (an isolate draw, a reference-plane check) ticks the
+box when shown and unticks it when hidden; unticking it leaves X-ray with the finding shown.
 
 One shared shader group ("KLS_Focus_v2") sits between each material's surface and
 its output. Its "Amount" value is set once for all materials: 0 passes the
@@ -119,7 +120,7 @@ def refresh():
     global _active
     highlighted = (any(board.highlight.get(kind) for kind in ("selected", "pair", "finding")) or
                    bool(board.highlight_components.get("footprints")) or board.outline_problem)
-    _active = bool(getattr(bpy.context.scene, "kileido_focus", False) and highlighted) or board.findings_isolate
+    _active = bool(getattr(bpy.context.scene, "kileido_focus", False) and (highlighted or board.findings_isolate))
     for material in shown_materials():
         add_to(material)
         set_render_method(material)

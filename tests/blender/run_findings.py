@@ -184,9 +184,11 @@ def frame(index, drop=(), extra=()):
                          "drc": {"state": "idle", "error": "", "run": ""}, "sources": {"drc": drc, "file": payload}}}
 
 
-CATALOGUE = [{"id": "plane.gap_crossing", "group": "plane", "title": "Signal crossing a plane gap", "v1": True},
-             {"id": "decap.distance", "group": "decap", "title": "Decoupling cap far from its pin", "v1": True},
-             {"id": "hs.stub", "group": "hs", "title": "Stubs on fast nets", "v1": False}]
+CATALOGUE = [{"id": "plane.gap_crossing", "group": "plane", "title": "Signal crossing a plane gap", "v1": True,
+              "measurable": True},
+             {"id": "decap.distance", "group": "decap", "title": "Decoupling cap far from its pin", "v1": True,
+              "measurable": True},
+             {"id": "hs.stub", "group": "hs", "title": "Stubs on fast nets", "v1": False, "measurable": False}]
 GROUPS = [{"id": "plane", "title": "Return paths and planes"}, {"id": "decap", "title": "Decoupling"},
           {"id": "hs", "title": "High speed"}]
 QUICK = {"plane.gap_crossing", "decap.distance"}
@@ -287,9 +289,9 @@ def check_drawing(scene):
     texts = [text for _, text, _ in drawn]
     assert "RF_A runs close to itself near J1 (via 420d87bb)" in texts and "distance: 5.3 mm" in texts, texts
     assert "Measured 5.30 mm < 6.00 mm min" in texts, texts
-    # A zone and a via highlighted; no X-ray with the tick box off.
+    # A zone and a via highlighted; a plane finding: X-ray mode ticked for it.
     show("Plane under the via")
-    assert amount.default_value == 0.0
+    assert state.board.findings_isolate and scene.kileido_focus and amount.default_value == 1.0
     zone = state.board.collection.all_objects[f"KLS In1.Cu zone {ZONE}"]
     assert zone["kls_zone_highlight"] == "finding"
     assert not state.board.collection.all_objects["KLS vias highlight finding"].hide_get()
@@ -348,7 +350,7 @@ def check_suggestions(scene, index):
     unknown = next(iter(findings.severity_icon("unknown").values()))
     assert ("operator", "Suggested fixes", unknown) in drawn
     assert findings_draw.mark(finding_named("Suggested fixes")) == "unknown"
-    # Isolate: a zone and a via, X-ray on whatever the tick box says.
+    # Isolate: a zone and a via, X-ray mode ticked for it (unticked again once hidden).
     amount = bpy.data.node_groups[focus.GROUP].nodes["Amount"].outputs[0]
     show("Plane isolated")
     assert state.board.findings_isolate and amount.default_value == 1.0
@@ -638,11 +640,18 @@ def check_markers(scene):
                                      (16.0, 12.0, kinds[2])], 10.0)
     assert [[m["kind"] for m in members] for _, _, members in groups] == [["error", "warning", "info"], ["unknown"]]
     assert groups[0][:2] == (16.0, 12.0)  # at the worst one's place
-    # The filter: errors only; dismissed: none.
+    # The filter row: info off leaves it out of the list; warnings off leaves the errors,
+    # on the board and in the list; dismissed: none.
     assert {m["finding"]["title"] for m in findings_markers.shown(scene)} == set(placed)
-    scene.kileido_markers_level = "error"
+    listed = lambda: {text for kind, text, _ in column(scene) if kind == "operator"}
+    scene.kileido_findings_info = False
+    assert "Tracks too close" in listed() and "Gone" not in listed()
+    scene.kileido_findings_info = True
+    assert "Gone" in listed()
+    scene.kileido_findings_warnings = False
     assert [m["finding"]["title"] for m in findings_markers.shown(scene)] == ["Tracks too close"]
-    scene.kileido_markers_level = "all"
+    assert "Plane under the via" not in listed() and "plane.gap_crossing (2)" not in listed()
+    scene.kileido_findings_warnings = True
     a["finding"]["state"] = "dismissed"
     assert "A second gap" not in {m["finding"]["title"] for m in findings_markers.shown(scene)}
     # "Show dismissed" off while a dismissed finding is shown: the list hides it, so does the board.
@@ -1031,6 +1040,9 @@ PLANES = {  # hand-built (the bridge measures these): one finding with every pla
             {"index": 3, "layer": "In2.Cu", "polygon_nm": [[18 * MM, 9 * MM], [20 * MM, 9 * MM], [19 * MM, 11 * MM]],
              "area_mm2": 2.0, "main": False, "tied": True}]),
     ]}
+GAP_ONLY = {  # as the LLM often sends a crossing: plane gaps only, no item lit
+    "key": "planes-3", "check": "plane.gap_crossing", "severity": "error", "title": "Gaps only", "state": "",
+    "bbox_nm": [10 * MM, 3 * MM, 14 * MM, 7 * MM], "draws": [PLANES["draws"][1]]}
 NO_RETURN = {
     "key": "planes-2", "check": "plane.layer_change_no_return", "severity": "error", "title": "No return via",
     "state": "", "bbox_nm": [7 * MM, 7 * MM, 9 * MM, 9 * MM],
@@ -1050,8 +1062,30 @@ def check_planes(scene, index):
     red, with the share covered; plane islands as areas on their layers, each its own
     colour, the loose one outlined red, numbered labels and the count; the column's lines."""
     header = frame(index)
-    header["findings"]["sources"]["file"]["findings"] += [PLANES, NO_RETURN]
+    header["findings"]["sources"]["file"]["findings"] += [PLANES, NO_RETURN, GAP_ONLY]
     apply.apply_frame(header, {})
+    # A plane finding lighting no item: X-ray mode ticked for it all the same; unticked, X-ray
+    # goes with the finding still shown; shown again, ticked again; hidden (a bare-board
+    # click), unticked again. Ticked by the user before: left ticked.
+    assert not scene.kileido_focus
+    show("Gaps only")
+    amount = bpy.data.node_groups[focus.GROUP].nodes["Amount"].outputs[0]
+    assert not state.board.highlight["finding"] and state.board.findings_isolate and amount.default_value == 1.0
+    assert scene.kileido_focus
+    scene.kileido_focus = False
+    assert state.board.findings_shown[1] == "planes-3" and amount.default_value == 0.0
+    apply.apply_frame(header, {})  # a new frame: the user's untick holds
+    assert not scene.kileido_focus and amount.default_value == 0.0
+    show("Gaps only")
+    show("Gaps only")
+    assert scene.kileido_focus and amount.default_value == 1.0
+    assert findings.hide_shown() and not findings.hide_shown()
+    assert state.board.findings_shown == ("", "") and not scene.kileido_focus and amount.default_value == 0.0
+    scene.kileido_focus = True
+    show("Gaps only")
+    show("Gaps only")
+    assert scene.kileido_focus
+    scene.kileido_focus = False
     found = show("Planes and returns")
     drawn = objects()
     top = state.board.heights["F.Cu"]
@@ -1319,8 +1353,8 @@ def check_column(scene):
     drc, llm = ([text for _, text, _ in column(scene, tabs=(tab,))] for tab in ("DRC", "LLM"))
     assert "KiCad DRC" in drc and "KiCad DRC" not in llm  # the DRC button only in the DRC tab
     assert "Test tool, run 4: 4 findings" in llm and "Test tool, run 4: 4 findings" not in drc
-    assert not any(text.startswith("LLM prompt") for text in drc) and \
-        any(text.startswith("LLM prompt") for text in llm)  # the prompt box only in the LLM tab
+    assert not any(text.startswith("Checks (") for text in drc) and \
+        any(text.startswith("Checks (") for text in llm)  # the prompt box only in the LLM tab
     assert ("operator", "plane.gap_crossing (2)", "DISCLOSURE_TRI_DOWN") in drawn, drawn  # under 20: open
     order = [text for kind, text, _ in drawn if kind == "operator" and text in ("Tracks too close",
                                                                                  "plane.gap_crossing (2)", "Gone")]
@@ -1338,8 +1372,22 @@ def check_column(scene):
     assert ("operator", "Gone", unknown) in drawn and findings_draw.mark(finding_named("Gone")) == "unknown"
     assert findings_draw.mark(finding_named("Tracks too close")) == "error"
     check_severity_icons()
-    # The checks the file says it skipped, with why.
-    assert "emc.ground: no stackup" in texts and not any(text.startswith("KiCad DRC,") for text in texts), texts
+    # The checks the file says it skipped, with why: folded until opened.
+    assert ("operator", "Not checked (1)", "DISCLOSURE_TRI_RIGHT") in drawn and "emc.ground: no stackup" not in texts
+    assert not any(text.startswith("KiCad DRC,") for text in texts), texts
+    assert bpy.ops.kileido.findings_group(group="file:skipped") == {"FINISHED"}
+    assert "emc.ground: no stackup" in [text for _, text, _ in column(scene)]
+    # A long tool text: its name before "(" or " with" in the header, the whole under About this run.
+    source = state.board.findings["sources"]["file"]
+    source["tool"] = "Claude Code (claude-opus-5-5) with custom Python 3.11"
+    drawn = column(scene, tabs=("LLM",))
+    assert "Claude Code, run 4: 4 findings" in [text for _, text, _ in drawn], drawn
+    assert ("operator", "About this run", "DISCLOSURE_TRI_RIGHT") in drawn
+    assert bpy.ops.kileido.findings_group(group="file:about") == {"FINISHED"}
+    assert "Claude Code (claude-opus-5-5) with custom Python 3.11" in [text for _, text, _ in column(scene)]
+    assert findings.short_tool("A" * 40) == "A" * 31 + "…" and findings.short_tool("Script, v2") == "Script"
+    source["tool"] = "Test tool"
+    scene.kileido_findings_open = ""
     gone = finding_named("Gone")
     assert gone["faded"] and not gone["draws"][0]["ok"]
     # Confirm, then dismiss: the rows at once (the bridge would write its state file).
@@ -1422,33 +1470,41 @@ def check_origin(scene, index):
 
 
 def check_prompt(scene, index):
-    """The LLM prompt box above the LLM's findings: the quick checks ticked to start with, groups
-    folded, Quick and All, Copy prompt sends the ticked ids, a ready prompt is copied once."""
+    """The LLM prompt box above the LLM's findings: the measurable checks ticked to start with (here
+    the quick two), groups folded, a check nothing measures says so, Quick, Measured and All, Copy
+    prompt sends the ticked ids, a ready prompt is copied once."""
     copied = []
     findings.set_clipboard = copied.append  # background Blender has no clipboard
     apply.apply_frame(prompt_frame(index), {})
     drawn = column(scene)
     texts = [text for _, text, _ in drawn]
-    assert "LLM prompt: 2 of 3 checks" in texts, texts  # the quick checks to start with
-    assert texts.index("KiCad DRC") < texts.index("LLM prompt: 2 of 3 checks") < \
+    assert ("operator", "Checks (2 of 3)", "DISCLOSURE_TRI_RIGHT") in drawn, drawn  # the quick checks; folded
+    assert texts.index("KiCad DRC") < texts.index("Checks (2 of 3)") < \
         texts.index("Test tool, run 4: 4 findings"), texts  # above the file's section
+    assert "Return paths and planes (1/1)" not in texts and ("operator", "Copy prompt", "COPYDOWN") in drawn
+    assert bpy.ops.kileido.findings_group(group=findings.CHECKS_TAG) == {"FINISHED"}
+    drawn = column(scene)
+    texts = [text for _, text, _ in drawn]
     for group in ("Return paths and planes (1/1)", "Decoupling (1/1)", "High speed (0/1)"):
         assert ("operator", group, "DISCLOSURE_TRI_RIGHT") in drawn, drawn  # folded
     assert "Stubs on fast nets" not in texts and ("operator", "Copy prompt", "COPYDOWN") in drawn
     assert bpy.ops.kileido.findings_group(group="prompt:hs") == {"FINISHED"}
     assert ("operator", "Stubs on fast nets", "CHECKBOX_DEHLT") in column(scene)
+    assert any(kind == "label" and text == "unchecked" for kind, text, _ in column(scene))  # nothing measures it
     assert bpy.ops.kileido.prompt_check(check="hs.stub") == {"FINISHED"}
     assert findings.chosen(scene) == QUICK | {"hs.stub"}
     drawn = column(scene)
     assert ("operator", "Stubs on fast nets", "CHECKBOX_HLT") in drawn and ("operator", "High speed (1/1)",
                                                                            "DISCLOSURE_TRI_DOWN") in drawn, drawn
     assert bpy.ops.kileido.prompt_preset(preset="quick") == {"FINISHED"}
-    assert findings.chosen(scene) == QUICK and scene.kileido_prompt_checks == ""
+    assert findings.chosen(scene) == QUICK and scene.kileido_prompt_checks != ""  # ticked by name
+    assert bpy.ops.kileido.prompt_preset(preset="measured") == {"FINISHED"}
+    assert findings.chosen(scene) == QUICK and scene.kileido_prompt_checks == ""  # the default: the measurable two
     assert bpy.ops.kileido.prompt_preset(preset="all") == {"FINISHED"}
     assert findings.chosen(scene) == {row["id"] for row in CATALOGUE}
     for row in CATALOGUE:  # none ticked: stays none (not back to quick), and nothing to ask for
         bpy.ops.kileido.prompt_check(check=row["id"])
-    assert findings.chosen(scene) == set() and "LLM prompt: 0 of 3 checks" in [t for _, t, _ in column(scene)]
+    assert findings.chosen(scene) == set() and "Checks (0 of 3)" in [t for _, t, _ in column(scene)]
     assert not bpy.ops.kileido.findings_prompt.poll()
     bpy.ops.kileido.prompt_preset(preset="quick")
     # Copy prompt: the ticked ids in the catalogue's order, then Making prompt… until the bridge answers.
@@ -1494,6 +1550,8 @@ def check_notes(scene, index):
     apply.apply_frame(prompt_frame(index), {})
     assert all(not getattr(scene, name) for name, _ in findings.NOTE_TOGGLES) and scene.kileido_prompt_note == ""
     assert findings.notes(scene) == ""
+    assert "Notes" not in [text for _, text, _ in column(scene)]  # inside the Checks fold
+    assert bpy.ops.kileido.findings_group(group=findings.CHECKS_TAG) == {"FINISHED"}
     drawn = column(scene)
     texts = [text for _, text, _ in drawn]
     assert ("operator", "Notes", "DISCLOSURE_TRI_RIGHT") in drawn, drawn  # folded, nothing given
@@ -1507,6 +1565,7 @@ def check_notes(scene, index):
     scene.kileido_prompt_note = "  Only the RF side  "
     assert findings.notes(scene) == f"{CHEAP}\n{CONFIDENT}\nOnly the RF side", findings.notes(scene)
     assert ("operator", "Notes (3)", "DISCLOSURE_TRI_DOWN") in column(scene)
+    assert ("operator", "Checks (2 of 3), 3 notes", "DISCLOSURE_TRI_DOWN") in column(scene)
     # Copy prompt sends them with the checks.
     assert bpy.ops.kileido.findings_prompt() == {"FINISHED"}
     assert sent[-1] == ("prompt", "", "file", ("plane.gap_crossing", "decap.distance"),
@@ -1869,6 +1928,8 @@ def main():
         live.request_findings = lambda action, key="", source="drc", checks=None, notes=None: sent.append(
             (action, key, source) if checks is None else (action, key, source, tuple(checks), notes))
         assert columns.tab_state("DRC") == "off"
+        assert not scene.kileido_findings_info  # info starts hidden (check_markers); listed for the rest
+        scene.kileido_findings_info = True
         check_column(scene)
         check_drc_header(scene, index)
         check_origin(scene, index)

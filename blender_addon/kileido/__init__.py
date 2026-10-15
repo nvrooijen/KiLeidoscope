@@ -168,7 +168,10 @@ class KILEIDO_OT_pick(bpy.types.Operator):
             self.report({"INFO"}, f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
         elif not self.extend:
             live.request_select([], False)  # clicking bare board clears KiCad's selection
-            self.report({"INFO"}, "KiLeidoscope: nothing to select here; KiCad's selection cleared")
+            if findings.hide_shown():  # and hides the shown finding, as KiCad's DRC marker goes
+                self.report({"INFO"}, "KiLeidoscope: finding hidden; KiCad's selection cleared")
+            else:
+                self.report({"INFO"}, "KiLeidoscope: nothing to select here; KiCad's selection cleared")
         return {"FINISHED"}
 
 
@@ -1498,16 +1501,27 @@ def _scene_properties():
             name="Markers", default=True,
             description="Show each finding as an icon on the board (nearby ones share one); click one to show it",
             update=lambda self, context: findings_markers.invalidate()),
-        "kileido_markers_level": EnumProperty(
-            name="Markers for", items=findings_markers.LEVELS, default="all",
-            update=lambda self, context: findings_markers.invalidate()),
+        "kileido_findings_errors": BoolProperty(
+            name="Errors", default=True, description="List and mark the errors",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_findings_warnings": BoolProperty(
+            name="Warnings", default=True, description="List and mark the warnings",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_findings_info": BoolProperty(
+            name="Info", default=False, description="List and mark the information notes too",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_markers_unchecked": BoolProperty(
+            name="Unchecked", default=True,
+            description="List and mark the findings KiLeidoscope could not measure too (the LLM's word only)",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
         "kileido_findings_dismissed": BoolProperty(
             name="Show dismissed", default=False,
             description="List the findings dismissed as not a problem too, greyed",
-            update=lambda self, context: findings.dismissed_toggled(context.scene)),
+            update=lambda self, context: findings.filter_toggled(context.scene)),
         "kileido_prompt_checks": StringProperty(
             name="Prompt checks", default="",
-            description="The checks Copy prompt asks the LLM for, one id per line; empty: the quick checks"),
+            description="The checks Copy prompt asks the LLM for, one id per line; empty: the checks KiLeidoscope "
+                        "can measure"),
         "kileido_prompt_show": BoolProperty(
             name="Show prompt", default=False,
             description="Show the prompt last copied to the clipboard"),

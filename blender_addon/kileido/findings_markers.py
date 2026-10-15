@@ -6,7 +6,7 @@ They are drawn over the 3D view (a POST_PIXEL handler, as the column tabs are), 
 objects: the same size on screen at any zoom, over every part, never in a render, and
 moving the view restarts nothing. Like pins on a map, markers that would overlap on screen
 share one, showing the worst icon and a count; zooming in splits them. Dismissed findings
-have none, the severity filter leaves out the milder ones, and while a finding is shown
+have none, nor do the findings the column's filter row hides, and while a finding is shown
 the others fade, as do markers on the side the view does not see.
 
 A click on a marker (KILEIDO_OT_pick asks `hit` first) opens the column that lists it with its
@@ -34,10 +34,6 @@ COUNT_SIZE = 11  # unscaled: a shared marker's count
 COUNT_PAD = 3  # unscaled: around the count on its plate
 COUNT_PLATE = (0.03, 0.03, 0.03, 0.85)
 FONT = 0
-LEVELS = (("error", "Errors", "Markers for errors only"),
-          ("warning", "Warnings", "Markers for errors and warnings"),
-          ("all", "All", "Markers for every finding, info too"))
-ALLOWED = {"error": {"error"}, "warning": {"error", "warning"}}  # a level -> the severities shown; "all": any
 
 _handle = None
 _cache = {"markers": None}
@@ -85,11 +81,10 @@ def markers():
 
 
 def shown(scene):
-    """The markers to draw: not dismissed, as severe as the filter asks (by severity, a
-    "?" too)."""
-    allowed = ALLOWED.get(scene.kileido_markers_level)
+    """The markers to draw: not dismissed, and let through by the column's filter row
+    (findings.passes: the severity toggles, Unchecked)."""
     return [marker for marker in markers() if marker["finding"].get("state") != "dismissed" and
-            (allowed is None or (marker["finding"].get("severity") or "warning") in allowed)]
+            findings.passes(scene, marker["source"], marker["finding"])]
 
 
 def merge(points, reach):
