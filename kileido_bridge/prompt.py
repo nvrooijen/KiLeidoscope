@@ -99,11 +99,13 @@ _TOOLS = {
              '"limit": 42.0}], "unit": "mm", "at": "U4"}'),
     "return_path": ("signal: a net (net:NAME) or a track (net@layer~x,y), plane: net@layer",
                     "the signal's tracks next to the plane, with and without plane under them, and the length "
-                    "without, measured by KiLeidoscope",
+                    "without, measured by KiLeidoscope; for a track between two planes (a stripline), also "
+                    "whether the plane on its other side is under the stretches without, with both distances",
                     '{"tool": "return_path", "signal": "net:CLK", "plane": "GND@In1.Cu"}'),
     "plane_gap": ("plane: net@layer, crossing: a track (net@layer~x,y) or a net (net:NAME)",
                   "the plane's edges at the gap lit up and where the track has no plane under it, measured "
-                  "(the antipads of the track's own vias count as plane)",
+                  "(the antipads of the track's own vias count as plane); for a stripline, also whether the "
+                  "plane on its other side is there, with both distances",
                   '{"tool": "plane_gap", "plane": "GND@In1.Cu", "crossing": "net:USB_D+@F.Cu~50.00,10.00"}'),
     "layer_change": ("via: the signal via, planes: list of 1 to 2 planes as net@layer (optional; default the "
                      "fill next to each layer it joins), limit: mm (optional, default 1.0)",

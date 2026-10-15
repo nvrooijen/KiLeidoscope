@@ -948,7 +948,8 @@ def _empty_draw(draw: Draw) -> dict:
             "measured_nm": None, "whole_nm": None, "limit_nm": None, "limit_is": "", "over": False,
             "polygon_nm": [], "layer": "", "layers": [], "kind": "", "size_nm": 0,
             "what": "", "segments_nm": [], "narrow": [], "min_nm": None, "path_nm": [], "bars": [], "unit": "",
-            "planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,
+            "planes": [], "spans_nm": [], "bare_nm": [], "backed_nm": [], "sides": [], "covered_nm": [],
+            "edges_nm": [], "returns": [], "fits": None,
             "islands": [], "barrel": {}, "marks": [], "rotation_deg": 0.0,
             "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],
             "pitch_nm": 0, "net": "", "touches": [], "kicad_drc": None}
@@ -1089,6 +1090,46 @@ def _coverage(board: _Resolver, out: dict, target: Resolved, role: str, plane: t
     return tracks, copper, planes.coverage(tracks, copper)
 
 
+def _other_side(board: _Resolver, out: dict, tracks: list, spans: list, plane_layer: str) -> None:
+    """A track between two copper layers (a stripline) returns on both planes, the nearer
+    one most. For the stretches without the named plane (`spans`), the plane on the
+    track's other side: those with fill of another net there (antipads filled) in
+    `backed_nm`, those with none in `bare_nm` (both as `_stretches`), and per signal layer
+    in `sides` {"layer", "plane", "plane_nm", "other", "other_nm", "nets", "without_nm",
+    "backed_nm"}: both planes' distances from the stackup, the other plane's nets, the
+    length without the named plane and how much of it the other one backs. A track with
+    copper on one side only (a microstrip) has no other side: its spans are all bare."""
+    index = board.index
+    neighbours = planes.copper_neighbours(index.snapshot)
+    nets = planes.signal_nets(index, {getattr(record, "net", "") for record in tracks})
+    bare, backed = [], []
+    for layer in dict.fromkeys(record.layer for record in tracks):
+        on = [span for span in spans if span.layer == layer]
+        sides = [side for side in neighbours.get(layer, ()) if side]
+        named = next((side for side in sides if side.layer == plane_layer), None)
+        other = next((side for side in sides if side.layer != plane_layer), None)
+        if named is None or other is None:
+            bare += on
+            continue
+        fills = sorted({record.net for record in index.layer_items(other.layer)
+                        if isinstance(record, model.ZoneFill) and record.net and record.net not in nets})
+        holes = planes.own_holes(index, nets, other.layer)
+        by_net = {net: planes.fill_antipads(planes.plane(index, net, other.layer), holes) for net in fills}
+        pieces = planes.coverage([model.Track(span.id, span.layer, "", span.start, span.end, span.width)
+                                  for span in on], tuple(rings for polygons in by_net.values() for rings in polygons))
+        under = [piece for piece in pieces if piece.covered]
+        bare += [piece for piece in pieces if not piece.covered]
+        backed += under
+        middles = np.array([piece.middle for piece in under], dtype=float).reshape(-1, 2)
+        used = [net for net, polygons in by_net.items() if len(middles) and planes.covered(middles, polygons).any()]
+        out["sides"].append({"layer": layer, "plane": plane_layer, "plane_nm": int(named.distance_nm),
+                             "other": other.layer, "other_nm": int(other.distance_nm), "nets": used,
+                             "without_nm": int(round(sum(span.length for span in on))),
+                             "backed_nm": int(round(sum(piece.length for piece in under)))})
+    _stretches(out, "bare_nm", bare)
+    _stretches(out, "backed_nm", backed)
+
+
 def _at_track(record) -> list:
     x, y = centre(record)
     return [int(x), int(y), record.layer]
@@ -1100,6 +1141,7 @@ def _plane_gap(board: _Resolver, out: dict, crossing: Resolved, plane: tuple[str
     tracks, copper, stretches = _coverage(board, out, crossing, "crossing", plane)
     spans = [stretch for stretch in stretches if not stretch.covered]
     _stretches(out, "spans_nm", spans)
+    _other_side(board, out, tracks, spans, plane[1])
     edges, points = [], 0
     for line in planes.edges_near(copper, [(min(s.start[0], s.end[0]), min(s.start[1], s.end[1]),
                                             max(s.start[0], s.end[0]), max(s.start[1], s.end[1]))
@@ -1122,6 +1164,7 @@ def _return_path(board: _Resolver, out: dict, signal: Resolved, plane: tuple[str
     spans = [stretch for stretch in stretches if not stretch.covered]
     _stretches(out, "covered_nm", [stretch for stretch in stretches if stretch.covered])
     _stretches(out, "spans_nm", spans)
+    _other_side(board, out, tracks, spans, plane[1])
     longest = max(spans, key=lambda stretch: stretch.length, default=None)
     out["points"] = [[*longest.middle, longest.layer]] if longest else [_at_track(tracks[0])]
     out["whole_nm"] = int(round(sum(stretch.length for stretch in stretches)))

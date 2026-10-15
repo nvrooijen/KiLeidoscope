@@ -818,6 +818,37 @@ def test_plane_gap_marks_the_void_and_its_edges(split):
     assert clear["points"] == [[25 * MM, 30 * MM, "F.Cu"]]  # the track's middle, for the label
 
 
+def stripline(back_to_x):
+    """The split board with STRIP on In2.Cu (1.0 mm under In1's split, 0.2 mm over B.Cu)
+    crossing the split at y = 25 mm, and B.Cu GND under it from x = 40 mm to `back_to_x`."""
+    snapshot = split_board.board()
+    strip = model.Track("strip-0", "In2.Cu", "STRIP", (40 * MM, 25 * MM), (60 * MM, 25 * MM), split_board.WIDTH)
+    back = model.ZoneFill("zone-gnd-b", "GND", "B.Cu", ((split_board.rect(40 * MM, 20 * MM, back_to_x, 30 * MM),),))
+    return BoardIndex(replace(snapshot, tracks=snapshot.tracks + (strip,), zones=snapshot.zones + (back,)))
+
+
+@pytest.mark.parametrize("tool, role", [("plane_gap", "crossing"), ("return_path", "signal")])
+def test_a_stripline_names_the_plane_on_its_other_side(tool, role):
+    """A track between two planes: the stretches without the named plane are checked
+    against the plane on its other side, with both distances from the stackup."""
+    draw = only_draw(payload(stripline(60 * MM), finding({"tool": tool, "plane": "GND@In1.Cu", role: "net:STRIP"})))
+    assert draw["ok"] and draw["measured_nm"] == 10_250_000  # In1's GND ends at 49.75 mm
+    assert draw["backed_nm"] == [[49_750_000, 25 * MM, 60 * MM, 25 * MM, "In2.Cu", split_board.WIDTH]]
+    assert draw["bare_nm"] == []
+    assert draw["sides"] == [{"layer": "In2.Cu", "plane": "In1.Cu", "plane_nm": MM, "other": "B.Cu",
+                              "other_nm": 200_000, "nets": ["GND"], "without_nm": 10_250_000,
+                              "backed_nm": 10_250_000}]
+    part = only_draw(payload(stripline(55 * MM), finding({"tool": tool, "plane": "GND@In1.Cu", role: "net:STRIP"})))
+    assert part["backed_nm"] == [[49_750_000, 25 * MM, 55 * MM, 25 * MM, "In2.Cu", split_board.WIDTH]]
+    assert part["bare_nm"] == [[55 * MM, 25 * MM, 60 * MM, 25 * MM, "In2.Cu", split_board.WIDTH]]
+    assert part["sides"][0]["backed_nm"] == 5_250_000 and part["measured_nm"] == 10_250_000  # the claim's length
+
+
+def test_a_microstrip_has_no_other_side(split):
+    draw = only_draw(payload(split, finding({"tool": "return_path", "signal": "net:USB_D+", "plane": "GND@In1.Cu"})))
+    assert draw["sides"] == [] and draw["backed_nm"] == [] and draw["bare_nm"] == draw["spans_nm"]
+
+
 def test_plane_gap_fills_its_own_antipads(split):
     draw = only_draw(payload(split, finding({"tool": "plane_gap", "plane": "GND@In2.Cu", "crossing": "net:LVDS_P"})))
     assert draw["ok"] and draw["ids"] == ["lvds-b-0"] and draw["measured_nm"] == 0  # B.Cu is next to In2.Cu
@@ -1126,7 +1157,7 @@ def test_a_stub_is_framed_on_its_via_and_each_discontinuity_point_is_keyed(stitc
 
 # ghosts: a part moved, a route, a row of vias (on the board of test_board_index)
 
-EMPTY = {"planes": [], "spans_nm": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,  # planes
+EMPTY = {"planes": [], "spans_nm": [], "bare_nm": [], "backed_nm": [], "sides": [], "covered_nm": [], "edges_nm": [], "returns": [], "fits": None,  # planes
          "islands": [], "barrel": {}, "marks": [],
          "part": "", "from": [], "moved_nm": None, "pads_nm": [], "width_nm": 0, "length_nm": None, "row": [],  # ghosts
          "pitch_nm": 0}

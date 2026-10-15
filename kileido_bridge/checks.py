@@ -54,6 +54,9 @@ CATALOGUE: tuple[Check, ...] = (
           "Find signal tracks that cross a split, slot or void in their reference plane (the plane "
           "on the next layer). Draw plane_gap with the plane as net@layer and the track as crossing "
           "(net@layer~x,y at the crossing itself); KiLeidoscope finds where it has no plane under it. "
+          "A track on an inner layer between two planes (a stripline) returns on both, mostly on the "
+          "nearer one: name the nearer plane (the digest's stackup gives the distances); KiLeidoscope "
+          "shows whether the other one is there. "
           "If you only know how much of the track has plane under it, not where it crosses, give "
           "coverage_pct (the share with plane under it) and length_mm (the whole track) in values and "
           "draw return_path for the net and plane. To suggest a "
@@ -75,7 +78,10 @@ CATALOGUE: tuple[Check, ...] = (
           values=("distance_mm",), rules=("signal_via",)),
     Check("plane.edge_run", "plane", "Track past plane edge",
           "Find signal tracks that run along or past the edge of their reference plane, with no plane "
-          "copper under part of their length. Draw return_path for the net and its plane.",
+          "copper under part of their length. Draw return_path for the net and its plane. "
+          "A track on an inner layer between two planes (a stripline) returns on both, mostly on the "
+          "nearer one: name the nearer plane (the digest's stackup gives the distances); KiLeidoscope "
+          "shows whether the other one is there.",
           "net, track as net@layer~x,y, plane as net@layer, length_mm without plane",
           ("return_path", "highlight", "area", "label"),
           values=("length_mm",)),

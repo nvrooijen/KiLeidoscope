@@ -27,6 +27,7 @@ import textwrap
 from dataclasses import replace
 from pathlib import Path
 
+import blf
 import bpy
 import numpy as np
 from mathutils import Vector
@@ -1050,6 +1051,42 @@ NO_RETURN = {
                          limit_is="max", planes=["GND@In1.Cu"])]}
 
 
+STRIP = {  # a stripline: In3.Cu between In2.Cu (named, 0.11 mm) and In4.Cu GND (0.55 mm)
+    "key": "planes-4", "check": "plane.edge_run", "severity": "warning", "title": "Stripline", "state": "",
+    "bbox_nm": [5 * MM, 14 * MM, 15 * MM, 16 * MM],
+    "draws": [plane_draw("return_path", "Without plane", layer="In2.Cu", ids=[OTHER], planes=["+1V8@In2.Cu"],
+                         covered_nm=[[5 * MM, 15 * MM, 11 * MM, 15 * MM, "F.Cu", 200_000]],
+                         spans_nm=[[11 * MM, 15 * MM, 15 * MM, 15 * MM, "F.Cu", 200_000]],
+                         backed_nm=[[11 * MM, 15 * MM, 13 * MM, 15 * MM, "F.Cu", 200_000]],
+                         bare_nm=[[13 * MM, 15 * MM, 15 * MM, 15 * MM, "F.Cu", 200_000]],
+                         sides=[{"layer": "In3.Cu", "plane": "In2.Cu", "plane_nm": 108_800, "other": "In4.Cu",
+                                 "other_nm": 550_000, "nets": ["GND"], "without_nm": 4 * MM, "backed_nm": 2 * MM}],
+                         measured_nm=4 * MM)]}
+
+
+def check_stripline(scene, index):
+    """A stripline's stretches without the named plane: those with the plane on its other
+    side faded red, the rest solid red; the label and the column name the other plane and
+    both distances."""
+    header = frame(index)
+    header["findings"]["sources"]["file"]["findings"] += [STRIP]
+    apply.apply_frame(header, {})
+    show("Stripline")
+    drawn = objects()
+    over = "KLS finding over"
+    assert drawn["KLS finding 1 return_path spans"].data.materials[0].name == over
+    assert drawn["KLS finding 1 return_path spans backed"].data.materials[0].name == over + " ghost"
+    side = "In4.Cu GND under 2.00 of 4.00 mm, 0.55 mm away (In2.Cu: 0.11 mm)"
+    assert findings_draw.side_text(STRIP["draws"][0]["sides"][0]) == side
+    body = drawn["KLS finding 1 return_path label"].data.body
+    assert body == "Without plane: 4.00 mm (60 % covered)\nIn4.Cu GND under 2.00 mm, 0.55 mm (In2.Cu 0.11)", repr(body)
+    assert any(text == side for _, text, _ in column(scene, ("LLM",))), column(scene, ("LLM",))
+    nearer = {**STRIP["draws"][0]["sides"][0], "other_nm": 100_000, "backed_nm": 4 * MM}
+    assert findings_draw.side_text(nearer) == "In4.Cu GND under all of it, 0.10 mm away: nearer than In2.Cu (0.11 mm)"
+    assert findings_draw.side_text({**nearer, "backed_nm": 0}) == "No plane on In4.Cu under it either"
+    findings.hide_shown()
+
+
 def leader_anchor(drawn, label):
     return np.array(tuple(drawn[label + " leader"].data.splines[0].points[-1].co)[:3])
 
@@ -1955,6 +1992,13 @@ def main():
         assert columns.tab_state("DRC") == "off"
         assert not scene.kileido_findings_info  # info starts hidden (check_markers); listed for the rest
         scene.kileido_findings_info = True
+        # The column's lines measured in the UI font: none wider than the room it has.
+        long = ("CVDDQ_A (U1.B6) is fed from LDO_1V8 through bead L1 with only C8 100n and C10 10n "
+                "/a/very/long/hierarchical/net/name/CVDDQ_A_SUPPLY")
+        for width in (120, 300):
+            lines = kileido._fit(long, width, 11)
+            blf.size(0, 11)
+            assert len(lines) > 1 and all(blf.dimensions(0, line)[0] <= width for line in lines), lines
         check_column(scene)
         check_drc_header(scene, index)
         check_origin(scene, index)
@@ -1969,6 +2013,7 @@ def main():
         check_suggestions(scene, index)
         check_kicad_drc(scene, index)
         check_planes(scene, index)
+        check_stripline(scene, index)
         check_vias_and_steps(scene, index)
         check_prompt(scene, index)
         check_notes(scene, index)

@@ -15,6 +15,7 @@ import re
 import textwrap
 from pathlib import Path
 
+import blf
 import bpy
 import bpy.utils.previews
 from bpy.app.handlers import persistent
@@ -390,12 +391,56 @@ class KILEIDO_PT_panel(bpy.types.Panel):
 _share = 1.0  # of the sidebar's width the column being drawn has (a column open: half)
 
 
-def _wrap(context, text):
-    """Lines that fit the sidebar at its current width (Blender cuts a longer label in
-    its middle): ~7 px per character and an icon and box margins, at the UI scale."""
+WRAP_MARGIN_PX = 50  # unscaled: an icon and a box's margins
+FINDINGS_MARGIN_PX = 100  # unscaled: the findings columns' details sit in boxes nested three deep, indented
+WRAP_CACHE = 2_000  # wrapped texts kept: the sidebar redraws often, its texts rarely change
+_wrapped = {}
+
+
+def _wrap(context, text, margin=WRAP_MARGIN_PX):
+    """Lines that fit the sidebar at its current width less `margin` (unscaled px; Blender
+    cuts a longer label in its middle): each line measured in the UI font (blf) at the UI
+    scale, words kept whole unless one alone is too wide. Without a font to measure with,
+    ~8 px per character."""
     scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
-    width = (context.region.width if context.region else 300 * scale) * _share
-    return textwrap.wrap(text, max(16, int((width - 50 * scale) / (7 * scale))))
+    width = max(80 * scale, (context.region.width if context.region else 300 * scale) * _share
+                - margin * scale)
+    points = context.preferences.ui_styles[0].widget.points if context.preferences.ui_styles else 11
+    key = (text, int(width), points, scale)
+    if key not in _wrapped:
+        if len(_wrapped) > WRAP_CACHE:
+            _wrapped.clear()
+        _wrapped[key] = _fit(text, width, points * scale)
+    return _wrapped[key]
+
+
+def _fit(text, width, size):
+    """`text` in lines at most `width` px wide in the UI font of `size` px."""
+    try:
+        blf.size(0, size)
+
+        def wide(line):
+            return blf.dimensions(0, line)[0]
+        wide("x")
+    except Exception:  # no font loaded
+        return textwrap.wrap(text, max(16, int(width / (size * 0.73))))
+    lines = []
+    for paragraph in text.split("\n"):
+        line = ""
+        for word in paragraph.split():
+            candidate = f"{line} {word}" if line else word
+            if wide(candidate) <= width:
+                line = candidate
+                continue
+            if line:
+                lines.append(line)
+            while wide(word) > width and len(word) > 1:  # a word wider than the line: cut it
+                cut = max(1, next((n for n in range(len(word), 0, -1) if wide(word[:n]) <= width), 1))
+                lines.append(word[:cut])
+                word = word[cut:]
+            line = word
+        lines.append(line)
+    return [line for line in lines if line] or [""]
 
 
 def _draw_thickness(layout, scene, copper_m):
@@ -541,7 +586,8 @@ def _draw_studio(layout, scene):
 
 def _draw_findings(tab):
     """The DRC or LLM column (findings.py), its lines wrapped to the column."""
-    return lambda layout, scene: findings.draw_column(layout, scene, lambda text: _wrap(bpy.context, text), tab)
+    return lambda layout, scene: findings.draw_column(layout, scene,
+                                                      lambda text: _wrap(bpy.context, text, FINDINGS_MARGIN_PX), tab)
 
 
 COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,

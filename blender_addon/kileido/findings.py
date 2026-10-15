@@ -44,10 +44,9 @@ UNITS = (("_mm2", "mm²"), ("_cm2", "cm²"), ("_mm", "mm"), ("_ps", "ps"), ("_mv
 STATES = {"confirm": "confirmed", "dismiss": "dismissed"}
 VERDICTS = ("measured", "refuted", "mismatch", "unchecked")  # the bridge's `verdict`, in the order the header counts
 VERDICT_LINES = {  # the detail's first line per verdict; refuted has its own line under the confidence
-    "measured": ("Measured on the board: KiLeidoscope found what this points at, and nothing contradicts it",
-                 "DRIVER_DISTANCE"),
-    "mismatch": ("Mismatch with the board: see below what KiLeidoscope found differently", "ERROR"),
-    "unchecked": ("Unchecked: nothing here was measured, the LLM's word only", "INFO")}
+    "measured": ("Measured: found on the board, nothing against it", "DRIVER_DISTANCE"),
+    "mismatch": ("Mismatch: the board says otherwise (below)", "ERROR"),
+    "unchecked": ("Unchecked: the LLM's word only", "INFO")}
 PAIR_TOOLS = ("distance", "clearance", "arrow")  # two ends: the detail names each end's net
 MEASURED = ("distance", "clearance", "edge_gap", "width", "routed_length", "layer_change", "plane_gap",
             "return_path", "stitching", "stub")  # a measured value against a limit
@@ -843,6 +842,8 @@ def _draw_facts(box, wrap, draw):
         box.label(text=f"{findings_draw.what_text(draw)}: none", icon="DRIVER_DISTANCE")
     if tool == "return_path" and findings_draw.covered_text(draw):
         box.label(text=findings_draw.covered_text(draw))
+    for text in findings_draw.side_lines(draw):  # a stripline's other plane under the stretches without it
+        _lines(box, wrap, text, "MESH_PLANE")
     if draw.get("planes"):
         _lines(box, wrap, f"Planes: {', '.join(draw['planes'])}", "MESH_PLANE")
     if tool == "plane_islands":

@@ -1070,6 +1070,56 @@ def covered_text(draw):
     return f"{min(percent, 99) if share < 1 else 100} % covered"
 
 
+def side_text(side):
+    """A stripline's other plane under the stretches without the named one (the bridge's
+    `sides`), with both distances: "In4.Cu GND under all of it, 0.55 mm away (In2.Cu
+    0.11 mm)"; "No plane on In4.Cu under it either"; "" with nothing without plane."""
+    without, backed = side.get("without_nm") or 0, side.get("backed_nm") or 0
+    other, plane = side.get("other") or "", side.get("plane") or "the plane"
+    if not other or without <= 0:
+        return ""
+    if backed <= 0:
+        return f"No plane on {other} under it either"
+    nets = "/".join(side.get("nets") or ())
+    where = f"{other} {nets}" if nets else other
+    amount = "all of it" if backed >= without * 0.99 else f"{backed / 1e6:.2f} of {without / 1e6:.2f} mm"
+    away, named = (side.get("other_nm") or 0) / 1e6, (side.get("plane_nm") or 0) / 1e6
+    if away < named:
+        return f"{where} under {amount}, {away:.2f} mm away: nearer than {plane} ({named:.2f} mm)"
+    if away == named:
+        return f"{where} under {amount}, {away:.2f} mm away: as near as {plane}"
+    return f"{where} under {amount}, {away:.2f} mm away ({plane}: {named:.2f} mm)"
+
+
+def side_lines(draw):
+    """`side_text` of each of a draw's signal layers that says anything."""
+    return [text for text in (side_text(side) for side in draw.get("sides") or ()) if text]
+
+
+def side_short(side):
+    """`side_text` for a 3D label's line (LABEL_CHARS): "In4.Cu GND under all, 0.55 mm
+    (In2.Cu 0.11)", the named plane's distance in mm too; "no plane on In4.Cu either"; ""."""
+    without, backed = side.get("without_nm") or 0, side.get("backed_nm") or 0
+    other = side.get("other") or ""
+    if not other or without <= 0:
+        return ""
+    if backed <= 0:
+        return f"no plane on {other} either"
+    where = " ".join(filter(None, (other, "/".join(side.get("nets") or ()))))
+    amount = "all" if backed >= without * 0.99 else f"{backed / 1e6:.2f} mm"
+    return (f"{where} under {amount}, {(side.get('other_nm') or 0) / 1e6:.2f} mm "
+            f"({side.get('plane') or 'plane'} {(side.get('plane_nm') or 0) / 1e6:.2f})")
+
+
+def _with_sides(first, second, draw):
+    """A plane draw's 3D label: `first` and `second` on their two lines, or with a
+    stripline's other plane (`side_short`) "first: second" and that plane."""
+    shorts = [text for text in (side_short(side) for side in draw.get("sides") or ()) if text]
+    if not shorts:
+        return "\n".join(filter(None, (first, second)))
+    return "\n".join((f"{first}: {second}" if second else first, "; ".join(shorts)))
+
+
 def island_text(island):
     """"4.1 mm², not tied": a plane piece's area, and "main" for the main plane, else
     whether vias tie it to it."""
@@ -1676,8 +1726,15 @@ def _gap_spans(draw, unit, name, finding):
         return None
     material = _material("over")
     lift = NARROW_LIFT_M
-    ribbon = _mesh(name + " spans", _ribbons(spans, lift), Matrix.Identity(4), finding, material)
-    ribbon.show_in_front = True  # an inner layer's too, as the tubes
+    backed = [span for span in draw.get("backed_nm") or () if len(span) >= 6]
+    bare = [span for span in draw.get("bare_nm") or () if len(span) >= 6] if backed else spans
+    if bare:
+        ribbon = _mesh(name + " spans", _ribbons(bare, lift), Matrix.Identity(4), finding, material)
+        ribbon.show_in_front = True  # an inner layer's too, as the tubes
+    if backed:  # a stripline's other plane under them: faded red, and the label says so (`side_text`)
+        ribbon = _mesh(name + " spans backed", _ribbons(backed, lift), Matrix.Identity(4), finding,
+                       _material("over", GHOST_ALPHA))
+        ribbon.show_in_front = True
     radius = _thin(unit, draw)
     ticks = []
     for x0, y0, x1, y1, layer, width in (span[:6] for span in spans):
@@ -1710,7 +1767,8 @@ def _draw_plane_gap(draw, unit, name, finding):
     if at is None and draw.get("points"):
         at = _point(draw["points"][0])[0]
     if at is not None:
-        _label(label_text(draw), at, unit, name + " label", finding, _material("over"), strong)
+        _label(_with_sides(what_text(draw), measured_text(draw), draw), at, unit, name + " label", finding,
+               _material("over"), strong)
 
 
 def _draw_return_path(draw, unit, name, finding):
@@ -1729,7 +1787,7 @@ def _draw_return_path(draw, unit, name, finding):
         return
     share = covered_text(draw)
     second = " ".join(text for text in (measured_text(draw), f"({share})" if share else "") if text)
-    _label(what_text(draw) + (f"\n{second}" if second else ""), at, unit, name + " label", finding,
+    _label(_with_sides(what_text(draw), second, draw), at, unit, name + " label", finding,
            _material("over" if draw.get("spans_nm") else finding.get("severity")), _strong(draw))
 
 
