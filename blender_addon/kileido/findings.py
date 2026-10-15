@@ -1096,6 +1096,14 @@ class KILEIDO_OT_prompt_preset(bpy.types.Operator):
                                 ("all", "All", "Every check in the catalogue")))
 
     @classmethod
+    def poll(cls, context):
+        """Not before the bridge sent its checks: Quick and All would tick none of them."""
+        if not catalogue():
+            cls.poll_message_set("The checks come from the bridge once KiCad is connected")
+            return False
+        return True
+
+    @classmethod
     def description(cls, context, properties):
         if properties.preset == "quick":
             return "Tick the three quick checks only (a short review)"

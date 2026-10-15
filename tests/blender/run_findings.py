@@ -1086,6 +1086,25 @@ def check_planes(scene, index):
     show("Gaps only")
     assert scene.kileido_focus
     scene.kileido_focus = False
+    # One tick box, two holders: a finding shown in X-ray and a malformed outline (apply.py).
+    # Neither lets go of X-ray while the other still wants it, whichever came first.
+    broken = {"problem": np.array([[0, 0]], dtype=np.int32)}
+    for fault_first in (False, True):
+        if fault_first:
+            apply._apply_outline_problem(broken)
+        show("Gaps only")
+        assert scene.kileido_focus
+        if not fault_first:
+            apply._apply_outline_problem(broken)
+        assert findings.hide_shown()
+        assert scene.kileido_focus, "hiding the finding unticked X-ray with the outline still broken"
+        apply._apply_outline_problem({})  # fixed in KiCad
+        assert not scene.kileido_focus
+    apply._apply_outline_problem(broken)
+    show("Gaps only")
+    apply._apply_outline_problem({})  # fixed while the finding is still shown
+    assert scene.kileido_focus, "fixing the outline unticked X-ray under a shown finding"
+    assert findings.hide_shown() and not scene.kileido_focus
     found = show("Planes and returns")
     drawn = objects()
     top = state.board.heights["F.Cu"]
@@ -1475,7 +1494,13 @@ def check_prompt(scene, index):
     prompt sends the ticked ids, a ready prompt is copied once."""
     copied = []
     findings.set_clipboard = copied.append  # background Blender has no clipboard
+    shown_before, stored = state.board.findings, scene.kileido_prompt_checks
+    state.board.findings = {**(shown_before or {}), "catalogue": []}  # the bridge has not sent its checks yet
+    assert not bpy.ops.kileido.prompt_preset.poll()  # Quick or All now would tick none of them
+    state.board.findings = shown_before
+    assert scene.kileido_prompt_checks == stored
     apply.apply_frame(prompt_frame(index), {})
+    assert bpy.ops.kileido.prompt_preset.poll()
     drawn = column(scene)
     texts = [text for _, text, _ in drawn]
     assert ("operator", "Checks (2 of 3)", "DISCLOSURE_TRI_RIGHT") in drawn, drawn  # the quick checks; folded

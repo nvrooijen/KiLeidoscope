@@ -1460,6 +1460,26 @@ def test_verdict_is_what_the_board_says(index, split):
     assert verdict(split, change, {"tool": "ghost", "kind": "via", "at": "pt:20,18.5@F.Cu", "net": "GND"}) == "mismatch"
 
 
+def test_kicads_word_on_a_ghost_changes_the_verdict(split):
+    """KiCad's DRC on the ghosts (`ghost_drc.apply`) can overturn the quick check: the
+    finding's verdict follows, both ways."""
+    change = {"tool": "layer_change", "via": "uuid:via-lvds-0"}
+    fits = payload(split, finding(change, {"tool": "ghost", "kind": "via", "at": "pt:20,19.2@F.Cu", "net": "GND"}))
+    assert fits["findings"][0]["verdict"] == "measured"
+    clash = ghost_drc.Outcome({(0, 1): ghost_drc.Verdict("done", problems=("hole clearance 0.25 mm needed",))})
+    judged = ghost_drc.apply(fits, clash)["findings"][0]
+    assert judged["draws"][1]["fits"] is False and judged["verdict"] == "mismatch"
+    assert ghost_drc.apply(fits, None)["findings"][0]["verdict"] == "measured"  # pending: the quick check's
+    near = payload(split, finding(change, {"tool": "ghost", "kind": "via", "at": "pt:19.5,19.575@F.Cu",
+                                          "net": "GND"}))  # 0.05 mm from the LVDS track: the quick check says no
+    assert near["findings"][0]["verdict"] == "mismatch"
+    allowed = ghost_drc.apply(near, ghost_drc.Outcome({(0, 1): ghost_drc.Verdict("done")}))["findings"][0]
+    assert allowed["draws"][1]["fits"] is True and allowed["verdict"] == "measured"  # KiCad's rules allow it
+    unlinked = {**near, "connected": False}
+    assert ghost_drc.apply(unlinked, ghost_drc.Outcome({(0, 1): ghost_drc.Verdict("done")}))["findings"][0][
+        "verdict"] == "unchecked"
+
+
 def ruled(board, rule, *draws, **fields):
     """The payload's one finding with `rule` applied to its check."""
     ctx = Context("file", {"4": STAMP}, STAMP, {}, {"test.check": (rule,)})
@@ -1511,6 +1531,10 @@ def test_signal_via_rule(split):
         rule["text"].endswith(" next to it: a return via, not a signal via")
     assert plane_via["verdict"] == "mismatch"
     assert ruled(split, "signal_via", {"tool": "highlight", "targets": ["uuid:via-lvds-0"]})["rules"] == []
+    at = ruled(split, "signal_via", {"tool": "layer_change", "via": "net:LVDS_P@F.Cu~20,20"})  # the via by its point
+    assert at["rules"] == [{"rule": "signal_via", "ok": True,
+                            "text": "net:LVDS_P@F.Cu~20,20 is on LVDS_P, no plane of its net next to it"}]
+    assert ruled(split, "signal_via", {"tool": "layer_change", "via": "uuid:00000000"})["rules"] == []  # no via
 
 
 def test_diff_pair_rule(split):
@@ -1524,6 +1548,11 @@ def test_diff_pair_rule(split):
                                 "GND is not a differential pair net: no partner named like it (+/- or P/N)"}]
     assert nets("net:LVDS_P", "net:LVDS_N", "net:ETH_P")[0]["text"] == "3 nets named (LVDS_P, LVDS_N, ETH_P): a pair is two"
     assert nets("uuid:via-lvds-0") == []  # no net named as such
+    # the plane under the pair, highlighted beside it, is left aside; named alone it is no pair
+    assert nets("net:LVDS_P", "net:LVDS_N", "net:GND@In1.Cu") == [
+        {"rule": "diff_pair", "ok": True, "text": "LVDS_P and LVDS_N are a pair"}]
+    assert nets("net:GND", "net:LVDS_P")[0]["ok"] is True
+    assert nets("net:GND", "net:VCC")[0]["text"].startswith("GND is not a differential pair net")
 
 
 def test_a_target_entry_names_its_net(index):

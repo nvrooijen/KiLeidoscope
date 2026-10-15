@@ -133,7 +133,8 @@ RULE_TEXT = {  # per rule (RULES; checks.Check.rules names them): what the promp
                   "one of the cap's pads",
     "same_net": "the two pads the distance or arrow joins must be on the same net",
     "signal_via": "the via must carry a signal, not a plane net",
-    "diff_pair": "the nets named (net:...) must be a differential pair by KiCad's naming (+/- or P/N)"}
+    "diff_pair": "the pair's nets named (net:...) must be a differential pair by KiCad's naming (+/- or P/N); "
+                 "other nets named, such as the plane's, are left aside"}
 # claimed value -> the tools that measure it (both shown when > 10 % apart, coverage > DISAGREE_POINTS)
 CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change")), ("width_mm", ("width",)),
           ("length_mm", ("routed_length", "return_path")), ("gap_mm", ("plane_gap",)), ("stub_mm", ("stub",)),
@@ -1681,9 +1682,13 @@ def _rule_signal_via(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
             continue
         by_role = dict(zip((role for role, _ in _roles(draw)), resolved))
         via = by_role.get("via")
-        if via is None or not via.items or not isinstance(via.items[0], model.Via):
+        if via is None:
             continue
-        record, text = via.items[0], via.target.strip()
+        try:
+            record = _via(board.index, via)  # a uuid, or net@layer~x,y at the via, as layer_change takes it
+        except _Bad:
+            continue
+        text = via.target.strip()
         layer = _plane_of_via(board.index, record)
         if layer:
             return False, f"{text} is on {record.net}, the plane on {layer} next to it: a return via, not a signal via"
@@ -1692,15 +1697,17 @@ def _rule_signal_via(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
 
 
 def _rule_diff_pair(board: _Resolver, draws: tuple[Draw, ...], drawn: list):
-    """The nets named as net:... must be a differential pair (KiCad's +/- or P/N naming)."""
-    nets = list(dict.fromkeys(_target_net(found) for _, resolved in drawn for found in resolved
-                              if found.target.strip().lower().startswith("net:") and _target_net(found)))
-    if not nets:
+    """The nets named as net:... must be a differential pair (KiCad's +/- or P/N naming). A
+    net with no partner named beside pair nets (the plane under them, highlighted) is left
+    aside; named alone, it is no pair."""
+    named = list(dict.fromkeys(_target_net(found) for _, resolved in drawn for found in resolved
+                               if found.target.strip().lower().startswith("net:") and _target_net(found)))
+    if not named:
         return None
-    partners = {net: diff_pair_partner(net, board.index.nets) for net in nets}
-    for net, partner in partners.items():
-        if partner is None:
-            return False, f"{net} is not a differential pair net: no partner named like it (+/- or P/N)"
+    partners = {net: diff_pair_partner(net, board.index.nets) for net in named}
+    nets = [net for net in named if partners[net] is not None]
+    if not nets:
+        return False, f"{named[0]} is not a differential pair net: no partner named like it (+/- or P/N)"
     if len(nets) == 1:
         return True, f"{nets[0]} pairs with {partners[nets[0]]}"
     if len(nets) == 2:
@@ -1754,6 +1761,13 @@ def _verdict(connected: bool, severity: str, faded: bool, draws: list[dict], dis
     if any(draw["ok"] and draw["tool"] in MEASURING for draw in draws):
         return "measured"
     return "unchecked"
+
+
+def verdict_of(row: dict, connected: bool) -> str:
+    """`_verdict` again from a finding's payload row: KiCad's DRC on its ghosts
+    (`ghost_drc.apply`) can change whether a suggestion fits after the resolve."""
+    return _verdict(connected, row.get("severity", ""), bool(row.get("faded")), row.get("draws") or [],
+                    row.get("disagree") or [], bool(row.get("passes")), row.get("rules") or [])
 
 
 def _clash_text(record, gap: float) -> tuple[str, str]:

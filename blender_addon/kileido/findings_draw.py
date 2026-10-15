@@ -196,18 +196,23 @@ def xray_wanted(finding, draws):
 
 def _follow_xray(wanted):
     """X-ray mode ticked when a finding that wants it is shown (once per finding: unticked
-    by the user, it stays off for it), and unticked when it goes if it was ticked for it."""
+    by the user, it stays off for it), and unticked when it goes if it was ticked for it.
+    A malformed outline may hold the tick too (`board.xray_for_outline`, apply.py): the
+    box is unticked only once neither holds it."""
     scene = bpy.context.scene
     if wanted and board.xray_for_finding != board.findings_shown:
         board.xray_for_finding = board.findings_shown
         if not getattr(scene, "kileido_focus", True):
             board.xray_ticked = True
             scene.kileido_focus = True
+        elif board.xray_for_outline:  # ticked for the outline: held for the finding too
+            board.xray_ticked = True
     elif not wanted and board.xray_for_finding is not None:
         board.xray_for_finding = None
         if board.xray_ticked:
             board.xray_ticked = False
-            scene.kileido_focus = False
+            if not board.xray_for_outline:
+                scene.kileido_focus = False
 
 
 def highlighted(finding):

@@ -491,9 +491,7 @@ class FindingsWatch:
                 pass  # kept in memory; the next confirm or dismiss tries again
         files = {source: self._read_file(folder, source) for source in job.reload if source in SOURCES}
         progress = self._read_progress(folder) if PROGRESS in job.reload else None
-        index = self._index_of(board)
-        runs = folder.runs()
-        with self._lock:
+        with self._lock:  # kept before anything else can fail: `_read` already counts these files as read
             if generation != self._generation:
                 return
             for source, found in files.items():
@@ -505,6 +503,11 @@ class FindingsWatch:
                 self._read.pop(PROGRESS, None)  # locked: the next tick tries again
             elif progress is not None:
                 self._progress = progress
+        index = self._index_of(board)
+        runs = folder.runs()
+        with self._lock:
+            if generation != self._generation:
+                return
             todo = [source for source in SOURCES if source in job.resolve or source in files]
             work = [(source, self._parsed.get(source), self._context(source, runs)) for source in todo]
             good = dict(self._good)

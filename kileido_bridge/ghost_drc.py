@@ -57,7 +57,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from . import drc_findings
-from .findings import _CONTROL, CAP_GHOST_NM, GHOST_VIA_NM, _mm_text, _show, turner
+from .findings import _CONTROL, CAP_GHOST_NM, GHOST_VIA_NM, _mm_text, _show, turner, verdict_of
 from .hatch import layer_names
 from .scrub import nodes
 
@@ -595,14 +595,18 @@ def check(folder, text: str, ghosts: list[Ghost], cli: str, run=run_drc, lock=No
 
 def apply(payload: dict, outcome: Outcome | None) -> dict:
     """The payload with KiCad's DRC on its ghosts: `outcome` None while it runs
-    ("pending"), with `error` when it failed. Published dicts are never changed in place:
-    rows and draws that change are new, the rest stay the same objects."""
+    ("pending"), with `error` when it failed. A row whose ghosts change gets its `verdict`
+    again (`findings.verdict_of`): a suggestion KiCad finds a clash in is a mismatch, one
+    it allows no longer is. Published dicts are never changed in place: rows and draws that
+    change are new, the rest stay the same objects."""
     rows, changed = [], False
     for fi, row in enumerate(payload.get("findings") or ()):
         draws = row.get("draws") or []
         new = [_judged(draw, outcome, (fi, di)) for di, draw in enumerate(draws)]
         if any(a is not b for a, b in zip(new, draws)):
             row, changed = {**row, "draws": new}, True
+            if "verdict" in row:
+                row["verdict"] = verdict_of(row, payload.get("connected", True))
         rows.append(row)
     return {**payload, "findings": rows} if changed else payload
 

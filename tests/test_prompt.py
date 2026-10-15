@@ -95,6 +95,7 @@ def test_request_offers_only_drawn_tools_with_their_fields():
     stackup = prompt.request_md("1", "00000000", ANSWER, by_id(["plane.stackup"]))
     assert tools_offered(stackup) == {"highlight", "label", "layers"} and "Draw with: layers, highlight\n" in stackup
     assert "No checks were chosen" in prompt.request_md("1", "00000000", ANSWER, ())
+    assert "emphasis (normal|strong" in every and "step (" not in every  # steps are not drawn: not offered
 
 
 def test_every_drawn_tool_has_a_line_and_its_example_parses():

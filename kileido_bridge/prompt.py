@@ -323,9 +323,8 @@ Answer file: {findings_path}
 Pick one or more drawing tools per finding from this list (fields in brackets,
 an example below each):
 {drawing_tools_short(tools)}
-Every tool also takes: label (short text), step (1, 2, ...: drawings with the
-same step appear together, in step order), emphasis (normal|strong). Colours
-come from the severity; do not give any.
+Every tool also takes: label (short text) and emphasis (normal|strong: drawn
+larger). Colours come from the severity; do not give any.
 
 ## Answer format (JSON)
 {{

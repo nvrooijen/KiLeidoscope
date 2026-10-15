@@ -8,6 +8,8 @@ from collections import namedtuple
 from contextlib import contextmanager
 from dataclasses import replace
 
+import pytest
+
 import kileido_bridge
 from kileido_bridge import findings_watch, kls_folder
 from kileido_bridge.live_copy import LiveBoardCopy
@@ -601,6 +603,30 @@ def test_a_bug_in_one_job_never_ends_the_findings_thread(tmp_path):
     job()  # the thread still takes work
     until(lambda: len(done) == 2)
     until(lambda: (tmp_path / ".kileidoscope" / "dismissed.json").is_file())
+
+
+def test_a_file_read_by_a_job_that_fails_later_is_kept(tmp_path):
+    """The tick counts a file as read when it hands it over: a job that fails after reading
+    it (a board index or run listing bug) must not lose it, or the next resolve would show
+    the file before it."""
+    (tmp_path / "board.kicad_pcb").write_text(FakeBoard.contents, encoding="utf-8")
+    watch = findings_watch.FindingsWatch(find_cli=lambda hint: "")
+    watch.target(str(tmp_path / "board.kicad_pcb"))
+    folder, generation = watch.folder, watch._generation
+    track = types.SimpleNamespace(id="11111111-2222-4333-8444-555555555555")
+    old = tool_file(track)
+    write(tmp_path, old)
+    watch._work(findings_watch._Job(reload={"file"}), generation, folder, watch._board, watch._state)
+    assert [r["title"] for r in file_rows(watch.result()[1])] == ["Stub on the clock"]
+    new = {**old, "findings": [{**old["findings"][0], "title": "The newer answer"}]}
+    write(tmp_path, new)
+    runs = folder.runs
+    folder.runs = lambda: (_ for _ in ()).throw(RuntimeError("a listing bug"))
+    with pytest.raises(RuntimeError):
+        watch._work(findings_watch._Job(reload={"file"}), generation, folder, watch._board, watch._state)
+    folder.runs = runs
+    watch._work(findings_watch._Job(resolve={"file"}), generation, folder, watch._board, watch._state)
+    assert [r["title"] for r in file_rows(watch.result()[1])] == ["The newer answer"]
 
 
 def test_a_drc_file_from_an_earlier_session_is_discarded(tmp_path, monkeypatch):

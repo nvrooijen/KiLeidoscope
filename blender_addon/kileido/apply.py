@@ -583,14 +583,17 @@ def _apply_outline_problem(arrays):
     if not board.outline_problem:
         obj.data.clear_geometry()
         set_visible(obj, False)
-        if board.xray_for_outline:  # ticked for the fault: untick now it is fixed
-            board.xray_for_outline = False
-            scene.kileido_focus = False
+        if board.xray_for_outline:  # ticked for the fault: untick now it is fixed, unless a shown finding
+            board.xray_for_outline = False  # holds it too (findings_draw._follow_xray)
+            if not board.xray_ticked:
+                scene.kileido_focus = False
         focus.refresh()
         return
     if not getattr(scene, "kileido_focus", True):  # the red outline, with everything else faded
         board.xray_for_outline = True
         scene.kileido_focus = True
+    elif board.xray_ticked:  # ticked for a shown finding: held for the fault too, so hiding it leaves X-ray on
+        board.xray_for_outline = True
     seg = np.vstack([np.column_stack([strokes, np.full(len(strokes), PROBLEM_LINE_NM)]),
                      np.column_stack([problems, problems, np.full(len(problems), PROBLEM_DOT_NM)])]).astype(np.int32)
     _segment_edges(obj.data, seg, np.zeros(len(seg), np.int32))
