@@ -138,6 +138,9 @@ class PairPhase:
     pads: tuple = ()  # dicts for the frame: see _pads
     lines: tuple = ()  # ({"layer", "kind", "mm"}, ...): what kind of line the route is, longest first
     net_ids: tuple = ()  # every item on the pair's nets (stubs and leftovers too), for Blender's highlight
+    # (k, 2) where each Δt reading sits: along P's copper and along N's (nm), so a tool
+    # comparing with a measurement along the copper reads it at the same two places.
+    matched_nm: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def skew_ps(self) -> float:
@@ -496,6 +499,8 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     f_a, f_b = _nearby(b[j], a, i), _nearby(a[i], b, j)
     dt = np.where(waiting_p, np.interp(f_a, np.arange(len(a)), t_p) - t_n[j],
                   t_p[i] - np.interp(f_b, np.arange(len(b)), t_n))
+    matched = np.column_stack((np.where(waiting_p, np.interp(f_a, np.arange(len(a)), s_a), s_a[i]),
+                               np.where(waiting_p, s_b[j], np.interp(f_b, np.arange(len(b)), s_b))))
     centre = np.where(waiting_p[:, None], (_at(a, f_a) + b[j]) / 2, (a[i] + _at(b, f_b)) / 2)
     along = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(centre, axis=0), axis=1))))
     widths = [piece.width for piece in (*p.pieces, *n.pieces) if piece.kind == "track"]
@@ -532,7 +537,8 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
                   for (layer, kind), length in sorted(lengths.items(), key=lambda entry: -entry[1]))
     return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
                      width, excursions, crossings,
-                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads, lines)
+                     tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads, lines,
+                     matched_nm=matched)
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
