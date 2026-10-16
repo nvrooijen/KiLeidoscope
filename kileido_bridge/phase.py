@@ -147,6 +147,12 @@ class PairPhase:
     # (k, 2) where each Δt reading sits: along P's copper and along N's (nm), so a tool
     # comparing with a measurement along the copper reads it at the same two places.
     matched_nm: np.ndarray | None = field(default=None, repr=False)
+    # (k, 2) each side's delay from the start at its matched reading (ps; their difference
+    # is dt_ps), and (k,) ps the pair's even mode has fallen behind its odd mode by each
+    # reading (the mean of the two sides' `_Walk.lag`): what a tool needs to rebuild the two
+    # traces' signals and predict what a probe on either reads once skew has made common mode.
+    delays_ps: np.ndarray | None = field(default=None, repr=False)
+    lag_ps: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def skew_ps(self) -> float:
@@ -516,6 +522,8 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
                   t_p[i] - np.interp(f_b, np.arange(len(b)), t_n))
     matched = np.column_stack((np.where(waiting_p, np.interp(f_a, np.arange(len(a)), s_a), s_a[i]),
                                np.where(waiting_p, s_b[j], np.interp(f_b, np.arange(len(b)), s_b))))
+    reached = np.column_stack((np.where(waiting_p, np.interp(f_a, np.arange(len(a)), t_p), t_p[i]),
+                               np.where(waiting_p, t_n[j], np.interp(f_b, np.arange(len(b)), t_n))))
     centre = np.where(waiting_p[:, None], (_at(a, f_a) + b[j]) / 2, (a[i] + _at(b, f_b)) / 2)
     along = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(centre, axis=0), axis=1))))
     widths = [piece.width for piece in (*p.pieces, *n.pieces) if piece.kind == "track"]
@@ -557,7 +565,7 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
                      width, excursions, crossings,
                      tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads, lines,
-                     matched_nm=matched)
+                     matched_nm=matched, delays_ps=reached, lag_ps=(behind[0] + behind[1]) / 2)
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
