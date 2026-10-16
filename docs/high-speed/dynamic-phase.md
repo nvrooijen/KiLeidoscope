@@ -118,6 +118,36 @@ $$V_\text{diff} = \frac{V_P - V_N}{2} \approx v\!\left(t - \tfrac{\delta}{2}\rig
 
 a common-mode pulse shaped like the edge's derivative, of order $\delta / t_r$ of the differential amplitude for a rise time $t_r$. A compensating bump $L$ mm further on makes the opposite pulse, aligned with the differential edge as it is then; the first one has fallen behind by $(\tau_\text{e} - \tau_\text{o})\,L$, and the two cancel only while that lag is small against $t_r$. That is the mode lag dynamic phase reports for each excursion (the lag per mm at the gap there, added up along both sides of the stretch; 0 where a side runs alone and on stripline): compare it with your edge's rise time. On the common-mode demo's pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) the lag is about 0.33 ps/mm, so a fix 45 mm away (case A) comes 15 ps late for a 25 ps edge and leaves two common-mode pulses, while a fix 2 mm away (case B) cancels; a full-wave run measured 16 % common mode at J1 for A against 7 % for B. With a tuning profile the lag is in the profile's scale, as the delay is. Beside a pour the odd mode's ratio is applied to both modes; the pour's own effect on the even mode is not modelled.
 
+### The equations behind it
+
+Everything above follows from one standard result. For a symmetric coupled pair that is lossless, uniform along its length $z$ and terminated in its modal impedances (no reflections), the coupled telegrapher's equations separate into two modes that never exchange energy, the even (common) and the odd (differential), each with its own velocity $v = 1/\tau$, $\tau = \sqrt{\varepsilon_\text{eff}}/c$ (Tripathi 1975 for the general inhomogeneous case; Pozar, coupled lines, for the symmetric one). Whatever the two conductors carry at $z = 0$ arrives at $z$ as
+
+$$V_P(z,t) = e\!\left(t - \tau_\text{e} z\right) + o\!\left(t - \tau_\text{o} z\right), \qquad V_N(z,t) = e\!\left(t - \tau_\text{e} z\right) - o\!\left(t - \tau_\text{o} z\right),$$
+
+with $e(t) = \tfrac12\,[V_P(0,t) + V_N(0,t)]$ and $o(t) = \tfrac12\,[V_P(0,t) - V_N(0,t)]$. This is exact under those assumptions; the rest is algebra on it.
+
+**Far-end crosstalk is the same velocity difference.** A step $s(t)$ on P with N quiet gives $e = o = s/2$, so at the far end of $\ell$ mm
+
+$$V_N(\ell,t) = \tfrac12\,[\,s(t - \tau_\text{e}\ell) - s(t - \tau_\text{o}\ell)\,] \approx -\tfrac{\ell}{2}\,(\tau_\text{e} - \tau_\text{o})\,s'(t - \tau_\text{o}\ell),$$
+
+the textbook far-end crosstalk of microstrip, zero on stripline where $\tau_\text{e} = \tau_\text{o}$ (Hall and Heck; Johnson and Graham). The mode lag dynamic phase reports is $\ell\,(\tau_\text{e} - \tau_\text{o})$, the same quantity.
+
+**Skew is mode conversion.** P behind N by $\delta$ at $z = 0$, $V_P = s(t - \delta)$ and $V_N = -s(t)$, gives
+
+$$e(t) = \tfrac12\,[\,s(t - \delta) - s(t)\,] = -\tfrac{\delta}{2}\,s'\!\left(t - \tfrac{\delta}{2}\right) + O(\delta^3), \qquad o(t) = \tfrac12\,[\,s(t - \delta) + s(t)\,] = s\!\left(t - \tfrac{\delta}{2}\right) + O(\delta^2).$$
+
+In Bockelman and Eisenstadt's mixed-mode parameters the same statement in the frequency domain is $S_\text{cd21} = \tfrac12\,(S_{21,P} - S_{21,N}) = \tfrac12\,e^{-j\omega T}\,(e^{-j\omega\delta} - 1)$ for two lines of delay $T$ and $T + \delta$, so
+
+$$|S_\text{cd21}| = |\sin(\pi f \delta)|,$$
+
+with its first peak at $f = 1/(2\delta)$: the measure channel standards use for intra-pair skew.
+
+**Why a distant fix does not undo it.** After $\ell$ mm coupled, the common-mode pulse is at $t = \tau_\text{e}\ell$ while the differential edge is at $\tau_\text{o}\ell$: behind by $\Delta\tau = \ell\,(\tau_\text{e} - \tau_\text{o})$, the mode lag. A bump there that delays N by $\delta$ converts again, with the opposite sign and aligned with the edge as it is then, so the common mode that remains is
+
+$$e_\text{left}(t) = \tfrac{\delta}{2}\,\big[\,s'(t - \tau_\text{o}\ell - \tfrac{\delta}{2}) - s'(t - \tau_\text{e}\ell - \tfrac{\delta}{2})\,\big] \approx -\tfrac{\delta}{2}\,\Delta\tau\;s''\!\left(t - \tau_\text{o}\ell - \tfrac{\delta}{2}\right)$$
+
+for $\Delta\tau$ small against the edge's rise time $t_r$. Its size next to the differential signal is then of order $\delta\,\Delta\tau / t_r^2$, within a factor of a few that depends on the edge's shape; once $\Delta\tau$ exceeds the edge the two pulses no longer overlap and what is left is simply the whole common mode, twice over. On the demo's case A, $\delta$ = 8 ps, $\Delta\tau$ = 15 ps and $t_r$ ≈ 25 ps: the order-of-magnitude form gives 0.2, the exact expression for a Gaussian pulse of that rise time 0.44, and the full-wave run measured 16 % common mode at J1, so the three agree in order of magnitude and no better. Case B, $\Delta\tau$ under 1 ps, gives 0.02; the 7 % measured there has other sources (the turn's own change of coupling, the bumps' lone stretches), so the estimate is only a floor. One run each.
+
 ### Why Δt holds up when the estimate is off
 
 Δt is a difference between P and N. Where both run on the same layer at the same width, they get the same τ, so an error in τ doesn't create Δt; it only scales it. An εeff that is 5 % off makes τ about 2.5 % off, so a 2 ps excursion reads 1.95 or 2.05 ps. The absolute delays of P and N carry the full error; Δt mostly doesn't.
@@ -189,6 +219,9 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 - D. M. Pozar, Microwave Engineering, 4th ed., Wiley, 2012: coupled lines, even and odd modes.
 - S. H. Hall and H. L. Heck, Advanced Signal Integrity for High-Speed Digital Designs, Wiley, 2009: modal decomposition, the two mode velocities and far-end crosstalk, differential-to-common conversion.
 - E. Bogatin, Signal and Power Integrity — Simplified, 3rd ed., Pearson, 2018: differential pairs, skew and common mode.
+- V. K. Tripathi, "Asymmetric coupled transmission lines in an inhomogeneous medium," IEEE Transactions on Microwave Theory and Techniques, vol. 23, no. 9, pp. 734–739, 1975: the two modes of a coupled line with two velocities, the solution the equations above rest on.
+- D. E. Bockelman and W. R. Eisenstadt, "Combined differential and common-mode scattering parameters: theory and simulation," IEEE Transactions on Microwave Theory and Techniques, vol. 43, no. 7, pp. 1530–1539, 1995: mixed-mode S-parameters, $S_\text{cd21}$.
+- H. W. Johnson and M. Graham, High-Speed Digital Design: A Handbook of Black Magic, Prentice Hall, 1993: far-end crosstalk from the modal velocity difference.
 
 ## Code
 
