@@ -205,6 +205,7 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
     column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
     column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
+    column.prop(scene, "kileido_phase_rise_ps", text="Edge rise time (ps)")
     pulses = layout.column(align=True)
     pulses.active = scene.kileido_phase_pulses
     pulses.row().prop(scene, "kileido_phase_pulse_clock", expand=True)

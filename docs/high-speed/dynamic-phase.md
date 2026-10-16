@@ -23,7 +23,7 @@ The tool measures and shows. It doesn't judge: there are no interface standards 
 
 ## The Δt chart
 
-**Export chart (SVG)** under the pair list writes one small plot per pair: Δt along the pair, the marker tolerance as a green band, every excursion shaded orange with its peak, and over each plot the pair's ends, its end-to-end skew and its largest |Δt|. All plots share one scale, so the pairs compare at a glance. A source and its compensation read as a plateau: Δt steps up at the bend and only steps back where the compensating bump sits, and the plateau's width is how far apart they are. The numbers go into the SVG's `<metadata>` block and, unless you untick it in the file dialog, into a `.csv` beside it (pair, mm along the pair, Δt in ps).
+**Export chart (SVG)** under the pair list writes one small plot per pair: Δt along the pair, dashed beside it Δt as a probe on each trace would read it (fading where the skew's common mode has fallen behind the edge, see [the drift](#the-equations-behind-it)), the marker tolerance as a green band, every excursion shaded orange with its peak, and over each plot the pair's ends, its end-to-end skew and its largest |Δt|. All plots share one scale, so the pairs compare at a glance. A source and its compensation read as a plateau: Δt steps up at the bend and only steps back where the compensating bump sits, and the plateau's width is how far apart they are. The numbers go into the SVG's `<metadata>` block and, unless you untick it in the file dialog, into a `.csv` beside it (pair, mm along the pair, Δt in ps).
 
 ## From the DRC column
 
@@ -146,7 +146,15 @@ with its first peak at $f = 1/(2\delta)$: the measure channel standards use for 
 
 $$e_\text{left}(t) = \tfrac{\delta}{2}\,\big[\,s'(t - \tau_\text{o}\ell - \tfrac{\delta}{2}) - s'(t - \tau_\text{e}\ell - \tfrac{\delta}{2})\,\big] \approx -\tfrac{\delta}{2}\,\Delta\tau\;s''\!\left(t - \tau_\text{o}\ell - \tfrac{\delta}{2}\right)$$
 
-for $\Delta\tau$ small against the edge's rise time $t_r$. Its size next to the differential signal is then of order $\delta\,\Delta\tau / t_r^2$, within a factor of a few that depends on the edge's shape; once $\Delta\tau$ exceeds the edge the two pulses no longer overlap and what is left is simply the whole common mode, twice over. On the demo's case A, $\delta$ = 8 ps, $\Delta\tau$ = 24 ps (73 mm of coupled pair between the turn and the bumps) and $t_r$ ≈ 25 ps: the order-of-magnitude form gives 0.3, the exact expression for a Gaussian pulse of that rise time 0.43, and the full-wave run gives 0.32 (the common-mode peak over the differential peak at J1's ports), so the three agree within a factor of two. Case B, $\Delta\tau$ under 1 ps, gives 0.02; the 0.16 measured there has other sources (the turn's own change of coupling, the bumps' lone stretches, the serpentine), so the estimate is only a floor. One run each.
+for $\Delta\tau$ small against the edge's rise time $t_r$.
+
+**What a probe on each trace reads, the drift.** A probe on P sees the differential edge plus the sliding common-mode pulse, on N the inverted edge plus the same pulse, and the timing of each moves as the pulse slides. For one skew $\delta$ followed by a lag $\Delta\tau$, timing each trace at the 50 % point of its pulse's running integral and keeping first order in $\delta$,
+
+$$\Delta t_\text{read} = \delta\,e^{-\Delta\tau^2 / 2\sigma^2}, \qquad \sigma = t_r / 2.56$$
+
+for a Gaussian edge: the skew reads in full where it is made and fades as its common mode falls behind, until the two edges are aligned again and the skew lives only in a common-mode pulse running behind them. Dynamic phase computes this along the route for any distribution of skew (`modes.apparent_dt`: the two-mode solution step by step, in the frequency domain, on a Gaussian edge of the *Edge rise time* setting) and carries it as a second curve, Δt as read, in the chart export; on stripline the two coincide. It is what a two-channel probe or a field solver's per-trace timing shows, not the skew itself, which is why neither is a measurement of Δt past the first discontinuity.
+
+Its size next to the differential signal is then of order $\delta\,\Delta\tau / t_r^2$, within a factor of a few that depends on the edge's shape; once $\Delta\tau$ exceeds the edge the two pulses no longer overlap and what is left is simply the whole common mode, twice over. On the demo's case A, $\delta$ = 8 ps, $\Delta\tau$ = 24 ps (73 mm of coupled pair between the turn and the bumps) and $t_r$ ≈ 25 ps: the order-of-magnitude form gives 0.3, the exact expression for a Gaussian pulse of that rise time 0.43, and the full-wave run gives 0.32 (the common-mode peak over the differential peak at J1's ports), so the three agree within a factor of two. Case B, $\Delta\tau$ under 1 ps, gives 0.02; the 0.16 measured there has other sources (the turn's own change of coupling, the bumps' lone stretches, the serpentine), so the estimate is only a floor. One run each.
 
 ### Why Δt holds up when the estimate is off
 

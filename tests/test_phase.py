@@ -479,7 +479,8 @@ def test_the_tracker_recomputes_only_pairs_whose_copper_changed():
     assert [header["type"] for header, _ in first] == ["phase_list", "phase_pair", "phase_pair"]
     listing = first[0][0]
     assert listing["keys"] == ["D_P", "E_P"] and listing["pending"] == 0
-    assert listing["settings"] == {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True, "flipped": []}
+    assert listing["settings"] == {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True, "flipped": [],
+                                   "rise_ps": 25.0}
     header, arrays = first[1]
     assert header["name"] == "D_P/N" and header["start"]["label"] == "J1.1/2" and header["end"]["label"] == "U1.1/2"
     assert header["start"]["ids"] == ["J1.1", "J1.2"] and header["start"]["layer"] == "F.Cu"
@@ -605,3 +606,23 @@ def test_kicad_names_each_pair_nets_netclass_and_its_tuning_profile():
 
     assert net_classes(Board(), {"D_P", "D_N"}) == {"D_P": ("HS", "Fast"), "D_N": ("Default", "")}
     assert sorted(asked) == ["D_N", "D_P"]  # only the pair nets are asked about
+
+
+def test_the_read_skew_fades_along_a_tight_coupled_pair_but_not_on_stripline():
+    """Δt as a probe would read it (modes.apparent_dt): the geometric Δt where the skew is
+    made, less and less of it as its common mode falls behind the edge."""
+    def tight(layer="F.Cu"):
+        board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.5)), layer=layer)
+        board.part("J1", (1, "D_P", (80, 0)), (2, "D_N", (80, 0.5)), layer=layer)
+        board.path("D_P", (0, 0), *boards.bump(78, 0, -1.5), (80, 0), layer=layer)  # the bump near J1, the start end
+        return board.path("D_N", (0, 0.5), (80, 0.5), layer=layer).snapshot()
+    result = phase.analyze_board(tight(), settings=phase.Settings(rise_ps=25.0))[0][0]
+    assert result.p.start.label.startswith("J1")
+    along = result.along_nm / 1e6
+    geometric, read = result.dt_ps, result.read_dt_ps
+    near, far = int(np.argmin(np.abs(along - 7))), int(np.argmin(np.abs(along - 75)))
+    assert geometric[near] == pytest.approx(geometric[far], abs=0.05)  # the skew is made once, by the bump
+    assert read[near] == pytest.approx(geometric[near], abs=0.3)  # read in full just after it
+    assert read[far] < 0.5 * geometric[far] and result.lag_ps[far] > 10  # faded far down the coupled pair
+    inner = phase.analyze_board(tight("In1.Cu"), settings=phase.Settings(rise_ps=25.0))[0][0]
+    assert np.allclose(inner.read_dt_ps[5:], inner.dt_ps[5:], atol=0.1) and inner.lag_ps[-1] == 0.0

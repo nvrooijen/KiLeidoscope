@@ -382,7 +382,6 @@ def phase_pair_message(info: dict, traces: dict, revision: int, centreline: dict
         arrays[f"{side}_t"] = np.asarray(delay, dtype="<f4")
         arrays[f"{side}_lead"] = np.asarray(lead, dtype="<f4")
         arrays[f"{side}_width"] = np.rint(width).astype("<i4")
-    if centreline:
-        arrays["along"] = np.rint(centreline["along"]).astype("<i4")
-        arrays["dt"] = np.asarray(centreline["dt"], dtype="<f4")
+    for name, values in (centreline or {}).items():
+        arrays[name] = np.rint(values).astype("<i4") if name == "along" else np.asarray(values, dtype="<f4")
     return encode_frame({"type": "phase_pair", "revision": revision, **info}, arrays)

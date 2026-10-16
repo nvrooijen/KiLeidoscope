@@ -31,7 +31,7 @@ def test_the_chart_draws_every_pair_on_one_scale_with_its_excursions_and_carries
                    excursions=[{"at_mm": 0.5, "length_mm": 8.5, "peak_ps": 2.8}], skew_ps=0.0, flipped=True)
     text = chart.svg([flat, bumped], 1.0, 5.0, "demo.kicad_pcb")
     assert text.startswith("<svg") and text.rstrip().endswith("</svg>")
-    assert text.count("<polyline") == 2  # one Δt line per pair
+    assert text.count("<polyline") == 4  # per pair: the Δt line and, dashed, Δt as read on the traces
     assert text.count('fill="#f5a623"') == 1  # the excursion, shaded once
     assert "+2.8 ps" in text and "skew +0.0 ps" in text and "(flipped)" in text
     assert "HDMI_D0_P/N" in text and "demo.kicad_pcb" in text
@@ -48,12 +48,12 @@ def test_the_csv_has_one_row_per_sample_and_quotes_names_with_commas():
     pair = _pair("TX_P/N → TX_C_P/N", [0.0, -0.4, -0.8])
     pair["start"] = "U1.A1/A2, via C1"
     rows = list(csv_module.reader(io.StringIO(chart.csv([pair]))))
-    assert rows[0] == ["pair", "start", "end", "along_mm", "dt_ps"]
-    assert rows[1] == ["TX_P/N → TX_C_P/N", "U1.A1/A2, via C1", "J1.1/2", "0.0000", "0.0000"]
-    assert rows[3][3:] == ["1.0000", "-0.8000"] and len(rows) == 4
+    assert rows[0] == ["pair", "start", "end", "along_mm", "dt_ps", "dt_read_ps"]
+    assert rows[1] == ["TX_P/N → TX_C_P/N", "U1.A1/A2, via C1", "J1.1/2", "0.0000", "0.0000", "0.0000"]
+    assert rows[3][3:] == ["1.0000", "-0.8000", "-0.8000"] and len(rows) == 4  # no read values given: Δt itself
 
 
 def test_an_empty_chart_still_draws():
     chart = _chart()
     text = chart.svg([], 1.0, 5.0)
-    assert "<svg" in text and "No measured pair" in text and chart.csv([]) == "pair,start,end,along_mm,dt_ps\n"
+    assert "<svg" in text and "No measured pair" in text and chart.csv([]) == "pair,start,end,along_mm,dt_ps,dt_read_ps\n"

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from . import board_text, channels, delays, model, protocol
+from . import board_text, channels, delays, model, modes, protocol
 
 SAMPLES = 400  # per side at most; longer routes get a longer step
 COUPLE_STEP_NM = 50_000  # the gap to the partner, and so the coupled unit delay, every 50 um
@@ -47,6 +47,7 @@ class Settings:
     min_length_nm: float = 5_000_000
     follow_series: bool = True
     flipped: frozenset = frozenset()  # channel keys walked from their other end
+    rise_ps: float = 25.0  # the signal's edge (10–90 %): how fast skew fades from the traces as it becomes common mode
 
     @classmethod
     def from_request(cls, header: dict) -> "Settings":
@@ -57,13 +58,18 @@ class Settings:
             length = max(0.0, float(header.get("min_length_mm", default.min_length_nm / 1e6))) * 1e6
         except (TypeError, ValueError):
             tolerance, length = default.tolerance_ps, default.min_length_nm
+        try:
+            rise = min(1000.0, max(1.0, float(header.get("rise_ps", default.rise_ps))))
+        except (TypeError, ValueError):
+            rise = default.rise_ps
         flipped = header.get("flipped", ())
         return cls(tolerance, length, bool(header.get("follow_series", True)),
-                   frozenset(str(key) for key in flipped) if isinstance(flipped, (list, tuple)) else frozenset())
+                   frozenset(str(key) for key in flipped) if isinstance(flipped, (list, tuple)) else frozenset(),
+                   rise)
 
     def as_json(self) -> dict:
         return {"tolerance_ps": self.tolerance_ps, "min_length_mm": self.min_length_nm / 1e6,
-                "follow_series": self.follow_series, "flipped": sorted(self.flipped)}
+                "follow_series": self.follow_series, "flipped": sorted(self.flipped), "rise_ps": self.rise_ps}
 
 
 @dataclass(frozen=True)
@@ -153,6 +159,9 @@ class PairPhase:
     # traces' signals and predict what a probe on either reads once skew has made common mode.
     delays_ps: np.ndarray | None = field(default=None, repr=False)
     lag_ps: np.ndarray | None = field(default=None, repr=False)
+    # (k,) ps: Δt as a probe on each trace would read it (modes.apparent_dt, for the settings'
+    # rise time): the geometric Δt where skew is made, fading as its common mode falls behind.
+    read_dt_ps: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def skew_ps(self) -> float:
@@ -562,10 +571,12 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
             lengths[key] = lengths.get(key, 0.0) + length / 2  # both sides: their mean
     lines = tuple({"layer": layer, "kind": kind, "mm": length / 1e6}
                   for (layer, kind), length in sorted(lengths.items(), key=lambda entry: -entry[1]))
+    lag = (behind[0] + behind[1]) / 2
     return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
                      width, excursions, crossings,
                      tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads, lines,
-                     matched_nm=matched, delays_ps=reached, lag_ps=(behind[0] + behind[1]) / 2)
+                     matched_nm=matched, delays_ps=reached, lag_ps=lag,
+                     read_dt_ps=modes.apparent_dt(reached, lag, settings.rise_ps))
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
@@ -780,7 +791,7 @@ class PhaseTracker:
         return hash((items.tracks, items.arcs, items.vias, tuple(_pad_key(pad) for pad in items.pads),
                      tuple(sorted({references.get(pad.footprint_id, "") for pad in items.pads})),
                      channel, channel.key in self.settings.flipped, self.settings.tolerance_ps,
-                     self.settings.min_length_nm, self._model_key, id(self._grounds_of)))
+                     self.settings.min_length_nm, self.settings.rise_ps, self._model_key, id(self._grounds_of)))
 
     def snapshot_frames(self) -> list[bytes]:
         """Everything for a viewer that (re)connected: the list, then every pair."""
@@ -876,5 +887,6 @@ def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
     }
     traces = {side: (trace.xyz_nm, trace.delay_ps, trace.lead_ps, trace.width_nm)
               for side, trace in zip("pn", result.traces)}
-    centreline = {"along": result.along_nm, "dt": result.dt_ps}  # Δt along the pair: the chart export
+    centreline = {"along": result.along_nm, "dt": result.dt_ps,  # Δt along the pair: the chart export
+                  "dt_read": result.read_dt_ps if result.read_dt_ps is not None else result.dt_ps}  # as a probe reads it
     return protocol.phase_pair_message(info, traces, revision, centreline)

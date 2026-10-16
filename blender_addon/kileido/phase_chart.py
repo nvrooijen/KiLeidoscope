@@ -1,7 +1,9 @@
 """The Δt chart of dynamic phase: one small plot per differential pair, as SVG, and its numbers as CSV.
 
 x: mm along the pair from the start end; y: Δt = t_P − t_N in ps (Δt < 0: P's edge is
-ahead there, Δt > 0: N's). A band at ± the marker tolerance, every excursion (|Δt| above it
+ahead there, Δt > 0: N's), and dashed beside it Δt as a probe on each trace would read it:
+the same where skew is made, fading as its common mode falls behind the edge (the bridge's
+modes.apparent_dt, for the Edge rise time setting). A band at ± the marker tolerance, every excursion (|Δt| above it
 for longer than the marker length) shaded, and over each plot the pair's ends, its
 end-to-end skew and its largest |Δt|. All plots share one y scale, so the pairs compare at a
 glance. The SVG carries its numbers too, in a <metadata> block (JSON), and `csv` writes
@@ -23,6 +25,7 @@ HEADER = 44  # the chart's title
 FOOTER = 54  # the key
 FONT = "Helvetica, Arial, sans-serif"
 LINE, BAND, EXCURSION, GRID, AXIS, TEXT, DIM = "#2a78d6", "#dcefdc", "#f5a623", "#e4e4e4", "#999999", "#222222", "#666666"
+READ = "#0b6b45"  # Δt as read on the traces
 MIN_SCALE_PS = 2.0  # the y axis spans at least ± this
 
 
@@ -91,7 +94,8 @@ def svg(pairs, tolerance_ps: float, min_length_mm: float, title: str = "") -> st
     out.append(f'<text x="14" y="{y}" fill="{DIM}">Green band: ±{_number(tolerance_ps)} ps, the marker tolerance. '
                f'Orange: an excursion, |Δt| above it for longer than {_number(min_length_mm)} mm; the number is its '
                f'peak Δt.</text>')
-    out.append(f'<text x="14" y="{y + 16}" fill="{DIM}">Skew: the end-to-end delay difference. The numbers are in '
+    out.append(f'<text x="14" y="{y + 16}" fill="{DIM}">Dashed: Δt as a probe on each trace would read it, fading where '
+               f'its common mode has fallen behind the edge. Skew: the end-to-end delay difference. The numbers are in '
                f'this file\'s &lt;metadata&gt; and in the .csv beside it.</text>')
     out.append("</svg>")
     return "\n".join(out) + "\n"
@@ -129,6 +133,11 @@ def _plot(pair, ox: float, oy: float, limit: float, tolerance_ps: float) -> list
         out.append(f'<line x1="{x(tick):.1f}" x2="{x(tick):.1f}" y1="{y1}" y2="{y1 + 4}" stroke="{AXIS}"/>')
         out.append(f'<text x="{x(tick):.1f}" y="{y1 + 16}" text-anchor="middle" fill="{DIM}">{_number(tick)}</text>')
     out.append(f'<rect x="{x0}" y="{y0}" width="{x1 - x0}" height="{y1 - y0}" fill="none" stroke="{AXIS}"/>')
+    read = [float(v) for v in pair.get("dt_read_ps", dt)]
+    if len(read) == len(along):
+        dashed = " ".join(f"{x(a):.1f},{y(d):.1f}" for a, d in zip(along, read))
+        out.append(f'<polyline points="{dashed}" fill="none" stroke="{READ}" stroke-width="1.2" stroke-dasharray="5 3" '
+                   f'stroke-linejoin="round"/>')
     points = " ".join(f"{x(a):.1f},{y(d):.1f}" for a, d in zip(along, dt))
     out.append(f'<polyline points="{points}" fill="none" stroke="{LINE}" stroke-width="1.6" stroke-linejoin="round"/>')
     out.append(f'<text x="{(x0 + x1) / 2}" y="{oy + HEIGHT - 6}" text-anchor="middle" fill="{DIM}">mm along the pair '
@@ -151,7 +160,8 @@ def _data(pairs, tolerance_ps: float, min_length_mm: float, title: str) -> dict:
                        "excursions": [{"at_mm": _f(e["at_mm"]), "length_mm": _f(e["length_mm"]),
                                        "peak_ps": _f(e["peak_ps"])} for e in pair.get("excursions", ())],
                        "along_mm": [round(float(v), 4) for v in pair["along_mm"]],
-                       "dt_ps": [round(float(v), 4) for v in pair["dt_ps"]]}
+                       "dt_ps": [round(float(v), 4) for v in pair["dt_ps"]],
+                       "dt_read_ps": [round(float(v), 4) for v in pair.get("dt_read_ps", pair["dt_ps"])]}
                       for pair in pairs]}
 
 
@@ -161,12 +171,13 @@ def _f(value, digits: int = 4):
 
 def csv(pairs) -> str:
     """One row per sample: pair, mm along the pair, Δt in ps; a header line first."""
-    lines = ["pair,start,end,along_mm,dt_ps"]
+    lines = ["pair,start,end,along_mm,dt_ps,dt_read_ps"]
     for pair in pairs:
         name = _field(pair["name"])
         start, end = _field(pair["start"]), _field(pair["end"])
-        for along, dt in zip(pair["along_mm"], pair["dt_ps"]):
-            lines.append(f"{name},{start},{end},{float(along):.4f},{float(dt):.4f}")
+        read = pair.get("dt_read_ps", pair["dt_ps"])
+        for along, dt, seen in zip(pair["along_mm"], pair["dt_ps"], read):
+            lines.append(f"{name},{start},{end},{float(along):.4f},{float(dt):.4f},{float(seen):.4f}")
     return "\n".join(lines) + "\n"
 
 

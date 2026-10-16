@@ -72,7 +72,7 @@ LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from
 SELECTED = "kls_selected"  # per trace copy (an object property the material reads): 1 for the selected pair
 _hidden = (set(), set())  # the last selection_split
 TICK_S = 1 / 30
-DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
+DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True, "rise_ps": 25.0}
 _syncing = False  # the pair list is being rebuilt: its index changes are not clicks
 _clock_start = None  # time.monotonic() when the pulses were launched
 
@@ -846,7 +846,7 @@ def settings():
     return {"tolerance_ps": float(scene.kileido_phase_tolerance_ps),
             "min_length_mm": float(scene.kileido_phase_min_mm),
             "follow_series": bool(scene.kileido_phase_follow_series),
-            "flipped": sorted(flipped())}
+            "flipped": sorted(flipped()), "rise_ps": float(scene.kileido_phase_rise_ps)}
 
 
 def _same_settings(reported):
@@ -854,6 +854,7 @@ def _same_settings(reported):
     try:
         return (abs(float(reported.get("tolerance_ps", -1)) - wanted["tolerance_ps"]) < 1e-6 and
                 abs(float(reported.get("min_length_mm", -1)) - wanted["min_length_mm"]) < 1e-6 and
+                abs(float(reported.get("rise_ps", -1)) - wanted["rise_ps"]) < 1e-6 and
                 bool(reported.get("follow_series")) == wanted["follow_series"] and
                 sorted(reported.get("flipped", ())) == wanted["flipped"])
     except (TypeError, ValueError):
@@ -965,6 +966,7 @@ def measured_pairs():
         out.append({"name": data.get("name", key), "start": data["start"]["label"], "end": data["end"]["label"],
                     "along_mm": [float(value) / 1e6 for value in data["along"]],
                     "dt_ps": [float(value) for value in data["dt"]],
+                    "dt_read_ps": [float(value) for value in data.get("dt_read", data["dt"])],
                     "excursions": list(data.get("excursions", ())), "skew_ps": float(data.get("skew_ps", 0.0)),
                     "max_ps": float(data.get("max_ps", 0.0)), "delay_p_ps": data.get("delay_p_ps"),
                     "delay_n_ps": data.get("delay_n_ps"), "length_p_mm": data.get("length_p_mm"),
