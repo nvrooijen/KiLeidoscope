@@ -221,12 +221,53 @@ def test_the_netclass_tuning_profile_sets_the_delay_first():
     snapshot = boards.layer_change()
     heights = protocol.layer_heights_nm(snapshot)[0]
     model_ = delays.StackupDelays(snapshot.stackup.layers, heights, profiles, {"D_P": "Fast", "D_N": "Fast"})
-    assert model_.track("D_P", "F.Cu", boards.WIDTH) == delays.UnitDelay(6.0, "tuning profile 'Fast'")
+    assert profiles["Fast"].geometry == {"F.Cu": (150_000, 150_000)}  # the width and gap KiCad computed it for
+    at_gap = model_.track("D_P", "F.Cu", 150_000, 150_000)
+    assert at_gap == delays.UnitDelay(6.0, "tuning profile 'Fast'")  # the pair at the profile's own gap: KiCad's number
+    alone = model_.track("D_P", "F.Cu", boards.WIDTH)
+    assert alone.source == at_gap.source and 6.0 < alone.ps_per_mm < 6.6  # a lone stretch: slower, by the estimate's ratio
     assert model_.track("D_P", "B.Cu", boards.WIDTH).source == delays.STACKUP  # no entry for B.Cu
     assert model_.barrel("D_P", "F.Cu", "B.Cu", ("F.Cu", "B.Cu"), 1e6) == (12.5, "tuning profile 'Fast'")
     assert model_.barrel("D_P", "F.Cu", "In1.Cu", ("F.Cu", "B.Cu"), 0.2e6)[0] == pytest.approx(1.6)
     result = phase.analyze_board(snapshot, model_)[0][0]
     assert result.sources == (delays.STACKUP, "tuning profile 'Fast'")
+
+
+def test_a_profiles_number_is_the_pairs_at_its_own_gap_and_scales_away_from_it():
+    """KiCad charges a profile's one delay to every track, but computed it for the pair at
+    the entry's width and gap: so that is where it holds exactly, and a stretch where P and
+    N part is scaled by the estimate's ratio, as the single-ended tuning KiCad's docs send
+    you to for uncoupled stretches would be."""
+    heights = protocol.layer_heights_nm(boards.matched())[0]
+    estimate = delays.StackupDelays(boards.STACKUP.layers, heights)
+    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, 100_000)})
+    model_ = delays.StackupDelays(boards.STACKUP.layers, heights, {"Fast": profile}, {"D_P": "Fast", "D_N": "Fast"})
+    anchor = estimate.track("D_P", "F.Cu", boards.WIDTH, 100_000).ps_per_mm
+    for gap in (100_000, 300_000, 2 * MM, None):
+        expected = 6.0 * estimate.track("D_P", "F.Cu", boards.WIDTH, gap).ps_per_mm / anchor
+        assert model_.track("D_P", "F.Cu", boards.WIDTH, gap).ps_per_mm == pytest.approx(expected)
+    assert model_.track("D_P", "F.Cu", boards.WIDTH, 100_000).ps_per_mm == pytest.approx(6.0)
+    assert model_.track("D_P", "F.Cu", boards.WIDTH).ps_per_mm > 6.0 * 1.02  # alone: the lone line's speed
+    single = delays.TuningProfile("SE", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, 0)})  # a single-ended entry
+    model_se = delays.StackupDelays(boards.STACKUP.layers, heights, {"SE": single}, {"D_P": "SE"})
+    assert model_se.track("D_P", "F.Cu", boards.WIDTH, 100_000).ps_per_mm == model_se.track("D_P", "F.Cu", boards.WIDTH).ps_per_mm == 6.0
+    inner = delays.TuningProfile("In", {"In1.Cu": 7.0}, geometry={"In1.Cu": (boards.WIDTH, 100_000)})
+    model_in = delays.StackupDelays(boards.STACKUP.layers, heights, {"In": inner}, {"D_P": "In"})
+    assert model_in.track("D_P", "In1.Cu", boards.WIDTH).ps_per_mm == 7.0  # stripline: coupled or not, the same
+
+    # On a board: a tight pair at the profile's gap reads the profile's number; a 2 mm bump
+    # away from the partner on P runs slower, so P reads more than its length times 6 ps/mm.
+    def pair(*p_points):
+        board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.5)))
+        board.part("J1", (1, "D_P", (50, 0)), (2, "D_N", (50, 0.5)))
+        return board.path("D_P", *p_points).path("D_N", (0, 0.5), (50, 0.5)).snapshot()
+    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, 500_000 - boards.WIDTH)})
+    model_ = delays.StackupDelays(boards.STACKUP.layers, heights, {"Fast": profile}, {"D_P": "Fast", "D_N": "Fast"})
+    straight = phase.analyze_board(pair((0, 0), (50, 0)), model_)[0][0]
+    assert straight.delay_p_ps / (straight.p.length_nm / 1e6) == pytest.approx(6.0, rel=0.005)
+    bumped = phase.analyze_board(pair((0, 0), *boards.bump(2, 0, -2.0), (50, 0)), model_)[0][0]
+    assert bumped.delay_p_ps - straight.delay_p_ps > 6.0 * 4.0 * 1.02  # the 4 mm of lone copper: slower than 6 ps/mm
+    assert bumped.sources == ("tuning profile 'Fast'",)
 
 
 def test_without_dielectric_constants_fr4_is_named_as_the_source():

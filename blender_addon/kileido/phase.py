@@ -29,6 +29,7 @@ import hashlib
 import json
 import math
 import time
+from pathlib import Path
 
 import bpy
 import numpy as np
@@ -951,6 +952,33 @@ def active_pair():
     rows = getattr(scene, "kileido_phase_pairs", ())
     index = getattr(scene, "kileido_phase_index", -1)
     return board.phase.get(rows[index].key) if 0 <= index < len(rows) else None
+
+
+def measured_pairs():
+    """Every pair with a Δt line, in the list's order, as the chart export (phase_chart)
+    takes them: Δt along the pair's centreline from its `along` and `dt` arrays."""
+    out = []
+    for key in board.phase_list.get("keys", ()):
+        data = board.phase.get(key)
+        if not data or data.get("shorts") or "along" not in data or "dt" not in data:
+            continue
+        out.append({"name": data.get("name", key), "start": data["start"]["label"], "end": data["end"]["label"],
+                    "along_mm": [float(value) / 1e6 for value in data["along"]],
+                    "dt_ps": [float(value) for value in data["dt"]],
+                    "excursions": list(data.get("excursions", ())), "skew_ps": float(data.get("skew_ps", 0.0)),
+                    "max_ps": float(data.get("max_ps", 0.0)), "delay_p_ps": data.get("delay_p_ps"),
+                    "delay_n_ps": data.get("delay_n_ps"), "length_p_mm": data.get("length_p_mm"),
+                    "length_n_mm": data.get("length_n_mm"), "sources": list(data.get("sources", ())),
+                    "flipped": bool(data.get("flipped", False))})
+    return out
+
+
+def export_path():
+    """Where the chart export starts: beside the board file, named after it."""
+    if board.board_path:
+        path = Path(board.board_path)
+        return str(path.with_name(f"{path.stem}_dynamic_phase.svg"))
+    return str(Path.home() / "dynamic_phase.svg")
 
 
 def sources_warning():

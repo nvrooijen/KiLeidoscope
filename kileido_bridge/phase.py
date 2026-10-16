@@ -92,6 +92,7 @@ class Excursion:
     length_nm: float
     peak_ps: float  # signed, the largest |Δt| of the stretch
     item_id: str  # the P track there
+    item_ids: tuple[str, ...] = ()  # the copper of both sides along the stretch, in walking order
 
 
 @dataclass(frozen=True)
@@ -264,8 +265,9 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
             heights: dict[str, int], grounds: dict | None = None, own_nets=()) -> _Walk:
     """The walk's delays again with the pair's coupling: along each track stretch, the
     unit delay at the gap to the partner there (the odd mode where they run close, the
-    lone line where one meanders or breaks out). A tuning profile or an inner layer
-    gives the same delay either way; a barrel, or a hop across a pad, keeps its own.
+    lone line where one meanders or breaks out). A tuning profile's number holds at the
+    profile's own gap and is scaled away from it (delays.StackupDelays._coupling); an inner
+    layer gives the same delay either way; a barrel, or a hop across a pad, keeps its own.
 
     `samples` (along, xyz) are this side's alignment samples: the gap is measured at
     each (to the partner's nearest sample, centre to centre) and interpolated between;
@@ -482,7 +484,7 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     p, n = _orient(p, n, flipped)
     walks = (_walk(p, "P", model_, heights), _walk(n, "N", model_, heights))
     step = max(MIN_STEP_NM, max(walk.along[-1] for walk in walks) / SAMPLES)
-    (a, t_p, items_p, s_a), (b, t_n, _, s_b) = (_resample(walk, step) for walk in walks)
+    (a, t_p, items_p, s_a), (b, t_n, items_n, s_b) = (_resample(walk, step) for walk in walks)
     i, j = _align(a, b)
     walks = tuple(_couple(walk, samples, partner, model_, heights, grounds, channel.nets)
                   for walk, samples, partner in ((walks[0], (s_a, a), b), (walks[1], (s_b, b), a)))
@@ -501,7 +503,9 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     excursions = tuple(
         Excursion(tuple(float(v) for v in centre[first]), float(along[first]), float(along[last] - along[first]),
                   float(dt[first + int(np.abs(dt[first:last + 1]).argmax())]),
-                  next((item for item in items_p[i[first]:] if item), ""))
+                  next((item for item in items_p[i[first]:] if item), ""),
+                  tuple(dict.fromkeys(item for item in (*items_p[i[first]:i[last] + 1], *items_n[j[first]:j[last] + 1])
+                                      if item)))
         for first, last in find_excursions(along, dt, settings.tolerance_ps, settings.min_length_nm))
     warnings = []
     parts = [{terminal.label.partition(".")[0] for terminal in (route.start, route.end) if "." in terminal.label}
@@ -750,6 +754,12 @@ class PhaseTracker:
         frames = self.frames
         return ([self.list_frame] if self.list_frame else []) + list(frames.values())
 
+    def measure_all(self, snapshot: model.BoardSnapshot) -> tuple[list, list[str]]:
+        """Every pair measured now, whole and at once (the DRC column's Dynamic phase
+        button): (results, warnings) as `analyze_board`, with the delay model and settings
+        the tracker has. It changes nothing in the tracker: the worker may be polling."""
+        return analyze_board(snapshot, self._model, self.settings)
+
 
 def _end(p_end: channels.Terminal, n_end: channels.Terminal) -> dict:
     """One end of the pair for the frame, marked between its P and N terminals."""
@@ -811,7 +821,8 @@ def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
         "max_ps": result.max_abs_ps, "length_p_mm": p.length_nm / 1e6, "length_n_mm": n.length_nm / 1e6,
         "width_nm": result.width_nm, "flipped": result.flipped,
         "excursions": [{"x": e.pos[0], "y": e.pos[1], "z": e.pos[2], "at_mm": e.at_nm / 1e6,
-                        "length_mm": e.length_nm / 1e6, "peak_ps": e.peak_ps, "id": e.item_id}
+                        "length_mm": e.length_nm / 1e6, "peak_ps": e.peak_ps, "id": e.item_id,
+                        "ids": list(e.item_ids)}
                        for e in result.excursions],
         "branches": [{"side": side, "label": branch.terminal.label, "id": branch.terminal.item_id,
                       "at_mm": branch.at_nm / 1e6, "length_mm": branch.length_nm / 1e6}
@@ -832,4 +843,5 @@ def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
     }
     traces = {side: (trace.xyz_nm, trace.delay_ps, trace.lead_ps, trace.width_nm)
               for side, trace in zip("pn", result.traces)}
-    return protocol.phase_pair_message(info, traces, revision)
+    centreline = {"along": result.along_nm, "dt": result.dt_ps}  # Δt along the pair: the chart export
+    return protocol.phase_pair_message(info, traces, revision, centreline)

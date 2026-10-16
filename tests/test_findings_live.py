@@ -7,6 +7,7 @@ import types
 from collections import namedtuple
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -109,7 +110,7 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
                           and any(p["status"] == "none" for p in payloads(f)), limit=LIMIT)
         none = payloads(frames)[-1]
         assert none["folder"] == str(project / ".kileidoscope") and none["drc"]["state"] == "idle"
-        assert set(none["sources"]) == {"drc", "file"}
+        assert set(none["sources"]) == {"drc", "phase", "file"}
         write(project, tool_file(track))
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         (row,) = file_rows(payload)
@@ -290,6 +291,35 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
         payload = until_payload(runtime, client, lambda p: p["drc"]["state"] == "failed")
         assert payload["drc"] == {"state": "failed", "error": "Failed to load board", "run": "2"}
         assert payload["sources"]["drc"]["findings"]  # the last run's findings stay listed
+
+
+def test_dynamic_phase_from_the_drc_column_lists_its_excursions(tmp_path, monkeypatch):
+    """The DRC column's Dynamic phase button: every pair measured now, its findings file
+    written beside KiCad's DRC's and read back, so the excursion shows in the list."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import phase_boards
+    runtime, reader, client, project = live(tmp_path, monkeypatch, snapshot=phase_boards.compensated_far())
+    with connected(runtime, client):
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        request(client, "run_phase", source="phase")
+        payload = until_payload(runtime, client, lambda p: p["sources"]["phase"]["status"] == "ok")
+        assert payload["phase"] == {"state": "idle", "error": ""}
+        source = payload["sources"]["phase"]
+        assert source["tool"].startswith("Dynamic phase; 1 pair measured")
+        (row,) = source["findings"]
+        assert row["check"] == "phase.excursion" and row["draws"][0]["ids"] and row["draws"][1]["tool"] == "label"
+        written = json.loads((project / ".kileidoscope" / "board.phase.kls-findings.json").read_text(encoding="utf-8"))
+        assert written["findings"][0]["check"] == "phase.excursion"
+        assert payload["sources"]["drc"]["status"] == "none"  # KiCad's DRC was not run
+
+
+def test_dynamic_phase_needs_a_saved_board(tmp_path, monkeypatch):
+    runtime, reader, client, project = live(tmp_path, monkeypatch, saved=False)
+    with connected(runtime, client):
+        until_payload(runtime, client, lambda p: p["status"] == "unsaved")
+        request(client, "run_phase", source="phase")
+        payload = until_payload(runtime, client, lambda p: p["phase"]["state"] == "failed")
+        assert payload["phase"]["error"] == findings_watch.SAVE_FIRST
 
 
 Check = namedtuple("Check", "id group title instruction evidence draws v1 values", defaults=((),))

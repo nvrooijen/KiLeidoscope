@@ -8,7 +8,7 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
-from . import findings_watch, flex_checks, hatch, kls_folder, protocol
+from . import findings, findings_watch, flex_checks, hatch, kls_folder, phase_findings, protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items, variant_dnp, with_variant_dnp
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
@@ -411,6 +411,23 @@ class BridgeRuntime:
         except Exception as exc:  # the viewer keeps its board; the panel says why the pairs stopped
             return self.phase.failed(exc, self.revision)
 
+    def _phase_findings(self):
+        """The DRC column's Dynamic phase button: every pair measured now, whole, and
+        written as a findings file beside KiCad's DRC's (phase_findings); the findings
+        watch reads it back like any other, so its findings get the list and the markers."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            self.findings.publish_file("phase", None, findings.NOT_CONNECTED)
+            return
+        try:
+            results, warnings = self.phase.measure_all(snapshot)
+            heights = protocol.layer_heights_nm(snapshot)[0]
+            data = phase_findings.convert(results, warnings, self.phase.settings, heights, self.copy_stamp)
+        except Exception as exc:  # a bug in the analysis costs this press, never the bridge
+            self.findings.publish_file("phase", None, f"could not measure the pairs ({type(exc).__name__}: {exc})")
+            return
+        self.findings.publish_file("phase", data)
+
     # --- Live board copy (kicad-cli exports) --------------------------------------------
 
     def _refresh_copy(self, force: bool = False):
@@ -561,7 +578,10 @@ class BridgeRuntime:
             self._take_select_requests()
             requests = self.server.take_findings_requests()
             for action, key, source, checks, notes in requests:
-                self.findings.request(action, key, source, checks, notes)
+                if action == "run_phase":
+                    self._phase_findings()
+                else:
+                    self.findings.request(action, key, source, checks, notes)
             if requests:
                 self.next_findings_at = 0.0  # Run DRC and a prompt start on the next tick
                 self.wake.set()

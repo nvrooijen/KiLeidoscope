@@ -4,7 +4,7 @@
 
 The Kileidoscope bridge is now updated with KiCad's DRC, which can be run directly from the UI. KiCad's design rule checker tells you what is wrong and where. It is, however, limited to 2D, whereas PCBs are inherently 3D objects. Some problems read much better in 3D: a via whose drill comes too close to a pad on an inner layer, a track squeezed past a board edge on the bottom side, two holes that nearly touch through every layer. KiLeidoscope's DRC column runs KiCad's own DRC on the board as it is open in KiCad, lists what it finds, and draws the finding you pick on the 3D board: the items involved lit, the gap measured, the label beside it, and a hole problem cut open so you see the barrels in section.
 
-KiLeidoscope does not check anything itself. Every finding is KiCad's; KiLeidoscope only shows it, and measures the gap again on the board so the drawing sits where the problem is.
+KiLeidoscope does not check the rules itself. Every finding in the KiCad DRC list is KiCad's; KiLeidoscope only shows it, and measures the gap again on the board so the drawing sits where the problem is. The one list of its own in this column is **Dynamic phase**, the differential pairs' timing (see [its guide](high-speed/dynamic-phase.md#from-the-drc-column)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/InfographDRC_Dark_gh3.webp">
@@ -37,6 +37,8 @@ KiLeidoscope does not check anything itself. Every finding is KiCad's; KiLeidosc
 The DRC column lives beside the **KiLeidoscope** tab of the 3D View sidebar (**N**): a click on the red **DRC** bookmark tab opens it, a second click closes it. A lit stripe on the tab shows that a finding is drawn.
 
 Press **KiCad DRC**. The button reads *Running KiCad DRC…* until KiCad's report is in; on a large board that takes a few seconds.
+
+Beside it, **Dynamic phase** measures every differential pair's timing at once and lists what the High speed column marks (stretches where P and N run out of phase, shorts, loops, unfinished sides) as a list of its own under the DRC one, with the same markers, confirm and dismiss, and select-in-KiCad. Its guide: [Dynamic phase](high-speed/dynamic-phase.md#from-the-drc-column).
 
 What is checked:
 

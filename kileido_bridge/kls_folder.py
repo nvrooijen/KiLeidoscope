@@ -15,6 +15,7 @@ file. A `.gitignore` holding `*` keeps the folder out of the user's repository.
   those are kept besides.
 - `<stem>.kls-findings.json`: an LLM's (or any tool's) answer; only read here.
 - `<stem>.drc.kls-findings.json`: the bridge's DRC findings.
+- `<stem>.phase.kls-findings.json`: the bridge's dynamic-phase findings (phase_findings).
 - `<stem>.kls-progress.json`: how far an LLM is with a prompt run (optional, `PROGRESS_FORMAT`,
   rewritten whole after each check); only read here.
 - `dismissed.json`: confirmed and dismissed findings.
@@ -37,7 +38,8 @@ SIDE_RUNS = {"ghost_drc": 2}  # kind -> runs of it kept; they count only against
 STATE_FILE = "dismissed.json"
 STATE_VERSION = 1
 MAX_STATE_ENTRIES = 10_000
-SOURCES = ("drc", "file")
+SOURCES = ("drc", "phase", "file")  # the bridge's DRC run, its dynamic phase, an LLM's or a tool's file
+OWN = ("drc", "phase")  # the sources the bridge writes itself
 STATES = ("confirmed", "dismissed")
 PROGRESS_FORMAT = "kls-progress 1"
 MAX_PROGRESS_BYTES = 4096
@@ -123,15 +125,16 @@ class KlsFolder:
         self.root = self.project / FOLDER
         self.findings_path = self.root / f"{self.stem}.kls-findings.json"
         self.drc_findings_path = self.root / f"{self.stem}.drc.kls-findings.json"
+        self.phase_findings_path = self.root / f"{self.stem}.phase.kls-findings.json"
         self.progress_path = self.root / f"{self.stem}.kls-progress.json"  # an LLM's, beside its answer
         self.state_path = self.root / STATE_FILE
         self.runs_dir = self.root / "runs"
 
     def path_for(self, source: str) -> Path:
-        """The findings file of a source: "drc" (ours) or "file" (an LLM's or a tool's)."""
+        """The findings file of a source: "drc" and "phase" (ours) or "file" (an LLM's or a tool's)."""
         if source not in SOURCES:
             raise ValueError(f"unknown findings source {source!r}")
-        return self.drc_findings_path if source == "drc" else self.findings_path
+        return {"drc": self.drc_findings_path, "phase": self.phase_findings_path}.get(source, self.findings_path)
 
     def _check(self) -> None:
         if not self.available:
@@ -261,14 +264,15 @@ class KlsFolder:
         self._write(STATE_FILE, json.dumps(data, indent=1, ensure_ascii=False).encode("utf-8"))
 
     def discard(self, source: str = "drc") -> None:
-        """Our DRC findings file removed: a session starts without the last one's, so a DRC
-        run is always this bridge's own. A tool's file is never touched."""
-        if source != "drc":
-            raise ValueError("only the bridge's own findings file is discarded")
+        """One of our own findings files (DRC, dynamic phase) removed: a session starts
+        without the last one's, so a run is always this bridge's own. A tool's file is
+        never touched."""
+        if source not in OWN:
+            raise ValueError("only the bridge's own findings files are discarded")
         if not self.available:
             return
         try:
-            self._within(self.drc_findings_path.name).unlink()
+            self._within(self.path_for(source).name).unlink()
         except OSError:  # missing, or locked by an editor: the next run overwrites it anyway
             pass
 
@@ -278,7 +282,7 @@ class KlsFolder:
         return self._within(path.name).open("rb")
 
     def write_findings(self, data: dict, source: str = "drc") -> Path:
-        """A findings file the bridge made (DRC), written whole or not at all."""
+        """A findings file the bridge made (DRC, dynamic phase), written whole or not at all."""
         path = self.path_for(source)
         self.ensure()
         text = json.dumps(data, indent=1, ensure_ascii=False, allow_nan=False)

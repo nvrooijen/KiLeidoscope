@@ -1,9 +1,10 @@
 """The DRC and LLM columns (their bookmark tabs, columns.py): the bridge's findings, listed.
 
-The bridge sends one `findings` frame with two sources (kileido_bridge/findings.py builds
-each): "drc", KiCad's own DRC run on a copy of the board (the KiCad DRC button), listed in
-the DRC tab, and "file", what the user's LLM (or a script) wrote into the project's
-.kileidoscope folder, listed in the LLM tab. Each is grouped by check, errors first. A finding's title shows it
+The bridge sends one `findings` frame with three sources (kileido_bridge/findings.py builds
+each): "drc", KiCad's own DRC run on a copy of the board (the KiCad DRC button), and
+"phase", every differential pair's dynamic phase measured at once (the Dynamic phase
+button, kileido_bridge/phase_findings.py), both listed in the DRC tab; and "file", what the
+user's LLM (or a script) wrote into the project's .kileidoscope folder, listed in the LLM tab. Each is grouped by check, errors first. A finding's title shows it
 (findings_draw: its highlight, label, distance, ...) and frames the 3D views on it; its
 buttons select its items in KiCad, confirm it or dismiss it; a hole finding also cuts the
 board open through both holes (hole_cut.py). Everything in a finding is plain text from the
@@ -28,8 +29,9 @@ from .findings_draw import figure
 from .objects import shown_view_areas
 from .state import board
 
-SOURCES = (("drc", "KiCad DRC"), ("file", "LLM"))
-TABS = {"drc": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS) that lists it
+SOURCES = (("drc", "KiCad DRC"), ("phase", "Dynamic phase"), ("file", "LLM"))
+TABS = {"drc": "DRC", "phase": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS) that lists it
+OWN = ("drc", "phase")  # the bridge's own sources: KiCad's DRC and dynamic phase need no verdict
 MENTION_ICONS = {"part": "MESH_CUBE", "pad": "MESH_PLANE", "net": "LINKED", "via": "RADIOBUT_OFF"}  # by kind
 SEVERITY_ICONS = {"error": "ERROR", "warning": "ERROR", "info": "INFO", "unknown": "QUESTION"}  # without previews
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
@@ -305,7 +307,7 @@ def passes(scene, source_name, finding):
     severity = finding.get("severity") if finding.get("severity") in SEVERITY_ORDER else "warning"
     toggle = next(name for kind, name, _ in SEVERITY_FILTERS if kind == severity)
     return (getattr(scene, toggle, True) and
-            (getattr(scene, "kileido_markers_unchecked", True) or source_name == "drc" or
+            (getattr(scene, "kileido_markers_unchecked", True) or source_name in OWN or
              finding.get("verdict") != "unchecked"))
 
 
@@ -395,12 +397,19 @@ def draw_column(layout, scene, wrap, tab):
     if tab == "DRC":
         drc = found.get("drc") or {}
         running = drc.get("state") == "running"
-        row = box.row()
+        buttons = box.row(align=True)
+        row = buttons.row(align=True)
         row.enabled = linked and status != "unsaved" and not running
         row.operator(KILEIDO_OT_findings_run_drc.bl_idname, text="Running KiCad DRC…" if running else "KiCad DRC",
                      icon="TIME" if running else "PLAY")
+        row = buttons.row(align=True)
+        row.enabled = linked and status != "unsaved"
+        row.operator(KILEIDO_OT_findings_run_phase.bl_idname, text="Dynamic phase", icon="PLAY")
         if drc.get("state") == "failed":
             _lines(box, wrap, f"DRC failed: {drc.get('error') or 'no report'}", "ERROR")
+        measured = found.get("phase") or {}
+        if measured.get("state") == "failed":
+            _lines(box, wrap, f"Dynamic phase failed: {measured.get('error') or 'no result'}", "ERROR")
     _draw_filter(box, scene, tab)
     row = box.row()
     row.prop(scene, "kileido_findings_dismissed", text="Show dismissed")
@@ -418,7 +427,7 @@ def draw_column(layout, scene, wrap, tab):
         _draw_source(layout, scene, wrap, name, title, data)
     if not listed and status != "unsaved":
         folder = found.get("folder") or "the board's .kileidoscope folder"
-        _lines(layout, wrap, "No findings yet. Press KiCad DRC" if tab == "DRC" else
+        _lines(layout, wrap, "No findings yet. Press KiCad DRC or Dynamic phase" if tab == "DRC" else
                f"No findings yet. Copy the prompt into your LLM tool; its answer lands in {folder}")
 
 
@@ -557,7 +566,7 @@ def _source_line(name, title, data, findings):
     dismissed = sum(1 for finding in findings if finding.get("state") == "dismissed")
     tool = (data.get("tool") or title).strip()
     about = []
-    if name == "drc":
+    if name in OWN:
         head, *remarks = [part.strip() for part in tool.split(";")]
     else:  # KiCad's own findings need no verdict
         head, remarks = short_tool(tool), []
@@ -1044,6 +1053,28 @@ class KILEIDO_OT_findings_run_drc(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_findings_run_phase(bpy.types.Operator):
+    bl_idname = "kileido.findings_run_phase"
+    bl_label = "Dynamic phase"
+    bl_description = ("Measure every differential pair's dynamic phase now and list here what the High speed "
+                      "column marks: stretches where P and N run out of phase, shorts, loops and unfinished sides")
+
+    @classmethod
+    def poll(cls, context):
+        found = board.findings or {}
+        if not _linked(cls):
+            return False
+        if found.get("status") == "unsaved":
+            cls.poll_message_set("Save the board first")
+            return False
+        return True
+
+    def execute(self, context):
+        from . import live
+        live.request_findings("run_phase", "", "phase")
+        return {"FINISHED"}
+
+
 class KILEIDO_OT_findings_prompt(bpy.types.Operator):
     bl_idname = "kileido.findings_prompt"
     bl_label = "Copy prompt"
@@ -1160,5 +1191,6 @@ class KILEIDO_OT_findings_group(bpy.types.Operator):
 
 
 CLASSES = (KILEIDO_OT_finding_show, KILEIDO_OT_finding_kicad, KILEIDO_OT_finding_mention, KILEIDO_OT_finding_state,
-           KILEIDO_OT_findings_run_drc, KILEIDO_OT_findings_prompt, KILEIDO_OT_prompt_check, KILEIDO_OT_prompt_preset,
+           KILEIDO_OT_findings_run_drc, KILEIDO_OT_findings_run_phase, KILEIDO_OT_findings_prompt,
+           KILEIDO_OT_prompt_check, KILEIDO_OT_prompt_preset,
            KILEIDO_OT_findings_group)

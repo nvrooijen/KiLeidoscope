@@ -21,6 +21,14 @@ Dynamic phase shows how far P and N are apart in time **at every point along the
 
 The tool measures and shows. It doesn't judge: there are no interface standards or pass/fail, only the two thresholds you set for the markers.
 
+## The Δt chart
+
+**Export chart (SVG)** under the pair list writes one small plot per pair: Δt along the pair, the marker tolerance as a green band, every excursion shaded orange with its peak, and over each plot the pair's ends, its end-to-end skew and its largest |Δt|. All plots share one scale, so the pairs compare at a glance. A source and its compensation read as a plateau: Δt steps up at the bend and only steps back where the compensating bump sits, and the plateau's width is how far apart they are. The numbers go into the SVG's `<metadata>` block and, unless you untick it in the file dialog, into a `.csv` beside it (pair, mm along the pair, Δt in ps).
+
+## From the DRC column
+
+The DRC column's **Dynamic phase** button measures every pair at once and lists what the pair list marks, as findings of their own next to KiCad's DRC: an excursion is a warning with the stretch's copper lit and a label at its start, a short an error, a loop a warning; an unfinished side, a branch, or ends on different parts are info. They get the DRC column's markers on the board, confirm and dismiss, and a click selects the copper in KiCad. The file is `.kileidoscope/<board>.phase.kls-findings.json`, beside the DRC one, and it is a snapshot: press the button again after routing.
+
 ## How it is calculated
 
 <picture>
@@ -76,7 +84,7 @@ The unit delay τ (ps/mm) of each piece comes from [`delays.py`](../../kileido_b
 
 | Source | Unit delay | Used when |
 |---|---|---|
-| KiCad tuning profile | the profile's ps/mm for that layer; vias by override, or ps/mm × height | the net's netclass has a tuning profile (Board Setup › Tuning Profiles) |
+| KiCad tuning profile | the profile's ps/mm for that layer, taken as the pair's at the entry's own width and gap; where the pair runs at another gap, one side alone, or beside a pour, scaled by the estimate's εeff ratio (below); vias by override, or ps/mm × height | the net's netclass has a tuning profile (Board Setup › Tuning Profiles) |
 | Microstrip estimate | $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$, with $\varepsilon_\text{eff}$ of the coupled pair at the gap there | outer layers, with εr from the board's stackup |
 | Stripline estimate | $\tau = \sqrt{\varepsilon_r}\,/\,c$ | inner layers, with εr from the board's stackup |
 | FR-4 default | εr = 4.2 in the formulas above | the stackup gives no dielectric constant |
@@ -87,6 +95,8 @@ Here $1/c$ = 3.3356 ps/mm. For microstrip, with $u = w/h$ (track width over the 
 - in a coupled pair the differential signal runs in the odd mode, with more of its field in the air between the two traces: Kirschning and Jansen's odd-mode $\varepsilon_\text{eff}(u, g)$, which is lower and tends to the lone trace's as $g$ grows. So a stretch where one side meanders away or breaks out runs at the lone trace's speed.
 
 On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) that gives 5.70 ps/mm, against 5.79 from KiCad's calculator (a lone trace: 5.99).
+
+With a tuning profile the profile's number is kept as the level and the estimate only supplies the change: KiCad's calculator worked the entry's delay out for the pair at the entry's width and gap, so that is where it holds exactly, and a stretch where P and N part is multiplied by $\sqrt{\varepsilon_\text{eff}(\text{gap there}) / \varepsilon_\text{eff}(\text{profile gap})}$. KiCad itself charges the one number to every track, which is why its pair tuning works only on coupled stretches and its docs send you to the single-track tuner for the rest; here the two agree wherever the pair runs at the profile's gap, and a lone bump reads a few percent slower, as it is.
 
 Beside a pour of another net on the same layer (a grounded coplanar waveguide), the trace runs faster again. A conformal mapping of the cross-section (Ghione and Naldi's method, with the pair's midline as an electric wall for the odd mode) gives $\varepsilon_\text{eff}$ with and without the pour; that ratio scales the value above. Against a 2D field solver it is within 1.5 %; a pour a quarter of a dielectric height away makes the MIPI pair about 3 % faster.
 
@@ -103,7 +113,7 @@ For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff
 - **No frequency dependence.** One εr per dielectric, as the stackup gives it. No change of Dk with frequency, no microstrip dispersion, no loss, no skin effect. These affect P and N alike where they run together.
 - **Microstrip:** no solder mask (delay a few % too low), zero copper thickness, and the next copper layer is assumed to be the reference plane.
 - **No plane underneath** (a plain coplanar waveguide, a 2-layer board without a pour on the other side, a plane several layers down) is not detected: a whole plane on the next copper layer is always assumed. Finding out what really lies under each trace is a field solver's job; a tuning profile with your own numbers covers such a board.
-- **Coupling** is modelled on outer layers without a tuning profile (see above). A tuning profile gives one value per layer, coupled or not, as KiCad's own tuning does. On inner layers (stripline) coupling doesn't change the speed.
+- **Coupling** is modelled on outer layers: from the gap, by the estimate; with a tuning profile, the profile's number at its own gap scaled by that estimate's ratio (see above). On inner layers (stripline) coupling doesn't change the speed.
 - **Meander self-coupling,** which shortens a tight meander's real delay, is not modelled.
 - **Grounded coplanar waveguide** is modelled on outer layers without a tuning profile: at each point, the distance to the nearest pour of another net on the same layer speeds that stretch up (a pour past 10 dielectric heights changes nothing). The pour is taken as one straight edge at that distance; stitching vias and the pour's own width are not considered.
 - **Vias** are treated as a piece of line. Pad and antipad capacitance and the via stub are ignored.
@@ -142,14 +152,17 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 | Flipped start | Δt from the other end equals total skew − Δt |
 | Unfinished route | reported |
 | Arcs | count their true length, not their chords |
-| Tuning profile | sets the delay before any estimate |
+| Tuning profile | the pair at the profile's own gap reads the profile's number exactly; a lone bump on one side runs slower; a single-ended entry and an inner layer are not scaled |
+| Lone trace, full wave | one trace of the coupled test pair (0.2 mm wide, 0.25 mm gap, 0.12 mm over εr 4.1) alone, in a 3D FDTD run (openEMS, not part of the repository): 5.876 ps/mm against the estimate's 5.865 (0.2 %); its ratio to the coupled pair 1.0316 against the estimate's 1.0311, which is the ratio the profile scaling uses. Single mesh, 8 cells per dielectric height; the same mesh put the pair within 0.1 % of a finer one |
+| Findings file | an excursion, a short, a loop, a branch and an unfinished side become findings the findings reader takes whole, every target found on the board |
+| Chart | every pair on one scale, the excursions shaded, the numbers in the SVG and the CSV |
 | No εr in the stackup | FR-4 is used and named as the source |
 | Microstrip vs stripline | microstrip is faster |
 | Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../../tests/field_solver.py)), which itself matches Kirschning and Jansen and Hammerstad and Jensen within 0.4 % |
 | Stackup from the board file | εr is read from the `.kicad_pcb` text |
 | Live tracker | recomputes only changed pairs, spreads work over polls, follows Blender's settings |
 
-**Still to do:** compare the end-to-end P and N delays with KiCad's own time-domain tuning on a real board with a tuning profile. They should match.
+**Still to do:** compare the end-to-end P and N delays with KiCad's own time-domain tuning on a real board with a tuning profile. They should match wherever the pair runs at the profile's gap, and differ by the lone stretches' few percent elsewhere.
 
 ## Code
 
@@ -158,5 +171,7 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 | [`kileido_bridge/channels.py`](../../kileido_bridge/channels.py) | pairs, channels through series parts, copper graph, ends and routes |
 | [`kileido_bridge/delays.py`](../../kileido_bridge/delays.py) | delay model: tuning profiles, microstrip, stripline, vias |
 | [`kileido_bridge/phase.py`](../../kileido_bridge/phase.py) | walk, alignment, Δt, excursions, live tracker, frames |
+| [`kileido_bridge/phase_findings.py`](../../kileido_bridge/phase_findings.py) | the DRC column's Dynamic phase button: every pair as a findings file |
+| [`blender_addon/kileido/phase_chart.py`](../../blender_addon/kileido/phase_chart.py) | the Δt chart: SVG and CSV |
 | [`blender_addon/kileido/phase.py`](../../blender_addon/kileido/phase.py) | drawing: tint, pulses, glow, via light, markers, labels |
 | [`blender_addon/kileido/high_speed_panel.py`](../../blender_addon/kileido/high_speed_panel.py) | the High speed column: Dynamic phase settings and pair list |

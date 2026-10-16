@@ -370,15 +370,19 @@ def phase_list_message(keys, settings: dict, warnings, pending: int, revision: i
                          "settings": settings, "warnings": list(warnings), "pending": pending})
 
 
-def phase_pair_message(info: dict, traces: dict, revision: int) -> bytes:
+def phase_pair_message(info: dict, traces: dict, revision: int, centreline: dict | None = None) -> bytes:
     """One pair: its terminals, delays and markers in the header; per side ("p", "n")
     its path in walking order (`<side>_xyz`: x, y, z in nm), the delay from the start
     (`<side>_t`, ps), how far that side is ahead of its partner (`<side>_lead`, ps;
-    negative: lagging) and the track width (`<side>_width`, nm) at each point."""
+    negative: lagging) and the track width (`<side>_width`, nm) at each point. `centreline`:
+    Δt along the pair for the chart export, `along` (nm along the centreline) and `dt` (ps)."""
     arrays = {}
     for side, (xyz, delay, lead, width) in traces.items():
         arrays[f"{side}_xyz"] = np.rint(xyz).astype("<i4").reshape(-1, 3)
         arrays[f"{side}_t"] = np.asarray(delay, dtype="<f4")
         arrays[f"{side}_lead"] = np.asarray(lead, dtype="<f4")
         arrays[f"{side}_width"] = np.rint(width).astype("<i4")
+    if centreline:
+        arrays["along"] = np.rint(centreline["along"]).astype("<i4")
+        arrays["dt"] = np.asarray(centreline["dt"], dtype="<f4")
     return encode_frame({"type": "phase_pair", "revision": revision, **info}, arrays)

@@ -2,11 +2,12 @@
 opened by its bookmark tab (columns.py). Sections: Dynamic phase."""
 
 import textwrap
+from pathlib import Path
 
 import bpy
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 
-from . import live, phase
+from . import live, phase, phase_chart
 from .state import board
 
 
@@ -134,6 +135,52 @@ class KILEIDO_OT_phase_help(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_phase_export(bpy.types.Operator):
+    bl_idname = "kileido.phase_export"
+    bl_label = "Export chart"
+    bl_description = ("Write Δt along every measured pair as an SVG chart, one plot per pair with the marker "
+                      "tolerance and the excursions drawn, and the numbers as a CSV beside it")
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.svg", options={"HIDDEN"})
+    with_csv: BoolProperty(name="CSV beside it", default=True,
+                           description="The same numbers as a .csv next to the .svg: pair, mm along the pair, Δt in ps")
+
+    @classmethod
+    def poll(cls, context):
+        if not phase.measured_pairs():
+            cls.poll_message_set("No measured pair to chart")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            self.filepath = phase.export_path()
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context):
+        self.layout.prop(self, "with_csv")
+
+    def execute(self, context):
+        path = Path(bpy.path.abspath(self.filepath))
+        if path.suffix.lower() != ".svg":
+            path = path.with_suffix(".svg")
+        pairs = phase.measured_pairs()
+        settings = phase.settings()
+        title = Path(board.board_path).name if board.board_path else ""
+        try:
+            path.write_text(phase_chart.svg(pairs, settings["tolerance_ps"], settings["min_length_mm"], title),
+                            encoding="utf-8")
+            if self.with_csv:
+                path.with_suffix(".csv").write_text(phase_chart.csv(pairs), encoding="utf-8")
+        except OSError as exc:
+            self.report({"ERROR"}, f"Could not write {path.name}: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Wrote {path.name}" + (f" and {path.with_suffix('.csv').name}" if self.with_csv else "")
+                    + f": {len(pairs)} pair{'' if len(pairs) == 1 else 's'}")
+        return {"FINISHED"}
+
+
 def draw(layout, context, wrap, swatch):
     """The High speed column. `wrap(context, text)` and `swatch(kind, color)` are the
     KiLeidoscope panel's own helpers."""
@@ -194,6 +241,7 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     # Every pair on show (up to a dozen): without a scrollbar the rows' columns line up with the titles.
     layout.template_list("KILEIDO_UL_phase_pairs", "", scene, "kileido_phase_pairs", scene,
                          "kileido_phase_index", rows=min(len(scene.kileido_phase_pairs), 12))
+    layout.operator(KILEIDO_OT_phase_export.bl_idname, text="Export chart (SVG)", icon="EXPORT")
     data = phase.active_pair()
     if data is not None:
         _draw_pair(context, layout.box(), data, wrap)
@@ -275,7 +323,7 @@ def _draw_pair(context, box, data, wrap):
         line.label(text=f"{excursion['at_mm']:.1f} mm: {_ps(excursion['peak_ps'], True)} ps "
                         f"over {excursion['length_mm']:.1f} mm", icon="ERROR")
         line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
-                      icon="RESTRICT_SELECT_OFF").ids = excursion["id"]
+                      icon="RESTRICT_SELECT_OFF").ids = "\n".join(excursion.get("ids") or [excursion["id"]])
     for branch in data.get("branches", ()):
         line = box.row(align=True)
         line.label(text=f"{branch['side']} branch to {branch['label']} at {branch['at_mm']:.1f} mm, "
@@ -293,4 +341,4 @@ def _draw_pair(context, box, data, wrap):
 
 
 CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip, KILEIDO_OT_phase_flip_selected,
-           KILEIDO_OT_phase_select, KILEIDO_OT_phase_help)
+           KILEIDO_OT_phase_select, KILEIDO_OT_phase_help, KILEIDO_OT_phase_export)

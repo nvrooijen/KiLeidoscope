@@ -80,7 +80,7 @@ def main():
         assert np.all(first[:, 2] > top)  # over the copper's outer face
         material = p_trace.data.materials[0]
         names = {node.attribute_name for node in material.node_tree.nodes if node.type == "ATTRIBUTE"}
-        assert names == {phase.LEAD, phase.DELAY, phase.SELECTED} and material.surface_render_method == "BLENDED"
+        assert {phase.LEAD, phase.DELAY, phase.SELECTED} <= names and material.surface_render_method == "BLENDED"  # the fold adds its own
         # P red and N blue, each flashing in its own colour; open over drilled holes like the copper.
         assert (material.name, n_trace.data.materials[0].name) == (f"{phase.TRACE} P", f"{phase.TRACE} N")
         for trace, side in ((p_trace, "p"), (n_trace, "n")):

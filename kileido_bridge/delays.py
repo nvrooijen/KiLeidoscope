@@ -7,7 +7,13 @@ impedance or εeff module can replace `StackupDelays`. Sources, in order:
    stored in the project file `.kicad_pro` under "tuning_profiles"; the netclass
    names its profile in "net_settings"). Its unit delays are attoseconds per mm
    (KiCad's `IU_PER_PS_PER_MM` = 1e6); a via takes an override for its layers,
-   else the profile's via delay per mm of stackup height it crosses.
+   else the profile's via delay per mm of stackup height it crosses. KiCad charges a
+   layer's one delay to every track of the net, but its calculator worked it out for
+   the pair at the entry's own width and gap: so that number holds where the pair
+   runs at that gap, and where the two tracks part (a lone bump, a breakout) the
+   track is scaled by the estimate's ratio between the gap there and the profile's.
+   KiCad's own length tuner says as much: its pair tuning only works on coupled
+   stretches, the rest is for the single-track tuner.
 2. εeff estimated from the stackup, with epsilon_r from the board file (KiCad
    10.0.3's IPC stackup has none, see kicad_reader._stackup): stripline inside;
    microstrip on the outer layers, alone (Hammerstad and Jensen) or, given the gap
@@ -68,21 +74,26 @@ class TuningProfile:
     layers: dict = field(default_factory=dict)  # signal layer -> ps/mm
     via_ps_per_mm: float = 0.0  # of stackup height crossed
     via_overrides: tuple = ()  # ({signal layers}, {via layers}, ps)
+    geometry: dict = field(default_factory=dict)  # signal layer -> (width nm, pair gap nm) the delay was computed for
 
 
 def tuning_profiles(project: dict) -> dict[str, TuningProfile]:
-    """The project's tuning profiles by name (KiCad 10, project/tuning_profiles.cpp)."""
+    """The project's tuning profiles by name (KiCad 10, project/tuning_profiles.cpp).
+    An entry's width and diff_pair_gap are the geometry KiCad's calculator gave the delay
+    for (nm); a gap of 0 is a single-ended entry."""
     profiles = {}
     section = project.get("tuning_profiles") or {}
     for entry in section.get("tuning_profiles_impedance_geometric") or ():
         try:
-            layers = {row["signal_layer"]: float(row["delay"]) / AS_PER_PS
-                      for row in entry.get("layer_entries") or () if float(row.get("delay", 0)) > 0}
+            rows = [row for row in entry.get("layer_entries") or () if float(row.get("delay", 0)) > 0]
+            layers = {row["signal_layer"]: float(row["delay"]) / AS_PER_PS for row in rows}
+            geometry = {row["signal_layer"]: (max(0, int(row.get("width") or 0)), max(0, int(row.get("diff_pair_gap") or 0)))
+                        for row in rows}
             overrides = tuple((frozenset((row["signal_layer_from"], row["signal_layer_to"])),
                                frozenset((row["via_layer_from"], row["via_layer_to"])),
                                float(row["delay"]) / AS_PER_PS) for row in entry.get("via_overrides") or ())
             profiles[entry["profile_name"]] = TuningProfile(
-                entry["profile_name"], layers, float(entry.get("via_prop_delay", 0)) / AS_PER_PS, overrides)
+                entry["profile_name"], layers, float(entry.get("via_prop_delay", 0)) / AS_PER_PS, overrides, geometry)
         except (KeyError, TypeError, ValueError):
             continue  # a profile KiCad would not load either
     return profiles
@@ -229,20 +240,44 @@ class StackupDelays(DelayModel):
               ground_nm: float | None = None) -> UnitDelay:
         profile = self._profile(net)
         if profile is not None and layer in profile.layers:
-            return UnitDelay(profile.layers[layer], f"{PROFILE} '{profile.name}'")
+            scale = self._coupling(layer, width_nm, gap_nm, ground_nm, profile.geometry.get(layer))
+            return UnitDelay(profile.layers[layer] * scale, f"{PROFILE} '{profile.name}'")
         beside = self._dielectric.get(layer, [])
         epsilon_r, source = self._epsilon(beside)
-        if len(beside) == 1 or layer in ("F.Cu", "B.Cu"):  # an outer layer: microstrip over one dielectric
+        if self._outer(layer):
             height = (beside[0].thickness_nm if beside else None) or width_nm or 1
             effective = microstrip_epsilon(epsilon_r, width_nm or height, height, gap_nm, ground_nm)
         else:
             effective = epsilon_r  # stripline: the field is all in the dielectric
         return UnitDelay(PS_PER_MM_VACUUM * math.sqrt(effective), source)
 
+    def _outer(self, layer: str) -> bool:
+        """An outer layer: microstrip over one dielectric."""
+        return len(self._dielectric.get(layer, [])) == 1 or layer in ("F.Cu", "B.Cu")
+
+    def _coupling(self, layer: str, width_nm: int, gap_nm: float | None, ground_nm: float | None,
+                  geometry: tuple[int, int] | None) -> float:
+        """How much slower or faster than its tuning profile's number a track runs here.
+        The profile's delay is the pair's at the entry's own width and gap (KiCad's
+        calculator: the odd mode there); away from that gap, alone, or beside a pour, the
+        estimate's εeff ratio scales it, so a stretch where P and N part runs at the lone
+        line's speed. 1 for a single-ended entry, on an inner layer (coupled or not, the
+        field is all in the dielectric), or without a dielectric height to measure the gap by."""
+        if not geometry or geometry[1] <= 0 or not self._outer(layer):
+            return 1.0
+        beside = self._dielectric.get(layer, [])
+        height = beside[0].thickness_nm if beside else 0
+        if not height:
+            return 1.0
+        epsilon_r, _ = self._epsilon(beside)
+        anchor = microstrip_epsilon(epsilon_r, geometry[0] or width_nm or height, height, geometry[1])
+        here = microstrip_epsilon(epsilon_r, width_nm or geometry[0] or height, height, gap_nm, ground_nm)
+        return math.sqrt(here / anchor)
+
     def structure(self, layer: str) -> tuple[str, float]:
         beside = self._dielectric.get(layer, [])
         heights = [entry.thickness_nm for entry in beside if entry.thickness_nm]
-        if len(beside) == 1 or layer in ("F.Cu", "B.Cu"):
+        if self._outer(layer):
             return "microstrip", float(heights[0]) if heights else 0.0
         return "stripline", float(min(heights)) if heights else 0.0
 
