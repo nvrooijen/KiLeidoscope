@@ -254,3 +254,90 @@ def test_large_zones_measure_fast():
 def test_a_point_target_in_capitals_counts_as_found(index):
     upper = resolve(index, "PT:15,10.4@F.Cu")
     assert upper.found and upper.point == resolve(index, "pt:15,10.4@F.Cu").point
+
+
+# routes
+
+def pad(pad_id, number, net, x, y, layers=("F.Cu",), drill=None):
+    half = 200_000
+    return model.Pad(pad_id, "f-r", number, net, (x, y), drill,
+                     {layer: (square(x - half, y - half, x + half, y + half),) for layer in layers})
+
+
+def route_board(*items):
+    """A part F with pads given in `items`, plus the tracks, arcs and vias in `items`."""
+    kinds = {model.Track: [], model.Arc: [], model.Via: [], model.Pad: [], model.ZoneFill: []}
+    for item in items:
+        kinds[type(item)].append(item)
+    footprint = model.Footprint("f-r", "F", (0, 0), 0.0, "top", ())
+    return BoardIndex(model.BoardSnapshot("r", {}, tuple(kinds[model.Track]), tuple(kinds[model.Arc]),
+                                          tuple(kinds[model.Via]), tuple(kinds[model.Pad]), (footprint,),
+                                          tuple(kinds[model.ZoneFill]), model.Outline(()), model.Stackup(()), (), {}))
+
+
+def test_route_takes_the_shortest_path_through_a_via():
+    start, end = pad("pa", "1", "N", 0, 0), pad("pb", "2", "N", 10 * MM, 5 * MM, ("F.Cu", "B.Cu"), (MM // 2, MM // 2))
+    index = route_board(
+        start, end,
+        model.Track("t1", "F.Cu", "N", (0, 0), (5 * MM, 0), 200_000),
+        model.Via("v1", "N", (5 * MM, 0), 600_000, 300_000, "F.Cu", "B.Cu"),
+        model.Track("t2", "B.Cu", "N", (5 * MM, 0), (10 * MM, 0), 200_000),
+        model.Track("t3", "B.Cu", "N", (10 * MM, 0), (10 * MM, 5 * MM), 200_000),
+        # the long way round on F.Cu: 25 mm
+        model.Track("t4", "F.Cu", "N", (0, 0), (0, 10 * MM), 200_000),
+        model.Track("t5", "F.Cu", "N", (0, 10 * MM), (10 * MM, 10 * MM), 200_000),
+        model.Track("t6", "F.Cu", "N", (10 * MM, 10 * MM), (10 * MM, 5 * MM), 200_000))
+    length, path, ids = index.route("N", start, end)
+    assert length == pytest.approx(15 * MM)
+    assert path == [(0, 0, "F.Cu"), (5 * MM, 0, "F.Cu"), (5 * MM, 0, "B.Cu"), (10 * MM, 0, "B.Cu"),
+                    (10 * MM, 5 * MM, "B.Cu")]  # the layer changes at the via
+    assert ids == ["pa", "t1", "v1", "t2", "t3", "pb"]
+
+
+def test_route_joins_a_track_that_ends_on_another_ones_middle():
+    start, end = pad("pa", "1", "N", 0, 0), pad("pb", "2", "N", 4 * MM, 6 * MM)
+    index = route_board(start, end,
+                        model.Track("t1", "F.Cu", "N", (0, 0), (10 * MM, 0), 200_000),
+                        model.Track("t2", "F.Cu", "N", (4 * MM, 50_000), (4 * MM, 6 * MM), 200_000))
+    length, path, ids = index.route("N", start, end)
+    assert length == pytest.approx(4 * MM + 50_000 + 6 * MM - 50_000, abs=2)
+    assert path[1] == (4 * MM, 0, "F.Cu") and ids == ["pa", "t1", "t2", "pb"]
+
+
+def test_route_follows_an_arc_and_a_track_through_a_pad():
+    start, end = pad("pa", "1", "N", 0, 0), pad("pb", "2", "N", 2 * MM, 0)
+    far = pad("pc", "3", "N", 6 * MM, 0)
+    index = route_board(start, end, far,
+                        model.Arc("a1", "F.Cu", "N", (0, 0), (MM, MM), (2 * MM, 0), 100_000),
+                        model.Track("t1", "F.Cu", "N", (MM, 0), (7 * MM, 0), 100_000))  # passes through pb
+    length, path, _ = index.route("N", start, end)
+    assert length == pytest.approx(math.pi * MM, rel=1e-4)  # the semicircle, not the 2 mm chord
+    assert path[0] == (0, 0, "F.Cu") and path[-1] == (2 * MM, 0, "F.Cu") and len(path) > 10
+    length, _, ids = index.route("N", end, far)
+    assert length == pytest.approx(4 * MM) and ids == ["pb", "t1", "pc"]
+
+
+def test_route_none_when_not_connected_and_zones_are_not_followed():
+    start, end = pad("pa", "1", "N", 0, 0), pad("pb", "2", "N", 10 * MM, 0)
+    plane = model.ZoneFill("z", "N", "F.Cu", (square(-MM, -MM, 11 * MM, MM),))
+    index = route_board(start, end, plane, model.Track("t1", "F.Cu", "N", (0, 0), (4 * MM, 0), 200_000),
+                        model.Track("t2", "B.Cu", "N", (4 * MM, 0), (10 * MM, 0), 200_000))  # no via between
+    assert index.route("N", start, end) is None
+    assert index.route("N", start, start) == (0.0, [(0, 0, "F.Cu")], ["pa"])
+
+
+def test_route_on_the_fixture_board(index):
+    length, path, ids = index.route("SIG", index.pads("U3", "4"), index.pads("C12", "1"))
+    assert length == 10 * MM and path == [(10 * MM, 10 * MM, "F.Cu"), (20 * MM, 10 * MM, "F.Cu")]
+    assert ids == ["p-u3-4", "aaaa0000-0000-4000-8000-00000000t001", "p-c12-1"]
+
+
+def test_route_on_a_long_net_is_fast():
+    import time
+    tracks = [model.Track(f"t{i}", "F.Cu", "N", (i * MM, 0), ((i + 1) * MM, 0), 200_000) for i in range(5_000)]
+    start, end = pad("pa", "1", "N", 0, 0), pad("pb", "2", "N", 5_000 * MM, 0)
+    index = route_board(start, end, *tracks)
+    begin = time.perf_counter()
+    length, _, ids = index.route("N", start, end)
+    assert length == pytest.approx(5_000 * MM) and len(ids) == 5_002
+    assert time.perf_counter() - begin < 5.0

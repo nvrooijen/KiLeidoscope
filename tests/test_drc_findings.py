@@ -108,8 +108,9 @@ def test_file_is_kls_findings(converted):
     assert converted["format"] == "kls-findings 1"
     assert (converted["run"], converted["stamp"]) == ("4", "a1b2c3d4")
     assert converted["tool"] == "KiCad DRC 10.0.3; 6 library notices left out"
+    assert converted["skipped"] == []
     for finding in converted["findings"]:
-        assert finding["severity"] in ("error", "warning")
+        assert finding["confidence"] == "high" and finding["severity"] in ("error", "warning")
         assert finding["check"].startswith("drc.") and len(finding["title"]) <= 300 and len(finding["message"]) <= 300
         assert all(re.fullmatch(r"[a-z0-9_]{1,40}", key) for key in finding["values"])
     json.dumps(converted)  # plain JSON
@@ -209,7 +210,7 @@ def test_hole_gaps_by_hand(index):
     assert drc_findings._hole_span(index, track, via[uid(0x701)])[0] == pytest.approx(0.225 * MM)  # 0.5 - 0.15 - 0.125
     assert drc_findings._hole_span(index, via[uid(0x702)], via[uid(0x703)], True)[0] == pytest.approx(0.2 * MM)
     assert drc_findings._hole_span(index, track, track) is None
-    # the two pairs checked by hand on a KiCad 10 report (PLAN-step1 §2.4)
+    # the two pairs checked by hand on a KiCad 10 report
     a = model.Via("a", "N1", (0, 0), 600_000, 300_000, "F.Cu", "B.Cu")
     b = model.Via("b", "N2", (600_000, 200_000), 600_000, 300_000, "F.Cu", "B.Cu")
     c = model.Via("c", "N1", (500_000, 0), 600_000, 300_000, "F.Cu", "B.Cu")
@@ -294,28 +295,35 @@ def test_unconnected_and_dangling(converted):
     assert labels[f"uuid:{uid(0x601)}"] == "pt:2,3@F.Cu"  # both ends open: DRC's position
     vias = by_check(converted, "via_dangling")
     assert len(vias) == 5 and all(draw(f, "label")["text"] == "Unconnected via" for f in vias)
-    for via in vias:  # the via lit, the label at its position
-        assert tools(via) == ["highlight", "label"]
+    for via in vias:  # the via lit, its unused barrel drawn with stub, the label at its position
+        assert tools(via) == ["highlight", "stub", "label"]
         assert draw(via, "highlight")["targets"][0].startswith("uuid:") and draw(via, "label")["at"].startswith("pt:")
+        assert draw(via, "stub") == {"tool": "stub", "via": draw(via, "highlight")["targets"][0]}
 
 
-def test_a_dangling_via_is_highlighted_and_labelled():
+def test_a_dangling_via_is_highlighted_labelled_and_its_barrel_drawn_as_a_stub():
     from kileido_bridge import findings
     via_id = "d0c00000-0000-4000-8000-00000000beef"
+    layer = model.StackupLayer
+    stack = model.Stackup((layer("F.Cu", "copper", 35_000, None, None, None),
+                           layer("core", "dielectric", 1_500_000, None, None, None),
+                           layer("B.Cu", "copper", 35_000, None, None, None)))
     via = model.Via(via_id, "GND", (5 * MM, 5 * MM), 600_000, 300_000, "F.Cu", "B.Cu")
-    board = BoardIndex(model.BoardSnapshot("dangle", {}, (), (), (via,), (), (), (), model.Outline(()),
-                                           model.Stackup(()), (), {}))
+    board = BoardIndex(model.BoardSnapshot("dangle", {}, (), (), (via,), (), (), (), model.Outline(()), stack, (), {}))
     report = {"violations": [entry("via_dangling", "Via is not connected or connected on only one layer",
                                    (via_id, "Via [GND] on F.Cu - B.Cu", 5, 5))]}
     (dangling,) = convert(report, board, "1", "00000000")["findings"]
-    assert tools(dangling) == ["highlight", "label"]
+    assert tools(dangling) == ["highlight", "stub", "label"]
     assert draw(dangling, "highlight")["targets"] == [f"uuid:{via_id}"]
     assert draw(dangling, "label") == {"tool": "label", "at": "pt:5,5@F.Cu", "text": "Unconnected via"}
-    context = findings.Context("drc.kls-findings.json", "drc", "00000000", {})
+    context = findings.Context("drc", {}, "00000000", {})
     payload = findings.resolve_file(findings.parse(json.dumps(convert(report, board, "1", "00000000")).encode()),
                                     board, context)
-    lit, label = payload["findings"][0]["draws"]
+    lit, drawn, label = payload["findings"][0]["draws"]
     assert lit["ok"] and lit["ids"] == [via_id] and label["ok"] and label["points"] == [[5 * MM, 5 * MM, "F.Cu"]]
+    assert drawn["tool"] == "stub" and drawn["ok"]
+    assert drawn["barrel"]["used"] == [] and drawn["barrel"]["stub"] == ["F.Cu", "B.Cu"]
+    assert drawn["measured_nm"] == 1_535_000 and "on no layer" in drawn["problem"]
 
 
 def test_crossing_label_sits_on_the_crossing(converted):
@@ -362,14 +370,16 @@ def test_courtyards_and_silkscreen(converted):
 
 def test_converted_file_resolves_and_measures_what_drc_says(converted, index):
     """The converter's file through the findings path: every clearance, edge gap and width
-    draws, measured over its limit as KiCad says."""
+    draws, measured over its limit as KiCad says, and the bridge's measurement agrees with
+    KiCad's "actual" (no disagreement)."""
     from kileido_bridge import findings
-    context = findings.Context("drc.kls-findings.json", "drc", "a1b2c3d4", {})
+    context = findings.Context("drc", {}, "a1b2c3d4", {})
     payload = findings.resolve_file(findings.parse(json.dumps(converted).encode()), index, context)
     measured = [d for f in payload["findings"] for d in f["draws"] if d["tool"] in ("clearance", "edge_gap", "width")]
     assert sorted(d["tool"] for d in measured) == ["clearance"] * 3 + ["edge_gap"]
     assert all(d["ok"] and d["what"] and d["measured_nm"] is not None and d["limit_is"] == "min" for d in measured)
     assert all(d["over"] for d in measured)  # every one is a violation
+    assert not any(f["disagree"] for f in payload["findings"])
 
 
 # the rest of the table, on hand-written entries
@@ -420,7 +430,7 @@ def test_types_not_on_the_fixture(index):
     assert draw(other, "label")["at"] == "pt:2,3@F.Cu"
 
 
-def test_isolated_copper_of_a_zone_on_the_board_lights_the_zone():
+def test_isolated_copper_of_a_zone_on_the_board_lights_the_zone_and_draws_its_islands():
     from kileido_bridge import findings
     zone_id = "d0c00000-0000-4000-8000-00000000abcd"
     pieces = ((rect(0, 0, 10 * MM, 10 * MM)[0],), (rect(20 * MM, 0, 22 * MM, 2 * MM)[0],))
@@ -431,14 +441,17 @@ def test_isolated_copper_of_a_zone_on_the_board_lights_the_zone():
     report = {"violations": [entry("isolated_copper", "Isolated copper fill",
                                    (zone_id, "Zone [GND] on In1.Cu, priority 0", 21, 1))]}
     (island,) = convert(report, board, "1", "00000000")["findings"]
-    assert tools(island) == ["highlight", "label"]
+    assert tools(island) == ["highlight", "plane_islands", "label"]
     assert draw(island, "highlight") == {"tool": "highlight", "targets": [f"uuid:{zone_id}"]}
+    assert draw(island, "plane_islands") == {"tool": "plane_islands", "net": "GND", "layer": "In1.Cu"}
     assert draw(island, "label") == {"tool": "label", "at": "pt:21,1@In1.Cu", "text": "Isolated copper"}
-    context = findings.Context("drc.kls-findings.json", "drc", "00000000", {})
+    context = findings.Context("drc", {}, "00000000", {})
     payload = findings.resolve_file(findings.parse(json.dumps(convert(report, board, "1", "00000000")).encode()),
                                     board, context)
-    lit, label = payload["findings"][0]["draws"]
+    lit, drawn, label = payload["findings"][0]["draws"]
     assert lit["ok"] and lit["ids"] == [zone_id] and label["ok"]
+    assert drawn["tool"] == "plane_islands" and drawn["ok"] and drawn["label"] == "2 pieces, 1 not tied"
+    assert [(i["area_mm2"], i["tied"]) for i in drawn["islands"]] == [(100.0, True), (4.0, False)]
 
 
 def test_long_description_is_cut_with_its_repeat_count(index):

@@ -136,7 +136,7 @@ def _mask_sheets(collection):
 def export_board(filepath):
     """Write the live board to a .blend package for `import_board`: as it looks now,
     without KiCad's selection or a finding drawn, and with its own Layers list."""
-    with findings_draw.left_out():  # the DRC column's drawing is this session's, not the board's
+    with findings_draw.nothing_drawn():  # a shown finding's drawing is this session's, not the board's
         _export_board(filepath)
 
 

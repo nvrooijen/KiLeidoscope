@@ -1,4 +1,4 @@
-"""Markers on the board for the DRC column's findings: one icon per finding, as its
+"""Markers on the board for the DRC and LLM columns' findings: one icon per finding, as its
 row's (findings_draw.ICONS: a red circle "!", a yellow triangle "!", a blue circle "i", a
 grey "?" for one KiLeidoscope could not confirm), just out from the side it is on.
 
@@ -6,10 +6,10 @@ They are drawn over the 3D view (a POST_PIXEL handler, as the column tabs are), 
 objects: the same size on screen at any zoom, over every part, never in a render, and
 moving the view restarts nothing. Like pins on a map, markers that would overlap on screen
 share one, showing the worst icon and a count; zooming in splits them. Dismissed findings
-have none, the severity filter leaves out the milder ones, and while a finding is shown
+have none, nor do the findings the column's filter row hides, and while a finding is shown
 the others fade, as do markers on the side the view does not see.
 
-A click on a marker (KILEIDO_OT_pick asks `hit` first) opens the DRC column with its
+A click on a marker (KILEIDO_OT_pick asks `hit` first) opens the column that lists it with its
 group unfolded, and shows its finding as its title there does: drawn, framed, its items
 selected in KiCad, its details under its row. A shared marker's click opens their groups
 and frames its findings, so they split.
@@ -22,6 +22,7 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 from . import findings, findings_draw, fold, transform
+from .objects import shown_view_areas
 from .state import board
 
 MARKER_PX = 18  # unscaled: a marker's width on screen
@@ -33,10 +34,6 @@ COUNT_SIZE = 11  # unscaled: a shared marker's count
 COUNT_PAD = 3  # unscaled: around the count on its plate
 COUNT_PLATE = (0.03, 0.03, 0.03, 0.85)
 FONT = 0
-LEVELS = (("error", "Errors", "Markers for errors only"),
-          ("warning", "Warnings", "Markers for errors and warnings"),
-          ("all", "All", "Markers for every finding, info too"))
-ALLOWED = {"error": {"error"}, "warning": {"error", "warning"}}  # a level -> the severities shown; "all": any
 
 _handle = None
 _cache = {"markers": None}
@@ -50,10 +47,8 @@ def invalidate():
     """A new findings frame or a rebuilt board: the markers placed again, the views redrawn."""
     _cache["markers"] = None
     try:
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == "VIEW_3D":
-                    area.tag_redraw()
+        for area in shown_view_areas():
+            area.tag_redraw()
     except (AttributeError, ReferenceError):
         pass
 
@@ -86,11 +81,10 @@ def markers():
 
 
 def shown(scene):
-    """The markers to draw: not dismissed, as severe as the filter asks (by severity, a
-    "?" too)."""
-    allowed = ALLOWED.get(scene.kileido_markers_level)
+    """The markers to draw: not dismissed, and let through by the column's filter row
+    (findings.passes: the severity toggles, Unchecked)."""
     return [marker for marker in markers() if marker["finding"].get("state") != "dismissed" and
-            (allowed is None or (marker["finding"].get("severity") or "warning") in allowed)]
+            findings.passes(scene, marker["source"], marker["finding"])]
 
 
 def merge(points, reach):
@@ -129,12 +123,13 @@ def open_markers(context, members):
     for source_name, check in dict.fromkeys((marker["source"], marker["finding"].get("check") or "other")
                                             for marker in members):
         findings.open_group(context.scene, source_name, check)  # its row in sight, its details under it
-    if context.area is not None and context.scene.kileido_column != "DRC":
-        columns.open_column(context, "DRC")
     keys = [(marker["source"], marker["key"]) for marker in members]
     showing = keys.index(board.findings_shown) if board.findings_shown in keys else -1
     number = (showing + 1) % len(members) if len(members) > 1 else 0
     marker = members[number]
+    tab = findings.TABS.get(marker["source"], "DRC")  # the tab that lists it
+    if context.area is not None and context.scene.kileido_column != tab:
+        columns.open_column(context, tab)
     bpy.ops.kileido.finding_show(source=marker["source"], key=marker["key"])
     title = marker["finding"].get("title") or marker["finding"].get("check") or "finding"
     if len(members) == 1:

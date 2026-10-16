@@ -79,7 +79,13 @@ def test_messages_only_for_dirty_groups_with_arc_sampled_into_tracks():
 def test_findings_frame_round_trip():
     payload = {"status": "ok", "folder": "C:/p/.kileidoscope", "drc": {"state": "idle", "error": "", "run": "4"},
                "sources": {"drc": {"status": "none", "findings": []},
-                           "file": {"status": "ok", "findings": [{"key": "3f2a", "title": "Stub µ"}]}}}
+                           "file": {"status": "ok", "findings": [{"key": "3f2a", "title": "Stub µ"}]}},
+               "prompt": {"state": "ready", "run": "3", "text": "Run: 3   Stamp: a1b2c3d4\nRead request.md — first",
+                          "error": ""},
+               "progress": {"state": "working", "run": "3", "done": 2, "total": 5, "check": "plane.gap_crossing",
+                            "note": "Tracing GND µ", "updated_unix": 1791200000.25, "made_unix": 1791199990.5},
+               "catalogue": [{"id": "plane.gap_crossing", "group": "plane", "title": "Plane gap", "v1": True}],
+               "groups": [{"id": "plane", "title": "Return paths and planes"}]}
     [(header, arrays)] = decode_all([findings_message(payload, 7)])
     assert header["type"] == "findings" and header["revision"] == 7 and header["findings"] == payload
     assert arrays == {}

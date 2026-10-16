@@ -26,10 +26,18 @@ class BoardState:
         self.ims_warnings = []  # what would short to the metal base (apply.refresh_ims_warnings)
         self.flex = {}  # flex mode's panel content from the bridge (kileido_bridge.flex_checks.report)
         self.fold_findings = []  # what runs into what at the end of a folding step (fold.check_steps)
-        # The DRC column (findings.py): the bridge's `findings` payload, and the one finding drawn.
+        # The DRC and LLM columns (findings.py): the bridge's `findings` payload, and the one finding drawn.
         self.findings = {}  # {"status", "folder", "drc", "sources": {"drc": ..., "file": ...}}
         self.findings_shown = ("", "")  # (source, key) of the finding drawn, ("", "") for none
+        self.findings_isolate = False  # the drawn finding wants X-ray (findings_draw.xray_wanted): it fades the
+        # rest while the box is ticked, even with nothing lit
+        self.xray_for_finding = None  # (source, key) X-ray was last turned on for (findings_draw._follow_xray)
+        self.xray_ticked = False  # the box was ticked for it, so it is unticked when the finding goes
         self.finding_severity = "error"  # its colour (materials.FINDING_COLORS)
+        self.layer_filter = None  # copper layers its `layers` draws leave shown (layers.set_filter); None: all
+        self.prompt_wait = None  # Copy prompt pressed: the run shown then ("" none), findings.MAKING once the
+        # bridge is making it; None: not asked
+        self.prompt_copied = ""  # the run whose prompt went to the clipboard
 
         # Shared display resources.
         self.groups = {}  # Geometry Nodes groups by role (nodes.ensure_all)

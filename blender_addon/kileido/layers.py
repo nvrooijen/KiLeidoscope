@@ -8,6 +8,10 @@ Every KiLeidoscope object belongs to at most one row (`row_of`). `objects.set_vi
 asks `hidden` first, so a hidden row stays hidden through live updates. A row that
 comes back shows only what it hid (`kls_layer_hidden`), never an empty highlight or
 a model KiCad hides.
+
+A shown finding's `layers` draw filters the copper rows (`set_filter`): only the copper
+layers it names stay shown, the others are hidden as if their eye were off, and come back
+as their eyes say once the finding is hidden. The eyes themselves are left as they are.
 """
 
 import re
@@ -66,7 +70,26 @@ def hidden(obj):
     if under_base(row) or (board.ims is not None and
                            (obj.get("kls_side") == "bottom" or obj.get("kls_paste_side") == "B")):
         return True
-    return row is not None and row != "Board" and not shown(row)
+    return row is not None and row != "Board" and (not shown(row) or filtered(row))
+
+
+def filtered(row, keep=None):
+    """True for a copper row a shown finding's layer filter leaves out (`keep`: that
+    filter, board.layer_filter when not given; None: no filter)."""
+    keep = board.layer_filter if keep is None else keep
+    return bool(keep) and row in COPPER_LAYERS and row not in keep
+
+
+def set_filter(keep):
+    """Only the copper rows in `keep` shown (None or empty: every row as its eye says);
+    the rows whose state changes are refreshed."""
+    keep = frozenset(keep) if keep else None
+    if keep == board.layer_filter:
+        return
+    old, board.layer_filter = board.layer_filter, keep
+    for row in board.heights:  # the board's copper layers
+        if filtered(row, old or frozenset()) != filtered(row):
+            refresh(row)
 
 
 def refresh(row):

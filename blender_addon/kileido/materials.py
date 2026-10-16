@@ -116,7 +116,7 @@ def create_all():
         "highlight_pair_barrel": make("KLS Highlight pair barrel", HIGHLIGHT_COLORS["pair"]),
         # A glow shell, not a surface: flat translucent red-orange in every mode.
         "highlight_box": make("KLS Highlight component", HIGHLIGHT_COLORS["selected"], HIGHLIGHT_BOX_ALPHA),
-        # The finding shown from the DRC column (findings_draw): recoloured by its severity.
+        # The finding shown from the DRC or LLM column (findings_draw): recoloured by its severity.
         "highlight_finding": make("KLS Highlight finding", FINDING_COLORS["error"]),
         "highlight_finding_barrel": make("KLS Highlight finding barrel", FINDING_COLORS["error"]),
         "highlight_finding_box": make("KLS Highlight finding component", FINDING_COLORS["error"],

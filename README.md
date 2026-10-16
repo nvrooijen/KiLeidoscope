@@ -39,6 +39,12 @@ Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Be
 - IMS boards: a 2-layer board drawn on its aluminum or copper base, the thin epoxy under F.Cu, in 3D and in the cross section, with warnings for vias and plated holes that would short to the base. See the [IMS guide](docs/ims.md).
 - Flex and rigid-flex boards (beta): bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
+- LLM review on the 3D board: paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the [LLM guide](docs/llm-review.md).
+
+<p align="center">
+  <img src="assets/llm-return-vias.png" width="640" align="middle" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC).">
+</p>
+<p align="center"><sub>LLM review: a layer change without a return via, as an LLM reported it. KiLeidoscope measures the nearest return vias against the limit, red past it, and draws the two vias the LLM suggests where it put them, checked by KiCad's DRC. See the <a href="docs/llm-review.md">LLM guide</a>.</sub></p>
 
 <p align="center">
   <img src="assets/collisions.png" width="290" align="middle" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">

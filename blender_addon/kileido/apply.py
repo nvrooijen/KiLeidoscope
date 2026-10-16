@@ -3,7 +3,7 @@
 Frames and their order are defined by the bridge (kileido_bridge/protocol.py): a
 snapshot is `snapshot_begin`, `board`, layer data, `footprints`, `stackup`,
 `snapshot_end`; live edits send single layer-data, footprint or selection frames. The
-DRC column's findings come in their own frames, after a snapshot.
+DRC and LLM columns' findings come in their own frames, after a snapshot.
 """
 
 import hashlib
@@ -71,7 +71,7 @@ def apply_frame(header, arrays):
         board.export = header.get("export") or {}
         models.follow_board(board.board_path, board.export)
     elif message_type == "findings":
-        findings.apply_findings(header)  # the DRC column's list, and the finding drawn
+        findings.apply_findings(header)  # the DRC and LLM columns' lists, and the finding drawn
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:
@@ -583,14 +583,17 @@ def _apply_outline_problem(arrays):
     if not board.outline_problem:
         obj.data.clear_geometry()
         set_visible(obj, False)
-        if board.xray_for_outline:  # ticked for the fault: untick now it is fixed
-            board.xray_for_outline = False
-            scene.kileido_focus = False
+        if board.xray_for_outline:  # ticked for the fault: untick now it is fixed, unless a shown finding
+            board.xray_for_outline = False  # holds it too (findings_draw._follow_xray)
+            if not board.xray_ticked:
+                scene.kileido_focus = False
         focus.refresh()
         return
     if not getattr(scene, "kileido_focus", True):  # the red outline, with everything else faded
         board.xray_for_outline = True
         scene.kileido_focus = True
+    elif board.xray_ticked:  # ticked for a shown finding: held for the fault too, so hiding it leaves X-ray on
+        board.xray_for_outline = True
     seg = np.vstack([np.column_stack([strokes, np.full(len(strokes), PROBLEM_LINE_NM)]),
                      np.column_stack([problems, problems, np.full(len(problems), PROBLEM_DOT_NM)])]).astype(np.int32)
     _segment_edges(obj.data, seg, np.zeros(len(seg), np.int32))

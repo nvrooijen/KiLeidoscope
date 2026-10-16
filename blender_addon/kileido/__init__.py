@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 5, 0),
+    "version": (0, 5, 1),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -15,6 +15,7 @@ import re
 import textwrap
 from pathlib import Path
 
+import blf
 import bpy
 import bpy.utils.previews
 from bpy.app.handlers import persistent
@@ -168,7 +169,10 @@ class KILEIDO_OT_pick(bpy.types.Operator):
             self.report({"INFO"}, f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
         elif not self.extend:
             live.request_select([], False)  # clicking bare board clears KiCad's selection
-            self.report({"INFO"}, "KiLeidoscope: nothing to select here; KiCad's selection cleared")
+            if findings.hide_shown():  # and hides the shown finding, as KiCad's DRC marker goes
+                self.report({"INFO"}, "KiLeidoscope: finding hidden; KiCad's selection cleared")
+            else:
+                self.report({"INFO"}, "KiLeidoscope: nothing to select here; KiCad's selection cleared")
         return {"FINISHED"}
 
 
@@ -387,12 +391,56 @@ class KILEIDO_PT_panel(bpy.types.Panel):
 _share = 1.0  # of the sidebar's width the column being drawn has (a column open: half)
 
 
-def _wrap(context, text):
-    """Lines that fit the sidebar at its current width (Blender cuts a longer label in
-    its middle): ~7 px per character and an icon and box margins, at the UI scale."""
+WRAP_MARGIN_PX = 50  # unscaled: an icon and a box's margins
+FINDINGS_MARGIN_PX = 100  # unscaled: the findings columns' details sit in boxes nested three deep, indented
+WRAP_CACHE = 2_000  # wrapped texts kept: the sidebar redraws often, its texts rarely change
+_wrapped = {}
+
+
+def _wrap(context, text, margin=WRAP_MARGIN_PX):
+    """Lines that fit the sidebar at its current width less `margin` (unscaled px; Blender
+    cuts a longer label in its middle): each line measured in the UI font (blf) at the UI
+    scale, words kept whole unless one alone is too wide. Without a font to measure with,
+    ~8 px per character."""
     scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
-    width = (context.region.width if context.region else 300 * scale) * _share
-    return textwrap.wrap(text, max(16, int((width - 50 * scale) / (7 * scale))))
+    width = max(80 * scale, (context.region.width if context.region else 300 * scale) * _share
+                - margin * scale)
+    points = context.preferences.ui_styles[0].widget.points if context.preferences.ui_styles else 11
+    key = (text, int(width), points, scale)
+    if key not in _wrapped:
+        if len(_wrapped) > WRAP_CACHE:
+            _wrapped.clear()
+        _wrapped[key] = _fit(text, width, points * scale)
+    return _wrapped[key]
+
+
+def _fit(text, width, size):
+    """`text` in lines at most `width` px wide in the UI font of `size` px."""
+    try:
+        blf.size(0, size)
+
+        def wide(line):
+            return blf.dimensions(0, line)[0]
+        wide("x")
+    except Exception:  # no font loaded
+        return textwrap.wrap(text, max(16, int(width / (size * 0.73))))
+    lines = []
+    for paragraph in text.split("\n"):
+        line = ""
+        for word in paragraph.split():
+            candidate = f"{line} {word}" if line else word
+            if wide(candidate) <= width:
+                line = candidate
+                continue
+            if line:
+                lines.append(line)
+            while wide(word) > width and len(word) > 1:  # a word wider than the line: cut it
+                cut = max(1, next((n for n in range(len(word), 0, -1) if wide(word[:n]) <= width), 1))
+                lines.append(word[:cut])
+                word = word[cut:]
+            line = word
+        lines.append(line)
+    return [line for line in lines if line] or [""]
 
 
 def _draw_thickness(layout, scene, copper_m):
@@ -536,14 +584,16 @@ def _draw_studio(layout, scene):
     reset.operator(KILEIDO_OT_reset_lights.bl_idname, text="", icon="FILE_REFRESH")
 
 
-def _draw_findings(layout, scene):
-    """The DRC column (findings.py), its lines wrapped to the column."""
-    findings.draw_column(layout, scene, lambda text: _wrap(bpy.context, text))
+def _draw_findings(tab):
+    """The DRC or LLM column (findings.py), its lines wrapped to the column."""
+    return lambda layout, scene: findings.draw_column(layout, scene,
+                                                      lambda text: _wrap(bpy.context, text, FINDINGS_MARGIN_PX), tab)
 
 
 COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,
-           "DRC": _draw_findings}  # columns.TABS keys -> what the column draws
-columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=findings.tab_state)
+           "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM")}  # columns.TABS keys -> what the column draws
+columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=lambda: findings.tab_state("DRC"),
+                      LLM=lambda: findings.tab_state("LLM"))
 
 
 def _draw_flex(layout, scene):
@@ -1492,18 +1542,39 @@ def _scene_properties():
             description="The kinds of flex check shown in full in the panel, one per line"),
         "kileido_findings_open": StringProperty(
             name="Findings checks toggled", default="",
-            description="The DRC column's groups opened or closed from how they start, one per line"),
+            description="The findings columns' groups opened or closed from how they start, one per line"),
         "kileido_markers": BoolProperty(
             name="Markers", default=True,
             description="Show each finding as an icon on the board (nearby ones share one); click one to show it",
             update=lambda self, context: findings_markers.invalidate()),
-        "kileido_markers_level": EnumProperty(
-            name="Markers for", items=findings_markers.LEVELS, default="all",
-            update=lambda self, context: findings_markers.invalidate()),
+        "kileido_findings_errors": BoolProperty(
+            name="Errors", default=True, description="List and mark the errors",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_findings_warnings": BoolProperty(
+            name="Warnings", default=True, description="List and mark the warnings",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_findings_info": BoolProperty(
+            name="Info", default=False, description="List and mark the information notes too",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_markers_unchecked": BoolProperty(
+            name="Unchecked", default=True,
+            description="List and mark the findings KiLeidoscope could not measure too (the LLM's word only)",
+            update=lambda self, context: findings.filter_toggled(context.scene)),
         "kileido_findings_dismissed": BoolProperty(
             name="Show dismissed", default=False,
             description="List the findings dismissed as not a problem too, greyed",
-            update=lambda self, context: findings.dismissed_toggled(context.scene)),
+            update=lambda self, context: findings.filter_toggled(context.scene)),
+        "kileido_prompt_checks": StringProperty(
+            name="Prompt checks", default="",
+            description="The checks Copy prompt asks the LLM for, one id per line; empty: the checks KiLeidoscope "
+                        "can measure"),
+        "kileido_prompt_show": BoolProperty(
+            name="Show prompt", default=False,
+            description="Show the prompt last copied to the clipboard"),
+        "kileido_prompt_note": StringProperty(
+            name="Notes for the LLM", default="",
+            description=f"Your own note, sent with the prompt after the ticked ones (plain text; all notes together "
+                        f"at most {findings.NOTES_MAX} characters)"),
         "kileido_flex_use": EnumProperty(
             name="Flex use", items=(("STATIC", "Static", "Bent once, at assembly"),
                                     ("DYNAMIC", "Dynamic", "Flexing again and again in use")),
@@ -1543,6 +1614,9 @@ def _scene_properties():
     for layer, label, default in cosmetics.LAYERS:
         properties[cosmetics.property_name(layer)] = BoolProperty(
             name=label, default=default, update=_layer_update(layer))
+    for name, sentence in findings.NOTE_TOGGLES:  # notes for the LLM, sent with the prompt when ticked
+        properties[name] = BoolProperty(name=sentence, default=False,
+                                        description=f"Send this note with the prompt: {sentence}")
     for row in (*layers.COPPER_LAYERS, "Vias", "Components", "Placeholders"):
         properties[layers.property_name(row)] = BoolProperty(
             name=row, default=True, update=_row_update(row))
@@ -1555,6 +1629,7 @@ def _file_loaded(_):
     bridge send the board again. A reflection image saved by another Blender install is
     found again in this one. A finding drawn when the file was saved is gone: it may be stale."""
     findings_draw.purge()
+    findings.stop_progress()  # the LLM's progress comes again with the findings
     board.reset()
     hole_cut.restore()  # a file saved with a hole finding's cut: the user's own cut back
     lighting.refresh_reflections()
@@ -1606,6 +1681,7 @@ def unregister():
     for timer in (dump.drain, _ims_rebuild):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
+    findings.stop_progress()
     findings.release_icons()
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)

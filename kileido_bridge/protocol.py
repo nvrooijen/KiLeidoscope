@@ -339,7 +339,9 @@ def findings_message(payload: dict, revision: int) -> bytes:
     """Findings for the Findings column (`findings_watch.FindingsWatch`), header only:
     {"type": "findings", "revision", "findings": {"status": "ok" | "none" | "unsaved",
     "folder": "<project>/.kileidoscope" or "", "drc": {"state": "idle" | "running" |
-    "failed", "error", "run"}, "sources": {"drc": ..., "file": ...}}}. Each source is
+    "failed", "error", "run"}, "prompt": {"state": "idle" | "making" | "ready" | "failed",
+    "run", "text", "error"}, "catalogue": [{"id", "group", "title", "v1"}], "groups":
+    [{"id", "title"}], "sources": {"drc": ..., "file": ...}}}. Each source is
     `findings.resolve_file`'s payload, or `findings.status_payload`'s without a file.
     Never part of a snapshot: sent after it, so a findings resolve never delays the board."""
     return encode_frame({"type": "findings", "revision": revision, "findings": payload})

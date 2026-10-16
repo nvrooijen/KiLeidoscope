@@ -242,7 +242,8 @@ def request_select(ids, extend=False, center=False, exact=False):
         link.client.request_select(ids, extend, center, exact)
 
 
-def request_findings(action, key="", source="drc"):
-    """The DRC column: confirm, dismiss or reset a finding, run DRC."""
+def request_findings(action, key="", source="drc", checks=None, notes=None):
+    """The DRC and LLM columns: confirm, dismiss or reset a finding, run DRC, or
+    make a prompt for the check ids `checks` with the user's `notes`."""
     if link.client is not None:
-        link.client.request_findings(action, key, source)
+        link.client.request_findings(action, key, source, checks, notes)

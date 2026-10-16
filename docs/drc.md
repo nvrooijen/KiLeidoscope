@@ -129,7 +129,7 @@ Your own cut is kept and put back exactly when the finding is hidden, another fi
 
 Every finding with a place on the board gets a marker: its row's icon, just out from the side it is on. Markers are drawn over the 3D view, not as objects, so they keep their size on screen at any zoom and never appear in a render.
 
-- **Markers** switches them on or off; **Errors**, **Warnings**, **All** sets the mildest severity that gets one.
+- **Markers** switches them on or off. The **Errors**, **Warnings** and **Info** toggles above it (each with its count, as in KiCad's DRC dialog) filter the list and the markers together; Info starts off.
 - Markers that would overlap on screen share one, showing the worst icon and a count. Zoom in to split them.
 - Dismissed findings have none. While a finding is shown, the other markers fade, as do markers on the side the view does not see.
 - A click on a marker opens the DRC column at its group and shows its finding, as a click on its title does. A click on a shared marker shows its first (worst) finding, the next one on each further click.

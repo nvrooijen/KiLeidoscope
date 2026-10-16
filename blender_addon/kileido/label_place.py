@@ -4,7 +4,7 @@ the leader; this module only places them.
 
 1. Never inside the board: just out from the outer surface the view looks at (the bottom
    one from below), the label's lowest edge LIFT_M clear of it as it turns to the eye's
-   place (a tall block tilts more than the eye's direction says); a
+   place (a tall block, a bar chart, tilts more than the eye's direction says); a
    leader runs from the label's foot to its anchor, wherever that is (an inner layer,
    the far side).
 2. Beside the finding, not on it: just outside its box (bbox_nm), on the first side, in
@@ -102,7 +102,7 @@ def beside(labels, box, eye, top, bottom, unit):
     tallest = max(label.height for label in labels)  # one height for all: a stack stays apart on screen
     surface = top if side > 0 else bottom
     z = surface + side * (LIFT_M + tallest / 2 * abs(up.z) + wide / 2 * abs(right.z))
-    for _ in range(3):  # each turned to the eye's place, not its direction: a tall block tilts more
+    for _ in range(3):  # each turned to the eye's place, not its direction: a tall block (a chart) tilts more
         short = 0.0
         for label, centre in zip(labels, centres):
             x, y = facing(Vector((centre.x, centre.y, z)), eye)

@@ -5,12 +5,14 @@ records into line segments with a half width (tracks, arcs, vias, the outline) a
 filled polygons (pads, zones, copper graphics, footprint boxes), so one set of distance
 functions answers both "which item is nearest this point" and "where are two items
 closest". A part measures as the copper of its pads (`BoardIndex.shape`), not its box,
-which takes in its texts; only a part with no copper pads measures as its box. Values
+which takes in its texts; only a part with no copper pads measures as its box.
+`BoardIndex.route` follows a net's tracks, arcs and vias from one pad to another. Values
 are nanometres in KiCad's board frame (y down), as in `model`.
 """
 
 from __future__ import annotations
 
+import heapq
 import math
 import re
 from collections import defaultdict
@@ -198,6 +200,32 @@ def _inside(points: np.ndarray, polygon: tuple[np.ndarray, ...]) -> np.ndarray:
                 cross_x = x1 + (py - y1) * (x2 - x1) / (y2 - y1)
             inside[start:start + step] ^= (np.count_nonzero(straddle & (px < cross_x), axis=1) % 2).astype(bool)
     return inside
+
+
+def polygon_area(rings) -> float:
+    """Area in nm² of a polygon given as its rings ((k, 2) arrays, the outer ring first,
+    then its holes): each ring's unsigned shoelace area (a fractured fill's slits cancel),
+    the holes taken off; 0 without rings."""
+    def shoelace(ring):
+        x, y = ring[:, 0], ring[:, 1]
+        return abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2
+    return shoelace(rings[0]) - sum(shoelace(ring) for ring in rings[1:]) if len(rings) else 0.0
+
+
+def arc_length(start: Point, mid: Point, end: Point) -> float:
+    """Length in nm of the circular arc from `start` through `mid` to `end`."""
+    (x1, y1), (x2, y2), (x3, y3) = start, mid, end
+    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    if d == 0:  # collinear: a straight piece
+        return math.dist(start, end)
+    s1, s2, s3 = x1 * x1 + y1 * y1, x2 * x2 + y2 * y2, x3 * x3 + y3 * y3
+    ux = (s1 * (y2 - y3) + s2 * (y3 - y1) + s3 * (y1 - y2)) / d
+    uy = (s1 * (x3 - x2) + s2 * (x1 - x3) + s3 * (x2 - x1)) / d
+    a1, a2, a3 = (math.atan2(y - uy, x - ux) for x, y in (start, mid, end))
+    sweep = (a3 - a1) % math.tau
+    if (a2 - a1) % math.tau > sweep:  # mid lies the other way round
+        sweep = math.tau - sweep
+    return math.hypot(x1 - ux, y1 - uy) * sweep
 
 
 def _ends(segments: np.ndarray, radii: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -468,6 +496,10 @@ class BoardIndex:
         """The part a pad belongs to; None for a pad whose part the snapshot lacks."""
         return self._footprints.get(pad.footprint_id)
 
+    def part_pads(self, footprint_id: str) -> tuple[model.Pad, ...]:
+        """A part's pads that have copper, in snapshot order."""
+        return tuple(self._copper_pads.get(footprint_id, ()))
+
     def pads(self, reference: str, number: str) -> tuple[model.Pad, ...]:
         """Every pad with this number on the part: KiCad allows repeats (thermal pads)."""
         return tuple(self._pads.get((reference, number), ()))
@@ -545,3 +577,227 @@ class BoardIndex:
             if best is None or result.distance < best[0].distance:
                 best = (result, ra, rb)
         return best
+
+    def route(self, net: str, pad_a, pad_b) -> tuple[float, list[tuple[int, int, str]], list[str]] | None:
+        """The shortest copper path along `net` from `pad_a` to `pad_b` (each a pad, or
+        every pad of a repeated number): (length in nm, its centre line as (x, y, layer)
+        points, the ids of its items in path order), or None when they are not connected.
+
+        Tracks and arcs (sampled) are the edges, weighted by centre-line length (Dijkstra).
+        Two of them join where an end of one lies within half a width of the other's
+        centre line (end to end, or a T); a via joins every layer of its span at its
+        position, and every piece whose copper touches it; a pad joins its layers (when
+        drilled), the ends of tracks and arcs that lie in its copper on that layer, and
+        tracks that pass through it (where they come nearest its centre). The length
+        counts tracks and arcs, plus the short jumps where ends meet; via barrels count
+        zero. Zones are not followed: a path that only exists through a pour is not found."""
+        starts = (pad_a,) if isinstance(pad_a, model.Pad) else tuple(pad_a)
+        ends = (pad_b,) if isinstance(pad_b, model.Pad) else tuple(pad_b)
+        graph = _Graph()
+        pieces: list[_Piece] = []
+        chains: dict[int, list[_Piece]] = {}  # record -> its pieces, start to end
+        for record in self.net_items(net):
+            if isinstance(record, model.Track):
+                chain = [_Piece(record, (*record.start, *record.end))]
+            elif isinstance(record, model.Arc):
+                points = sample_arc(record.start, record.mid, record.end)
+                chain = [_Piece(record, (*a, *b)) for a, b in zip(points, points[1:])] or \
+                    [_Piece(record, (*record.start, *record.end))]
+                chords = sum(piece.length for piece in chain)
+                for piece in chain:  # chords are a little shorter than the curve
+                    piece.scale = arc_length(record.start, record.mid, record.end) / chords if chords else 1.0
+                for one, other in zip(chain, chain[1:]):  # sampled points are shared: joined end to start
+                    graph.join(one.station(graph, one.length), other.station(graph, 0.0), 0.0)
+            else:
+                continue
+            chains[id(record)] = chain
+            pieces += chain
+        grid = _Grid()
+        for i, piece in enumerate(pieces):
+            x1, y1, x2, y2 = piece.line
+            grid.add(piece.layer, (min(x1, x2) - piece.half, min(y1, y2) - piece.half,
+                                   max(x1, x2) + piece.half, max(y1, y2) + piece.half), i)
+
+        def touching(layer: str, point, reach: float, skip=None):
+            """(piece, distance from `point` to its centre line, position along it) of
+            every piece on `layer` whose centre line lies within `reach` + its half width."""
+            x, y = point
+            for i in grid.near(layer, (x - reach, y - reach, x + reach, y + reach)):
+                piece = pieces[i]
+                if piece.record is skip:
+                    continue
+                distance, along = piece.project(point)
+                if distance <= reach + piece.half:
+                    yield piece, distance, along
+
+        for piece in pieces:  # ends meeting other tracks: end to end or a T
+            for along, point in ((0.0, piece.line[:2]), (piece.length, piece.line[2:])):
+                node = piece.station(graph, along)
+                for other, distance, there in touching(piece.layer, point, piece.half, skip=piece.record):
+                    if distance <= max(piece.half, other.half):
+                        graph.join(node, other.station(graph, there), distance)
+        vias = defaultdict(list)  # layer -> (via, node)
+        for via in (record for record in self.net_items(net) if isinstance(record, model.Via)):
+            nodes = [graph.node(*via.pos, layer, via) for layer in self.layers_of(via)]
+            for one, other in zip(nodes, nodes[1:]):
+                graph.join(one, other, 0.0)
+            for layer, node in zip(self.layers_of(via), nodes):
+                vias[layer].append((via, node))
+                for piece, distance, along in touching(layer, via.pos, via.diameter / 2):
+                    graph.join(node, piece.station(graph, along), distance)
+        pads = {id(pad): pad for pad in (*(r for r in self.net_items(net) if isinstance(r, model.Pad)), *starts, *ends)}
+        nodes_of: dict[int, list[int]] = {}
+        for pad in pads.values():
+            layers = [layer for layer in pad.layers if layer in pad.polygons]
+            nodes = nodes_of[id(pad)] = [graph.node(*pad.pos, layer, pad) for layer in layers]
+            if pad.drill:
+                for one, other in zip(nodes, nodes[1:]):
+                    graph.join(one, other, 0.0)
+            for layer, node in zip(layers, nodes):
+                shape = self.shape(pad, layer)
+                touched: dict[int, list[_Piece]] = {}  # record -> its pieces touching the pad
+                for i in grid.near(layer, shape.bbox):
+                    if gap(pieces[i].shape, shape).distance <= 0:
+                        touched.setdefault(id(pieces[i].record), []).append(pieces[i])
+                for near in touched.values():
+                    chain = chains[id(near[0].record)]
+                    joins = [(piece, along) for piece, along, point in
+                             ((chain[0], 0.0, chain[0].line[:2]), (chain[-1], chain[-1].length, chain[-1].line[2:]))
+                             if point_gap(shape, point).distance <= piece.half]
+                    if not joins:  # passes through the pad: joined where it comes nearest the pad's centre
+                        piece = min(near, key=lambda piece: piece.project(pad.pos)[0])
+                        joins = [(piece, piece.project(pad.pos)[1])]
+                    for piece, along in joins:
+                        graph.join(node, piece.station(graph, along), 0.0)
+                for via, via_node in vias.get(layer, ()):
+                    if point_gap(shape, via.pos).distance <= via.diameter / 2:
+                        graph.join(node, via_node, 0.0)
+        for piece in pieces:
+            piece.link(graph)
+        found = graph.shortest([n for pad in starts for n in nodes_of[id(pad)]],
+                               {n for pad in ends for n in nodes_of[id(pad)]})
+        if found is None:
+            return None
+        length, path = found
+        points: list[tuple[int, int, str]] = []
+        for x, y, layer in (graph.points[n] for n in path):
+            point = (int(round(x)), int(round(y)), layer)
+            if not points or points[-1] != point:
+                points.append(point)
+        ids = list(dict.fromkeys(graph.owners[n].id for n in path))
+        return length, points, ids
+
+
+_CELL = 1_000_000  # nm: grid cell of the route lookup
+
+
+class _Grid:
+    """Items by layer and 1 mm cell, for "what is near this box" on one layer."""
+
+    def __init__(self):
+        self._cells: dict[tuple[str, int, int], list[int]] = defaultdict(list)
+
+    @staticmethod
+    def _span(box):
+        return (range(math.floor(box[0] / _CELL), math.floor(box[2] / _CELL) + 1),
+                range(math.floor(box[1] / _CELL), math.floor(box[3] / _CELL) + 1))
+
+    def add(self, layer: str, box, item: int) -> None:
+        columns, rows = self._span(box)
+        for column in columns:
+            for row in rows:
+                self._cells[(layer, column, row)].append(item)
+
+    def near(self, layer: str, box) -> list[int]:
+        """Items whose box shares a cell with `box`, once each, in the order added."""
+        if not all(map(math.isfinite, box)):
+            return []
+        columns, rows = self._span(box)
+        found = {item for column in columns for row in rows for item in self._cells.get((layer, column, row), ())}
+        return sorted(found)
+
+
+class _Graph:
+    """Route nodes: points on a layer, each owned by the item it lies on."""
+
+    def __init__(self):
+        self.points: list[tuple[float, float, str]] = []
+        self.owners: list[Record] = []
+        self.edges: list[list[tuple[int, float]]] = []
+
+    def node(self, x: float, y: float, layer: str, owner: Record) -> int:
+        self.points.append((x, y, layer))
+        self.owners.append(owner)
+        self.edges.append([])
+        return len(self.points) - 1
+
+    def join(self, a: int, b: int, weight: float) -> None:
+        if a != b:
+            self.edges[a].append((b, weight))
+            self.edges[b].append((a, weight))
+
+    def shortest(self, sources, targets) -> tuple[float, list[int]] | None:
+        """Dijkstra from any source to the nearest target: (length, nodes in order)."""
+        best = {node: 0.0 for node in sources}
+        before: dict[int, int] = {}
+        heap = [(0.0, node) for node in best]
+        heapq.heapify(heap)
+        while heap:
+            length, node = heapq.heappop(heap)
+            if length > best[node]:
+                continue
+            if node in targets:
+                path = [node]
+                while path[-1] in before:
+                    path.append(before[path[-1]])
+                return length, path[::-1]
+            for other, weight in self.edges[node]:
+                if length + weight < best.get(other, math.inf):
+                    best[other] = length + weight
+                    before[other] = node
+                    heapq.heappush(heap, (length + weight, other))
+        return None
+
+
+class _Piece:
+    """One straight piece of a track or arc, with its route nodes ("stations") by
+    position along it in whole nm."""
+
+    def __init__(self, record, line: tuple[float, float, float, float]):
+        self.record, self.layer, self.line, self.half = record, record.layer, line, record.width / 2
+        self.length = math.hypot(line[2] - line[0], line[3] - line[1])
+        self.scale = 1.0  # route length per nm of this piece (an arc's chords: a little over 1)
+        self.stations: dict[int, int] = {}
+
+    @property
+    def shape(self) -> Shape:
+        return _shape([self.line], self.half)
+
+    def project(self, point) -> tuple[float, float]:
+        """(distance from `point` to the centre line, position of its foot along it)."""
+        x1, y1, x2, y2 = self.line
+        dx, dy = x2 - x1, y2 - y1
+        t = 0.0 if not self.length else min(1.0, max(0.0, ((point[0] - x1) * dx + (point[1] - y1) * dy)
+                                                       / self.length ** 2))
+        return math.hypot(point[0] - x1 - t * dx, point[1] - y1 - t * dy), t * self.length
+
+    def station(self, graph: _Graph, along: float) -> int:
+        key = int(round(min(max(along, 0.0), self.length)))
+        node = self.stations.get(key)
+        if node is None:
+            x1, y1, x2, y2 = self.line
+            if key >= round(self.length):
+                x, y = x2, y2
+            else:
+                t = key / self.length
+                x, y = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+            node = self.stations[key] = graph.node(x, y, self.layer, self.record)
+        return node
+
+    def link(self, graph: _Graph) -> None:
+        """Both ends, and every station in between joined in order by its length."""
+        self.station(graph, 0.0)
+        self.station(graph, self.length)
+        keys = sorted(self.stations)
+        for a, b in zip(keys, keys[1:]):
+            graph.join(self.stations[a], self.stations[b], (b - a) * self.scale)

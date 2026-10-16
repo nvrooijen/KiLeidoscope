@@ -15,6 +15,9 @@ import numpy as np
 PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}
+# Every frame type the bridge sends (the bridge's protocol.MESSAGE_TYPES; a test keeps them equal).
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
+                 "appearance", "selection", "status", "export", "findings")
 _LENGTH = struct.Struct(">I")
 _CONNECT_PENDING = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                     *(getattr(errno, name) for name in ("WSAEWOULDBLOCK", "WSAEINPROGRESS", "WSAEALREADY")
@@ -122,12 +125,18 @@ class SocketClient:
             self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend),
                                                "center": bool(center), "exact": bool(exact)}))
 
-    def request_findings(self, action, key="", source="drc"):
+    def request_findings(self, action, key="", source="drc", checks=None, notes=None):
         """Ask the bridge to act on its findings: "confirm", "dismiss" or "reset" the finding
-        `key`, or "run_drc"; `source` is the file ("drc" or "file")."""
+        `key`, "run_drc", or make a "prompt" for the check ids
+        `checks` with the user's `notes` (plain text, a prompt's only); `source` is the file
+        ("drc" or "file")."""
         if self.state == "connected":
-            self.outgoing.extend(encode_frame({"type": "findings", "action": str(action), "key": str(key),
-                                               "source": str(source)}))
+            header = {"type": "findings", "action": str(action), "key": str(key), "source": str(source)}
+            if checks is not None:
+                header["checks"] = [str(check) for check in checks]
+            if notes is not None and action == "prompt":
+                header["notes"] = str(notes)
+            self.outgoing.extend(encode_frame(header))
 
     def poll_io(self) -> list[tuple[dict, dict[str, np.ndarray]]]:
         sock = self.socket

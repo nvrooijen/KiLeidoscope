@@ -61,7 +61,7 @@ GROUPS = (
     ("drawings", "Drawings"),
     ("components", "Components"),
     ("highlights", "Highlights"),
-    ("findings", "Findings"),  # the DRC column's drawing (findings_draw)
+    ("findings", "Findings"),  # the shown finding's drawing (findings_draw)
 )
 _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zone": "pours", "drill": "drills",
                  "solder": "paste"}
@@ -206,13 +206,20 @@ def view3d_spaces():
                 yield area.spaces.active
 
 
-def shown_views():
-    """(area pointer, region_3d) of every 3D view in an open window: the screens on show,
-    not every workspace's screen in the file (those are views nobody is looking through)."""
+def shown_view_areas():
+    """Every 3D View area in an open window: the screens on show, not every workspace's
+    screen in the file (those are views nobody is looking through)."""
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
-            if area.type == "VIEW_3D" and area.spaces.active.region_3d is not None:
-                yield area.as_pointer(), area.spaces.active.region_3d
+            if area.type == "VIEW_3D":
+                yield area
+
+
+def shown_views():
+    """(area pointer, region_3d) of every 3D view in an open window (`shown_view_areas`)."""
+    for area in shown_view_areas():
+        if area.spaces.active.region_3d is not None:
+            yield area.as_pointer(), area.spaces.active.region_3d
 
 
 def outline_bounds():

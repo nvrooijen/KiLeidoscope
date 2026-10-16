@@ -3,12 +3,14 @@
 `U3` (part), `U3.4` (pad), `net:GND`, `net:GND@In1.Cu`, `net:USB_D+@F.Cu~42.10,18.75`
 (the one item of that net nearest the point), `layer:In1.Cu`, `uuid:5a222dbd` (a uuid's
 last 8 hex, or all of it), `pt:42.10,18.75@F.Cu` (snapped to copper within 0.5 mm) and
-`edge`. Coordinates are millimetres in KiCad's board frame (y down), as in the board file.
-A target that names nothing resolves with no items and a note saying why.
+`edge`. Coordinates are millimetres in KiCad's board frame (y down), as in the board file;
+one past MAX_MM is refused (`point_problem`). A target that names nothing resolves with no
+items and a note saying why.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -17,8 +19,11 @@ from .board_index import BoardIndex
 from .model import Point
 
 SNAP_NM = 500_000  # `pt:` snaps to copper this close
+MAX_MM = 10_000.0  # coordinates and sizes past 10 m are not a board
+FAR = f"a coordinate past {MAX_MM:g} mm (10 m) is not on a board"
 _NUMBER = r"-?(?:\d+(?:\.\d*)?|\.\d+)"
 _POINT = re.compile(rf"\s*({_NUMBER})\s*,\s*({_NUMBER})\s*")
+_GIVEN_POINT = re.compile(rf"(?:[Pp][Tt]\s*:|~)\s*({_NUMBER})\s*,\s*({_NUMBER})")  # a target's `pt:x,y` or `~x,y`
 # Net names can hold "@" and "~" ("/~{RST}"), so suffixes are only split off when they
 # parse as a copper layer and a point; a name that is a net as written wins.
 _SUFFIXES = re.compile(rf"^(?P<name>.*?)(?:\s*@\s*(?P<layer>(?:[FfBb]|[Ii][Nn]\d+)\.[Cc][Uu]))?"
@@ -47,15 +52,35 @@ def kind(record) -> str:
     return _KIND.get(type(record), type(record).__name__.lower())
 
 
-def _mm(nm: float) -> str:
+def _shown_mm(nm: float) -> str:
     return f"{nm / 1e6:.2f} mm"
 
 
+class FarPoint(ValueError):
+    """A target's point lies past MAX_MM: refused, never resolved."""
+
+
+def _near(x: float, y: float) -> bool:
+    return math.isfinite(x) and math.isfinite(y) and abs(x) <= MAX_MM and abs(y) <= MAX_MM
+
+
+def point_problem(target: str) -> str:
+    """FAR when a point the target gives (`pt:x,y`, `~x,y`) lies past MAX_MM, else ""."""
+    for x, y in _GIVEN_POINT.findall(target):
+        if not _near(float(x), float(y)):
+            return FAR
+    return ""
+
+
 def _parse_point(text: str) -> Point | None:
+    """A point "x,y" in mm as nm; None when it is not one, FarPoint past MAX_MM."""
     match = _POINT.fullmatch(text)
     if not match:
         return None
-    return (round(float(match.group(1)) * 1e6), round(float(match.group(2)) * 1e6))
+    x, y = float(match.group(1)), float(match.group(2))
+    if not _near(x, y):
+        raise FarPoint(FAR)
+    return (round(x * 1e6), round(y * 1e6))
 
 
 def copper_layer(text: str) -> str | None:
@@ -87,11 +112,19 @@ def _pick(index: BoardIndex, target: str, items, layer, point, what: str) -> Res
     if near is None:
         return Resolved(target, (), layer, point, f"{what} has no copper to measure")
     note = "" if near.gap.distance <= SNAP_NM else \
-        f"nearest {kind(near.record)} of {what} is {_mm(near.gap.distance)} from the point"
+        f"nearest {kind(near.record)} of {what} is {_shown_mm(near.gap.distance)} from the point"
     return Resolved(target, (near.record,), layer, point, note)
 
 
 def resolve(index: BoardIndex, target: str) -> Resolved:
+    """The items a target names; a point past MAX_MM names nothing (`FAR`)."""
+    try:
+        return _resolve(index, target)
+    except FarPoint as error:
+        return Resolved(target, note=str(error))
+
+
+def _resolve(index: BoardIndex, target: str) -> Resolved:
     text = target.strip()
     if text == "edge":
         return Resolved(target, (index.snapshot.outline,))
@@ -129,10 +162,10 @@ def resolve(index: BoardIndex, target: str) -> Resolved:
         candidates = index.layer_items(layer) if layer else index.copper
         near = index.nearest(point, candidates, layer, max_distance=SNAP_NM)
         if near is None:
-            return Resolved(target, (), layer, point, f"no copper within {_mm(SNAP_NM)}")
+            return Resolved(target, (), layer, point, f"no copper within {_shown_mm(SNAP_NM)}")
         where = getattr(near.record, "layer", None) if layer is None else None
         note = (f"snapped to {kind(near.record)}" + (f" on {where}" if where else "") +
-                f" {_mm(near.gap.distance)} away") if near.gap.distance or where else ""
+                f" {_shown_mm(near.gap.distance)} away") if near.gap.distance or where else ""
         return Resolved(target, (near.record,), layer, point, note)
     footprints = index.footprints(text)
     if footprints:
