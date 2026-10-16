@@ -6,6 +6,8 @@ No, this is not yet another AI plugin. It's a tool for visualizing your AI board
 
 The tool works with your favorite LLM, and filters out some of your privacy-sensitive information (the title block with your company and author, board text variables, schematic sheet names and local file paths). LLM-review creates a personalized prompt for you, that allows you to easily paste your review command into your own LLM.
 
+❗ KiLeidoscope itself sends nothing anywhere: no account, no API key, no network. The only copy of your board that leaves your machine is the one your own LLM tool sends, and a local model keeps it at home. KiLeidoscope itself does not run any servers and does not track your data! ❗
+
 <p align="center">
   <img src="../assets/llm-review.gif" width="656" alt="The LLM column in Blender's sidebar beside a 3D board: a list of findings grouped by check, each with its verdict. A click on one draws it on the board: a signal via ringed, its nearest return vias measured against a 1 mm limit, two suggested vias drawn where the LLM put them with the note that KiCad's DRC says they fit.">
 </p>
