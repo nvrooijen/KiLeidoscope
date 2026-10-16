@@ -34,8 +34,9 @@ def test_an_excursion_is_a_warning_with_its_copper_lit_and_a_label_at_its_start(
     assert finding["check"] == "phase.excursion" and finding["severity"] == "warning"
     assert "P and N" in finding["title"] and "apart over" in finding["title"]
     assert "walked from J1.1/2" in finding["message"] and "End-to-end skew" in finding["message"]  # J1: the start end
-    assert set(finding["values"]) == {"peak_ps", "length_mm", "at_mm", "skew_ps"}
+    assert set(finding["values"]) == {"peak_ps", "length_mm", "at_mm", "mode_lag_ps", "skew_ps"}
     assert finding["values"]["length_mm"] > 40 and abs(finding["values"]["skew_ps"]) < 0.01
+    assert finding["values"]["mode_lag_ps"] > 1 and "ps behind the edge" in finding["message"]  # the common mode's lag
     highlight, label = finding["draw"]
     assert highlight["tool"] == "highlight" and len(highlight["targets"]) >= 2
     assert all(target.startswith("uuid:t-") for target in highlight["targets"])  # both sides' tracks along the stretch

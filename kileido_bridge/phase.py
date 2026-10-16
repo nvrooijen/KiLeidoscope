@@ -93,6 +93,12 @@ class Excursion:
     peak_ps: float  # signed, the largest |Δt| of the stretch
     item_id: str  # the P track there
     item_ids: tuple[str, ...] = ()  # the copper of both sides along the stretch, in walking order
+    # ps the pair's even (common) mode falls behind its odd (differential) mode over the
+    # stretch (delays.DelayModel.mode_lag summed along both sides' copper, 0 on stripline):
+    # the common mode made where the excursion starts arrives this much after the edge
+    # where it ends, so a compensation there cancels it only if this is small against the
+    # signal's rise time.
+    mode_lag_ps: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -164,6 +170,7 @@ class _Walk:
     crossings: list
     sources: set
     lines: dict = field(default_factory=dict)  # (layer, kind) -> nm of track (from _couple)
+    lag: np.ndarray | None = None  # (v,) ps the even mode has fallen behind the odd mode by each vertex (from _couple)
 
 
 def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: dict[str, int]) -> _Walk:
@@ -275,7 +282,11 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
     `samples` (along, xyz) are this side's alignment samples: the gap is measured at
     each (to the partner's nearest sample, centre to centre) and interpolated between;
     so is the distance to the nearest pour of another net on the sample's layer
-    (`grounds`, from ground_edges), for a grounded coplanar waveguide."""
+    (`grounds`, from ground_edges), for a grounded coplanar waveguide.
+
+    Along the same stretches the even mode's lag behind the odd mode (model_.mode_lag,
+    ps/mm at the gap there) is added up into `lag`: how far a common-mode pulse has
+    fallen behind the differential edge by each vertex."""
     total = walk.along[-1]
     if total <= 0 or len(partner) < 2:
         return walk
@@ -295,6 +306,7 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
     vertex = np.clip(np.searchsorted(walk.along, middle), 1, len(walk.along) - 1)
     track = (walk.xyz[vertex, 2] == walk.xyz[vertex - 1, 2]) & np.array([bool(walk.items[v]) for v in vertex])
     ratio = np.ones(len(middle))
+    lag = np.zeros(len(middle))  # ps/mm the even mode falls behind the odd mode on each cut
     if track.any():
         gaps = np.interp(middle[track], at, nearest)
         pours = _between_samples(middle[track], at, ground)
@@ -310,8 +322,9 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
                 alone = lone.get(key[:3])
                 if alone is None:
                     alone = lone[key[:3]] = model_.track(walk.nets[v], layer, width).ps_per_mm
-                cache[key] = model_.track(walk.nets[v], layer, width, key[3], side).ps_per_mm / alone if alone else 1.0
-            ratio[index] = cache[key]
+                cache[key] = (model_.track(walk.nets[v], layer, width, key[3], side).ps_per_mm / alone if alone else 1.0,
+                              model_.mode_lag(walk.nets[v], layer, width, key[3], side))
+            ratio[index], lag[index] = cache[key]
     lines = {}
     if track.any():
         spans = np.diff(cuts)[track]
@@ -328,9 +341,11 @@ def _couple(walk: _Walk, samples: tuple[np.ndarray, np.ndarray], partner: np.nda
                 kind = "coupled " + kind
             lines[(layer, kind)] = lines.get((layer, kind), 0.0) + float(span)
     coupled = np.concatenate(([delay[0]], delay[0] + np.cumsum(np.diff(delay) * ratio)))
+    behind = np.concatenate(([0.0], np.cumsum(np.diff(cuts) / 1e6 * lag)))
     crossings = [replace(crossing, reached_ps=float(np.interp(crossing.at_nm, cuts, coupled)))
                  for crossing in walk.crossings]
-    return replace(walk, delay=np.interp(walk.along, cuts, coupled), crossings=crossings, lines=lines)
+    return replace(walk, delay=np.interp(walk.along, cuts, coupled), crossings=crossings, lines=lines,
+                   lag=np.interp(walk.along, cuts, behind))
 
 
 def _resample(walk: _Walk, step: float) -> tuple[np.ndarray, np.ndarray, list, np.ndarray]:
@@ -505,12 +520,16 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     along = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(centre, axis=0), axis=1))))
     widths = [piece.width for piece in (*p.pieces, *n.pieces) if piece.kind == "track"]
     width = float(np.median(np.hypot(*(a[i, :2] - b[j, :2]).T))) + (float(np.median(widths)) if widths else 0.0)
+    # The even mode's lag behind the odd mode at each reading, along P's copper and along N's.
+    behind = [np.interp(matched[:, column], walk.along, walk.lag) if walk.lag is not None else np.zeros(len(matched))
+              for column, walk in enumerate(walks)]
     excursions = tuple(
         Excursion(tuple(float(v) for v in centre[first]), float(along[first]), float(along[last] - along[first]),
                   float(dt[first + int(np.abs(dt[first:last + 1]).argmax())]),
                   next((item for item in items_p[i[first]:] if item), ""),
                   tuple(dict.fromkeys(item for item in (*items_p[i[first]:i[last] + 1], *items_n[j[first]:j[last] + 1])
-                                      if item)))
+                                      if item)),
+                  mode_lag_ps=float(sum(side[last] - side[first] for side in behind) / 2))  # both sides: their mean
         for first, last in find_excursions(along, dt, settings.tolerance_ps, settings.min_length_nm))
     warnings = []
     parts = [{terminal.label.partition(".")[0] for terminal in (route.start, route.end) if "." in terminal.label}
@@ -827,8 +846,8 @@ def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
         "max_ps": result.max_abs_ps, "length_p_mm": p.length_nm / 1e6, "length_n_mm": n.length_nm / 1e6,
         "width_nm": result.width_nm, "flipped": result.flipped,
         "excursions": [{"x": e.pos[0], "y": e.pos[1], "z": e.pos[2], "at_mm": e.at_nm / 1e6,
-                        "length_mm": e.length_nm / 1e6, "peak_ps": e.peak_ps, "id": e.item_id,
-                        "ids": list(e.item_ids)}
+                        "length_mm": e.length_nm / 1e6, "peak_ps": e.peak_ps, "mode_lag_ps": e.mode_lag_ps,
+                        "id": e.item_id, "ids": list(e.item_ids)}
                        for e in result.excursions],
         "branches": [{"side": side, "label": branch.terminal.label, "id": branch.terminal.item_id,
                       "at_mm": branch.at_nm / 1e6, "length_mm": branch.length_nm / 1e6}

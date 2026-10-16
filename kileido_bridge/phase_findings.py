@@ -51,11 +51,12 @@ def _excursion(result: phase.PairPhase, excursion: phase.Excursion, settings: ph
     return _finding("phase.excursion", "warning",
                     f"{name}: P and N {abs(excursion.peak_ps):.1f} ps apart over {length:.1f} mm",
                     f"|Δt| stays above {settings.tolerance_ps:g} ps from {at:.1f} mm to {at + length:.1f} mm along "
-                    f"the pair, walked from {start}; peak {excursion.peak_ps:+.1f} ps, {ahead} ahead. Over that "
-                    f"stretch part of the differential signal runs as common mode. End-to-end skew "
+                    f"the pair, walked from {start}; peak {excursion.peak_ps:+.1f} ps, {ahead} ahead. Part of the "
+                    f"differential signal runs as common mode there, which falls {excursion.mode_lag_ps:.1f} ps "
+                    f"behind the edge over the stretch (mode lag; compare with the rise time). End-to-end skew "
                     f"{result.skew_ps:+.1f} ps.",
                     {"peak_ps": round(excursion.peak_ps, 2), "length_mm": round(length, 2), "at_mm": round(at, 2),
-                     "skew_ps": round(result.skew_ps, 2)}, draws)
+                     "mode_lag_ps": round(excursion.mode_lag_ps, 2), "skew_ps": round(result.skew_ps, 2)}, draws)
 
 
 def _short(result: phase.Shorted) -> dict:

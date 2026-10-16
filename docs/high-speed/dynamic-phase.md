@@ -70,7 +70,7 @@ with $s'$ the matched point on N. Δt < 0: P's edge is ahead there; Δt > 0: N's
 *Assumes:* a direction; see [Which end to start from](#which-end-to-start-from).
 
 **7. Excursions** · [`phase.find_excursions()`](../../kileido_bridge/phase.py)
-Wherever |Δt| stays above *Marker above (ps)* for at least *Marker longer than (mm)*, a marker at the start of that stretch, with its peak Δt. Defaults: 1 ps over 5 mm.
+Wherever |Δt| stays above *Marker above (ps)* for at least *Marker longer than (mm)*, a marker at the start of that stretch, with its peak Δt and the [mode lag](#common-mode-and-mode-lag) over it. Defaults: 1 ps over 5 mm.
 
 **8. Live: changed pairs only** · [`phase.PhaseTracker`](../../kileido_bridge/phase.py)
 A pair is recomputed only when its copper, the delay inputs (stackup, project file, netclasses) or the settings change. Each poll spends at most 80 ms; pairs left over follow on the next polls.
@@ -101,6 +101,22 @@ With a tuning profile the profile's number is kept as the level and the estimate
 Beside a pour of another net on the same layer (a grounded coplanar waveguide), the trace runs faster again. A conformal mapping of the cross-section (Ghione and Naldi's method, with the pair's midline as an electric wall for the odd mode) gives $\varepsilon_\text{eff}$ with and without the pour; that ratio scales the value above. Against a 2D field solver it is within 1.5 %; a pour a quarter of a dielectric height away makes the MIPI pair about 3 % faster.
 
 For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
+
+### Common mode and mode lag
+
+A coupled pair carries two modes: the odd (differential) mode, whose field sits partly in the air between the traces, and the even (common) mode. On microstrip the even mode's effective permittivity is the higher, so it is the slower; in a homogeneous dielectric (stripline) the two travel at the same speed. Kirschning and Jansen's static even mode, with $u = w/h$ and $g = s/h$:
+
+$$v = u\,\frac{20 + g^2}{10 + g^2} + g\,e^{-g}, \qquad \varepsilon_\text{eff,e} = \frac{\varepsilon_r + 1}{2} + \frac{\varepsilon_r - 1}{2}\left(1 + \frac{10}{v}\right)^{-a(v)\,b(\varepsilon_r)}$$
+
+with $a$ and $b$ Hammerstad and Jensen's functions of the lone line, so that a pair far apart ($g \to \infty$, $v \to u$) has both modes become the lone line. The odd mode is the one in the delay model above. Each mode's unit delay is $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$, and the mode lag per mm is
+
+$$\tau_\text{e} - \tau_\text{o} = \frac{\sqrt{\varepsilon_\text{eff,e}} - \sqrt{\varepsilon_\text{eff,o}}}{c}.$$
+
+Skew turns differential signal into common mode. With P behind N by a small $\delta$, $V_P(t) = v(t - \delta)$ and $V_N(t) = -v(t)$, so to first order
+
+$$V_\text{diff} = \frac{V_P - V_N}{2} \approx v\!\left(t - \tfrac{\delta}{2}\right), \qquad V_\text{cm} = \frac{V_P + V_N}{2} \approx -\frac{\delta}{2}\,\frac{dv}{dt}$$
+
+a common-mode pulse shaped like the edge's derivative, of order $\delta / t_r$ of the differential amplitude for a rise time $t_r$. A compensating bump $L$ mm further on makes the opposite pulse, aligned with the differential edge as it is then; the first one has fallen behind by $(\tau_\text{e} - \tau_\text{o})\,L$, and the two cancel only while that lag is small against $t_r$. That is the mode lag dynamic phase reports for each excursion (the lag per mm at the gap there, added up along both sides of the stretch; 0 where a side runs alone and on stripline): compare it with your edge's rise time. On the common-mode demo's pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) the lag is about 0.33 ps/mm, so a fix 45 mm away (case A) comes 15 ps late for a 25 ps edge and leaves two common-mode pulses, while a fix 2 mm away (case B) cancels; a full-wave run measured 16 % common mode at J1 for A against 7 % for B. With a tuning profile the lag is in the profile's scale, as the delay is. Beside a pour the odd mode's ratio is applied to both modes; the pour's own effect on the even mode is not modelled.
 
 ### Why Δt holds up when the estimate is off
 
@@ -159,10 +175,20 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 | No εr in the stackup | FR-4 is used and named as the source |
 | Microstrip vs stripline | microstrip is faster |
 | Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../../tests/field_solver.py)), which itself matches Kirschning and Jansen and Hammerstad and Jensen within 0.4 % |
+| Even mode and mode lag | the even mode is slower than the odd mode on an outer layer, equal inside, the lone line's far apart and a line twice as wide for touching traces; the far-compensated board's excursion carries a lag proportional to its length (about 6 ps over 45 mm at the 1 mm pitch), the locally compensated one under a tenth of that, a stripline pair none. Against the field solver with a magnetic wall at the pair's midline (run on 2026-10-16, not in the repository) Kirschning and Jansen's even mode is within 1 % on the demo pair, the MIPI pair and the test boards' pair; the lag per mm, a difference of two roots, reads 1 to 10 % above the solver's (demo pair 0.33 against 0.30 ps/mm) |
 | Stackup from the board file | εr is read from the `.kicad_pcb` text |
 | Live tracker | recomputes only changed pairs, spreads work over polls, follows Blender's settings |
 
 **Still to do:** compare the end-to-end P and N delays with KiCad's own time-domain tuning on a real board with a tuning profile. They should match wherever the pair runs at the profile's gap, and differ by the lone stretches' few percent elsewhere.
+
+## References
+
+- M. Kirschning and R. H. Jansen, "Accurate wide-range design equations for the frequency-dependent characteristic of parallel coupled microstrip lines," IEEE Transactions on Microwave Theory and Techniques, vol. 32, no. 1, pp. 83–90, 1984: the even and odd modes.
+- E. Hammerstad and Ø. Jensen, "Accurate models for microstrip computer-aided design," IEEE MTT-S International Microwave Symposium Digest, 1980, pp. 407–409: the lone line.
+- G. Ghione and C. Naldi, "Coplanar waveguides for MMIC applications: effect of upper shielding, conductor backing, finite-extent ground planes, and line-to-line coupling," IEEE Transactions on Microwave Theory and Techniques, vol. 35, no. 3, pp. 260–267, 1987: the pour beside the pair.
+- D. M. Pozar, Microwave Engineering, 4th ed., Wiley, 2012: coupled lines, even and odd modes.
+- S. H. Hall and H. L. Heck, Advanced Signal Integrity for High-Speed Digital Designs, Wiley, 2009: modal decomposition, the two mode velocities and far-end crosstalk, differential-to-common conversion.
+- E. Bogatin, Signal and Power Integrity — Simplified, 3rd ed., Pearson, 2018: differential pairs, skew and common mode.
 
 ## Code
 

@@ -320,8 +320,10 @@ def _draw_pair(context, box, data, wrap):
             column.label(text=line)
     for excursion in data.get("excursions", ()):
         line = box.row(align=True)
-        line.label(text=f"{excursion['at_mm']:.1f} mm: {_ps(excursion['peak_ps'], True)} ps "
-                        f"over {excursion['length_mm']:.1f} mm", icon="ERROR")
+        text = f"{excursion['at_mm']:.1f} mm: {_ps(excursion['peak_ps'], True)} ps over {excursion['length_mm']:.1f} mm"
+        if "mode_lag_ps" in excursion:  # how far the common mode falls behind over the stretch
+            text += f", mode lag {_ps(excursion['mode_lag_ps'])} ps"
+        line.label(text=text, icon="ERROR")
         line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
                       icon="RESTRICT_SELECT_OFF").ids = "\n".join(excursion.get("ids") or [excursion["id"]])
     for branch in data.get("branches", ()):

@@ -289,6 +289,62 @@ def test_a_coupled_pair_runs_faster_on_the_outside_and_the_same_inside():
     assert inner[0] == inner[1]  # stripline: all its field in the dielectric, coupled or not
 
 
+def test_the_even_mode_is_slower_than_the_odd_mode_outside_and_as_fast_inside():
+    """The common mode runs in the pair's even mode, with more of its field in the
+    dielectric than the differential signal's odd mode (Kirschning and Jansen): slower on
+    microstrip, the lone line once the pair is far apart, and on stripline the same εr."""
+    heights = protocol.layer_heights_nm(boards.matched())[0]
+    model_ = delays.StackupDelays(boards.STACKUP.layers, heights)
+    gap, h = MM - boards.WIDTH, 200_000
+    even = delays.microstrip_epsilon_even(4.0, boards.WIDTH, h, gap)
+    odd, alone = delays.microstrip_epsilon(4.0, boards.WIDTH, h, gap), delays.microstrip_epsilon(4.0, boards.WIDTH, h)
+    assert odd < alone < even
+    assert delays.microstrip_epsilon_even(4.0, boards.WIDTH, h, 50 * MM) == pytest.approx(alone, rel=1e-4)  # far apart
+    assert delays.microstrip_epsilon_even(4.0, boards.WIDTH, h, 1) == pytest.approx(
+        delays._single_microstrip(4.0, 2 * boards.WIDTH / h), rel=1e-6)  # touching: one line twice as wide
+    assert delays.microstrip_epsilon_even(4.0, boards.WIDTH, h) == alone  # alone: the lone line, as the odd mode is
+    lag = model_.mode_lag("D_P", "F.Cu", boards.WIDTH, gap)
+    assert lag == pytest.approx(delays.PS_PER_MM_VACUUM * (math.sqrt(even) - math.sqrt(odd))) and 0.1 < lag < 0.2
+    assert model_.mode_lag("D_P", "F.Cu", boards.WIDTH, 100_000) > lag  # a tighter pair: the modes part more
+    assert model_.mode_lag("D_P", "F.Cu", boards.WIDTH) == 0.0  # alone: both modes are the lone line's
+    assert model_.mode_lag("D_P", "In1.Cu", boards.WIDTH, gap) == 0.0  # stripline: the same εr for both
+    # With a tuning profile the lag is in the profile's scale: its number over the estimate's odd mode at the entry's gap.
+    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, gap)})
+    scaled = delays.StackupDelays(boards.STACKUP.layers, heights, {"Fast": profile}, {"D_P": "Fast"})
+    assert scaled.mode_lag("D_P", "F.Cu", boards.WIDTH, gap) == pytest.approx(
+        lag * 6.0 / (delays.PS_PER_MM_VACUUM * math.sqrt(odd)))
+    assert scaled.mode_lag("D_P", "In1.Cu", boards.WIDTH, gap) == 0.0
+
+
+def test_an_excursion_carries_how_far_the_common_mode_falls_behind_over_it():
+    """Skew made at a bend becomes common mode, which runs in the even mode: slower than the
+    differential edge on microstrip. A compensation far away meets a common-mode pulse that
+    has fallen behind by the stretch's mode lag, and cancels it only while that is small
+    against the rise time (seen in the openEMS run of the common-mode demo, 2026-10-16)."""
+    heights = protocol.layer_heights_nm(boards.matched())[0]
+    per_mm = delays.StackupDelays(boards.STACKUP.layers, heights).mode_lag("D_P", "F.Cu", boards.WIDTH, MM - boards.WIDTH)
+    far = only_pair(boards.compensated_far())
+    [excursion] = far.excursions
+    assert excursion.mode_lag_ps == pytest.approx(per_mm * excursion.length_nm / 1e6, rel=0.03)  # proportional to its length
+    assert excursion.mode_lag_ps > 5  # 45 mm at the boards' 1 mm pitch: about 6 ps
+    [near] = only_pair(boards.compensated_locally(), min_length_nm=1 * MM).excursions
+    assert 0 < near.mode_lag_ps < excursion.mode_lag_ps / 10  # ~2 mm: fixed before the common mode has fallen behind
+    assert near.mode_lag_ps == pytest.approx(per_mm * near.length_nm / 1e6, rel=0.25)  # the bumps run less coupled
+    header = protocol.FrameDecoder().feed(phase.pair_frame(far, 1))[0][0]
+    assert header["excursions"][0]["mode_lag_ps"] == pytest.approx(excursion.mode_lag_ps)
+
+
+def test_on_stripline_the_two_modes_run_together_so_an_excursion_has_no_mode_lag():
+    """The far-compensated pair inside the board: the same excursion, but its common mode
+    keeps up with the differential edge (one εr for both modes)."""
+    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 1)), layer="In1.Cu")
+    board.part("J1", (1, "D_P", (50, 0)), (2, "D_N", (50, 1)), layer="In1.Cu")
+    board.path("D_P", (0, 0), *boards.bump(2, 0, -0.25), (50, 0), layer="In1.Cu")
+    board.path("D_N", (0, 1), *boards.bump(47, 1, 0.25), (50, 1), layer="In1.Cu")
+    [excursion] = only_pair(board.snapshot()).excursions
+    assert excursion.length_nm > 40 * MM and excursion.mode_lag_ps == 0.0
+
+
 def test_kirschning_jansen_odd_mode_is_near_kicads_coupled_microstrip():
     # This board's MIPI pair: 117 um wide, 102 um apart, 121 um of er 4.5 to the plane.
     # KiCad 10's tuning profile calculator gives 5.794 ps/mm for it (er_eff 3.02).

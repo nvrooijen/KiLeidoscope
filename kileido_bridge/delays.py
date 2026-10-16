@@ -23,6 +23,11 @@ impedance or εeff module can replace `StackupDelays`. Sources, in order:
    mapping of the cross-section gives with and without that pour.
 3. FR-4, εr 4.2, when the stackup gives no dielectric constant: clearly a guess,
    and named as the source.
+
+A coupled pair also has an even (common) mode, slower on microstrip than the odd
+mode (its field sits more in the dielectric) and as fast inside: `mode_lag` is how
+many ps per mm the common mode falls behind the differential signal on a stretch,
+what phase.py adds up over an excursion.
 """
 
 import fnmatch
@@ -66,6 +71,12 @@ class DelayModel:
         """("microstrip" or "stripline", dielectric height in nm) of a trace on `layer`;
         ("", 0) when unknown."""
         return "", 0.0
+
+    def mode_lag(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None,
+                 ground_nm: float | None = None) -> float:
+        """ps per mm the pair's even (common) mode runs behind its odd (differential)
+        mode on this stretch, τ_even − τ_odd: 0 alone, on stripline, or when unknown."""
+        return 0.0
 
 
 @dataclass(frozen=True)
@@ -150,6 +161,32 @@ def microstrip_epsilon(epsilon_r: float, width_nm: float, height_nm: float, gap_
         c = b - (b - 0.207) * math.exp(-0.414 * u)
         d = 0.593 + 0.694 * math.exp(-0.562 * u)
         effective = ((epsilon_r + 1) / 2 + a - single) * math.exp(-c * g ** d) + single
+    if ground_nm is not None and ground_nm / h < FAR_GROUND_H:
+        g = max(gap_nm, 1.0) / h if gap_nm is not None else LONE_GAP_H
+        s = max(ground_nm, 1.0) / h
+        effective *= _coplanar_epsilon(epsilon_r, u, g, s) / _coplanar_epsilon(epsilon_r, u, g, None)
+    return effective
+
+
+@functools.lru_cache(maxsize=65_536)
+def microstrip_epsilon_even(epsilon_r: float, width_nm: float, height_nm: float, gap_nm: float | None = None,
+                            ground_nm: float | None = None) -> float:
+    """εeff of the pair's even (common) mode, `gap_nm` from the partner (Kirschning and
+    Jansen 1984): both traces driven alike, the field between them cancels and the pair
+    runs much as one wider lone line, with more of its field in the dielectric than the
+    odd mode and so slower; it tends to the lone line as the gap widens, and touching
+    traces give a line twice as wide. Alone (gap None) it is the lone line's, as
+    `microstrip_epsilon` is, so the two modes part only where the pair is coupled.
+    `ground_nm` from a pour applies the odd mode's ratio (`_coplanar_epsilon`); the
+    pour's own effect on the even mode is not modelled. Static, zero thickness, no mask."""
+    h = max(height_nm, 1.0)
+    u = max(width_nm, 1.0) / h
+    if gap_nm is None:
+        effective = _single_microstrip(epsilon_r, u)
+    else:
+        g = max(gap_nm, 1.0) / h
+        v = u * (20 + g * g) / (10 + g * g) + g * math.exp(-g)
+        effective = _single_microstrip(epsilon_r, v)
     if ground_nm is not None and ground_nm / h < FAR_GROUND_H:
         g = max(gap_nm, 1.0) / h if gap_nm is not None else LONE_GAP_H
         s = max(ground_nm, 1.0) / h
@@ -280,6 +317,31 @@ class StackupDelays(DelayModel):
         if self._outer(layer):
             return "microstrip", float(heights[0]) if heights else 0.0
         return "stripline", float(min(heights)) if heights else 0.0
+
+    def mode_lag(self, net: str, layer: str, width_nm: int, gap_nm: float | None = None,
+                 ground_nm: float | None = None) -> float:
+        """τ_even − τ_odd on an outer layer, from the stackup estimate's two modes; with a
+        tuning profile whose entry has a pair gap, in the profile's own scale (its number
+        over the estimate's odd mode at the entry's gap, as `_coupling` scales the delay).
+        0 alone (both modes are the lone line's), on stripline (the same εr for both),
+        or without a dielectric height."""
+        if gap_nm is None or not self._outer(layer):
+            return 0.0
+        beside = self._dielectric.get(layer, [])
+        height = beside[0].thickness_nm if beside else 0
+        if not height:
+            return 0.0
+        epsilon_r, _ = self._epsilon(beside)
+        width = width_nm or height
+        odd = microstrip_epsilon(epsilon_r, width, height, gap_nm, ground_nm)
+        even = microstrip_epsilon_even(epsilon_r, width, height, gap_nm, ground_nm)
+        per_root = PS_PER_MM_VACUUM
+        profile = self._profile(net)
+        geometry = profile.geometry.get(layer) if profile is not None and layer in profile.layers else None
+        if geometry and geometry[1] > 0:
+            anchor = microstrip_epsilon(epsilon_r, geometry[0] or width, height, geometry[1])
+            per_root = profile.layers[layer] / math.sqrt(anchor)
+        return max(0.0, per_root * (math.sqrt(even) - math.sqrt(odd)))
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
                length_nm: float) -> tuple[float, str]:
