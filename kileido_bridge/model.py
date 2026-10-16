@@ -69,6 +69,8 @@ class Pad:
     polygons: dict[str, tuple[Polygon, ...]]
     drill_shape: str | None = None  # "round" or "oval"; None without a drill
     drill_angle_rad: float = 0.0
+    pin_name: str = ""  # the schematic pin's name ("PA7_13"), "" for none
+    pin_type: str = ""  # its electrical type as the board file spells it ("power_in"), "+no_connect" added
 
     @property
     def layers(self) -> tuple[str, ...]:
@@ -76,11 +78,16 @@ class Pad:
 
         A non-plated hole (np_thru_hole, e.g. Tag-Connect alignment holes) has no
         copper anywhere; it rides on the outer layers so its drill opening is drawn.
+        Any drilled pad rides on F.Cu, whose frame carries every pad drill: copper
+        only on other layers (a pad KiCad still answers for as the SMD pad it was,
+        see kicad_reader._pad_polygons) must not lose its hole.
         """
         copper = tuple(layer for layer in self.polygons if layer not in PASTE_LAYERS)
-        if copper:
+        if not (self.drill and min(self.drill) > 0):
             return copper
-        return ("F.Cu", "B.Cu") if self.drill and min(self.drill) > 0 else ()
+        if not copper:
+            return ("F.Cu", "B.Cu")
+        return copper if "F.Cu" in copper else ("F.Cu", *copper)
 
     @property
     def groups(self) -> frozenset[tuple[str, str]]:
@@ -99,6 +106,9 @@ class Footprint:
     model_paths: tuple[str, ...]
     bbox_nm: tuple[int, int, int, int] | None = None  # KiCad board-space x, y, width, height
     model_visible: tuple[bool, ...] = ()
+    dnp: bool = False  # KiCad's "Do not populate"
+    value: str = ""  # the Value field, e.g. "100n"
+    lib_id: str = ""  # library and footprint name, e.g. "Capacitor_SMD:C_0402_1005Metric"
 
 
 @dataclass(frozen=True)
@@ -126,6 +136,17 @@ class Outline:
     # and the problem locations, so the viewer can show where it is wrong.
     strokes: tuple[tuple[Point, ...], ...] = ()
     problems: tuple[Point, ...] = ()
+
+
+@dataclass(frozen=True)
+class Drawing:
+    """A drawing on one of flex mode's user layers (`flex.LAYER_NAMES`): a closed outline
+    ("closed"), an open line ("line", arcs sampled) or a text at `points[0]` ("text")."""
+    id: str
+    layer: str
+    kind: str
+    points: tuple[Point, ...]
+    text: str = ""
 
 
 @dataclass(frozen=True)
@@ -158,6 +179,8 @@ class BoardSnapshot:
     warnings: tuple[str, ...]
     read_timings_ms: dict[str, float]
     graphics: tuple[CopperGraphic, ...] = ()
+    drawings: tuple[Drawing, ...] = ()
+    variant: str = ""  # KiCad's selected assembly variant; "" is the default
 
 
 def to_jsonable(value: Any) -> Any:
@@ -191,12 +214,13 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
         tuple(Pad(p["id"], p["footprint_id"], p["number"], p["net"], point(p["pos"]),
                   point(p["drill"]) if p["drill"] is not None else None,
                   {layer: tuple(polygon(poly) for poly in polys) for layer, polys in p["polygons"].items()},
-                  p["drill_shape"], float(p["drill_angle_rad"]))
+                  p["drill_shape"], float(p["drill_angle_rad"]), p.get("pin_name", ""), p.get("pin_type", ""))
               for p in data["pads"]),
         tuple(Footprint(f["id"], f["reference"], point(f["pos"]), f["rotation_rad"], f["side"],
                         tuple(f["model_paths"]),
                         tuple(int(value) for value in f["bbox_nm"]) if f["bbox_nm"] is not None else None,
-                        tuple(f["model_visible"]))
+                        tuple(f["model_visible"]), bool(f.get("dnp", False)),  # older dumps: no dnp,
+                        f.get("value", ""), f.get("lib_id", ""))  # no value or library
               for f in data["footprints"]),
         tuple(ZoneFill(z["id"], z["net"], z["layer"], tuple(polygon(poly) for poly in z["polygons"]))
               for z in data["zones"]),
@@ -207,4 +231,7 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
         tuple(data["warnings"]), dict(data["read_timings_ms"]),
         tuple(CopperGraphic(g["id"], g["net"], g["layer"], tuple(polygon(poly) for poly in g["polygons"]))
               for g in data.get("graphics", ())),  # dumps from before copper graphics have none
+        tuple(Drawing(d["id"], d["layer"], d["kind"], tuple(point(p) for p in d["points"]), d["text"])
+              for d in data.get("drawings", ())),  # dumps from before flex mode have none
+        variant=data.get("variant", ""),  # dumps from before variants have none
     )

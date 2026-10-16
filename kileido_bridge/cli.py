@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import flex_checks
 from .board_specs import read_appearance
 from .kicad_reader import connect_board, connect_reader, read_snapshot, saved_board_path
 from .loop import BridgeRuntime
@@ -37,8 +38,10 @@ def _run_dump(args: argparse.Namespace) -> int:
         return 1
     if args.output.suffix == ".kls":  # binary frames: what Blender's "Load dump" reads
         board_path = saved_board_path(board)
+        appearance = read_appearance(board_path)
         args.output.write_bytes(b"".join(snapshot_frames(
-            snapshot, board_path=board_path, appearance=read_appearance(board_path))))
+            snapshot, board_path=board_path, appearance=appearance,
+            flex=flex_checks.report(snapshot, appearance.get("flex_stack", {})))))
     else:  # JSON: for people and debugging
         args.output.write_text(json.dumps(to_jsonable(snapshot), indent=2), encoding="utf-8")
     print(json.dumps({"board_name": snapshot.board_name,

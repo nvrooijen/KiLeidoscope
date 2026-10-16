@@ -7,6 +7,7 @@ from . import nodes
 from .state import board
 
 OUTLINE = "KLS outline"
+VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
 
 
 def set_visible(obj, visible):
@@ -61,6 +62,7 @@ GROUPS = (
     ("components", "Components"),
     ("highlights", "Highlights"),
     ("phase", "Dynamic phase"),
+    ("findings", "Findings"),  # the shown finding's drawing (findings_draw)
 )
 _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zone": "pours", "drill": "drills",
                  "solder": "paste"}
@@ -68,6 +70,8 @@ _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zo
 
 def group_of(name):
     """The GROUPS key for a KiLeidoscope object name ("KLS F.Cu zone <id>" -> "pours")."""
+    if name.startswith("KLS finding "):
+        return "findings"
     if "highlight" in name:
         return "highlights"
     if name.startswith("KLS phase "):
@@ -93,9 +97,11 @@ def ensure_groups():
             board.collection.children.link(child)
 
 
-def link_owned(obj):
-    """Link a new KiLeidoscope object into its group of the board collection."""
-    group = next((child for child in board.collection.children if child.get("kls_group") == group_of(obj.name)),
+def link_owned(obj, key=None):
+    """Link a new KiLeidoscope object into its group of the board collection (`key`,
+    else picked from its name)."""
+    key = key or group_of(obj.name)
+    group = next((child for child in board.collection.children if child.get("kls_group") == key),
                  board.collection)
     group.objects.link(obj)
     lock_in_place(obj)
@@ -112,14 +118,19 @@ def find(name):
     return board.collection.all_objects.get(board.name_prefix + name)
 
 
-def owned_object(name, kind="MESH"):
+def owned_object(name, kind="MESH", group=None):
     """The board collection's object `name`, created (with empty mesh data) if missing."""
     obj = board.collection.all_objects.get(name)
     if obj is not None:
         return obj
+    return new_owned(name, kind, group)
+
+
+def new_owned(name, kind="MESH", group=None):
+    """A new object in the board collection (in `group`, else the one its name picks)."""
     obj = bpy.data.objects.new(name, bpy.data.meshes.new(name) if kind == "MESH" else None)
     obj["kileido_owned"] = 1
-    link_owned(obj)
+    link_owned(obj, group)
     return obj
 
 
@@ -196,6 +207,22 @@ def view3d_spaces():
         for area in screen.areas:
             if area.type == "VIEW_3D":
                 yield area.spaces.active
+
+
+def shown_view_areas():
+    """Every 3D View area in an open window: the screens on show, not every workspace's
+    screen in the file (those are views nobody is looking through)."""
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                yield area
+
+
+def shown_views():
+    """(area pointer, region_3d) of every 3D view in an open window (`shown_view_areas`)."""
+    for area in shown_view_areas():
+        if area.spaces.active.region_3d is not None:
+            yield area.as_pointer(), area.spaces.active.region_3d
 
 
 def outline_bounds():

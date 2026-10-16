@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import cut, focus, highlight, kicad_cli
+from . import components, cut, focus, fold, highlight, kicad_cli
 from .objects import link_owned, set_visible
 from . import state
 from .state import board
@@ -33,6 +33,9 @@ _MODEL_PATH = re.compile(r'\(model\s+"((?:[^"\\]|\\.)*)"')
 _FOOTPRINT = re.compile(r'\(footprint\s+"')
 _UUID = re.compile(r'\(uuid\s+"([^"]+)"')
 MATCH_TOLERANCE_M = 0.0002  # a GLB root this close to a footprint origin belongs to it
+KICAD_MODEL_LIFT_M = 50e-6  # KiCad's 3D export lifts each model this far off the copper (BOARD_OFFSET)
+KICAD_COPPER_M = 35e-6  # the copper thickness KiCad assumes when the stackup gives none
+SEATED = "kls_model_seated"  # on a model part: its local frame puts it on the copper
 GLB_ASSET = "kls_glb_asset"  # on a GLB import's collection: its content's id (`load_glb`)
 
 
@@ -96,7 +99,8 @@ def _on_board_change(job, memory):
     cli = kicad_cli.executable(job.export)
     project = kicad_cli.project_dir(job.export, job.source)
     variables = kicad_cli.path_variables(_MODEL_PATH.findall(text), job.export.get("kicad_settings", ""))
-    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables)
+    variant = kicad_cli.variant_arguments(job.export)  # a variant's export is cached on its own
+    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables, *variant)
     if key == memory.get("key"):
         return
     if _export(job, cli, key, data, project):
@@ -121,7 +125,7 @@ def _export(job, cli, key, data, project):
         output = directory / "models.glb"
         result = kicad_cli.run(
             [cli, "pcb", "export", "glb", "--no-board-body", *kicad_cli.defines(project),
-             "--output", output, board_file], 120)
+             *kicad_cli.variant_arguments(job.export), "--output", output, board_file], 120)
         messages = (result.stdout + result.stderr).strip()
         problems = kicad_cli.model_problems(messages)
         if result.returncode != 0 or problems:
@@ -131,8 +135,9 @@ def _export(job, cli, key, data, project):
         missing = len(problems)
         positions_file = directory / "positions.csv"
         positions_result = kicad_cli.run(
-            [cli, "pcb", "export", "pos", "--format", "csv", "--units", "mm",
-             "--side", "both", "--output", positions_file, board_file], 30)  # takes no --define-var
+            [cli, "pcb", "export", "pos", "--format", "csv", "--units", "mm", "--side", "both",
+             *kicad_cli.variant_arguments(job.export), "--output", positions_file, board_file],
+            30)  # takes no --define-var
         if positions_result.returncode != 0 or not positions_file.is_file():
             raise RuntimeError("KiCad could not export footprint positions: " +
                                (positions_result.stderr or positions_result.stdout).strip()[-300:])
@@ -297,6 +302,21 @@ def _model_index(source, target, matches):
     return siblings.index(source), len(siblings)
 
 
+def dnp_excluded(footprint):
+    """True for a footprint KiCad marks "Do not populate" while the panel hides them."""
+    return footprint.get("kls_dnp") == 1 and not getattr(bpy.context.scene, "kileido_show_dnp", True)
+
+
+def placeholder_visible(footprint, footprint_id):
+    """A footprint's missing-model box shows while it has a model file KiCad would show,
+    none of its models are bound, and it is not an excluded DNP part."""
+    if footprint is None or footprint.get("kls_active") != 1 or dnp_excluded(footprint):
+        return False
+    flags = list(footprint.get("kls_model_visible", ()))
+    return (bool(footprint.get("kls_model_paths")) and (not flags or any(flags)) and
+            footprint_id not in board.model_bound)
+
+
 def model_is_visible(footprint, model_obj):
     """Live KiCad 3D-model visibility for one imported model part.
 
@@ -304,7 +324,7 @@ def model_is_visible(footprint, model_obj):
     slot of the footprint. KiCad's GLB export omits models hidden at save time
     (measured), so the GLB roots map onto the slots that were visible then.
     """
-    if footprint is None or footprint.get("kls_active") != 1:
+    if footprint is None or footprint.get("kls_active") != 1 or dnp_excluded(footprint):
         return False
     flags = [bool(flag) for flag in footprint.get("kls_model_visible", ())]
     if not flags:
@@ -341,11 +361,23 @@ def _saved_footprint_matrix(target, saved_positions):
             Matrix.Diagonal((*scale, 1.0)))
 
 
+def _seat_shift(side):
+    """z (m) from KiCad's GLB to this board, so a model's seating plane is the copper.
+
+    KiCad's export has z = 0 at the dielectric's bottom face (here: under B.Cu, one
+    copper thickness lower) and lifts every model 50 um off the outer copper, up on
+    top and down underneath (measured, KiCad 10: a top 0402 13 um over its pad, a
+    bottom one 83 um under it)."""
+    shift = float(board.layer_thickness.get("B.Cu") or KICAD_COPPER_M)
+    return shift + KICAD_MODEL_LIFT_M if side == "bottom" else shift - KICAD_MODEL_LIFT_M
+
+
 def bind_root(root, asset_hash, saved_positions=None):
     """Link imported mesh data to existing footprint transforms, without file I/O."""
     board.drop_if_freed("model bind")
     if board.collection is None:
         raise ValueError("Load or connect a board before loading models")
+    fold.unfold_parts()  # models match and sit on the footprints' flat places; folded again below
     bpy.context.view_layer.update()
     matches = _matches(root, saved_positions)
     active = set()
@@ -367,29 +399,35 @@ def bind_root(root, asset_hash, saved_positions=None):
                 mesh_source.data = geometry
                 if redundant.users == 0:
                     bpy.data.meshes.remove(redundant)
-            name = f"KLS model {footprint_id} {part}"
-            clone = board.collection.all_objects.get(name)
+            name = components.model_name(target.get("kls_reference", ""), target.get("kls_model_paths", ()), part)
+            clone = components.find(components.MODEL, footprint_id, part)
             if clone is None:
                 clone = bpy.data.objects.new(name, geometry)
-                link_owned(clone)
+                link_owned(clone, "components")
             clone.data = geometry  # linked geometry, including UVs and materials
             prior = clone.get("kls_model_local_matrix")
-            if clone.get("kls_model_asset") == asset_hash and prior is not None and len(prior) == 16:
+            if (clone.get("kls_model_asset") == asset_hash and clone.get(SEATED) == 1
+                    and prior is not None and len(prior) == 16):
                 local = Matrix(tuple(prior[row * 4:row * 4 + 4] for row in range(4)))
             else:
                 saved_frame = _saved_footprint_matrix(target, saved_positions or [])
-                local = saved_frame.inverted() @ rebase @ mesh_source.matrix_world
+                seat = Matrix.Translation((0.0, 0.0, _seat_shift(target.get("kls_side"))))
+                local = saved_frame.inverted() @ seat @ rebase @ mesh_source.matrix_world
                 clone["kls_model_local_matrix"] = [local[row][col]
                                                    for row in range(4) for col in range(4)]
-            clone.matrix_world = target.matrix_world @ local
+                clone[SEATED] = 1  # frames saved before the seat fix are recomputed
+            components.attach(clone, target, local)
             clone["kileido_owned"] = 1
             clone["kls_model_fp_id"] = footprint_id
+            clone["kls_side"] = target.get("kls_side", "")
             clone["kls_model_asset"] = asset_hash
             clone["kls_model_index"] = model_index
             clone["kls_model_count"] = model_count
+            clone["kls_model_part"] = part
+            components.rename(clone, name)
             set_visible(clone, model_is_visible(target, clone))
-            names.append(name)
-            active.add(name)
+            names.append(clone.name)
+            active.add(clone.name)
         if not names:
             board.model_objects_by_fp.pop(footprint_id, None)
     for obj in tuple(board.collection.all_objects):
@@ -402,12 +440,10 @@ def bind_root(root, asset_hash, saved_positions=None):
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_footprint_placeholder") == 1:
             footprint_id = obj.get("kls_footprint_id")
-            footprint = board.collection.all_objects.get(f"KLS footprint {footprint_id}")
-            visible = footprint is not None and footprint.get("kls_active") == 1
-            flags = list(footprint.get("kls_model_visible", ())) if footprint else []
-            visible = visible and bool(footprint.get("kls_model_paths")) and (not flags or any(flags))
-            set_visible(obj, visible and footprint_id not in board.model_bound)
+            footprint = components.find(components.FRAME, footprint_id)
+            set_visible(obj, placeholder_visible(footprint, footprint_id))
     unbound = [footprint_id for footprint_id in list(board.model_bound) if not board.model_objects_by_fp.get(footprint_id)]
+    fold.refold_parts()  # a folded board folds its new models with it
     state.log(f"models bound: {len(board.model_bound)} footprints, {len(active)} parts, "
               f"{len(matches)} GLB roots matched, {len(unbound)} without parts")
     return {"matched": len(board.model_bound),

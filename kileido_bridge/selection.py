@@ -35,6 +35,13 @@ def selected_nets(snapshot: model.BoardSnapshot, selected_ids: frozenset[str]) -
     return frozenset(item.net for item in items if item.id in selected_ids and item.net)
 
 
+def selected_copper(snapshot: model.BoardSnapshot, selected_ids: frozenset[str]) -> tuple[str, ...]:
+    """Selected tracks, arcs, vias and zones themselves, without their nets: a selection
+    made from a finding shows its items, not every net they are on."""
+    items = (*snapshot.tracks, *snapshot.arcs, *snapshot.vias, *snapshot.zones)
+    return tuple(sorted({item.id for item in items if item.id in selected_ids}))
+
+
 def unconnected(snapshot: model.BoardSnapshot, selected_ids: frozenset[str]) -> tuple[str, ...]:
     """Selected tracks, arcs, vias and zones without a net: no net to follow, so they
     are highlighted alone (KiCad shows them selected; a net highlight would skip them)."""

@@ -13,3 +13,7 @@ dump*.json
 _dev/
 dist/
 *.in-use
+
+# KiCad's own files beside a project (templates/ included)
+*-backups/
+_autosave-*

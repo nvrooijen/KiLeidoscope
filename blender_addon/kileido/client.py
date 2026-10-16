@@ -15,6 +15,9 @@ import numpy as np
 PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}
+# Every frame type the bridge sends (the bridge's protocol.MESSAGE_TYPES; a test keeps them equal).
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
+                 "appearance", "selection", "status", "export", "findings", "phase_list", "phase_pair")
 _LENGTH = struct.Struct(">I")
 _CONNECT_PENDING = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                     *(getattr(errno, name) for name in ("WSAEWOULDBLOCK", "WSAEINPROGRESS", "WSAEALREADY")
@@ -114,12 +117,26 @@ class SocketClient:
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "resync", "adopt": True} if adopt else {"type": "resync"}))
 
-    def request_select(self, ids, extend=False, center=False):
+    def request_select(self, ids, extend=False, center=False, exact=False):
         """Ask the bridge to select these KiCad items (a click in Blender), and with
-        `center` to pan KiCad's PCB editor to them."""
+        `center` to pan KiCad's PCB editor to them; `exact` (a finding) highlights the
+        items alone, not their whole nets."""
         if self.state == "connected":
             self.outgoing.extend(encode_frame({"type": "select", "ids": list(ids), "extend": bool(extend),
-                                               "center": bool(center)}))
+                                               "center": bool(center), "exact": bool(exact)}))
+
+    def request_findings(self, action, key="", source="drc", checks=None, notes=None):
+        """Ask the bridge to act on its findings: "confirm", "dismiss" or "reset" the finding
+        `key`, "run_drc", or make a "prompt" for the check ids
+        `checks` with the user's `notes` (plain text, a prompt's only); `source` is the file
+        ("drc" or "file")."""
+        if self.state == "connected":
+            header = {"type": "findings", "action": str(action), "key": str(key), "source": str(source)}
+            if checks is not None:
+                header["checks"] = [str(check) for check in checks]
+            if notes is not None and action == "prompt":
+                header["notes"] = str(notes)
+            self.outgoing.extend(encode_frame(header))
 
     def request_phase_settings(self, settings: dict):
         """The dynamic-phase settings (kileido_bridge/phase.py Settings.from_request)."""

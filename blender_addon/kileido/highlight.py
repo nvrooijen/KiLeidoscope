@@ -1,5 +1,6 @@
 """KiCad's selection in Blender: highlighted nets in red-orange, their differential-pair
-partner in blue, selected components boxed.
+partner in blue, selected components boxed. A finding shown from the DRC or LLM column
+(findings_draw) highlights its items the same way, as the kind "finding", in its severity's colour.
 
 Highlights are copies of the live copper meshes (so they follow edits), slightly
 wider and higher than the copper they cover. Zones switch material instead: a copy
@@ -10,7 +11,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from . import focus, materials, transform
+from . import components, focus, materials, transform
 from .objects import (camera_rays_only, hide, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, write_attribute)
 from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward, via_plating
@@ -26,7 +27,8 @@ BOX_MARGIN_M = 0.1e-3  # around the component body
 
 def apply_selection(header):
     """KiCad selection changed (protocol.selection_message)."""
-    board.highlight = {"selected": set(header.get("selected", ())), "pair": set(header.get("pair", ()))}
+    board.highlight = {"selected": set(header.get("selected", ())), "pair": set(header.get("pair", ())),
+                       "finding": board.highlight.get("finding", set())}  # the shown finding's stays
     board.highlight_components = {"footprints": set(header.get("footprints", ())),
                                   "pads": set(header.get("pads", ()))}
     from . import phase
@@ -60,15 +62,27 @@ def refresh(layer=None, kind=None):
         _refresh_pads(wanted, board.highlight_components["pads"], layer)
     if kind is None:
         _refresh_component_boxes(board.highlight_components["footprints"])
+        _refresh_component_boxes(finding_footprints(), "finding")
+    from . import fold  # a flex board shows its copy: the highlights there follow
+    fold.refresh_highlights()
 
 
 def refresh_components():
     """Footprints moved (an edit or an undo keeps KiCad's selection): the boxes follow."""
-    chosen = board.highlight_components["footprints"]
-    if board.collection is None or board.in_snapshot or not chosen:
+    chosen, found = board.highlight_components["footprints"], finding_footprints()
+    if board.collection is None or board.in_snapshot or not (chosen or found):
         return
     bpy.context.view_layer.update()  # the boxes read the moved footprints' world matrices
     _refresh_component_boxes(chosen)
+    _refresh_component_boxes(found, "finding")
+
+
+def finding_footprints():
+    """The parts among the shown finding's items: boxed like selected components."""
+    if board.collection is None:
+        return set()
+    return {item_id for item_id in board.highlight.get("finding", ())
+            if components.find(components.FRAME, item_id) is not None}
 
 
 def _hide(obj):
@@ -165,7 +179,8 @@ def _refresh_pads(wanted, component_pads, only_layer=None):
     pads of selected components (red-orange): a sheet just above each pad's outer
     copper surface (no side walls, so nothing is coplanar with the copper's)."""
     chosen_by_kind = {"selected": wanted["selected"] | component_pads, "pair": wanted["pair"],
-                      "phase": wanted.get("phase", set())}
+                      "phase": wanted.get("phase", set()),
+                      "finding": wanted.get("finding", set())}
     for source in _copper_sources("pads"):
         layer = source["kls_copper"][0]
         if only_layer is not None and layer != only_layer:
@@ -282,14 +297,14 @@ def _component_extent(footprint_id, footprint):
     for name in board.model_objects_by_fp.get(footprint_id, ()):
         part = board.collection.all_objects.get(name)
         if part is not None and not part.hide_get():
-            corners += [to_local @ (part.matrix_world @ Vector(corner)) for corner in part.bound_box]
+            corners += [_in_frame(part, footprint, to_local) @ Vector(corner) for corner in part.bound_box]
     if corners:
         points = np.array([tuple(corner) for corner in corners])
         return points.min(axis=0), points.max(axis=0)
-    box = board.collection.all_objects.get(f"KLS footprint placeholder {footprint_id}")
+    box = components.find(components.PLACEHOLDER, footprint_id)
     if box is None or "kls_placeholder_width_m" not in box:
         return None
-    center = np.array(tuple(to_local @ box.matrix_world.translation))
+    center = np.array(tuple(_in_frame(box, footprint, to_local).translation))
     half = np.array((box["kls_placeholder_width_m"] / 2, box["kls_placeholder_height_m"] / 2,
                      PLACEHOLDER_HEIGHT_M))
     low, high = center - half, center + half
@@ -297,23 +312,32 @@ def _component_extent(footprint_id, footprint):
     return low, high
 
 
-def _refresh_component_boxes(chosen):
-    """Selected components: a translucent red-orange box around each one."""
+def _in_frame(obj, footprint, to_local):
+    """`obj`'s matrix in its footprint's frame; on the frame itself, even before Blender
+    has evaluated a move."""
+    return obj.matrix_basis if obj.parent == footprint else to_local @ obj.matrix_world
+
+
+def _refresh_component_boxes(chosen, kind="selected"):
+    """Selected components: a translucent red-orange box around each one (a finding's parts:
+    in its colour, objects of their own)."""
+    tag = 1 if kind == "selected" else kind  # 1: as saved files have it
+    prefix = "KLS footprint highlight " + ("" if kind == "selected" else f"{kind} ")
     active = set()
     for footprint_id in chosen:
-        footprint = board.collection.all_objects.get(f"KLS footprint {footprint_id}")
+        footprint = components.find(components.FRAME, footprint_id)
         extent = _component_extent(footprint_id, footprint) if footprint is not None else None
         if extent is None:
             continue
         low, high = extent[0] - BOX_MARGIN_M, extent[1] + BOX_MARGIN_M
-        obj = owned_object(f"KLS footprint highlight {footprint_id}")
-        obj["kls_highlight_box"] = 1
+        obj = owned_object(prefix + footprint_id)
+        obj["kls_highlight_box"] = tag
         single_point(obj.data)
         obj.matrix_world = footprint.matrix_world @ Matrix.Translation(Vector(tuple((low + high) / 2)))
-        set_modifier(obj, board.groups["highlight_box"], "highlight_box",
-                     {"Size": tuple(float(v) for v in np.abs(high - low))})
+        material = "highlight_box" if kind == "selected" else f"highlight_{kind}_box"
+        set_modifier(obj, board.groups["highlight_box"], material, {"Size": tuple(float(v) for v in np.abs(high - low))})
         _show(obj)
         active.add(obj.name)
     for obj in tuple(board.collection.all_objects):
-        if obj.get("kls_highlight_box") == 1 and obj.name not in active:
+        if obj.get("kls_highlight_box") == tag and obj.name not in active:
             set_visible(obj, False)

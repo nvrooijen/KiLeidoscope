@@ -1,7 +1,7 @@
 """Copper from the board text, used while KiCad answers busy (route tool active)."""
 
 from kileido_bridge import model
-from kileido_bridge.board_text import copper_items, via_protection, via_rings
+from kileido_bridge.board_text import copper_items, variant_dnp, via_protection, via_rings, with_variant_dnp
 
 TEXT = """(kicad_pcb
 \t(segment
@@ -85,3 +85,81 @@ def test_annular_rings_as_kicad_writes_them():
     assert via_rings("(layers \"F.Cu\" \"B.Cu\")") == model.RINGS_ALL  # KiCad's default writes nothing
     assert via_rings("(remove_unused_layers yes)") == model.RINGS_CONNECTED
     assert via_rings("(remove_unused_layers yes) (keep_end_layers yes)") == model.RINGS_ENDS_AND_CONNECTED
+
+
+VARIANT_TEXT = """(kicad_pcb
+\t(variants
+\t\t(variant
+\t\t\t(name "5V Output")
+\t\t)
+\t\t(variant
+\t\t\t(name "Lite")
+\t\t)
+\t)
+\t(footprint "Resistor_SMD:R_0402_1005Metric"
+\t\t(layer "F.Cu")
+\t\t(uuid "fp-1")
+\t\t(at 10 20)
+\t\t(property "Reference" "R1"
+\t\t\t(at 0 0 0)
+\t\t\t(uuid "text-1")
+\t\t)
+\t\t(property "Note" "(variant (name \\"Lite\\") (dnp yes))"
+\t\t\t(uuid "text-2")
+\t\t)
+\t\t(attr smd)
+\t\t(variant
+\t\t\t(name "5V Output")
+\t\t\t(dnp yes)
+\t\t)
+\t\t(variant
+\t\t\t(name "Li \\"te\\"")
+\t\t\t(dnp no)
+\t\t)
+\t\t(pad "1" smd rect
+\t\t\t(uuid "pad-1")
+\t\t)
+\t)
+\t(footprint "Resistor_SMD:R_0402_1005Metric"
+\t\t(layer "B.Cu")
+\t\t(uuid "fp-2")
+\t\t(attr smd dnp)
+\t\t(variant
+\t\t\t(name "5V Output")
+\t\t\t(dnp no)
+\t\t)
+\t)
+\t(footprint "Fiducial:Fiducial_1mm"
+\t\t(layer "F.Cu")
+\t\t(uuid "fp-3")
+\t)
+)
+"""
+
+
+def test_per_variant_dnp_is_read_per_footprint():
+    """KiCad 10 writes a footprint's per-variant DNP as `(variant (name "X") (dnp yes))`
+    blocks inside the footprint; the first uuid in the block is the footprint's own."""
+    found = variant_dnp(VARIANT_TEXT)
+    assert found == {"5V Output": {"fp-1": True, "fp-2": False}, 'Li "te"': {"fp-1": False}}
+    assert variant_dnp("(kicad_pcb\n\t(variants\n\t\t(variant\n\t\t\t(name \"A\")\n\t\t)\n\t)\n)\n") == {}
+    assert variant_dnp("(kicad_pcb (footprint \"R\" (uuid \"u\")))") == {}  # nothing to parse: one search
+    compact = ('(kicad_pcb\n\t(footprint "R"\n\t\t(uuid "fp-1")\n'
+               '\t\t(variant (name "A") (dnp yes))\n\t\t(variant (name "B") (dnp no))\n\t)\n'
+               '\t(variants\n\t\t(variant\n\t\t\t(name "A")\n\t\t\t(description "x")\n\t\t)\n\t)\n)\n')
+    assert variant_dnp(compact) == {"A": {"fp-1": True}, "B": {"fp-1": False}}
+
+
+def test_variant_dnp_overrides_the_footprint_flag():
+    """The selected variant's DNP replaces KiCad's default flag per footprint; a
+    footprint the variant does not mention keeps it. The default variant ("") changes nothing."""
+    fitted = model.Footprint("fp-1", "R1", (0, 0), 0.0, "top", ())
+    unfitted = model.Footprint("fp-2", "R2", (0, 0), 0.0, "bottom", (), dnp=True)
+    bare = model.Footprint("fp-3", "FID1", (0, 0), 0.0, "top", ())
+    footprints = (fitted, unfitted, bare)
+    overrides = variant_dnp(VARIANT_TEXT)
+    assert [f.dnp for f in with_variant_dnp(footprints, "5V Output", overrides)] == [True, False, False]
+    assert [f.dnp for f in with_variant_dnp(footprints, 'Li "te"', overrides)] == [False, True, False]
+    assert with_variant_dnp(footprints, "", overrides) == footprints
+    assert with_variant_dnp(footprints, "Unknown", overrides) == footprints
+    assert with_variant_dnp(footprints, "5V Output", {}) == footprints

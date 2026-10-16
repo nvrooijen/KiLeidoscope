@@ -782,6 +782,180 @@ def test_routes_appear_while_kicad_is_busy_from_the_board_text():
         runtime.close()
 
 
+def test_hatched_shapes_reach_blender_with_their_hatch(tmp_path, monkeypatch):
+    """KiCad's API reports a hatched shape as unfilled and kicad-cli plots only its outline:
+    the bridge adds KiCad's own hatch (worked out in the background) to the copper graphic
+    and bakes it into the live copy, then sends that layer again."""
+    import kileido_bridge.loop as loop_module
+    from kileido_bridge import hatch, model
+    from kileido_bridge.live_copy import LiveBoardCopy
+    saved = tmp_path / "board.kicad_pcb"
+    saved.write_text("(kicad_pcb)", encoding="utf-8")
+    ring = ((1_000_000, 1_000_000), (5_000_000, 1_000_000), (5_000_000, 2_000_000))
+
+    class FakeBoard:
+        contents = '(kicad_pcb\n\t(gr_rect\n\t\t(fill cross_hatch)\n\t\t(layer "B.Cu")\n\t\t(uuid "hatched")\n\t)\n)\n'
+
+        def get_as_string(self):
+            return self.contents
+
+    outline = model.CopperGraphic("hatched", "GND", "B.Cu", ((((0, 0), (6_000_000, 0), (6_000_000, 100_000)),),))
+    snapshot = replace(fixture(), graphics=(outline,))
+    reader = FakeReader(snapshot)
+    reader.board = FakeBoard()
+    monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(saved))
+    server = BridgeServer(port=0, token="t")
+    copy = LiveBoardCopy(tmp_path / "live", debounce_s=0.0, recheck_s=0.0)
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, live_copy=copy)
+    runtime.hatcher = hatch.Hatcher(compute_fn=lambda text: {"hatched": ("B.Cu", (ring,))})
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
+                          and runtime.hatch_version == 1, limit=2000)
+        if not any(h.get("kind") == "graphics" and h.get("layer") == "B.Cu" and h.get("revision", 0) > 1
+                   for h, _ in frames):  # the snapshot went out before the hatch: B.Cu's graphics follow
+            exchange(runtime, client, lambda f: any(h.get("kind") == "graphics" and h.get("layer") == "B.Cu"
+                                                    for h, _ in f))
+        (graphic,) = runtime.snapshot.graphics
+        assert graphic.polygons[-1] == (ring,)  # the outline, then the hatch
+        live = Path(runtime._export()["path"]).read_text(encoding="utf-8")
+        assert "(gr_poly" in live and "(xy 1.000000 1.000000)" in live and live.startswith(FakeBoard.contents[:-3])
+        assert saved.read_text(encoding="utf-8") == "(kicad_pcb)"  # the user's file is untouched
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_a_flex_model_failure_reaches_blender_as_a_problem_not_a_disconnect(monkeypatch):
+    """A bug in the flex model on some board must not take the KiCad connection down: the
+    panel gets a report whose one problem says so, and polling goes on."""
+    import kileido_bridge.loop as loop_module
+
+    def broken(snapshot, stack):
+        raise ZeroDivisionError("float division by zero")
+    monkeypatch.setattr(loop_module.flex_checks, "report", broken)
+    reader = FakeReader(fixture())
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        (flex,) = [h["flex"] for h, _ in frames if h["type"] == "flex"]
+        assert flex["bends"] == [] and flex["findings"] == [] and flex["limits"] == {"static": 20, "dynamic": None}
+        (problem,) = flex["problems"]
+        assert problem["message"].startswith("Flex mode could not read this board (ZeroDivisionError")
+        reader.events.append((fixture(), {("F.Cu", "tracks")}))  # an edit: the checks run again
+        for _ in range(3):
+            runtime.step()
+        assert runtime.reader is reader and not reader.closed and runtime.status == "connected"
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_selected_variant_hides_its_dnp_parts_and_reaches_the_exports(tmp_path, monkeypatch):
+    """Switching the assembly variant in KiCad: the parts it marks DNP reach Blender
+    as DNP (the "DNP components" eye hides them), the kicad-cli exports learn the
+    variant, and an edit of a per-variant DNP flag follows through the board text."""
+    import kileido_bridge.loop as loop_module
+    from kileido_bridge.live_copy import LiveBoardCopy
+    snapshot = fixture()
+    first = snapshot.footprints[0].id
+    project = tmp_path / "project"
+    project.mkdir()
+    saved = project / "board.kicad_pcb"
+    saved.write_text("(kicad_pcb)", encoding="utf-8")
+
+    def text(dnp):
+        return ('(kicad_pcb\n\t(variants\n\t\t(variant\n\t\t\t(name "5V Output")\n\t\t)\n\t)\n'
+                f'\t(footprint "R"\n\t\t(layer "F.Cu")\n\t\t(uuid "{first}")\n'
+                f'\t\t(variant\n\t\t\t(name "5V Output")\n\t\t\t(dnp {dnp})\n\t\t)\n\t)\n)\n')
+
+    class FakeBoard:
+        contents = text("yes")
+
+        def get_as_string(self):
+            return self.contents
+
+    board = FakeBoard()
+    reader = FakeReader(snapshot)
+    reader.board = board
+    monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(saved))
+    server = BridgeServer(port=0, token="t")
+    copy = LiveBoardCopy(tmp_path / "live", debounce_s=0.0, recheck_s=0.0)
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, live_copy=copy)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+
+    def dnp_of(frames):
+        records = [h["footprints"] for h, _ in frames if h["type"] == "footprints"]
+        return {r["id"]: r["dnp"] for r in records[-1]} if records else None
+
+    try:
+        runtime.step()
+        client.connect()
+        initial = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        header = next(h for h, _ in initial if h["type"] == "board")
+        assert header["export"]["variant"] == ""
+        assert not any(dnp_of(initial).values())  # the default variant: KiCad's own flags
+
+        reader.events.append((replace(snapshot, variant="5V Output"), set()))
+        switched = exchange(runtime, client, lambda f: any(h["type"] == "export" for h, _ in f))
+        assert next(h for h, _ in switched if h["type"] == "export")["export"]["variant"] == "5V Output"
+        assert dnp_of(switched)[first] is True
+        assert sum(dnp_of(switched).values()) == 1
+        assert not any(h["type"] == "snapshot_begin" for h, _ in switched)  # no full resend
+
+        board.contents = text("no")  # the flag edited in KiCad's footprint properties
+        edited = exchange(runtime, client, lambda f: dnp_of(f) is not None)
+        assert dnp_of(edited)[first] is False
+
+        board.contents = text("yes")
+        exchange(runtime, client, lambda f: dnp_of(f) is not None)
+        client.request_resync()
+        again = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        assert next(h for h, _ in again if h["type"] == "board")["export"]["variant"] == "5V Output"
+        assert dnp_of(again)[first] is True
+
+        reader.events.append((replace(snapshot, variant=""), set()))
+        back = exchange(runtime, client, lambda f: any(h["type"] == "export" for h, _ in f))
+        assert next(h for h, _ in back if h["type"] == "export")["export"]["variant"] == ""
+        assert dnp_of(back)[first] is False
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_a_finding_selection_highlights_its_items_not_their_nets():
+    """Shown from the DRC column, a finding is selected in KiCad as a click would be,
+    but Blender lights its items alone: a GND via must not light the whole ground net."""
+    snapshot = fixture()
+    via, pad = snapshot.vias[0], snapshot.pads[0]
+    same_net = [track.id for track in snapshot.tracks if track.net == via.net]
+    assert same_net  # the fixture's via shares its net with tracks
+    reader = FakeReader(snapshot)
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        runtime.step()
+        client.connect()
+        exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        client.request_select([via.id, pad.id], exact=True)
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "selection" and h["selected"] for h, _ in f))
+        header = next(h for h, _ in frames if h["type"] == "selection" and h["selected"])
+        assert header["selected"] == [via.id] and not set(same_net) & set(header["selected"])
+        client.request_select([via.id])  # a plain click on the same via: its whole net again
+        frames = exchange(runtime, client, lambda f: any(h["type"] == "selection" and set(same_net) <= set(h["selected"])
+                                                         for h, _ in f))
+    finally:
+        client.close()
+        runtime.close()
+
+
 def test_dynamic_phase_follows_edits_and_the_panel_settings():
     sys.path.insert(0, str(ROOT / "tests"))
     import phase_boards

@@ -5,7 +5,7 @@ from collections import deque
 
 import bpy
 
-from . import apply
+from . import apply, dump, studio
 from .client import PROTOCOL, SocketClient
 from .state import board
 
@@ -20,8 +20,8 @@ class LiveLink:
     """One connection to a bridge, reconnecting until `disconnect`.
 
     Frames are queued as they arrive and applied within a time budget per tick. A
-    newer frame for the same (layer, kind) replaces a queued older one, and a
-    snapshot supersedes everything queued before it.
+    newer frame for the same (layer, kind) replaces a queued older one (a newer findings
+    frame an older one), and a snapshot supersedes everything queued before it.
     """
 
     def __init__(self):
@@ -42,6 +42,7 @@ class LiveLink:
     def connect(self, port, token):
         self.disconnect()
         self.enabled = True
+        dump.last_path = ""  # the board is KiCad's from here on, not the dump's
         self.port, self.token = port, token
         self.next_retry = 0.0
         self.last_update_at = None
@@ -92,6 +93,8 @@ class LiveLink:
         if not self.enabled:
             return None
         self._receive()
+        if studio.updates_held():  # a render or a studio add-on: received, applied afterwards
+            return TICK_S
         deadline = time.perf_counter() + APPLY_BUDGET_S
         while self.pending and time.perf_counter() < deadline:
             header, arrays = self.pending.popleft()
@@ -136,6 +139,10 @@ class LiveLink:
             key = (header.get("layer"), header.get("kind"))
             kept = [(queued, queued_arrays) for queued, queued_arrays in self.pending
                     if queued.get("type") != "layer_data" or (queued.get("layer"), queued.get("kind")) != key]
+            self.pending.clear()
+            self.pending.extend(kept)
+        elif kind == "findings":  # each one is the whole list: only the newest counts
+            kept = [(queued, queued_arrays) for queued, queued_arrays in self.pending if queued.get("type") != kind]
             self.pending.clear()
             self.pending.extend(kept)
         self.pending.append((header, arrays))
@@ -228,13 +235,21 @@ def request_resync(adopt=False):
         link.client.request_resync(adopt)
 
 
-def request_select(ids, extend=False, center=False):
-    """A click in Blender: select these items in KiCad, and with `center` pan KiCad to them."""
+def request_select(ids, extend=False, center=False, exact=False):
+    """A click in Blender: select these items in KiCad, and with `center` pan KiCad to them;
+    `exact` (a finding) highlights the items alone, not their whole nets."""
     if link.client is not None:
-        link.client.request_select(ids, extend, center)
+        link.client.request_select(ids, extend, center, exact)
 
 
 def request_phase_settings(settings):
     """Tolerance, distance, series parts and flipped pairs for the bridge's dynamic phase."""
     if link.client is not None:
         link.client.request_phase_settings(settings)
+
+
+def request_findings(action, key="", source="drc", checks=None, notes=None):
+    """The DRC and LLM columns: confirm, dismiss or reset a finding, run DRC, or
+    make a prompt for the check ids `checks` with the user's `notes`."""
+    if link.client is not None:
+        link.client.request_findings(action, key, source, checks, notes)

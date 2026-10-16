@@ -8,15 +8,15 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
-from . import protocol
+from . import findings_watch, flex_checks, hatch, kls_folder, protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
-from .board_text import copper_items
+from .board_text import copper_items, variant_dnp, with_variant_dnp
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
                            follow_new_kicad, kicad_tools, net_classes, saved_board_path, select_in_kicad,
                            selected_ids)
 from .live_copy import LiveBoardCopy
 from .phase import PhaseTracker
-from .selection import components, highlight_nets, selected_nets, unconnected
+from .selection import components, highlight_nets, selected_copper, selected_nets, unconnected
 
 
 def _is_timeout(exc: Exception) -> bool:
@@ -69,15 +69,28 @@ class BridgeRuntime:
         self.tools = {}
         self.appearance = {}
         self.appearance_sig = None
+        self.flex = None  # flex mode's panel content as Blender last received it
+        self.flex_error = ""  # why the flex model last failed, so it is said once
         self.copy = live_copy or LiveBoardCopy()
         self.copy_enabled = True
         self.phase = PhaseTracker()  # differential pairs' dynamic phase
+        self.copy_text = ""  # the board text last written to the copy (before its hatches are baked in)
+        self.variant_dnp = {}  # each assembly variant's DNP overrides by footprint id, from the board text
+        self.hatcher = hatch.Hatcher()  # KiCad's own hatches of hatched shapes, worked out in the background
+        self.hatch_version = 0  # the hatcher's result the snapshot and copy carry
+        self.hatch_error = ""  # the hatcher's error as the status frame last said it
+        self.copy_stamp = ""  # kls_folder.stamp of copy_text: what a findings file's stamp echoes
+        # Findings: the board's .kileidoscope folder, watched in the background
+        self.findings = findings_watch.FindingsWatch()
+        self.findings_version = 0  # the watch's payload Blender last received
+        self.next_findings_at = 0.0
         # Selection highlight
         self.highlight = ((), (), (), ())
         self.sticky_nets = frozenset()  # highlighted nets, kept through routing
         self.had_selection = False
         self.busy_seen = False
         self.selected = frozenset()  # KiCad's selection as last read or requested
+        self.exact = frozenset()  # a selection made from a finding: its items, not their nets
         self.requested = None  # (ids, deadline) of a Blender click KiCad has not shown yet
         # Threads (start): KiCad calls run on a worker, so a stalled KiCad delays no click.
         self.lock = threading.RLock()  # the server and the highlight; never held during a KiCad call
@@ -89,9 +102,10 @@ class BridgeRuntime:
     # --- Connection state ---------------------------------------------------------------
 
     def _status_frame(self, **extra) -> bytes:
+        self.hatch_error = self.hatcher.error
         return protocol.encode_frame({"type": "status", "kicad": self.status, "revision": self.revision,
                                       **extra, "error": self.error, "new_kicad": self.new_kicad,
-                                      "outdated_pads": self.outdated_pads})
+                                      "outdated_pads": self.outdated_pads, "hatch_error": self.hatch_error})
 
     def _status(self, value, last_read_ms=None, error=""):
         if value == self.status and error == self.error:
@@ -114,6 +128,7 @@ class BridgeRuntime:
             self.board_path = ""
             self.appearance = {}
             self.appearance_sig = None
+            self.flex = None
             self.tools = {}
             self.copy_enabled = True
             self.phase.reset()
@@ -153,6 +168,7 @@ class BridgeRuntime:
             self._disconnect_reader(error=f"{type(exc).__name__}: {exc}")
             return
         self.timeout_count = 0
+        result = self._with_hatches(result)
         snapshot = result.snapshot
         board_changed = self.snapshot is None or snapshot.board_name != self.snapshot.board_name
         if board_changed:
@@ -163,25 +179,37 @@ class BridgeRuntime:
             changes = _copper_changes(self.snapshot, snapshot.tracks, snapshot.arcs, snapshot.vias)
             result = replace(result, dirty=result.dirty | changes)
         self.sent_from_text = False
+        saved = not board_changed and not self.board_path and self._follow_save(snapshot)
+        variant_changed = not board_changed and snapshot.variant != self.snapshot.variant
         full_snapshot = board_changed or ("", "stackup") in result.dirty
+        if full_snapshot or variant_changed:
+            self._refresh_copy(force=True)  # the variant's DNP flags come from the board text
         if full_snapshot:
-            self._refresh_copy(force=True)
             source = self._appearance_source()
             self.appearance_sig = appearance_signature(source)  # stamp before reading
             self.appearance = read_appearance(source)
+            self.flex = self._flex_report(snapshot)
+        edited = bool(result.dirty)  # the variant overlay below changes no board text
+        result = self._with_variant(result)
+        snapshot = result.snapshot
         self.snapshot = snapshot
         frames = self._geometry_frames(result, full_snapshot)
         if not full_snapshot:
-            if result.dirty:
+            if variant_changed or saved:  # the export's project folder follows a save too
+                frames.append(protocol.export_message(self._export(), self.revision))
+            if edited:
                 self.copy.changed(self.clock())
             self._refresh_copy()
-            frames += self._appearance_frames()
+            appearance = self._appearance_frames()
+            frames += appearance + self._flex_frames(snapshot, bool(result.dirty or appearance))
         frames += self._phase_frames(everything=full_snapshot)
         frames += self._selection_frames(snapshot, force=full_snapshot)
-        if result.outdated_pads != self.outdated_pads:
+        if result.outdated_pads != self.outdated_pads or self.hatcher.error != self.hatch_error:
             self.outdated_pads = result.outdated_pads
             frames.append(self._status_frame())
         self._send(frames, snapshot=full_snapshot)
+        if full_snapshot:
+            self._send(self._findings_resend())  # after the snapshot: never delays the board
         self._status("connected", snapshot.read_timings_ms.get("total"))
 
     def _on_board_changed(self, snapshot):
@@ -191,9 +219,26 @@ class BridgeRuntime:
         self.board_path = saved_board_path(board)
         self.tools = kicad_tools(board) if board is not None else {}
         set_kicad_version(self.tools.get("kicad_version"))
+        self.hatcher.kicad_cli = self.tools.get("kicad_cli", "")
         self.copy.target(snapshot.board_name, self.board_path)
         self.copy_enabled = True
         self.phase.reset()
+        self.variant_dnp = {}  # the new board's come with its text
+        self.copy_text = self.copy_stamp = ""  # the last board's, until this one's copy is written
+        self.findings.target(self.board_path)
+
+    def _follow_save(self, snapshot) -> bool:
+        """An unsaved board saved since the last poll. KiCad names a new project's board
+        before its file exists, so the file turns up under the name the document already
+        has; the copy's project folder and the findings follow it. (A board saved under
+        another name is another document to KiCad's API: the reader reconnects and
+        `_on_board_changed` finds it.)"""
+        self.board_path = saved_board_path(getattr(self.reader, "board", None))
+        if not self.board_path:
+            return False
+        self.copy.target(snapshot.board_name, self.board_path)
+        self.findings.target(self.board_path)
+        return True
 
     def _geometry_frames(self, result: PollResult, full_snapshot: bool) -> list[bytes]:
         """A complete snapshot after a board or stackup change, else one frame per dirty group."""
@@ -209,7 +254,33 @@ class BridgeRuntime:
         return protocol.snapshot_frames(self.snapshot, self.revision, self.origin_nm,
                                         board_path=self.board_path,
                                         appearance=self.appearance,
-                                        export=self._export())
+                                        export=self._export(), flex=self.flex)
+
+    def _flex_report(self, snapshot) -> dict | None:
+        """Flex mode's report; one that says so (an error in its problems) when the model
+        fails on this board, so a flex bug never disconnects KiCad."""
+        stack = self.appearance.get("flex_stack", {})
+        try:
+            report = flex_checks.report(snapshot, stack)
+        except Exception as exc:
+            error = f"Flex mode could not read this board ({type(exc).__name__}: {exc}); please report it"
+            if error != self.flex_error:
+                self.flex_error = error
+                self._status(self.status, error=error)
+            return flex_checks.error_report(error, stack)
+        self.flex_error = ""
+        return report
+
+    def _flex_frames(self, snapshot, changed: bool) -> list[bytes]:
+        """Flex mode's checks again after an edit (or a stackup change in the board file)."""
+        if not changed:
+            return []
+        report = self._flex_report(snapshot)
+        if report == self.flex:
+            return []
+        self.flex = report
+        self.revision += 1
+        return [protocol.flex_message(report, self.revision)]
 
     def _appearance_frames(self) -> list[bytes]:
         """IPC has no colours or finish. They come from the live board copy (so they
@@ -237,7 +308,7 @@ class BridgeRuntime:
         except Exception:
             return  # also busy for text (a modal dialog), or no board
         if self.copy_enabled and self.copy.path is not None:
-            self.copy.write(text, now, self.board_path)  # mask/silkscreen overlays follow too
+            self._write_copy(text, now)  # mask/silkscreen overlays follow too
         tracks, arcs, vias = copper_items(text)
         dirty = _copper_changes(self.snapshot, tracks, arcs, vias)
         frames = []
@@ -248,6 +319,7 @@ class BridgeRuntime:
             self.revision += 1
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
             frames += self._phase_frames()
+            frames += self._flex_frames(snapshot, True)
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
         self._send(frames)
 
@@ -275,6 +347,14 @@ class BridgeRuntime:
             if read and self._before_requested(selected):
                 return []
             self.selected = selected
+            if self.exact and selected == self.exact:
+                self.sticky_nets, self.had_selection, self.busy_seen = frozenset(), True, False
+                current = (selected_copper(snapshot, selected), (), *components(snapshot, selected))
+                if current == self.highlight and not force:
+                    return []
+                self.highlight = current
+                return [protocol.selection_message(*current, self.revision)]
+            self.exact = frozenset()  # KiCad's selection moved on: back to whole nets
             nets = selected_nets(snapshot, selected)
             if nets:
                 self.sticky_nets = nets
@@ -346,7 +426,46 @@ class BridgeRuntime:
             if not self.copy.path.is_file():
                 self.copy_enabled = False  # this KiCad cannot serialize boards; use the saved file
             return  # otherwise keep the last good copy and retry later
-        self.copy.write(text, now, self.board_path)
+        self._write_copy(text, now)
+
+    def _write_copy(self, text: str, now: float):
+        """The copy as KiCad gives it, with the hatches of its hatched shapes baked in
+        (kicad-cli plots them as their outlines alone; `hatch`)."""
+        self.copy_text = text
+        self.variant_dnp = variant_dnp(text)
+        self.copy_stamp = kls_folder.stamp(text)
+        self.hatcher.want(text)
+        self.copy.write(hatch.bake(text, self.hatcher.shapes), now, self.board_path)
+
+    def _with_hatches(self, result: PollResult) -> PollResult:
+        """The reader's snapshot with the hatches in its copper graphics (IPC reports a
+        hatched shape as unfilled). New hatches from the background mark those layers
+        changed, and the copy takes them too."""
+        version, shapes = self.hatcher.result()
+        snapshot = result.snapshot
+        if shapes:
+            snapshot = replace(snapshot, graphics=hatch.apply(snapshot.graphics, shapes))
+        dirty = result.dirty
+        if version != self.hatch_version:
+            self.hatch_version = version
+            before = self.snapshot.graphics if self.snapshot is not None else ()
+            dirty = dirty | {(graphic.layer, "graphics") for graphic in (*before, *snapshot.graphics)}
+            if self.copy_text and self.copy_enabled and self.copy.path is not None:
+                self.copy.write(hatch.bake(self.copy_text, shapes), self.clock(), self.board_path)
+        return replace(result, snapshot=snapshot, dirty=dirty)
+
+    def _with_variant(self, result: PollResult) -> PollResult:
+        """The reader's footprints with the selected variant's DNP flags (KiCad's API
+        gives the default variant's). A change marks the footprints dirty: the "DNP
+        components" eye in Blender follows the variant."""
+        snapshot = result.snapshot
+        footprints = with_variant_dnp(snapshot.footprints, snapshot.variant, self.variant_dnp)
+        dirty = result.dirty
+        if footprints != snapshot.footprints:
+            snapshot = replace(snapshot, footprints=footprints)
+        if self.snapshot is not None and footprints != self.snapshot.footprints:
+            dirty = dirty | {("", "footprints")}
+        return replace(result, snapshot=snapshot, dirty=dirty)
 
     def _appearance_source(self) -> str:
         if self.copy_enabled and self.copy.path is not None and self.copy.path.is_file():
@@ -359,16 +478,42 @@ class BridgeRuntime:
                 "live": live,
                 "project_dir": self.copy.project_dir if live else "",
                 "kicad_cli": self.tools.get("kicad_cli", ""),
-                "kicad_settings": str(settings_dir())}  # its kicad_common.json: Configure Paths
+                "kicad_settings": str(settings_dir()),  # its kicad_common.json: Configure Paths
+                "variant": self.snapshot.variant if self.snapshot is not None else ""}
+
+    # --- Findings ------------------------------------------------------------------------
+
+    def _findings_frames(self) -> list[bytes]:
+        """The watch's payload when it has a new one (either thread may ask)."""
+        with self.lock:
+            version, payload = self.findings.result()
+            if version == self.findings_version or payload is None:
+                return []
+            self.findings_version = version
+            return [protocol.findings_message(payload, self.revision)]
+
+    def _findings_resend(self) -> list[bytes]:
+        """The last payload again, after a snapshot (Blender rebuilds its board)."""
+        _, payload = self.findings.result()
+        return [protocol.findings_message(payload, self.revision)] if payload is not None else []
+
+    def _tick_findings(self, now: float):
+        """Check the findings files on a deadline; also while KiCad is disconnected."""
+        if now >= self.next_findings_at:
+            self.next_findings_at = now + self.findings.CHECK_S
+            self.findings.tick(now, self.snapshot, self.revision, self.copy_stamp, self.tools,
+                               self.copy_text if self.copy_enabled else "")
+        self._send(self._findings_frames())
 
     # --- Blender requests and the main loop ---------------------------------------------
 
     def _take_select_requests(self):
         """A click in Blender (main thread, under the lock): highlight it now, and queue
-        selecting it in KiCad for the worker. A pad selects its footprint. KiCad can take
+        selecting it in KiCad for the worker. A pad selects its footprint; `exact` (a finding)
+        highlights the items alone, not their nets. KiCad can take
         seconds to apply a selection and answer (measured 1-9 s with its window hidden
         behind Blender); later polls confirm it."""
-        for ids, extend, center in self.server.take_select_requests():
+        for ids, extend, center, exact in self.server.take_select_requests():
             snapshot = self.snapshot
             if self.reader is None or snapshot is None:
                 continue
@@ -377,6 +522,7 @@ class BridgeRuntime:
             if not wanted and not extend:
                 self.sticky_nets = frozenset()  # a click on bare board: clear the highlight
             selected = frozenset(wanted) | (self.selected if extend else frozenset())
+            self.exact = selected if exact and selected else frozenset()
             self.requested = (selected, self.clock() + self.REQUEST_GRACE_S)
             self.server.send_frames(self._selection_frames(snapshot, selected=selected))
             self.server.pump()
@@ -406,12 +552,20 @@ class BridgeRuntime:
             self.server.send_frames([protocol.selection_message(*self.highlight, self.revision)])
             self.server.send_frames(self.phase.snapshot_frames())
         self.server.send_frames([self._status_frame()])
+        self.server.send_frames(self._findings_resend())  # kept while KiCad is disconnected too
 
     def step(self) -> None:
         """Serve Blender; without a started worker (tests), also talk to KiCad."""
         with self.lock:
             self.server.pump()
             self._take_select_requests()
+            requests = self.server.take_findings_requests()
+            for action, key, source, checks, notes in requests:
+                self.findings.request(action, key, source, checks, notes)
+            if requests:
+                self.next_findings_at = 0.0  # Run DRC and a prompt start on the next tick
+                self.wake.set()
+            self.server.send_frames(self._findings_frames())  # a confirm or dismiss shows at once
             if self.server.take_adopt() and self.new_kicad:
                 self.follower()
                 self.next_connect_at = 0.0  # connect now, not at the next retry
@@ -435,6 +589,7 @@ class BridgeRuntime:
         if self.reader is not None and now >= self.next_poll_at:
             self.next_poll_at = now + self.poll_interval_s
             self._poll()
+        self._tick_findings(now)
 
     def start(self) -> None:
         """Talk to KiCad on a worker thread from now on; `step` then only serves Blender."""

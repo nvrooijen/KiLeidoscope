@@ -1,6 +1,8 @@
 """Bookmark tabs on the KiLeidoscope sidebar's left edge. Each opens its column left of
-the KiLeidoscope panel (High speed; later DC), one at a time, and the sidebar widens to
-make room; clicking the open tab again closes it.
+the KiLeidoscope panel (Studio, IMS, Flex, DRC, LLM, High speed), one at a time, and the sidebar
+widens to make room; clicking the open tab again closes it. A mode switched on in its column
+keeps its tab lit (a bright stripe on its outer edge) once the column is closed; one the board
+cannot have is greyed.
 
 The tabs are drawn in the 3D view (Blender's panels cannot colour a button or turn its
 text), so they have no tooltip or hover. A press on one reaches `KILEIDO_OT_column_tab`
@@ -22,8 +24,16 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 
 # (key, label, colour): the order they hang from the top.
-TABS = (("HIGH_SPEED", "High speed", (0.83, 0.33, 0.49)),)
+TABS = (("STUDIO", "Studio", (0.36, 0.60, 0.56)),  # a teal, neither board colour
+        ("IMS", "IMS", (0.38, 0.56, 0.78)),  # aluminium blue
+        ("FLEX", "Flex", (0.82, 0.52, 0.14)),  # polyimide amber
+        ("DRC", "DRC", (0.80, 0.24, 0.24)),  # DRC red
+        ("LLM", "LLM", (0.56, 0.38, 0.80)),  # LLM purple
+        ("HIGH_SPEED", "High speed", (0.83, 0.33, 0.49)))  # the pair tint's pink
 NONE = "NONE"
+GREY = (0.42, 0.42, 0.42)  # a tab whose mode this board cannot have
+# key -> a function telling the tab's mode: "on", "off" or "unavailable" (set by the add-on).
+STATES = {}
 CATEGORY = "KiLeidoscope"  # the sidebar tab the bookmarks belong to
 
 SIZEX_OFFSET = {(5, 1): 198}  # bytes into ARegion; measured by scanning at two UI scales
@@ -38,6 +48,7 @@ TAB_OUT = 5  # how much further the open tab sticks out
 TAB_PAD = 12  # text to tab end
 TAB_GAP = 6
 TAB_RADIUS = 5
+TAB_STRIPE = 3  # the lit stripe of a mode that is on
 TEXT_SIZE = 12
 FONT = 0
 
@@ -87,6 +98,16 @@ def _outline(x0, y0, x1, y1, radius, steps=6):
     return points
 
 
+def _quad(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)]
+
+
+def tab_state(key):
+    """"on", "off" or "unavailable": what the tab's mode is for the board shown."""
+    state = STATES.get(key)
+    return state() if state is not None else "off"
+
+
 def _draw():
     area = bpy.context.area
     if area is None:
@@ -102,16 +123,24 @@ def _draw():
     ascent = blf.dimensions(FONT, "H")[1]
     for key, label, color, (x0, y0, x1, y1) in rects:
         is_open = key == active
+        mode = tab_state(key)
         if is_open:
             x0 -= TAB_OUT * scale
+        if mode == "unavailable":
+            color = GREY
         outline = _outline(x0, y0, x1, y1, TAB_RADIUS * scale)
         centre = ((x0 + x1) / 2, (y0 + y1) / 2)
         triangles = [vertex for a, b in zip(outline, outline[1:] + outline[:1]) for vertex in (centre, a, b)]
-        shader.uniform_float("color", (*color, 1.0 if is_open else 0.7))
+        shader.uniform_float("color", (*color, 1.0 if is_open or mode == "on" else 0.55))
         batch_for_shader(shader, "TRIS", {"pos": triangles}).draw(shader)
+        if mode == "on":  # lit along its outer edge, open or closed
+            inset = TAB_RADIUS * scale
+            stripe = (x0, y0 + inset, x0 + TAB_STRIPE * scale, y1 - inset)
+            shader.uniform_float("color", (1.0, 0.95, 0.75, 1.0))
+            batch_for_shader(shader, "TRIS", {"pos": _quad(*stripe)}).draw(shader)
         # Read top to bottom, like Blender's own sidebar tabs: glyph tops face the panel.
         text_x = (x0 + x1 - TAB_TUCK * scale) / 2 - ascent / 2
-        blf.color(FONT, 1.0, 1.0, 1.0, 1.0 if is_open else 0.85)
+        blf.color(FONT, 1.0, 1.0, 1.0, 1.0 if is_open or mode == "on" else 0.8)
         blf.enable(FONT, blf.ROTATION)
         blf.rotation(FONT, -math.pi / 2)
         blf.position(FONT, text_x, y1 - TAB_PAD * scale, 0)

@@ -1,11 +1,15 @@
 """Binary frame format and message builders."""
 
+import ast
+from pathlib import Path
+
 import numpy as np
 import pytest
 from kipy.proto.board.board_types_pb2 import BoardLayer
 
 from kileido_bridge.kicad_reader import BoardReader
-from kileido_bridge.protocol import FrameDecoder, MAX_FRAME_BYTES, encode_frame, messages_for
+from kileido_bridge.protocol import (FrameDecoder, MAX_FRAME_BYTES, MESSAGE_TYPES, encode_frame, findings_message,
+                                     messages_for)
 from test_phase1 import FakeBoard, item_id, point, polygon, track, via
 from types import SimpleNamespace as NS
 
@@ -70,3 +74,35 @@ def test_messages_only_for_dirty_groups_with_arc_sampled_into_tracks():
     second = reader.poll()
     only = decode_all(messages_for(second.snapshot, second.dirty, revision=2))
     assert [(h["layer"], h["kind"]) for h, _ in only] == [("B.Cu", "tracks")]
+
+
+def test_findings_frame_round_trip():
+    payload = {"status": "ok", "folder": "C:/p/.kileidoscope", "drc": {"state": "idle", "error": "", "run": "4"},
+               "sources": {"drc": {"status": "none", "findings": []},
+                           "file": {"status": "ok", "findings": [{"key": "3f2a", "title": "Stub µ"}]}},
+               "prompt": {"state": "ready", "run": "3", "text": "Run: 3   Stamp: a1b2c3d4\nRead request.md — first",
+                          "error": ""},
+               "progress": {"state": "working", "run": "3", "done": 2, "total": 5, "check": "plane.gap_crossing",
+                            "note": "Tracing GND µ", "updated_unix": 1791200000.25, "made_unix": 1791199990.5},
+               "catalogue": [{"id": "plane.gap_crossing", "group": "plane", "title": "Plane gap", "v1": True}],
+               "groups": [{"id": "plane", "title": "Return paths and planes"}]}
+    [(header, arrays)] = decode_all([findings_message(payload, 7)])
+    assert header["type"] == "findings" and header["revision"] == 7 and header["findings"] == payload
+    assert arrays == {}
+
+
+def _sent_types(path: Path) -> set[str]:
+    """Every literal "type" of a dict built in `path`: the frames it sends."""
+    found = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "type" and isinstance(value, ast.Constant):
+                    found.add(value.value)
+    return found
+
+
+def test_message_types_lists_every_frame_the_bridge_sends():
+    bridge = Path(__file__).resolve().parents[1] / "kileido_bridge"
+    sent = _sent_types(bridge / "protocol.py") | _sent_types(bridge / "loop.py")
+    assert sent == set(MESSAGE_TYPES) and len(MESSAGE_TYPES) == len(set(MESSAGE_TYPES))

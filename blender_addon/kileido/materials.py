@@ -1,13 +1,14 @@
 """KiLeidoscope's board materials and the three colour modes (board stackup, realistic, PCB Editor).
 
 Materials are emission shaders (flat colours) that gain a Principled BSDF in
-Realistic mode. Colours come from the bridge's appearance data (board_specs):
+Realistic mode. In the other two modes the panel's Shaded lights the flat colours
+(shading.lit_flat_group), so the studio lights, their shadows and the cut light show depth. Colours come from the bridge's appearance data (board_specs):
 KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 """
 
 import bpy
 
-from . import cut, focus, holes, laminate, section, shading
+from . import cut, focus, holes, ims, laminate, section, shading
 from .placement import copper_thickness
 from .state import board
 
@@ -20,9 +21,25 @@ LAMINATE_SHADE = 0.2  # the laminate returns little light: mask over it this muc
 FALLBACK_COPPER = (0.7, 0.6, 0.1)
 FALLBACK_MASK = (0.29, 0.49, 0.71)
 FALLBACK_CORE = (0.43, 0.45, 0.29)
+# Flex: KiCad's 3D viewer colour for "Polyimide", the amber film and coverlay. It acts as a
+# colour filter: mostly see-through, tinting what lies behind it, so a light background
+# turns bright amber and the copper in it darker orange-brown lines.
+POLYIMIDE = (205 / 255, 130 / 255, 0.0)
+POLYIMIDE_ALPHA = 0.35  # its own colour; the rest is what shows through, tinted
+FILM_TINT = 0.85  # how much of its amber the film gives what shows through
+STIFFENER_METAL = (0.78, 0.79, 0.80)  # a stainless steel or aluminium stiffener (sRGB)
+# The coverlay film's colours (sRGB, its own share, its tint on what shows through): amber
+# polyimide; black and white coverlay hide most of the copper under them.
+COVERLAYS = {"AMBER": ("Amber", POLYIMIDE, POLYIMIDE_ALPHA, FILM_TINT),
+             "BLACK": ("Black", (0.06, 0.06, 0.06), 0.93, 1.0),
+             "WHITE": ("White", (0.93, 0.93, 0.90), 0.9, 0.3)}
 
 # red-orange / blue (sRGB); white: what dynamic phase leaves to the highlight of a selected pair
 HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0), "phase": (1.0, 1.0, 1.0)}
+# A finding's colour by its severity (sRGB): magenta-red, amber, cyan; its distance past a limit: red.
+FINDING_COLORS = {"error": (1.0, 0.05, 0.35), "warning": (1.0, 0.70, 0.0), "info": (0.0, 0.75, 1.0)}
+FINDING_OVER_COLOR = (1.0, 0.0, 0.0)
+FINDING_PASS_COLOR = (0.1, 0.8, 0.3)  # a measurement that meets its limit
 PLACEHOLDER_COLOR = (0.36, 0.43, 0.52)  # a component whose model file is missing: a grey-blue box
 OUTLINE_PROBLEM_COLOR = (1.0, 0.0, 0.0)  # a malformed board outline: bright red
 OUTLINE_PROBLEM_GLOW = 0.8  # higher reads orange in AgX
@@ -65,11 +82,26 @@ def create_all():
         "board": make("KLS Board mask top", FALLBACK_MASK),
         "board_bottom": make("KLS Board mask bottom", FALLBACK_MASK),
         "board_core": make("KLS Board FR4 core", FALLBACK_CORE),
+        # The board's outline walls: the core's look, but holed (holes.HOLED), so a drill on
+        # the edge (a castellated pad) opens the wall. Bare drill walls keep "board_core":
+        # they stand on a hole's rim and the hole mask would cut them in half.
+        "board_edge": make("KLS Board edge", FALLBACK_CORE),
+        "ims_base": make("KLS IMS base", ims.COLORS["AL"]),
+        "flex": make("KLS Flex polyimide", POLYIMIDE, POLYIMIDE_ALPHA),
+        "stiffener_metal": make("KLS Stiffener metal", STIFFENER_METAL),
+        # Its bare drill walls: the same metal, never see-through (they stand inside the hole mask).
+        "ims_wall": make("KLS IMS hole wall", ims.COLORS["AL"]),
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
+        # The plated board edge: the hole plating's look, but it stands just outside the
+        # outline, so it is not clipped to the board as hole plating is (holes.CLIPPED).
+        "plating_edge": make("KLS Edge plating", (0.75, 0.61, 0.23)),
         # A via barrel the finish never reached (a tent, plug or fill closes it): bare copper.
         "plating_bare": make("KLS Hole plating bare", BARE_COPPER),
+        # Copper milled back to the board edge (castellated pads): the cut face is bare
+        # copper, and it stands on the outline, so it is not clipped to the board either.
+        "copper_cut": make("KLS Copper cut edge", BARE_COPPER),
         # A plugged via's plug: solder mask ink, in the board's mask colour.
         "via_plug": make("KLS Via plug ink", FALLBACK_MASK),
         # The solder mask spanning a tented via's hole, one per side; see-through while hidden.
@@ -87,6 +119,11 @@ def create_all():
         "highlight_phase_barrel": make("KLS Highlight phase barrel", HIGHLIGHT_COLORS["phase"]),
         # A glow shell, not a surface: flat translucent red-orange in every mode.
         "highlight_box": make("KLS Highlight component", HIGHLIGHT_COLORS["selected"], HIGHLIGHT_BOX_ALPHA),
+        # The finding shown from the DRC or LLM column (findings_draw): recoloured by its severity.
+        "highlight_finding": make("KLS Highlight finding", FINDING_COLORS["error"]),
+        "highlight_finding_barrel": make("KLS Highlight finding barrel", FINDING_COLORS["error"]),
+        "highlight_finding_box": make("KLS Highlight finding component", FINDING_COLORS["error"],
+                                      HIGHLIGHT_BOX_ALPHA),
         "highlight_outline": make("KLS Highlight outline", OUTLINE_PROBLEM_COLOR),
     }
 
@@ -125,6 +162,8 @@ def paint(material, color):
             node.inputs["Color"].default_value = (*linear, 1.0)
         elif node.type == "BSDF_PRINCIPLED":
             node.inputs["Base Color"].default_value = (*linear, 1.0)
+        elif node.name == shading.LIT_FLAT:
+            node.inputs["Color"].default_value = (*linear, 1.0)
         elif node.name == BASE_COLOR:  # the colour under the silkscreen ink (`print_silk`)
             node.outputs[0].default_value = (*linear, 1.0)
 
@@ -186,8 +225,14 @@ def _print_on_tent(material, side):
     nodes[COAT_AMOUNT].inputs[1].default_value = covered_state(side)["coat"]
 
 
+def shaded():
+    """The panel's Shaded: Board stackup and PCB Editor colours lit, not flat."""
+    return bool(getattr(bpy.context.scene, "kileido_shaded", True))
+
+
 def set_surface(material, realistic, metallic=0.0, roughness=0.4):
-    """Route the lit (Realistic) or flat (emission) shader to the material's surface."""
+    """Route the lit (Realistic), flat (emission) or, while Shaded is on, the flat colour
+    lit (shading.lit_flat_group) shader to the material's surface."""
     tree = material.node_tree
     emission = next(node for node in tree.nodes if node.type == "EMISSION")
     principled = next((node for node in tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
@@ -198,7 +243,19 @@ def set_surface(material, realistic, metallic=0.0, roughness=0.4):
     principled.inputs["Roughness"].default_value = roughness
     mix = next((node for node in tree.nodes if node.type == "MIX_SHADER"), None)
     target = mix.inputs[2] if mix else focus.surface_input(material)
-    tree.links.new((principled if realistic else emission).outputs[0], target)
+    if realistic or not shaded():
+        tree.links.new((principled if realistic else emission).outputs[0], target)
+        return
+    lit = tree.nodes.get(shading.LIT_FLAT)
+    if lit is None:
+        lit = tree.nodes.new("ShaderNodeGroup")
+        lit.name = shading.LIT_FLAT
+        lit.node_tree = shading.lit_flat_group()
+    color = emission.inputs["Color"]  # the flat colour, or what feeds it (finish, silkscreen)
+    lit.inputs["Color"].default_value = color.default_value
+    if color.is_linked:
+        tree.links.new(color.links[0].from_socket, lit.inputs["Color"])
+    tree.links.new(lit.outputs[0], target)
 
 
 # --- Colours --------------------------------------------------------------------------------
@@ -269,6 +326,7 @@ def layer_material(layer):
     if key not in board.materials:
         board.materials[key] = make(f"KLS {layer} copper", FALLBACK_COPPER)
         holes.add_to(board.materials[key])
+        holes.clip_to_board(board.materials[key])  # copper past the board edge is milled away
         if cut.enabled():  # a layer's first copper while the board is cut open
             cut.add_to(board.materials[key])
     material = board.materials[key]
@@ -285,6 +343,8 @@ def set_mask_image(side, image, bounds):
     previous = board.mask_images.get(side, (None,))[0]
     board.mask_images[side] = (image, bounds)
     refresh_mask_colors()
+    from . import fold  # the coverlay on the flex is made from the mask
+    fold.invalidate()
     if previous is not None and previous != image and previous.users == 0:
         bpy.data.images.remove(previous)
 
@@ -325,7 +385,7 @@ def finish_mask(material, key):
     rough.inputs["To Max"].default_value = COPPER_ROUGHNESS
     links = material.node_tree.links
     for node in nodes:
-        if node.type == "EMISSION":
+        if node.type == "EMISSION" or node.name == shading.LIT_FLAT:
             links.new(mix.outputs["Result"], node.inputs["Color"])
         elif node.type == "BSDF_PRINCIPLED":
             links.new(mix.outputs["Result"], node.inputs["Base Color"])
@@ -402,7 +462,7 @@ def _build_finish_mask(material, sides):
     """The colour mix between covered and exposed copper, driven by the mask plot(s)."""
     tree = material.node_tree
     nodes, links = tree.nodes, tree.links
-    geometry = nodes.new("ShaderNodeNewGeometry")
+    position = shading.flat_position(tree)
     mix = nodes.new("ShaderNodeMix")
     mix.name = "KLS finish mix"
     mix.data_type = "RGBA"
@@ -410,8 +470,7 @@ def _build_finish_mask(material, sides):
     for side in sides:
         texture = nodes.new("ShaderNodeTexImage")
         texture.name, texture.extension = f"KLS mask plot {side}", "CLIP"
-        shading.project_plot(tree, geometry.outputs["Position"], texture,
-                             f"KLS mask offset {side}", f"KLS mask scale {side}")
+        shading.project_plot(tree, position, texture, f"KLS mask offset {side}", f"KLS mask scale {side}")
         alphas[side] = shading.sharp_alpha(material, texture)
     if len(sides) == 2:  # vias: top plot above mid-board, bottom plot below
         split = nodes.new("ShaderNodeSeparateXYZ")
@@ -419,7 +478,7 @@ def _build_finish_mask(material, sides):
         above.name, above.operation = "KLS mask side", "GREATER_THAN"
         choose = nodes.new("ShaderNodeMix")
         choose.data_type = "FLOAT"
-        links.new(geometry.outputs["Position"], split.inputs[0])
+        links.new(position, split.inputs[0])
         links.new(split.outputs["Z"], above.inputs[0])
         links.new(above.outputs[0], choose.inputs["Factor"])
         links.new(alphas["B"], choose.inputs["A"])
@@ -445,7 +504,7 @@ def _bare_inner_faces(material, sides):
     opening = mix.inputs["Factor"].links[0].from_socket
     driven = [link.to_socket for link in opening.links]
     normal = nodes.new("ShaderNodeSeparateXYZ")  # the normal on the side seen: a flat sheet's back counts too
-    links.new(nodes.new("ShaderNodeNewGeometry").outputs["Normal"], normal.inputs[0])
+    links.new(shading.flat_normal(tree), normal.inputs[0])
     facing_in = {"F": shading.math_node(tree, "LESS_THAN", normal.outputs["Z"], -INNER_FACE_Z),
                  "B": shading.math_node(tree, "GREATER_THAN", normal.outputs["Z"], INNER_FACE_Z)}
     if len(sides) == 2:  # vias: the top land above mid-board, the bottom land below
@@ -506,7 +565,7 @@ def print_silk(material, sides, base, opening, coordinates=None):
     links.new(relief.outputs["Normal"], nodes["KLS silk bump"].inputs["Normal"])
     links.new(base, mix.inputs["A"])
     for node in nodes:
-        if node.type == "EMISSION":
+        if node.type == "EMISSION" or node.name == shading.LIT_FLAT:
             links.new(mix.outputs["Result"], node.inputs["Color"])
         elif node.type == "BSDF_PRINCIPLED":
             links.new(mix.outputs["Result"], node.inputs["Base Color"])
@@ -520,7 +579,7 @@ def _build_silk(material, sides, opening, coordinates):
     tree = material.node_tree
     nodes, links = tree.nodes, tree.links
     if coordinates is None:
-        coordinates = nodes.new("ShaderNodeNewGeometry").outputs["Position"]
+        coordinates = shading.flat_position(tree)
     inks, colors = {}, {}
     for side in sides:
         texture = nodes.new("ShaderNodeTexImage")
@@ -707,12 +766,21 @@ def set_color_mode(mode):
     # Its rings on inner copper: the via colour in the editor's theme, else as inner copper (no finish).
     paint(board.materials["via_rings"],
           (board.appearance.get("editor_via") if mode == "EDITOR" else _copper_color("inner")) or FALLBACK_COPPER)
-    # Hole walls: copper plated, then finished like the pads.
-    paint(board.materials["plating"], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
-    set_surface(board.materials["plating"], realistic, COPPER_METALLIC, 0.3)
-    paint(board.materials["plating_bare"], _lit_metal(BARE_COPPER))
-    set_surface(board.materials["plating_bare"], realistic, COPPER_METALLIC, 0.3)
+    # Hole walls: copper plated, then finished like the pads; the plated board edge alike.
+    for key in ("plating", "plating_edge"):
+        paint(board.materials[key], _lit_metal(finish_color() or viewer.get("copper") or BARE_COPPER))
+        set_surface(board.materials[key], realistic, COPPER_METALLIC, 0.3)
+    for key in ("plating_bare", "copper_cut"):
+        paint(board.materials[key], _lit_metal(BARE_COPPER))
+        set_surface(board.materials[key], realistic, COPPER_METALLIC, 0.3)
     paint_tents()
+    for key in ("ims_base", "ims_wall"):
+        _paint_ims_base(board.materials[key], realistic)
+    paint(board.materials["flex"], POLYIMIDE)
+    set_surface(board.materials["flex"], realistic, 0.0, 0.25)  # the coverlay is glossy
+    _tint_see_through(board.materials["flex"], POLYIMIDE)
+    paint(board.materials["stiffener_metal"], STIFFENER_METAL)
+    set_surface(board.materials["stiffener_metal"], realistic, 1.0, 0.35)
     paint(board.materials["via_resin"], section.RESIN)
     set_surface(board.materials["via_resin"], realistic, 0.0, 0.5)
     _paint_highlights()
@@ -720,21 +788,103 @@ def set_color_mode(mode):
     for key, material in board.materials.items():
         if key == "solder":
             set_surface(material, realistic, 0.9, 0.3)  # tin-silver-copper alloy
-        if key in {"board", "board_bottom", "board_core", "vias", "via_rings"} or key.startswith("copper:"):
+        if key in {"board", "board_bottom", "board_core", "board_edge", "vias", "via_rings"} or key.startswith("copper:"):
             metal = key in ("vias", "via_rings") or key.startswith("copper:")
             set_surface(material, realistic, COPPER_METALLIC if metal else 0.0,
                         COPPER_ROUGHNESS if metal else 0.42)
             if metal:
                 finish_mask(material, key)
-    laminate.set_edges(board.materials["board_core"], realistic)  # routed edges and bare drills show the layers
+    # Routed edges and bare drills show the layers; an IMS's thin epoxy has no glass weave.
+    for key in ("board_core", "board_edge"):
+        laminate.set_edges(board.materials[key], realistic and board.ims is None)
     # Copper in the cut plane's section: bare (a cut never has the finish), lit like the rest.
     cut.set_look(realistic, shading.srgb_to_linear(metal_color(BARE_COPPER)), COPPER_METALLIC, COPPER_ROUGHNESS)
+
+
+def coverlay_variant(mask, choice="AMBER"):
+    """The coverlay on the flex, made from a side's solder mask material: the same openings
+    (KiCad's coverlay openings are drawn on F.Mask and B.Mask), film of `choice`
+    (COVERLAYS) between them."""
+    _, color, alpha, tint = COVERLAYS.get(choice, COVERLAYS["AMBER"])
+    name = f"{mask.name} (coverlay)"
+    old = bpy.data.materials.get(name)
+    if old is not None and old.users == 0:
+        bpy.data.materials.remove(old)
+    variant = mask.copy()
+    variant.name = name
+    tree = variant.node_tree
+    sheet = next((node for node in tree.nodes if node.type == "MIX_SHADER" and node.inputs[1].is_linked
+                  and node.inputs[1].links[0].from_node.type == "BSDF_TRANSPARENT"
+                  and node.inputs[0].is_linked), None)
+    if sheet is not None:  # the film is see-through where the mask is solid
+        film = tree.nodes.new("ShaderNodeMath")
+        film.operation = "MULTIPLY"
+        tree.links.new(sheet.inputs[0].links[0].from_socket, film.inputs[0])
+        film.inputs[1].default_value = alpha
+        tree.links.new(film.outputs[0], sheet.inputs[0])
+    paint(variant, color)
+    _tint_see_through(variant, color, tint)
+    return variant
+
+
+def flex_copper_variant(copper, choice="AMBER"):
+    """Copper on the flex: under clear amber coverlay it is bare copper; under black or
+    white coverlay it takes the film's colour, as covered copper takes the mask's; in the
+    coverlay's openings it keeps the board's finish."""
+    name = f"{copper.name} (flex)"
+    old = bpy.data.materials.get(name)
+    if old is not None and old.users == 0:
+        bpy.data.materials.remove(old)
+    variant = copper.copy()
+    variant.name = name
+    if "KLS finish mix" in variant.node_tree.nodes:
+        _, color, alpha, _ = COVERLAYS.get(choice, COVERLAYS["AMBER"])
+        set_covered(variant, covered_from(None if choice == "AMBER" else (*color, alpha)))
+    return variant
+
+
+def _tint_see_through(material, color, tint=FILM_TINT):
+    """What shows through `material` takes its colour, as through amber film: the copper in
+    the flex reads as darker lines and the flex stays saturated over a light background."""
+    linear = [1.0 - tint * (1.0 - channel) for channel in shading.srgb_to_linear(color)]
+    for node in material.node_tree.nodes:
+        if node.type == "BSDF_TRANSPARENT":
+            node.inputs["Color"].default_value = (*linear, 1.0)
+
+
+def _paint_ims_base(material, realistic):
+    """The IMS base: its metal, or nickel over it, with the panel's finish."""
+    scene = bpy.context.scene
+    finish = getattr(scene, "kileido_ims_finish", "MILL")
+    _, roughness, anisotropy = ims.FINISHES.get(finish, ims.FINISHES["MILL"])
+    color = ims.NICKEL if finish == "NICKEL" else ims.COLORS.get(getattr(scene, "kileido_ims_metal", "AL"),
+                                                                 ims.COLORS["AL"])
+    paint(material, _lit_metal(color))
+    set_surface(material, realistic, 1.0, roughness)
+    principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
+    principled.inputs["Anisotropic"].default_value = anisotropy
+
+
+def paint_ims_base():
+    """The IMS base's metal or finish changed: its two materials, nothing else."""
+    if board.materials:
+        realistic = board.color_mode == "REALISTIC"
+        for key in ("ims_base", "ims_wall"):
+            _paint_ims_base(board.materials[key], realistic)
+
+
+def core_color():
+    """The laminate under the mask (sRGB): KiCad's 3D core colour, or on an IMS board its
+    thin cream epoxy, whatever KiCad's colour."""
+    if board.ims is not None:
+        return section.IMS_DIELECTRIC
+    return board.appearance.get("viewer", {}).get("core") or FALLBACK_CORE
 
 
 def _paint_board_faces(viewer):
     appearance = board.appearance
     editor = board.color_mode == "EDITOR"
-    core = viewer.get("core") or FALLBACK_CORE
+    core = core_color()
     for key, side, suffix in (("board", "F", "top"), ("board_bottom", "B", "bottom")):
         mask = ((appearance.get(f"editor_mask_{suffix}") if editor else
                  viewer.get(f"soldermask_{suffix}") or appearance.get("saved_colors", {}).get(f"{side}.Mask")) or
@@ -745,20 +895,33 @@ def _paint_board_faces(viewer):
         # substrate. Until then, paint the face with the mask colour.
         paint(board.materials[key], core if side in board.mask_images and not editor else mask)
     paint(board.materials["board_core"], core)
+    paint(board.materials["board_edge"], core)
+
+
+def _paint_highlight(material, color):
+    # Metallic and glowing in every mode: lit metal alone washed out to pink
+    # under the 0.2 W softboxes and AgX (compared on the reference board).
+    paint(material, color)
+    set_surface(material, True, HIGHLIGHT_METALLIC, HIGHLIGHT_ROUGHNESS)
+    principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
+    principled.inputs["Emission Color"].default_value = principled.inputs["Base Color"].default_value
+    principled.inputs["Emission Strength"].default_value = HIGHLIGHT_GLOW
+
+
+def paint_finding():
+    """The shown finding's highlight in its severity's colour (`board.finding_severity`)."""
+    color = FINDING_COLORS.get(board.finding_severity, FINDING_COLORS["warning"])
+    for key in ("highlight_finding", "highlight_finding_barrel"):
+        _paint_highlight(board.materials[key], color)
+    paint(board.materials["highlight_finding_box"], color)
 
 
 def _paint_highlights():
     painted = [(f"highlight_{kind}{part}", color) for kind, color in HIGHLIGHT_COLORS.items()
                for part in ("", "_barrel")] + [("highlight_outline", OUTLINE_PROBLEM_COLOR)]
     for key, color in painted:
-        # Metallic and glowing in every mode: lit metal alone washed out to pink
-        # under the 0.2 W softboxes and AgX (compared on the reference board).
-        material = board.materials[key]
-        paint(material, color)
-        set_surface(material, True, HIGHLIGHT_METALLIC, HIGHLIGHT_ROUGHNESS)
-        principled = next(node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED")
-        principled.inputs["Emission Color"].default_value = principled.inputs["Base Color"].default_value
-        principled.inputs["Emission Strength"].default_value = HIGHLIGHT_GLOW
+        _paint_highlight(board.materials[key], color)
+    paint_finding()
     # A malformed outline must read as pure red from every side and under any light:
     # only its glow (lit red, metal and softbox reflections read as salmon in AgX).
     outline = board.materials["highlight_outline"]

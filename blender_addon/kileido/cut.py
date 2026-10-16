@@ -10,7 +10,9 @@ Two parts, no booleans:
   like a micrograph.
 
 The plane is an ordinary mesh object ("KLS cut plane"; move it, or turn it about Z) and
-its arrow points to the removed side. A section needs the plane upright; tilted, only the
+its arrow points to the removed side. The face can be hidden (Section face) to look into
+the cut board itself, and a cut light ("KLS cut light") can shine into the cut from the
+removed side, along the plane's normal. A section needs the plane upright; tilted, only the
 removed side's transparency applies. The board's geometry is read once per change and
 kept, so moving the plane only redoes the crossing.
 """
@@ -22,20 +24,25 @@ import numpy as np
 from mathutils import Vector
 
 from . import focus, laminate, metal, nodes, section, shading, transform
-from .placement import CAP_PLATING_M, mask_thickness, via_plating
+from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
 from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
 from .state import board
 
 GROUP = "KLS_Clip_v1"
 NODE = focus.CUT_NODE
 PLANE = "KLS cut plane"
+LIGHT = "KLS cut light"
+# The cut light lights the cut as the softboxes light the board's faces (lighting.py):
+# a disk of the plane's length, as far off as a softbox of that size, at their irradiance.
+LIGHT_GAIN = 1.0
 FACE = focus.CUT_FACE  # the section's object and material
 FACE_COLOR = "kls_color"
 FACE_ALONG = "kls_along"  # metres along the cut: the laminate weave's horizontal coordinate
 FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
-FACE_METAL = "kls_metal"  # 1 on copper: polished metal
+FACE_METAL = "kls_metal"  # 1 on copper and an IMS base: polished metal
+FACE_OWN_METAL = "kls_own_metal"  # 1 on metal that is not copper (an aluminum base): lit in its own colour
 FACE_MILKY = "kls_resin"  # 1 on resin: milky, the barrel behind it shows through
-FACE_MATERIAL_VERSION = 9
+FACE_MATERIAL_VERSION = 10
 RESIN_OPACITY = 0.55  # resin in a via is milky: the barrel behind it shows through, faded
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
@@ -51,13 +58,22 @@ REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
 _data = None  # the board's geometry for the section (`_gather`), until it changes
-_edges = None  # the plated board edge's stretches (`plated_edges`), until the board changes
+_edges = {}  # stretches along the outline until the board changes: "plated" (`plated_edges`), "milled" (`milled_edges`)
 # How the section's copper is lit (`set_look`): Realistic, its linear colour, metallic, roughness.
 _look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
 
 def enabled(scene=None):
     return bool(getattr(scene or bpy.context.scene, "kileido_cut", False))
+
+
+def face_wanted(scene=None):
+    """The panel's Section face: draw the section, or leave the cut board open to look into."""
+    return bool(getattr(scene or bpy.context.scene, "kileido_cut_face", True))
+
+
+def light_wanted(scene=None):
+    return enabled(scene) and bool(getattr(scene or bpy.context.scene, "kileido_cut_light", False))
 
 
 # --- Removed side: transparent ------------------------------------------------------------
@@ -304,6 +320,7 @@ def push(scene=None):
         for name, vector in (("Origin", origin), ("Normal", normal)):
             for axis, value in zip("XYZ", vector):
                 group.nodes[name].inputs[axis].default_value = value
+    place_light(scene)
     rebuild(scene)
 
 
@@ -433,9 +450,14 @@ def _face_material():
     # Copper lit as metal (bare: a cut never carries the finish), with the same polish.
     lit_color = tree.nodes.new("ShaderNodeRGB")
     lit_color.name = "KLS cut copper colour"
+    lit_base = tree.nodes.new("ShaderNodeMix")  # copper's lit colour, or an aluminum base's own
+    lit_base.data_type = "RGBA"
+    tree.links.new(_attribute(tree, FACE_OWN_METAL).outputs["Fac"], lit_base.inputs[0])
+    tree.links.new(lit_color.outputs[0], shading.typed_socket(lit_base.inputs, "A"))
+    tree.links.new(color, shading.typed_socket(lit_base.inputs, "B"))
     lit_polish = tree.nodes.new("ShaderNodeGroup")
     lit_polish.node_tree = metal.group()
-    tree.links.new(lit_color.outputs[0], lit_polish.inputs["Base"])
+    tree.links.new(shading.typed_socket(lit_base.outputs, "Result"), lit_polish.inputs["Base"])
     tree.links.new(along, lit_polish.inputs["Along"])
     tree.links.new(height.outputs["Z"], lit_polish.inputs["Height"])
     lit_polish.inputs["Metal"].default_value = 1.0
@@ -511,15 +533,26 @@ def shapes():
 def plated_edges():
     """Stretches of a plated board edge (KiCad's Board Setup: Plated board edge), where
     copper on both outer layers reaches the edge; empty when the board has none."""
-    global _edges
     if not board.appearance.get("edge_plating") or board.collection is None or board.in_snapshot:
         return []
-    if _edges is None:
+    if "plated" not in _edges:
         data = shapes()
         copper = data["copper"]
-        _edges = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
-                  if data["outline"] is not None else [])
-    return _edges
+        _edges["plated"] = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
+                            if data["outline"] is not None else [])
+    return _edges["plated"]
+
+
+def milled_edges():
+    """{outer layer: stretches} where shown copper crosses the outline: the fab mills it
+    back to the edge, leaving a cut copper face there (section.milled_edges)."""
+    if board.collection is None or board.in_snapshot:
+        return {}
+    if "milled" not in _edges:
+        data = shapes()
+        _edges["milled"] = ({layer: section.milled_edges(data["outline"], data["copper"][layer], data["drills"])
+                             for layer in section.OUTER if layer in data["copper"]} if data["outline"] is not None else {})
+    return _edges["milled"]
 
 
 def rectangles(scene=None):
@@ -533,12 +566,13 @@ def rectangles(scene=None):
     line = section.Line(origin[:2], normal[:2])
     layers = {layer: section.copper_along(line, found) for layer, found in data["copper"].items()}
     copper, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,
-                                         board.appearance.get("dielectrics"))
+                                         board.appearance.get("dielectrics"), base=ims_band())
     rects = section.cross_section(line, data["outline"], layers, copper, bands, vias=data["vias"],
                                   pad_drills=data["drills"], plated_edges=plated_edges(),
                                   plating=via_plating(), land_lift=_land_lift(),
                                   cap_plating=CAP_PLATING_M, tents=_tents(), plug_color=_plug_ink())
-    return rects, (line, normal)
+    from . import fold  # fold imports materials, which imports this module
+    return fold.section(rects, line), (line, normal)
 
 
 def _plug_ink():
@@ -562,7 +596,7 @@ def rebuild(scene=None):
     face = _face_object(create=enabled(scene))
     if face is None:
         return
-    result = rectangles(scene)
+    result = rectangles(scene) if face_wanted(scene) else None
     mesh = face.data
     mesh.clear_geometry()
     if result is None:
@@ -584,11 +618,13 @@ def rebuild(scene=None):
         colors[:, :3] = np.repeat([shading.srgb_to_linear(rect[4]) for rect in rects], 4, axis=0)
     attribute = mesh.color_attributes.get(FACE_COLOR) or mesh.color_attributes.new(FACE_COLOR, "FLOAT_COLOR", "POINT")
     attribute.data.foreach_set("color", colors.ravel())
-    copper = np.repeat([rect[4] == section.COPPER for rect in rects], 4).astype(np.float32)
+    copper = np.repeat([rect[4] in section.METALS for rect in rects], 4).astype(np.float32)
+    own_metal = np.repeat([rect[4] in section.METALS and rect[4] != section.COPPER for rect in rects],
+                          4).astype(np.float32)
     weave = np.repeat([rect[4] in section.WOVEN for rect in rects], 4).astype(np.float32)
     milky = np.repeat([rect[4] == section.RESIN for rect in rects], 4).astype(np.float32)
     for name, values in ((FACE_ALONG, s.astype(np.float32)), (FACE_WEAVE, weave), (FACE_METAL, copper),
-                         (FACE_MILKY, milky)):
+                         (FACE_OWN_METAL, own_metal), (FACE_MILKY, milky)):
         found = mesh.attributes.get(name) or mesh.attributes.new(name, "FLOAT", "POINT")
         found.data.foreach_set("value", values)
     mesh.update()
@@ -598,8 +634,9 @@ def rebuild(scene=None):
 
 def invalidate():
     """The board changed: read it again for the next section (soon, once per burst of edits)."""
-    global _data, _edges
-    _data = _edges = None
+    global _data
+    _data = None
+    _edges.clear()
     if enabled() and not bpy.app.timers.is_registered(_rebuild_soon):
         bpy.app.timers.register(_rebuild_soon, first_interval=REBUILD_DELAY_S)
 
@@ -609,12 +646,59 @@ def _rebuild_soon():
     return None
 
 
+# --- The cut light --------------------------------------------------------------------------
+
+def _light_object(create):
+    light = bpy.data.objects.get(LIGHT)
+    if light is None and create:
+        data = bpy.data.lights.get(LIGHT) or bpy.data.lights.new(LIGHT, "AREA")
+        light = bpy.data.objects.new(LIGHT, data)
+        light["kileido_owned"] = 1
+        light.hide_select = True  # it follows the plane; a stray click must not move it
+        bpy.context.scene.collection.objects.link(light)
+    return light
+
+
+def place_light(scene=None):
+    """Put the cut light on the removed side, facing into the cut along the plane's normal,
+    over the middle of the board's section; hide it while it is off."""
+    scene = scene or bpy.context.scene
+    light = _light_object(create=light_wanted(scene))
+    if light is None:
+        return
+    on, origin, normal = _state(scene)
+    if not light_wanted(scene) or not on:
+        hide(light, True)
+        light.hide_render = True
+        return
+    from . import lighting  # lighting imports materials, which imports this module
+    width, depth, _, x, y = _extents()
+    size = math.hypot(width, depth) * SHEET_MARGIN
+    scale = size / lighting.SOFTBOX_SIZE_M
+    normal = Vector(normal)
+    flat = Vector((normal.x, normal.y, 0.0))
+    centre = Vector((x, y, origin[2]))
+    if flat.length > 1e-9:  # the point of the cut line nearest the board's middle
+        flat.normalize()
+        centre -= flat * (centre - Vector(origin)).dot(flat)
+    light.location = centre + normal * lighting.SOFTBOX_HEIGHT_M * scale
+    light.rotation_mode = "QUATERNION"
+    light.rotation_quaternion = normal.to_track_quat("Z", "Y")  # an area light shines along its -Z
+    data = light.data
+    data.type, data.shape, data.size = "AREA", "DISK", size
+    data.color = (1.0, 1.0, 1.0)
+    data.energy = lighting.softbox_energy(scale) * LIGHT_GAIN
+    hide(light, False)
+    light.hide_render = False
+
+
 # --- Switching ------------------------------------------------------------------------------
 
 def refresh():
     """The tick box, or a whole new board: bring materials, plane and face in line."""
-    global _pushed, _data, _edges
-    _data = _edges = None  # before ensure_plane: placing a new plane already draws the section
+    global _pushed, _data
+    _data = None  # before ensure_plane: placing a new plane already draws the section
+    _edges.clear()
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:

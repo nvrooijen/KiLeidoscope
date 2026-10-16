@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import transform
+from . import section, transform
 from .state import board
 
 # A display clearance on both board faces, outside the KiCad copper surfaces.
@@ -23,6 +23,8 @@ def copper_thickness(layer):
     """
     if layer not in ("F.Cu", "B.Cu") or not getattr(bpy.context.scene, "kileido_copper_3d", True):
         return 0.0
+    if layer == "B.Cu" and board.ims is not None:  # the metal base stands in for it (and is no copper layer)
+        return 0.0
     return float(board.layer_thickness.get(layer) or 0.0)
 
 
@@ -42,8 +44,18 @@ def copper_placement(layer, kind):
 
 
 def laminate_faces():
-    """z of the dielectric's top and bottom faces (inside the outer copper)."""
-    return board.thickness_m - copper_thickness("F.Cu"), copper_thickness("B.Cu")
+    """z of the dielectric's top and bottom faces (inside the outer copper; on an IMS
+    board, on the metal base)."""
+    bottom = board.ims.dielectric[0] if board.ims is not None else copper_thickness("B.Cu")
+    return board.thickness_m - copper_thickness("F.Cu"), bottom
+
+
+def ims_band():
+    """The IMS metal base as the cut and the laminate bands draw it: (z0, z1, sRGB), or None."""
+    if board.ims is None:
+        return None
+    metal = getattr(bpy.context.scene, "kileido_ims_metal", "AL")
+    return (*board.ims.base, section.BASE_METALS.get(metal, section.ALUMINUM))
 
 
 def mask_thickness(side):

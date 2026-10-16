@@ -17,6 +17,7 @@ import math
 import bpy
 
 from . import section, shading
+from .placement import ims_band
 from .state import board
 
 GROUP = "KLS_Laminate_v3"
@@ -173,7 +174,7 @@ def update_bands(tree=None):
     if tree is None or not board.heights:
         return
     _, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,
-                                    board.appearance.get("dielectrics"))
+                                    board.appearance.get("dielectrics"), base=ims_band())
     signature = (tree.as_pointer(), board.thickness_m, tuple(bands))
     if signature == _bands_set:
         return
@@ -212,11 +213,10 @@ def set_edges(material, realistic):
         stage = tree.nodes.new("ShaderNodeGroup")
         stage.name = EDGE_NODE
         stage.node_tree = group()
-        geometry = tree.nodes.new("ShaderNodeNewGeometry")
         position = tree.nodes.new("ShaderNodeSeparateXYZ")
-        tree.links.new(geometry.outputs["Position"], position.inputs[0])
+        tree.links.new(shading.flat_position(tree), position.inputs[0])
         normal = tree.nodes.new("ShaderNodeSeparateXYZ")
-        tree.links.new(geometry.outputs["Normal"], normal.inputs[0])
+        tree.links.new(shading.flat_normal(tree), normal.inputs[0])
         # Along a wall: position . (-ny, nx), the wall's horizontal tangent.
         along = shading.math_node(tree, "SUBTRACT", shading.math_node(tree, "MULTIPLY", position.outputs["Y"], normal.outputs["X"]),
                       shading.math_node(tree, "MULTIPLY", position.outputs["X"], normal.outputs["Y"]))

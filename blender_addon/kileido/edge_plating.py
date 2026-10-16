@@ -18,9 +18,11 @@ import numpy as np
 
 from . import cut
 from .objects import OUTLINE, owned_object, set_visible
+from .placement import copper_placement
 from .state import board
 
 OBJECT = "KLS edge plating"
+MILLED = "KLS {} milled edge"  # per outer layer: its copper's cut face where it crosses the outline
 THICKNESS_M = 25e-6  # a typical plated wall, as the panel's default Via wall
 WALL_GAP_M = 0.5e-6  # off the board's own wall, so the two never share a face
 JOIN_M = 1e-9  # stretches whose ends meet this closely continue one strip,
@@ -144,10 +146,53 @@ def _shell(points, normals, closed, top):
     return vertices, faces, smooth
 
 
+def _fill(mesh, vertices, faces, material, smooth=None):
+    """Replace the mesh's geometry and give it its one material."""
+    mesh.clear_geometry()
+    mesh.from_pydata(vertices, [], faces)
+    if smooth is not None:
+        mesh.polygons.foreach_set("use_smooth", np.array(smooth, bool))
+    mesh.update()
+    if mesh.materials:
+        mesh.materials[0] = material
+    else:
+        mesh.materials.append(material)
+
+
+def refresh_milled():
+    """Each outer layer's cut copper face on the edge: copper drawn past the outline is
+    see-through there (holes.clip_to_board), and this closes its end, the copper's own
+    height, facing out."""
+    from . import layers  # layers imports this module
+    found = cut.milled_edges()
+    for layer in ("F.Cu", "B.Cu"):
+        name, stretches = MILLED.format(layer), found.get(layer, ())
+        obj = board.collection.all_objects.get(name)
+        if not stretches:
+            if obj is not None:
+                obj.data.clear_geometry()
+                set_visible(obj, False)
+            continue
+        obj = owned_object(name)
+        z, thickness = copper_placement(layer, "pads")  # the highest of the layer's copper
+        z0, z1 = sorted((z, z + thickness))
+        vertices, faces = [], []
+        for start, end, outward in stretches:
+            first = len(vertices)
+            vertices += [(*start, z0), (*end, z0), (*end, z1), (*start, z1)]
+            run = np.asarray(end, np.float64) - np.asarray(start, np.float64)
+            quad = [first, first + 1, first + 2, first + 3]
+            faces.append(quad if run[1] * outward[0] - run[0] * outward[1] >= 0 else quad[::-1])  # facing out
+        _fill(obj.data, vertices, faces, board.materials["copper_cut"])
+        set_visible(obj, not layers.hidden(obj))
+        board.touched.add(obj.name)
+
+
 def refresh():
-    """Draw the plating for the board as it is now, or clear it."""
+    """Draw the plating for the board as it is now, or clear it; the cut copper faces too."""
     if board.collection is None or board.in_snapshot:
         return
+    refresh_milled()
     stretches = cut.plated_edges()
     obj = board.collection.all_objects.get(OBJECT)
     if not stretches:
@@ -164,15 +209,7 @@ def refresh():
         faces += [[index + len(vertices) for index in face] for face in part[1]]
         vertices += part[0]
         smooth += part[2]
-    mesh = obj.data
-    mesh.clear_geometry()
-    mesh.from_pydata(vertices, [], faces)
-    mesh.polygons.foreach_set("use_smooth", np.array(smooth, bool))
-    mesh.update()
-    if mesh.materials:
-        mesh.materials[0] = board.materials["plating"]
-    else:
-        mesh.materials.append(board.materials["plating"])
+    _fill(obj.data, vertices, faces, board.materials["plating_edge"], smooth)  # outside the outline: never clipped
     outline = board.collection.all_objects.get(OUTLINE)
     set_visible(obj, outline is None or not outline.hide_get())  # with the board solid
     board.touched.add(obj.name)

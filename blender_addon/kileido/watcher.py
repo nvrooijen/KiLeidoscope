@@ -131,6 +131,7 @@ class BoardWatcher:
         self._generation = 0
         self._board_path = ""
         self._source = ""
+        self._export = {}
         self._stop = None
         self._timer = self._drain  # one bound method: Blender timers compare by identity
 
@@ -138,14 +139,14 @@ class BoardWatcher:
         """Watch the board of a newly shown snapshot (no-op when it is unchanged)."""
         export = dict(export or {})
         source = export.get("path") or board_path
-        if board_path == self._board_path and source == self._source:
+        if board_path == self._board_path and source == self._source and export == self._export:
             if not source and board.board_name:
                 self.status = self.unavailable
             return
         if self._stop is not None:
             self._stop.set()
         self._generation += 1
-        self._board_path, self._source = board_path, source
+        self._board_path, self._source, self._export = board_path, source, export
         if not source:  # an unsaved board still has the bridge's live copy
             self._stop = None
             self.status = self.unavailable
@@ -162,6 +163,7 @@ class BoardWatcher:
             self._stop.set()
         self._stop = None
         self._board_path = self._source = ""
+        self._export = {}
         self._generation += 1
         if bpy.app.timers.is_registered(self._timer):
             bpy.app.timers.unregister(self._timer)

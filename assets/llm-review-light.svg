@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 560" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#818B98"/>
+    </marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d9734e"/>
+    </marker>
+    <marker id="p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8e6fe6"/>
+    </marker>
+    <marker id="t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6f97d6"/>
+    </marker>
+    <style>
+      .lbl { font-size: 11px; fill: #59636E; }
+      .plbl { font-size: 11px; fill: #8e6fe6; }
+      .tlbl { font-size: 11px; fill: #6f97d6; }
+      .arr { stroke: #818B98; stroke-width: 1.5; fill: none; }
+      .click { stroke: #d9734e; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+      .llm { stroke: #8e6fe6; stroke-width: 1.8; fill: none; }
+      .hand { stroke: #8e6fe6; stroke-width: 1.8; fill: none; stroke-dasharray: 2 4; }
+      .foot { font-size: 11px; fill: #59636E; }
+    </style>
+  </defs>
+
+  <rect width="850" height="560" fill="#FFFFFF"/>
+
+  <!-- KiCad -->
+  <rect x="20" y="20" width="130" height="110" rx="10" fill="#2f4cb0"/>
+  <text x="85" y="68" fill="#fff" font-size="15" font-weight="700">KiCad 10</text>
+  <text x="85" y="90" fill="#dfe5ff" font-size="12">IPC API server</text>
+
+  <!-- Bridge -->
+  <rect x="270" y="20" width="190" height="330" rx="10" fill="#cdebc4"/>
+  <text x="365" y="50" fill="#14261a" font-size="15" font-weight="700">KiLeidoscope</text>
+  <text x="365" y="68" fill="#14261a" font-size="15" font-weight="700">bridge</text>
+  <text x="365" y="86" fill="#3d7a32" font-size="11">in KiCad's Python</text>
+
+  <rect x="282" y="100" width="166" height="80" rx="8" fill="#b6dca8" stroke="#3d7a32" stroke-width="1.5"/>
+  <text x="365" y="121" fill="#14261a" font-size="13" font-weight="700">Findings</text>
+  <text x="365" y="139" fill="#3d7a32" font-size="11">read the file as data,</text>
+  <text x="365" y="153" fill="#3d7a32" font-size="11">find every name on the board,</text>
+  <text x="365" y="167" fill="#3d7a32" font-size="11">measure, verdict</text>
+
+  <rect x="282" y="194" width="166" height="56" rx="8" fill="#b6dca8" stroke="#3d7a32" stroke-width="1.5"/>
+  <text x="365" y="215" fill="#14261a" font-size="13" font-weight="700">KiCad DRC</text>
+  <text x="365" y="234" fill="#3d7a32" font-size="11">the report as findings</text>
+
+  <rect x="282" y="264" width="166" height="74" rx="8" fill="#b6dca8" stroke="#8e6fe6" stroke-width="2"/>
+  <text x="365" y="286" fill="#14261a" font-size="13" font-weight="700">LLM review</text>
+  <text x="365" y="303" fill="#4b3a99" font-size="11">the prompt, the digest,</text>
+  <text x="365" y="317" fill="#4b3a99" font-size="11">the checks; rules applied,</text>
+  <text x="365" y="331" fill="#4b3a99" font-size="11">suggestions checked</text>
+
+  <!-- Blender -->
+  <rect x="580" y="20" width="160" height="110" rx="10" fill="#e8801a"/>
+  <text x="660" y="46" fill="#fff" font-size="15" font-weight="700">Blender add-on</text>
+  <text x="660" y="67" fill="#fff3e6" font-size="12">DRC tab, LLM tab</text>
+  <text x="660" y="85" fill="#ffe6cc" font-size="11">list by check, markers,</text>
+  <text x="660" y="100" fill="#ffe6cc" font-size="11">the finding drawn in 3D,</text>
+  <text x="660" y="115" fill="#ffe6cc" font-size="11">prompt box, progress</text>
+
+  <!-- KiCad <-> bridge -->
+  <line class="arr" x1="150" y1="62" x2="268" y2="62" marker-end="url(#g)"/>
+  <text class="lbl" x="210" y="44">geometry reads</text>
+  <text class="lbl" x="210" y="57">every 200 ms</text>
+  <line class="click" x1="270" y1="104" x2="152" y2="104" marker-end="url(#r)"/>
+  <text class="lbl" x="210" y="99">select in KiCad</text>
+  <text class="lbl" x="210" y="120">(the only write)</text>
+
+  <!-- bridge <-> Blender -->
+  <line class="arr" x1="460" y1="62" x2="578" y2="62" marker-end="url(#g)"/>
+  <text class="lbl" x="520" y="44">one findings frame,</text>
+  <text class="lbl" x="520" y="57">local TCP</text>
+  <line class="click" x1="580" y1="104" x2="462" y2="104" marker-end="url(#r)"/>
+  <text class="lbl" x="520" y="99">select, confirm, dismiss</text>
+  <text class="lbl" x="520" y="120">KiCad DRC, Copy prompt</text>
+
+  <!-- kicad-cli: checks the frozen copies in the run folders, its report read by the bridge -->
+  <rect x="580" y="196" width="160" height="88" rx="10" fill="#2f4cb0"/>
+  <text x="660" y="220" fill="#fff" font-size="14" font-weight="700">kicad-cli</text>
+  <text x="660" y="239" fill="#dfe5ff" font-size="11">pcb drc on a frozen copy,</text>
+  <text x="660" y="253" fill="#dfe5ff" font-size="11">and on a copy with the</text>
+  <text x="660" y="267" fill="#dfe5ff" font-size="11">suggestions written in</text>
+  <line class="arr" x1="578" y1="214" x2="462" y2="214" marker-end="url(#g)"/>
+  <text class="lbl" x="520" y="204">DRC report</text>
+  <path class="arr" d="M460,412 H520 V250 H578" marker-end="url(#g)"/>
+  <text class="lbl" x="528" y="335" text-anchor="start">board</text>
+  <text class="lbl" x="528" y="348" text-anchor="start">copy</text>
+
+  <!-- the project folder: every writer lands here -->
+  <rect x="270" y="390" width="190" height="124" rx="10" fill="#cdebc4"/>
+  <text x="365" y="412" fill="#14261a" font-size="14" font-weight="700">.kileidoscope/</text>
+  <text x="365" y="430" fill="#3d7a32" font-size="11">in the project, beside the board:</text>
+  <text x="365" y="444" fill="#3d7a32" font-size="11">the only place the bridge writes</text>
+  <text x="365" y="466" fill="#14261a" font-size="11">the frozen board copies,</text>
+  <text x="365" y="481" fill="#14261a" font-size="11">the findings files, your marks</text>
+
+  <!-- bridge <-> folder -->
+  <line class="arr" x1="320" y1="388" x2="320" y2="352" marker-end="url(#g)"/>
+  <text class="lbl" x="310" y="366" text-anchor="end">watches the</text>
+  <text class="lbl" x="310" y="380" text-anchor="end">findings files</text>
+  <line class="arr" x1="410" y1="352" x2="410" y2="388" marker-end="url(#g)"/>
+  <text class="lbl" x="420" y="366" text-anchor="start">writes the runs,</text>
+  <text class="lbl" x="420" y="380" text-anchor="start">DRC findings, marks</text>
+
+  <!-- any tool or script: writes the same format -->
+  <rect x="20" y="200" width="130" height="72" rx="10" fill="#3c4043"/>
+  <text x="85" y="226" fill="#fff" font-size="14" font-weight="700">Any tool or script</text>
+  <text x="85" y="245" fill="#e8eaed" font-size="11">writes a findings file</text>
+  <text x="85" y="260" fill="#bdc1c6" font-size="10">DRC exporters, your own</text>
+  <path d="M150,236 H220 V458 H268" fill="none" stroke="#6f97d6" stroke-width="1.6" marker-end="url(#t)"/>
+  <text class="tlbl" x="214" y="452" text-anchor="end">kls-findings.json</text>
+
+  <!-- the LLM: your own tool, reached only by your clipboard -->
+  <rect x="580" y="390" width="160" height="124" rx="10" fill="#6a4fc9"/>
+  <text x="660" y="416" fill="#fff" font-size="15" font-weight="700">LLM</text>
+  <text x="660" y="434" fill="#e9e2ff" font-size="11">your own tool, any model</text>
+  <text x="660" y="454" fill="#e9e2ff" font-size="11">reads request.md, the digest,</text>
+  <text x="660" y="468" fill="#e9e2ff" font-size="11">the board copy</text>
+  <text x="660" y="488" fill="#e9e2ff" font-size="11">writes the findings file</text>
+  <text x="660" y="502" fill="#e9e2ff" font-size="11">and its progress</text>
+  <path class="llm" d="M578,470 H462" marker-start="url(#p)" marker-end="url(#p)"/>
+  <text class="plbl" x="520" y="460">the run folder out</text>
+  <text class="plbl" x="520" y="486">the answer in</text>
+
+  <!-- the prompt: from Blender's clipboard, pasted by you -->
+  <path class="hand" d="M740,75 H806 V334"/>
+  <path class="hand" d="M806,386 V452 H742" marker-end="url(#p)"/>
+  <text class="plbl" x="806" y="355">the prompt,</text>
+  <text class="plbl" x="806" y="370">pasted by you</text>
+
+  <!-- legend and footer -->
+  <line class="arr" x1="24" y1="536" x2="54" y2="536"/>
+  <text class="foot" x="60" y="540" text-anchor="start">findings toward Blender</text>
+  <line class="click" x1="200" y1="536" x2="230" y2="536"/>
+  <text class="foot" x="236" y="540" text-anchor="start">clicks from Blender</text>
+  <line class="llm" x1="356" y1="536" x2="386" y2="536"/>
+  <text class="foot" x="392" y="540" text-anchor="start">the LLM's files</text>
+  <line class="hand" x1="494" y1="536" x2="524" y2="536"/>
+  <text class="foot" x="530" y="540" text-anchor="start">carried by you</text>
+  <text class="foot" x="415" y="556">Files only. Nothing talks to the LLM but you; nothing writes to KiCad but Select.</text>
+</svg>

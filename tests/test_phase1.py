@@ -9,7 +9,8 @@ from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape
 
 from kileido_bridge.geometry import OUTLINE_PROBLEM, sample_arc, sample_bezier
 from kileido_bridge.kicad_reader import BoardReader, read_snapshot
-from kileido_bridge.model import to_jsonable
+from kileido_bridge.model import snapshot_from_jsonable, to_jsonable
+from kileido_bridge.protocol import FrameDecoder, footprints_message
 
 
 def point(x, y):
@@ -38,6 +39,8 @@ class FakeBoard:
         self.footprints = []
         self.zones = []
         self.shapes = []
+        self.texts = []
+        self.layer_names = {}  # user layers: canonical -> the board's name for it
         self.stackup = NS(layers=[])
         self.pad_polygons = {}
         self.outdated = {}  # pad id -> the copy KiCad answers id lookups with (after an undo)
@@ -67,6 +70,9 @@ class FakeBoard:
     def get_shapes(self):
         return self.shapes
 
+    def get_text(self):
+        return self.texts
+
     def get_stackup(self):
         return self.stackup
 
@@ -75,7 +81,7 @@ class FakeBoard:
 
     def get_layer_name(self, layer):
         return {BoardLayer.BL_F_Cu: "F.Cu", BoardLayer.BL_B_Cu: "B.Cu",
-                BoardLayer.BL_Edge_Cuts: "Edge.Cuts"}[layer]
+                BoardLayer.BL_Edge_Cuts: "Edge.Cuts", **self.layer_names}[layer]
 
     def get_items_by_id(self, ids):
         by_id = {pad.id.value: pad for pad in self.pads} | self.outdated
@@ -120,9 +126,10 @@ class FakePad:
 
 
 def footprint(uid="f1", pads=()):
-    return NS(id=item_id(uid), reference_field=NS(text=NS(value="J1")),
-              position=point(0, 0), orientation=NS(to_radians=lambda: 0.0),
-              layer=BoardLayer.BL_F_Cu, definition=NS(pads=pads, models=[]))
+    return NS(id=item_id(uid), reference_field=NS(text=NS(value="J1")), value_field=NS(text=NS(value="SMA")),
+              position=point(0, 0), orientation=NS(to_radians=lambda: 0.0), layer=BoardLayer.BL_F_Cu,
+              definition=NS(pads=pads, models=[], id=NS(library="Connector_Coaxial", name="SMA_Edge")),
+              attributes=NS(do_not_populate=False))
 
 
 def test_empty_board_and_missing_stackup():
@@ -274,6 +281,22 @@ def test_pad_polygon_and_footprint_link():
     assert isinstance(serial["pads"][0]["pos"][0], int)
 
 
+def test_do_not_populate_reaches_blender():
+    board = FakeBoard()
+    fitted, dnp = footprint("f1"), footprint("f2")
+    dnp.attributes.do_not_populate = True
+    board.footprints = [fitted, dnp]
+    snapshot = read_snapshot(board)
+    assert [item.dnp for item in snapshot.footprints] == [False, True]
+    assert snapshot_from_jsonable(to_jsonable(snapshot)) == snapshot
+    older = to_jsonable(snapshot)
+    for item in older["footprints"]:
+        del item["dnp"]  # a dump from before the flag
+    assert not any(item.dnp for item in snapshot_from_jsonable(older).footprints)
+    (header, _), = FrameDecoder().feed(footprints_message(snapshot, 1))
+    assert [record["dnp"] for record in header["footprints"]] == [False, True]
+
+
 def test_oval_drill_shape_and_padstack_angle_are_read():
     board = FakeBoard()
     item = pad("slot")
@@ -358,6 +381,35 @@ def test_outline_warnings_name_the_problem_and_where():
     assert len(warnings) == 1 and "Edge.Cuts outlines cross each other near (10.00, " in warnings[0]
 
 
+def test_outline_drawn_inside_a_footprint():
+    """Edge.Cuts kept in a footprint (multi-board alignment) is part of the outline, as in
+    KiCad; moving that footprint moves the outline, moving another part does not resend it."""
+    square = [(0, 0), (10_000_000, 0), (10_000_000, 10_000_000), (0, 10_000_000)]
+    frame = footprint("frame")
+    frame.definition.shapes = _edges(*square)
+    part = footprint("part")
+    board = FakeBoard()
+    board.footprints = [frame, part]
+    reader = BoardReader(board)
+    first = reader.poll(full=True)
+    assert [w for w in first.snapshot.warnings if w.startswith(OUTLINE_PROBLEM)] == []
+    assert set(first.snapshot.outline.polygons[0][0]) == set(square)
+
+    part.position = point(2_000_000, 0)
+    assert ("", "outline") not in reader.poll(full=True).dirty
+
+    frame.definition.shapes = _edges(*[(x + 1_000_000, y) for x, y in square])
+    moved = reader.poll(full=True)
+    assert ("", "outline") in moved.dirty
+    assert min(x for x, _ in moved.snapshot.outline.polygons[0][0]) == 1_000_000
+
+    # Half the outline on the board, half in the footprint: one closed ring.
+    sides = _edges(*square)
+    board.shapes, frame.definition.shapes = sides[:2], sides[2:]
+    assert len(read_snapshot(board).outline.polygons) == 1
+    assert _outline_warnings(board) == []
+
+
 def _copper_shape(layer=BoardLayer.BL_F_Cu, width=0, filled=False, shape_id="g", **geometry):
     return NS(id=item_id(shape_id), layer=layer, net=NS(name="GND"),
               attributes=NS(stroke=NS(width=width), fill=NS(filled=filled)), **geometry)
@@ -395,3 +447,45 @@ def test_copper_graphics_are_read_as_filled_copper():
     stadium = graphics["line"].polygons[0][0]  # 3 mm long, 0.25 mm wide, round ends
     assert abs(_area(stadium) / (3_000_000 * 250_000 + np.pi * 125_000 ** 2) - 1) < 0.01
     assert graphics["tie"].polygons == ((tuple(bridge),),)
+
+
+def test_a_drilled_pad_with_copper_only_on_b_cu_keeps_its_hole():
+    """Every pad drill rides on the F.Cu pads frame. A pad KiCad reports with copper only
+    on B.Cu (live, an SMD pad just turned through-hole) still goes there."""
+    from kileido_bridge.model import Pad
+    from kileido_bridge.protocol import fill_message
+    square = (((0, 0), (1_000_000, 0), (1_000_000, 1_000_000), (0, 1_000_000)),)
+    pad = Pad("p", "f", "1", "", (500_000, 500_000), (400_000, 400_000), {"B.Cu": (square,)}, "round", 0.0)
+    smd = Pad("s", "f", "2", "", (0, 0), None, {"B.Cu": (square,)})
+    assert pad.layers == ("F.Cu", "B.Cu") and smd.layers == ("B.Cu",)
+    snapshot = read_snapshot(FakeBoard())
+    snapshot = type(snapshot)(**{**snapshot.__dict__, "pads": (pad, smd)})
+    (header, arrays), = FrameDecoder().feed(fill_message(snapshot, "F.Cu", "pads", 1))
+    assert header["ids"] == ["p"] and len(arrays["drill"]) == 1
+    assert arrays["drill_plated"][0] == 1  # it has copper (on B.Cu): plated
+
+
+def test_selected_assembly_variant_is_read_every_poll():
+    """KiCad keeps the selected variant in memory only; `${VARIANT}` expands to its
+    name ("" for the default). KiCad 9 leaves the variable unexpanded: also default."""
+    board = FakeBoard()
+    board.variant = "5V Output"
+    board.expand_text_variables = lambda text: text.replace("${VARIANT}", board.variant)
+    reader = BoardReader(board)
+    snapshot = reader.poll().snapshot
+    assert snapshot.variant == "5V Output"
+    board.variant = ""
+    assert reader.poll().snapshot.variant == ""  # a fast poll sees the switch too
+    board.expand_text_variables = lambda text: text  # KiCad 9: no such variable
+    assert reader.poll().snapshot.variant == ""
+
+    def unsupported(text):
+        raise RuntimeError("unhandled message")  # a KiCad without the call keeps the link
+
+    board.expand_text_variables = unsupported
+    assert reader.poll().snapshot.variant == ""
+    assert read_snapshot(FakeBoard()).variant == ""  # no expand_text_variables at all
+    assert snapshot_from_jsonable(to_jsonable(snapshot)).variant == "5V Output"
+    older = to_jsonable(snapshot)
+    del older["variant"]  # a dump from before variants
+    assert snapshot_from_jsonable(older).variant == ""

@@ -77,6 +77,31 @@ def test_stack_layout_places_copper_and_colours_each_dielectric():
     assert {color for _, _, color in unknown} == {section.CORE}
 
 
+def test_ims_base_is_metal_under_a_chalky_dielectric():
+    """A 1.5 mm aluminum base in B.Cu's place, 0.1 mm dielectric, 35 um F.Cu (ims.stack's heights)."""
+    stack = [STACK[0], {"name": "Dielectric 1", "type": "dielectric", "thickness_nm": 100_000}, STACK[-1]]
+    heights, thickness = {"B.Cu": 0.0, "F.Cu": 1635 * UM}, {"F.Cu": 35 * UM, "B.Cu": 1500 * UM}
+    copper, bands = section.stack_layout(heights, thickness, stack, SAVED[:1], base=(0.0, 1500 * UM, section.ALUMINUM))
+    assert {name: tuple(round(z / UM) for z in zr) for name, zr in copper.items()} == {
+        "B.Cu": (0, 0), "F.Cu": (1600, 1635)}  # the base is no B.Cu copper
+    assert [(round(z0 / UM), round(z1 / UM), color) for z0, z1, color in bands] == [
+        (0, 1500, section.ALUMINUM), (1500, 1600, section.IMS_DIELECTRIC)]
+    assert section.IMS_DIELECTRIC not in section.WOVEN and section.ALUMINUM in section.METALS
+    # Cut across the board: aluminum below, dielectric above, nothing drawn twice.
+    rects = section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), {}, copper, bands)
+    assert sorted((round(r[2] / UM), round(r[3] / UM), r[4]) for r in rects) == [
+        (0, 1500, section.ALUMINUM), (1500, 1600, section.IMS_DIELECTRIC)]
+    # A through via: plated barrel down through the base, but no B.Cu land the base's height.
+    vias = {"xy": np.array([(0.0, 0.0)]), "diameter": np.array([0.6 * MM]), "drill": np.array([0.3 * MM]),
+            "top": ["F.Cu"], "bottom": ["B.Cu"], "core_top": [False], "core_bottom": [False],
+            "fill_copper": [False], "capped": [False], "tent_top": [False], "tent_bottom": [False],
+            "plug_ink": [False]}
+    rects = section.cross_section(ALONG_X, square(-20 * MM, -15 * MM, 20 * MM, 15 * MM), {}, copper, bands,
+                                  vias=vias, plating=25 * UM)
+    in_base = [r for r in rects if r[4] == section.COPPER and r[2] < 1500 * UM]  # reaching into the base
+    assert in_base and all(round((r[1] - r[0]) / UM) == 25 for r in in_base), in_base  # only the barrel walls
+
+
 def _board(plug, capped=False, cap_plating=0.0, halves=(True, True), tented=False, ink=False):
     """40 x 30 mm board; In1 poured over all of it; a 0.5 mm F.Cu track from x = -5 to 5;
     a blind via F.Cu-In1 at x = 10 mm (0.6 mm land, 0.3 mm drill). plug: None (open),
@@ -196,6 +221,71 @@ def test_cross_section_shows_the_plated_edge_as_a_strip_outside_the_board():
     assert color_at(rects, -20 * MM - 10 * UM, 1530 * UM) == section.COPPER  # the board's whole height
     assert color_at(rects, -20 * MM - 30 * UM, 800 * UM) is None  # 25 um thick
     assert color_at(rects, 20 * MM + 10 * UM, 800 * UM) is None  # the right edge is not plated
+
+
+def test_copper_and_half_holes_past_the_outline_are_milled_away():
+    """A castellated pad: F.Cu from x = 18 to 22 mm over the right edge (x = 20 mm), and a
+    1 mm plated drill centred on the edge. The fab mills both back to the outline."""
+    outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
+    copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
+    layers = {"F.Cu": section.capsules(ALONG_X, [(18 * MM, 0)], [(22 * MM, 0)], 0.5 * MM)}
+    drills = [(20 * MM, 0.0, 1 * MM, 1 * MM, 0.0, 1)]
+    rects = section.cross_section(ALONG_X, outline, layers, copper, bands, pad_drills=drills, plating=25 * UM)
+    pad_z = sum(copper["F.Cu"]) / 2
+    assert color_at(rects, 19 * MM, pad_z) == section.COPPER  # the pad on the board
+    assert color_at(rects, 21 * MM, pad_z) is None  # its overhang: milled away
+    assert color_at(rects, 19.5 * MM + 10 * UM, 800 * UM) == section.COPPER  # the half hole's wall, on the board
+    assert color_at(rects, 20.5 * MM - 10 * UM, 800 * UM) is None  # its outer half: milled away
+    assert max(r[1] for r in rects) <= 20 * MM + 1e-12  # nothing past the edge
+    # Without an outline nothing is clipped (the section has no board to clip to).
+    loose = section.cross_section(ALONG_X, None, layers, copper, bands, pad_drills=drills, plating=25 * UM)
+    assert color_at(loose, 21 * MM, pad_z) == section.COPPER
+
+
+def test_a_half_hole_in_a_notched_outline_keeps_its_wall():
+    """The outline follows the drill: a 0.5 mm semicircle notch in the right edge, the
+    plated 1 mm drill centred on it. The wall stands on the outline and keeps its plating."""
+    arc = [(20 * MM - 0.5 * MM * np.sin(a), -0.5 * MM * np.cos(a)) for a in np.linspace(0, np.pi, 33)]
+    points = np.array([(-20 * MM, -15 * MM), (20 * MM, -15 * MM), (20 * MM, -0.5 * MM), *arc[1:-1],
+                       (20 * MM, 0.5 * MM), (20 * MM, 15 * MM), (-20 * MM, 15 * MM)])
+    outline = points, np.roll(points, -1, axis=0), np.zeros(len(points), int)
+    copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
+    drills = [(20 * MM, 0.0, 1 * MM, 1 * MM, 0.0, 1)]
+    rects = section.cross_section(ALONG_X, outline, {}, copper, bands, pad_drills=drills, plating=25 * UM)
+    assert color_at(rects, 19.5 * MM + 10 * UM, 800 * UM) == section.COPPER  # the wall, on the notch
+    assert color_at(rects, 19.5 * MM + 40 * UM, 800 * UM) is None  # the notch itself: air
+    assert color_at(rects, 19 * MM, 800 * UM) not in (None, section.COPPER)  # laminate
+
+
+def test_a_plated_edge_stays_outside_while_copper_is_clipped():
+    outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
+    stretches = section.plated_edges(outline, {"rings": [square(-21 * MM, -15 * MM, 0, 15 * MM)]},
+                                     {"rings": [square(-21 * MM, -15 * MM, 10 * MM, 15 * MM)]})
+    copper, bands = section.stack_layout(HEIGHTS, THICKNESS, STACK, SAVED)
+    layers = {"F.Cu": section.rings(ALONG_X, *square(-21 * MM, -15 * MM, 0, 15 * MM))}  # 1 mm past the left edge
+    rects = section.cross_section(ALONG_X, outline, layers, copper, bands, plated_edges=stretches, edge_plating=25 * UM)
+    pad_z = sum(copper["F.Cu"]) / 2
+    assert color_at(rects, -20 * MM - 10 * UM, 800 * UM) == section.COPPER  # the edge plating, outside
+    assert color_at(rects, -20 * MM - 500 * UM, pad_z) is None  # the pour's overhang: milled away
+    assert color_at(rects, -19 * MM, pad_z) == section.COPPER
+
+
+def test_milled_edges_find_copper_crossing_the_outline_and_skip_half_holes():
+    """A castellated pad over the right edge (x = 20 mm) leaves a cut copper face there,
+    minus its half hole; a pad stopping short of the edge leaves none."""
+    outline = square(-20 * MM, -15 * MM, 20 * MM, 15 * MM)
+    over = {"rings": [square(18 * MM, -1 * MM, 22 * MM, 1 * MM)]}
+    found = section.milled_edges(outline, over)
+    assert len(found) == 1
+    start, end, outward = found[0]
+    assert np.allclose(outward, (1, 0))
+    assert np.allclose(sorted([start[1], end[1]]), [-1 * MM, 1 * MM], atol=1e-9)
+    assert np.allclose([start[0], end[0]], 20 * MM)
+    drill = [(20 * MM, 0.0, 1 * MM, 1 * MM, 0.0, 1)]
+    spans = sorted(sorted((s[1], e[1])) for s, e, _ in section.milled_edges(outline, over, drill))
+    assert len(spans) == 2 and spans[0][1] < -0.45 * MM and spans[1][0] > 0.45 * MM  # the hole stays open
+    short = {"rings": [square(18 * MM, -1 * MM, 19.99 * MM, 1 * MM)]}
+    assert section.milled_edges(outline, short) == []
 
 
 ALL_LAYERS = {"F.Cu", "In1.Cu", "In2.Cu", "B.Cu"}

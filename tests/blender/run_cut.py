@@ -303,7 +303,7 @@ def main():
         no_openings.pixels.foreach_set(np.zeros(4 * 4 * 4, np.float32))  # alpha 0: the mask covers everything
         for side in "FB":
             colors.set_mask_image(side, no_openings, (-0.03, -0.02, 0.03, 0.02))
-        scene.kileido_color_mode = "FAB"  # flat: the rendered colours are the materials' own
+        scene.kileido_color_mode = "FAB"  # flat (Shaded: lit head-on by a softbox): the materials' own colours
         rows = [f"kileido_show_{row}" for row in ("board", "vias", "F_Cu", "In1_Cu", "In2_Cu", "B_Cu")]
         for row in rows:
             setattr(scene, row, False)
@@ -549,10 +549,47 @@ def main():
         assert not principled.inputs["Base Color"].is_linked
         assert section_nodes["KLS realistic"].outputs[0].default_value == 0.0  # flat, like the board's copper
 
+        # Seeing into the cut: the section face can be hidden, and a light shines into the cut
+        # from the removed side, along the plane's normal (and follows a flip).
+        scene.kileido_cut_face = False
+        assert face.hide_get() and not len(face.data.polygons)
+        scene.kileido_cut_face = True
+        assert not face.hide_get() and len(face.data.polygons) > 10
+        assert bpy.data.objects.get(cut.LIGHT) is None
+        for flip in (False, True):
+            scene.kileido_cut_flip = flip
+            scene.kileido_cut_light = True
+            light = bpy.data.objects[cut.LIGHT]
+            bpy.context.view_layer.update()
+            _, origin, normal = cut._state(scene)
+            shines = light.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))  # an area light's
+            assert (light.location - Vector(origin)).dot(Vector(normal)) > 0, flip  # on the removed side
+            assert shines.dot(Vector(normal)) < -0.999, (flip, shines, normal)  # into the cut
+            assert not light.hide_render and not light.hide_get() and light.data.energy > 0
+            scene.kileido_cut_light = False
+            assert light.hide_render and light.hide_get()
+        scene.kileido_cut_flip = False
+
+        # Shaded: Board stackup and PCB Editor colours lit (by the softboxes and the cut
+        # light) instead of flat, in the same colours; off, flat as KiCad draws them.
+        copper = board.materials["copper:F.Cu"]
+        lit = copper.node_tree.nodes[shading.LIT_FLAT]
+        emission = next(n for n in copper.node_tree.nodes if n.type == "EMISSION")
+        assert scene.kileido_shaded and lit.outputs[0].is_linked and not emission.outputs[0].is_linked
+        assert (lit.inputs["Color"].links[0].from_socket == emission.inputs["Color"].links[0].from_socket
+                if emission.inputs["Color"].is_linked else
+                np.allclose(lit.inputs["Color"].default_value, emission.inputs["Color"].default_value))
+        scene.kileido_shaded = False
+        assert emission.outputs[0].is_linked and not lit.outputs[0].is_linked
+        scene.kileido_shaded = True
+
         # Off: stages gone, plane and face hidden, nothing drawn.
+        scene.kileido_cut_light = True
         scene.kileido_cut = False
         assert all(cut.NODE not in m.node_tree.nodes for m in cut.materials() if m.node_tree)
         assert plane.hide_get() and face.hide_get() and not len(face.data.polygons)
+        assert bpy.data.objects[cut.LIGHT].hide_render  # no cut, no cut light
+        scene.kileido_cut_light = False
         print("KLS_CUT_OK=" + json.dumps({"renders": str(OUT)}))
     finally:
         kileido.unregister()

@@ -95,7 +95,9 @@ def status():
 
 
 def follow_board(board_path, export=None):
-    _watcher.follow(board_path, export)
+    """The overlays plot every footprint whatever the assembly variant, so a variant
+    switch (new export settings) does not restart this watch."""
+    _watcher.follow(board_path, {key: value for key, value in (export or {}).items() if key != "variant"})
 
 
 def stop_following():
@@ -157,7 +159,7 @@ def _layer_color(layer):
 def recolor():
     """Colour, opacity and height of every overlay for the current colour mode (and,
     through `set_layer_visible`, where the silkscreen is drawn)."""
-    core = board.appearance.get("viewer", {}).get("core") or materials.FALLBACK_CORE
+    core = materials.core_color()
     for layer, _, default in LAYERS:
         material = bpy.data.materials.get(material_name(layer))
         if material is None:
@@ -340,7 +342,7 @@ def _print_on_mask(material, side):
         base.name = materials.BASE_COLOR
         emission = next(node for node in nodes if node.type == "EMISSION")
         base.outputs[0].default_value = emission.inputs["Color"].default_value[:]
-    coordinates = next(node for node in nodes if node.type == "TEX_COORD").outputs["Object"]
+    coordinates = shading.flat_position(material.node_tree)  # the mask plot's own (_mapping)
     materials.print_silk(material, (side,), base.outputs[0], shading.sharp_alpha(material, texture), coordinates)
 
 
@@ -529,8 +531,7 @@ def _mapping(material, bounds):
     texture = next(node for node in tree.nodes if node.type == "TEX_IMAGE")
     texture.extension = "CLIP"
     if tree.nodes.get("KLS plot offset") is None:
-        shading.project_plot(tree, tree.nodes.new("ShaderNodeTexCoord").outputs["Object"], texture,
-                             "KLS plot offset", "KLS plot scale")
+        shading.project_plot(tree, shading.flat_position(tree), texture, "KLS plot offset", "KLS plot scale")
     xmin, ymin, xmax, ymax = bounds
     shading.set_plot_rectangle(tree, "KLS plot offset", "KLS plot scale", xmin, ymin, xmax - xmin, ymax - ymin)
 

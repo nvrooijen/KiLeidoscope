@@ -22,6 +22,22 @@ class BoardState:
         self.thickness_m = 0.0
         self.layer_names = {}  # canonical layer -> KiCad's display name ("F.SilkS" -> "Top Overlay")
         self.stackup = []  # KiCad's stackup top to bottom: {"name", "type", "thickness_nm", "material", ...}
+        self.ims = None  # ims.Stack while IMS mode puts a metal base under the board (the heights above are its)
+        self.ims_warnings = []  # what would short to the metal base (apply.refresh_ims_warnings)
+        self.flex = {}  # flex mode's panel content from the bridge (kileido_bridge.flex_checks.report)
+        self.fold_findings = []  # what runs into what at the end of a folding step (fold.check_steps)
+        # The DRC and LLM columns (findings.py): the bridge's `findings` payload, and the one finding drawn.
+        self.findings = {}  # {"status", "folder", "drc", "sources": {"drc": ..., "file": ...}}
+        self.findings_shown = ("", "")  # (source, key) of the finding drawn, ("", "") for none
+        self.findings_isolate = False  # the drawn finding wants X-ray (findings_draw.xray_wanted): it fades the
+        # rest while the box is ticked, even with nothing lit
+        self.xray_for_finding = None  # (source, key) X-ray was last turned on for (findings_draw._follow_xray)
+        self.xray_ticked = False  # the box was ticked for it, so it is unticked when the finding goes
+        self.finding_severity = "error"  # its colour (materials.FINDING_COLORS)
+        self.layer_filter = None  # copper layers its `layers` draws leave shown (layers.set_filter); None: all
+        self.prompt_wait = None  # Copy prompt pressed: the run shown then ("" none), findings.MAKING once the
+        # bridge is making it; None: not asked
+        self.prompt_copied = ""  # the run whose prompt went to the clipboard
 
         # Shared display resources.
         self.groups = {}  # Geometry Nodes groups by role (nodes.ensure_all)
@@ -43,9 +59,11 @@ class BoardState:
         # Component models bound to footprints (models.bind_root).
         self.model_bound = set()
         self.model_objects_by_fp = {}
+        self.component_names = {}  # components.key_of -> object name (components.find)
+        self.component_names_of = 0  # the collection (pointer) that index is of
 
         # KiCad's selection (protocol.selection_message).
-        self.highlight = {"selected": set(), "pair": set()}
+        self.highlight = {"selected": set(), "pair": set(), "finding": set()}  # finding: findings_draw
         self.highlight_components = {"footprints": set(), "pads": set()}
         # Dynamic phase of differential pairs (phase.py): each pair's last frame, by key.
         self.phase = {}
@@ -63,19 +81,21 @@ class BoardState:
             log(f"board state reset; {len(self.model_bound)} bound models forgotten")
         self.__init__()
 
-    def drop_if_freed(self, where):
+    def drop_if_freed(self, where, resync=True):
         """True after a collection freed under us (undo, file load) was forgotten: the board
-        state starts over and a live bridge sends the board again."""
+        state starts over and a live bridge sends the board again (`resync`; not needed
+        when a full snapshot is what just arrived)."""
         if self.collection is None:
             return False
         try:
             self.collection.name
         except ReferenceError:
-            log(f"the board's collection was freed ({where}); state reset, resync requested "
-                f"({len(self.model_bound)} bound models lost)")
+            log(f"the board's collection was freed ({where}); state reset"
+                f"{', resync requested' if resync else ''} ({len(self.model_bound)} bound models lost)")
             self.reset()
-            from . import live
-            live.request_resync()
+            if resync:
+                from . import live
+                live.request_resync()
             return True
         return False
 

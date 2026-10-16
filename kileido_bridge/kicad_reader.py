@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import queue
@@ -18,14 +19,16 @@ from types import SimpleNamespace
 
 from kipy import KiCad
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
-from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape
+from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape, PadStackShape, PadStackType
 from kipy.proto.common import ApiStatusCode, commands
 from kipy.proto.common.types import KIID
+from kipy.proto.common.types.base_types_pb2 import ElectricalPinType
 from kipy.util.board_layer import CANONICAL_LAYER_NAMES, is_copper_layer
 
 from . import model
 from .diff import Key, combine, fingerprint, item_bytes, item_digest
-from .geometry import (circle_ring, outline_crossings, outline_warning, polyline_strokes, sample_arc,
+from .flex import LAYER_NAMES as FLEX_LAYER_NAMES
+from .geometry import (arc_step, circle_ring, outline_crossings, outline_warning, polyline_strokes, sample_arc,
                        sample_bezier, stroke)
 
 # Tracks and vias are polled every cycle (~13 ms); the rest only on the slow
@@ -34,8 +37,16 @@ FAST_SOURCES = {"tracks": "get_tracks", "vias": "get_vias"}
 SLOW_SOURCES = {
     "pads": "get_pads", "footprints": "get_footprints", "zones": "get_zones",
     "shapes": "get_shapes", "stackup": "get_stackup", "enabled_layers": "get_enabled_layers",
+    "texts": "get_text",
 }
 _DRILL_SHAPES = {DrillShape.DS_OBLONG: "oval", DrillShape.DS_CIRCLE: "round"}
+# a schematic pin's electrical type -> the board file's pintype word
+_PIN_TYPES = {getattr(ElectricalPinType, name): word for name, word in (
+    ("EPT_INPUT", "input"), ("EPT_OUTPUT", "output"), ("EPT_BIDIRECTIONAL", "bidirectional"),
+    ("EPT_TRISTATE", "tri_state"), ("EPT_PASSIVE", "passive"), ("EPT_FREE", "free"),
+    ("EPT_UNSPECIFIED", "unspecified"), ("EPT_POWER_INPUT", "power_in"), ("EPT_POWER_OUTPUT", "power_out"),
+    ("EPT_OPEN_COLLECTOR", "open_collector"), ("EPT_OPEN_EMITTER", "open_emitter"),
+    ("EPT_NO_CONNECT", "no_connect")) if hasattr(ElectricalPinType, name)}
 
 
 class KiCadBusy(Exception):
@@ -235,6 +246,26 @@ def kicad_tools(board) -> dict:
     return tools
 
 
+def active_variant(board) -> str:
+    """The assembly variant selected in KiCad's PCB editor, "" for the default.
+
+    KiCad keeps the selection in memory only (no file or API field holds it), but
+    `${VARIANT}` expands to its name (KiCad 10; measured with kipy 0.7.1). KiCad 9
+    has no such variable and returns the text unexpanded: the default variant.
+    """
+    expand = getattr(board, "expand_text_variables", None)
+    if expand is None:
+        return ""
+    try:
+        with _busy_aware():
+            expanded = expand("${VARIANT}")
+    except KiCadBusy:
+        raise
+    except Exception:  # a KiCad without the call: the default variant, not a lost link
+        return ""
+    return "" if expanded in ("${VARIANT}", None) else str(expanded).strip()
+
+
 def _point(value) -> model.Point:
     return int(value.x), int(value.y)
 
@@ -414,12 +445,60 @@ def _copper_graphic(shape) -> model.CopperGraphic | None:
     return model.CopperGraphic(shape.id.value, net, canonical_layer(shape.layer), polygons)
 
 
+def _with_footprint_shapes(raw_shapes, raw_footprints) -> list:
+    """Board shapes plus every footprint's shapes (already placed on the board)."""
+    return list(raw_shapes) + [item for footprint in raw_footprints
+                               for item in getattr(footprint.definition, "shapes", ())]
+
+
 def _copper_graphics(raw_shapes, raw_footprints) -> tuple[model.CopperGraphic, ...]:
     """Copper drawn as graphics: board shapes and footprint shapes on copper layers."""
-    shapes = list(raw_shapes) + [item for footprint in raw_footprints
-                                 for item in getattr(footprint.definition, "shapes", ())]
+    shapes = _with_footprint_shapes(raw_shapes, raw_footprints)
     graphics = (_copper_graphic(shape) for shape in shapes if canonical_layer(shape.layer).endswith(".Cu"))
     return tuple(graphic for graphic in graphics if graphic is not None)
+
+
+def _drawing(shape, layer: str) -> model.Drawing | None:
+    """A shape on a flex mode layer: closed (polygon, rectangle, circle) or a line."""
+    uid = shape.id.value
+    if hasattr(shape, "polygons"):
+        rings = [_ring(polygon.outline) for polygon in shape.polygons]
+        return model.Drawing(uid, layer, "closed", rings[0]) if rings and len(rings[0]) >= 3 else None
+    if hasattr(shape, "top_left") and hasattr(shape, "bottom_right"):
+        (left, top), (right, bottom) = _point(shape.top_left), _point(shape.bottom_right)
+        return model.Drawing(uid, layer, "closed", ((left, top), (right, top), (right, bottom), (left, bottom)))
+    if hasattr(shape, "radius_point") and hasattr(shape, "center"):
+        center, edge = _point(shape.center), _point(shape.radius_point)
+        radius = math.hypot(edge[0] - center[0], edge[1] - center[1])
+        return model.Drawing(uid, layer, "closed", circle_ring(center, radius)) if radius else None
+    if hasattr(shape, "control1") and hasattr(shape, "control2"):
+        return model.Drawing(uid, layer, "line", sample_bezier(_point(shape.start), _point(shape.control1),
+                                                               _point(shape.control2), _point(shape.end)))
+    if hasattr(shape, "mid"):
+        return model.Drawing(uid, layer, "line", sample_arc(_point(shape.start), _point(shape.mid),
+                                                            _point(shape.end)))
+    if hasattr(shape, "start") and hasattr(shape, "end"):
+        return model.Drawing(uid, layer, "line", (_point(shape.start), _point(shape.end)))
+    return None
+
+
+def _drawings(raw_shapes, raw_texts, display: dict[str, str]) -> tuple[model.Drawing, ...]:
+    """Shapes and texts on the layers named for flex mode (`flex.LAYER_NAMES`)."""
+    wanted = {layer for layer, name in display.items() if name.casefold() in FLEX_LAYER_NAMES}
+    if not wanted:
+        return ()
+    drawings = [_drawing(shape, layer) for shape in raw_shapes if (layer := canonical_layer(shape.layer)) in wanted]
+    for text in raw_texts:
+        layer = canonical_layer(text.layer)
+        if layer not in wanted:
+            continue
+        if hasattr(text, "top_left"):  # a text box: its centre
+            (left, top), (right, bottom) = _point(text.top_left), _point(text.bottom_right)
+            where = ((left + right) // 2, (top + bottom) // 2)
+        else:
+            where = _point(text.position)
+        drawings.append(model.Drawing(text.id.value, layer, "text", (where,), text.value))
+    return tuple(drawing for drawing in drawings if drawing is not None)
 
 
 def _optional_float(wrapper, field: str) -> float | None:
@@ -433,6 +512,21 @@ def _optional_float(wrapper, field: str) -> float | None:
         except ValueError:  # proto3 scalar without presence information
             pass
     return value if value != 0 else None
+
+
+def stackup_digest(stackup) -> bytes:
+    """The stackup's fingerprint without its layers' colours, which nothing here uses:
+    KiCad 10.0.6 sends a dielectric layer's colour uninitialised (measured: values like
+    1.27e-311 that differ between reads), so a fingerprint with them changed on every
+    read and the bridge sent the whole board again about once a second."""
+    proto = getattr(stackup, "proto", None)
+    if proto is None:  # a stand-in stackup (tests)
+        return fingerprint([stackup])
+    stable = type(proto)()
+    stable.CopyFrom(proto)
+    for layer in stable.layers:
+        layer.ClearField("color")
+    return hashlib.blake2b(stable.SerializeToString(deterministic=True), digest_size=16).digest()
 
 
 def _stackup(source, layer_name, warnings: list[str]) -> model.Stackup:
@@ -520,7 +614,14 @@ def _convert_footprint(item) -> tuple[model.Footprint, tuple[str, ...]]:
         "bottom" if item.layer == BoardLayer.BL_B_Cu else "top",
         tuple(model_item.filename for model_item in item.definition.models),
         model_visible=tuple(bool(model_item.visible) for model_item in item.definition.models),
+        dnp=bool(item.attributes.do_not_populate),
+        value=item.value_field.text.value, lib_id=_lib_id(item.definition.id),
     ), tuple(child.id.value for child in item.definition.pads)
+
+
+def _lib_id(identifier) -> str:
+    """The board file's `Library:Footprint`; just the name when the library is unset."""
+    return f"{identifier.library}:{identifier.name}" if identifier.library else identifier.name
 
 
 def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) -> model.Pad:
@@ -528,7 +629,24 @@ def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) 
     diameter = _point(item.padstack.drill.diameter)
     return model.Pad(item.id.value, "", item.number, item.net.name, _point(item.position),
                      diameter if diameter != (0, 0) else None, dict(shapes.get(item.id.value, {})),
-                     _DRILL_SHAPES.get(item.padstack.drill.shape), float(item.padstack.angle.to_radians()))
+                     _DRILL_SHAPES.get(item.padstack.drill.shape), float(item.padstack.angle.to_radians()),
+                     *_symbol_pin(item))
+
+
+def _symbol_pin(item) -> tuple[str, str]:
+    """(name, type) of the schematic pin a pad carries, as the board file's pinfunction and
+    pintype spell them; ("", "") without one (a KiCad that does not send it, a bare pad).
+    kipy has no accessor for it: this reads the pad's private `_proto`, and gives ("", "")
+    when a kipy release drops it or its `symbol_pin` (the digest and `mentions` then lack
+    pin names)."""
+    proto = getattr(item, "_proto", None)
+    if proto is None or not hasattr(proto, "symbol_pin") or not proto.HasField("symbol_pin"):
+        return "", ""
+    pin = proto.symbol_pin
+    kind = _PIN_TYPES.get(pin.type, "")
+    if pin.no_connect:
+        kind = f"{kind}+no_connect" if kind else "no_connect"
+    return pin.name, kind
 
 
 def _convert_zone(item) -> tuple[model.ZoneFill, ...]:
@@ -549,7 +667,10 @@ def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tu
     copy that is no longer on the board (measured: the pre-undo position, until the
     board is reopened). Every pad-shape call goes by id, so such a pad's shape is
     the copy's. A copy that differs only in placement (moved, rotated, flipped) is
-    mapped onto the pad as the board has it; any other difference is reported.
+    mapped onto the pad as the board has it. Any other difference (measured: an SMD pad
+    turned through-hole, still answered for as the SMD pad on B.Cu only) gets the shape
+    built from the pad's own, fresh padstack (`_standard_pad_polygons`) when it is a
+    standard one, and is reported otherwise.
     """
     polygons_by_pad: dict[str, dict[str, tuple[model.Polygon, ...]]] = defaultdict(dict)
     if not raw_pads or not layers:
@@ -565,12 +686,19 @@ def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tu
         mirrored = copy.padstack.drill.start_layer != pad.padstack.drill.start_layer  # a flip swaps them
         placements[pad.id.value] = (mirrored, _placement_map(copy, pad, mirrored))
         if _shape_bytes(copy, mirrored) != _shape_bytes(pad, mirrored):
-            outdated.add(pad.id.value)
+            built = _standard_pad_polygons(pad, layers)
+            if built is None:
+                outdated.add(pad.id.value)
+            else:
+                polygons_by_pad[pad.id.value] = built
+    asking = [pad for pad in raw_pads if pad.id.value not in polygons_by_pad]  # the rest: KiCad's own shapes
+    if not asking:
+        return polygons_by_pad, outdated
     asked = list(dict.fromkeys([*layers, *(flip.get(layer, layer) for layer in layers)]))
     presence = call("check_padstack_presence_on_layers",
-                    board.check_padstack_presence_on_layers, raw_pads, asked)
+                    board.check_padstack_presence_on_layers, asking, asked)
     wanted: dict[object, list] = defaultdict(list)  # layer KiCad is asked for -> [(pad, board layer)]
-    for pad in raw_pads:
+    for pad in asking:
         mirrored = placements.get(pad.id.value, (False, None))[0]
         for layer in layers:
             query = flip.get(layer, layer) if mirrored else layer
@@ -590,6 +718,75 @@ def _pad_polygons(board, call, raw_pads, layers) -> tuple[dict[str, dict[str, tu
                     polygon = _place_polygon(polygon, *placements[pad.id.value])
                 polygons_by_pad[pad.id.value][canonical_layer(layer)] = (polygon,)
     return polygons_by_pad, outdated
+
+
+_PASTE_SIDE = {BoardLayer.BL_F_Paste: BoardLayer.BL_F_Cu, BoardLayer.BL_B_Paste: BoardLayer.BL_B_Cu}
+
+
+def _standard_pad_polygons(pad, layers) -> dict[str, tuple[model.Polygon, ...]] | None:
+    """A pad's copper (and paste) shapes on `layers`, built from its padstack as
+    `get_pads` returns it (fresh, unlike the id-based shape calls); None when a shape is
+    not a plain circle, rectangle, rounded rectangle or oval. Paste takes the copper
+    shape of its side (KiCad's paste margin, usually 0, is left out)."""
+    stack = pad.proto.pad_stack
+    on = set(stack.layers)
+    entries = {entry.layer: entry for entry in stack.copper_layers}
+    built = {}
+    for layer in layers:
+        if layer not in on:
+            continue
+        copper = _PASTE_SIDE.get(layer, layer)
+        entry = entries.get(copper)
+        if entry is None and stack.copper_layers:
+            if stack.type == PadStackType.PST_NORMAL:
+                entry = stack.copper_layers[0]
+            elif stack.type == PadStackType.PST_FRONT_INNER_BACK and copper not in (BoardLayer.BL_F_Cu,
+                                                                                    BoardLayer.BL_B_Cu):
+                entry = next((e for e in stack.copper_layers if e.layer not in (BoardLayer.BL_F_Cu,
+                                                                                BoardLayer.BL_B_Cu)), None)
+        ring = _pad_ring(pad, entry) if entry is not None else None
+        if ring is None:
+            return None
+        built[canonical_layer(layer)] = ((ring,),)
+    return built
+
+
+def _pad_ring(pad, entry, tolerance_nm: int = 5_000) -> model.Ring | None:
+    """One padstack layer's outline in board coordinates: its rounded rectangle (a
+    circle and an oval are rounded all the way), offset, then turned by the pad's angle
+    as KiCad's RotatePoint does (y points down)."""
+    width, height = entry.size.x_nm, entry.size.y_nm
+    if width <= 0 or height <= 0:
+        return None
+    shape = entry.shape
+    if shape == PadStackShape.PSS_CIRCLE:
+        height = width
+        radius = width / 2
+    elif shape == PadStackShape.PSS_OVAL:
+        radius = min(width, height) / 2
+    elif shape == PadStackShape.PSS_ROUNDRECT:
+        radius = min(width, height) * min(max(entry.corner_rounding_ratio, 0.0), 0.5)
+    elif shape == PadStackShape.PSS_RECTANGLE:
+        radius = 0.0
+    else:
+        return None
+    hx, hy = width / 2 - radius, height / 2 - radius
+    steps = max(1, math.ceil((math.pi / 2) / arc_step(radius, tolerance_nm))) if radius > 0 else 0
+    local = []
+    for cx, cy, start in ((hx, hy, 0.0), (-hx, hy, 0.5), (-hx, -hy, 1.0), (hx, -hy, 1.5)):
+        for k in range(steps + 1):
+            angle = math.pi * (start + 0.5 * k / steps) if steps else 0.0
+            local.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    angle = pad.padstack.angle.to_radians()
+    c, s = math.cos(angle), math.sin(angle)
+    (px, py), (ox, oy) = _point(pad.position), (entry.offset.x_nm, entry.offset.y_nm)
+    ring = []
+    for x, y in local:
+        x, y = x + ox, y + oy
+        point = (round(px + x * c + y * s), round(py - x * s + y * c))
+        if not ring or point != ring[-1]:
+            ring.append(point)
+    return tuple(ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring)
 
 
 def _same_item(a, b) -> bool:
@@ -720,7 +917,7 @@ class BoardReader:
         self._parts: dict[str, object] = {
             "tracks": (), "arcs": (), "vias": (), "footprints": (), "pads": (), "zones": (),
             "outline": model.Outline(()), "stackup": model.Stackup(()), "display": {}, "graphics": (),
-            "footprint_by_pad": {},
+            "footprint_by_pad": {}, "drawings": (),
         }
         self._warnings: dict[str, list[str]] = {}
         self._timings: dict[str, float] = {}  # of the poll in progress, in ms
@@ -778,7 +975,8 @@ class BoardReader:
             digests[source] = self._digests(raw[source])
             hashes[source] = combine(digests[source])
         hashes["shapes"] = self._timed("hash", fingerprint, raw["shapes"])
-        hashes["stackup"] = self._timed("hash", fingerprint, [raw["stackup"]])
+        hashes["texts"] = self._timed("hash", fingerprint, raw["texts"])
+        hashes["stackup"] = self._timed("hash", stackup_digest, raw["stackup"])
         hashes["enabled_layers"] = self._timed("hash", fingerprint, raw["enabled_layers"])
         return hashes
 
@@ -795,6 +993,7 @@ class BoardReader:
         started = time.perf_counter_ns()
         self._timings = timings = {}
         slow = full or self._slow_due()
+        variant = self._call("expand_text_variables", active_variant, self.board)  # cheap; every poll
         raw = self._read(FAST_SOURCES if not slow else {**FAST_SOURCES, **SLOW_SOURCES})
         digests = {source: self._digests(raw[source]) for source in ("tracks", "vias")}
         hashes: dict[object, bytes] = {key: combine(group)
@@ -820,7 +1019,7 @@ class BoardReader:
             self.board.name, dict(parts["display"]), parts["tracks"], parts["arcs"], parts["vias"],
             parts["pads"], parts["footprints"], parts["zones"], parts["outline"], parts["stackup"],
             tuple(w for group in warnings.values() for w in group), timings,
-            graphics=parts["graphics"],
+            graphics=parts["graphics"], drawings=parts["drawings"], variant=variant,
         )
         return PollResult(snapshot, frozenset(dirty), slow, len(self._outdated_pads))
 
@@ -852,14 +1051,23 @@ class BoardReader:
                                                   digests["zones"], _convert_zone)
             self._parts["zones"] = tuple(fill for fills in records for fill in fills)
             dirty |= {(fill.layer, "zones") for fills in added + removed for fill in fills}
-        if "shapes" in changed:
-            self._warnings["outline"] = []
-            self._parts["outline"] = self._timed("convert", _outline, raw["shapes"], self._warnings["outline"])
-            dirty.add(("", "outline"))
         if changed & {"shapes", "footprints"}:
+            # KiCad's outline includes Edge.Cuts drawn inside footprints (multi-board alignment)
+            warnings: list[str] = []
+            outline = self._timed("convert", _outline, _with_footprint_shapes(raw["shapes"], raw["footprints"]),
+                                  warnings)
+            self._warnings["outline"] = warnings
+            if outline != self._parts["outline"]:
+                self._parts["outline"] = outline
+                dirty.add(("", "outline"))
             old = set(self._parts["graphics"])
             self._parts["graphics"] = self._timed("convert", _copper_graphics, raw["shapes"], raw["footprints"])
             dirty |= {(graphic.layer, "graphics") for graphic in old ^ set(self._parts["graphics"])}
+        if changed & {"shapes", "texts", "stackup", "enabled_layers"}:  # layer names come with the stackup
+            drawings = self._timed("convert", _drawings, raw["shapes"], raw["texts"], self._parts["display"])
+            if drawings != self._parts["drawings"]:
+                self._parts["drawings"] = drawings
+                dirty.add(("", "drawings"))
         return dirty
 
     def _convert_tracks(self, raw_tracks, digests: list[bytes]) -> None:

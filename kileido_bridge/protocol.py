@@ -27,6 +27,9 @@ PROTOCOL = 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}  # "|" = single byte, no byte order
 DEFAULT_THICKNESS_NM = 1_600_000  # board thickness when the stackup cannot give one
+# Every frame type the bridge sends (here and in loop.py); the add-on's client.py lists the same ones.
+MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
+                 "appearance", "selection", "status", "export", "findings", "phase_list", "phase_pair")
 _LENGTH = struct.Struct(">I")
 
 
@@ -212,7 +215,7 @@ def footprints_message(snapshot: model.BoardSnapshot, revision: int) -> bytes:
     return encode_frame({"type": "footprints", "revision": revision, "footprints": [
         {"id": f.id, "ref": f.reference, "x": f.pos[0], "y": f.pos[1], "rot": f.rotation_rad,
          "side": f.side, "bbox_nm": f.bbox_nm, "model_paths": f.model_paths,
-         "model_visible": f.model_visible}
+         "model_visible": f.model_visible, "dnp": f.dnp}
         for f in snapshot.footprints]})
 
 
@@ -313,6 +316,11 @@ def board_message(snapshot: model.BoardSnapshot, revision: int, origin_nm: tuple
     })
 
 
+def export_message(export: dict, revision: int) -> bytes:
+    """The export settings alone: the selected assembly variant changed, nothing else."""
+    return encode_frame({"type": "export", "revision": revision, "export": export})
+
+
 def all_keys(snapshot: model.BoardSnapshot) -> frozenset[Key]:
     keys = {(t.layer, "tracks") for t in snapshot.tracks} | {(a.layer, "arcs") for a in snapshot.arcs}
     keys |= {group for pad in snapshot.pads for group in pad.groups}
@@ -322,13 +330,32 @@ def all_keys(snapshot: model.BoardSnapshot) -> frozenset[Key]:
     return frozenset(keys)
 
 
+def flex_message(report: dict | None, revision: int) -> bytes:
+    """Flex mode's panel content (`flex_checks.report`); None: the board has no flex."""
+    return encode_frame({"type": "flex", "revision": revision, "flex": report})
+
+
+def findings_message(payload: dict, revision: int) -> bytes:
+    """Findings for the Findings column (`findings_watch.FindingsWatch`), header only:
+    {"type": "findings", "revision", "findings": {"status": "ok" | "none" | "unsaved",
+    "folder": "<project>/.kileidoscope" or "", "drc": {"state": "idle" | "running" |
+    "failed", "error", "run"}, "prompt": {"state": "idle" | "making" | "ready" | "failed",
+    "run", "text", "error"}, "catalogue": [{"id", "group", "title", "v1"}], "groups":
+    [{"id", "title"}], "sources": {"drc": ..., "file": ...}}}. Each source is
+    `findings.resolve_file`'s payload, or `findings.status_payload`'s without a file.
+    Never part of a snapshot: sent after it, so a findings resolve never delays the board."""
+    return encode_frame({"type": "findings", "revision": revision, "findings": payload})
+
+
 def snapshot_frames(snapshot: model.BoardSnapshot, revision: int = 1,
                     origin_nm: tuple[int, int] | None = None, board_path: str = "",
-                    appearance: dict | None = None, export: dict | None = None) -> list[bytes]:
+                    appearance: dict | None = None, export: dict | None = None,
+                    flex: dict | None = None) -> list[bytes]:
     """Everything Blender needs to show a board from scratch, in apply order."""
     return [encode_frame({"type": "snapshot_begin", "revision": revision}),
             board_message(snapshot, revision, origin_nm, board_path, appearance, export),
             *messages_for(snapshot, all_keys(snapshot), revision),
+            flex_message(flex, revision),
             encode_frame({"type": "snapshot_end", "revision": revision})]
 
 

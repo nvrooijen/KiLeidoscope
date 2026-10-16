@@ -4,6 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 from kipy.errors import ApiError
+from kipy.board import BoardStackup
+from kipy.proto.board import board_pb2
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
 from kipy.proto.board.board_types_pb2 import BoardLayer
 from kipy.proto.common import ApiStatusCode
@@ -92,6 +94,34 @@ def test_removed_track_layer_is_dirty():
     assert reader.poll().dirty == {("B.Cu", "tracks")}
 
 
+def _stackup(dielectric_red, dielectric_nm=100_000):
+    """A real kipy stackup: F.Cu over a dielectric whose colour is `dielectric_red`."""
+    proto = board_pb2.BoardStackup()
+    copper = proto.layers.add(layer=BoardLayer.BL_F_Cu, enabled=True, type=BoardStackupLayerType.BSLT_COPPER)
+    copper.thickness.value_nm = 35_000
+    dielectric = proto.layers.add(layer=BoardLayer.BL_UNDEFINED, enabled=True,
+                                  type=BoardStackupLayerType.BSLT_DIELECTRIC)
+    dielectric.thickness.value_nm = dielectric_nm
+    dielectric.color.r = dielectric_red
+    return BoardStackup(proto)
+
+
+def test_dielectric_colour_noise_does_not_dirty_the_stackup():
+    """KiCad 10.0.6 sends a dielectric's colour uninitialised (1.27e-311, different on every
+    read): that alone must not resend the board; a real stackup change still does."""
+    board, clock = CountingBoard(), Clock()
+    board.stackup = _stackup(1.2667e-311)
+    reader = BoardReader(board, slow_interval_s=1.0, clock=clock)
+    reader.poll()
+    board.stackup = _stackup(9.3460e-307)
+    clock.now = 1.5
+    result = reader.poll()
+    assert result.full_read and ("", "stackup") not in result.dirty
+    board.stackup = _stackup(1.4241e-306, dielectric_nm=200_000)
+    clock.now = 3.0
+    assert ("", "stackup") in reader.poll().dirty
+
+
 def test_proto_polygon_path_with_arc_node():
     """Production reads polygon points from kipy protos, not from wrappers."""
     outline = pb.PolyLine(closed=True)
@@ -161,8 +191,9 @@ def test_changed_pad_fetches_shapes_for_that_pad_only_and_dirties_its_layer():
     board.footprints = [footprint(pads=[first, moved])]
     result = reader.poll(full=True)
     assert requested == [["p2"]]
-    # The footprint contains its pads, so it changes too; F.Cu pads stay untouched.
-    assert result.dirty == {("B.Cu", "pads"), ("", "footprints")}
+    # The footprint contains its pads, so it changes too. The pad is drilled, and every
+    # pad drill rides on the F.Cu frame, so F.Cu is redrawn for its hole.
+    assert result.dirty == {("B.Cu", "pads"), ("F.Cu", "pads"), ("", "footprints")}
     assert [p.footprint_id for p in result.snapshot.pads] == ["f1", "f1"]
 
 
@@ -214,8 +245,39 @@ def test_outdated_copy_of_a_flipped_pad_is_mirrored_onto_the_bottom():
     assert result.outdated_pads == 0
 
 
-def test_outdated_copy_with_another_shape_is_counted():
+def test_outdated_copy_with_another_shape_is_built_from_the_fresh_padstack():
     result = read_outdated(kicad_pad(size=(3_000_000, 1_000_000)), kicad_pad(), TRIANGLE)
+    assert result.snapshot.pads[0].polygons == {"F.Cu": ((((1_500_000, 500_000), (-1_500_000, 500_000),
+                                                          (-1_500_000, -500_000), (1_500_000, -500_000)),),)}
+    assert result.outdated_pads == 0
+
+
+def test_smd_pad_turned_through_hole_gets_copper_on_both_sides():
+    """Measured in KiCad 10: after the change KiCad still answers for the pad as the
+    B.Cu-only SMD pad it was; the fresh padstack says *.Cu."""
+    from kipy.proto.board import board_types_pb2 as bt
+    fresh = kicad_pad(size=(2_500_000, 2_000_000))
+    fresh.proto.type = bt.PT_PTH
+    stack = fresh.proto.pad_stack
+    del stack.layers[:]
+    stack.layers.extend([BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu])
+    stack.type = bt.PST_NORMAL
+    stack.copper_layers[0].shape = bt.PSS_ROUNDRECT
+    stack.copper_layers[0].corner_rounding_ratio = 0.05
+    stack.drill.diameter.x_nm = stack.drill.diameter.y_nm = 1_000_000
+    result = read_outdated(fresh, kicad_pad(bottom=True, size=(2_500_000, 2_000_000)), TRIANGLE)
+    polygons = result.snapshot.pads[0].polygons
+    assert set(polygons) == {"F.Cu", "B.Cu"} and result.outdated_pads == 0
+    ring = polygons["F.Cu"][0][0]
+    assert (min(x for x, _ in ring), max(x for x, _ in ring)) == (-1_250_000, 1_250_000)
+    assert (min(y for _, y in ring), max(y for _, y in ring)) == (-1_000_000, 1_000_000)
+
+
+def test_outdated_copy_with_a_custom_shape_is_counted():
+    from kipy.proto.board import board_types_pb2 as bt
+    fresh = kicad_pad(size=(3_000_000, 1_000_000))
+    fresh.proto.pad_stack.copper_layers[0].shape = bt.PSS_CUSTOM
+    result = read_outdated(fresh, kicad_pad(), TRIANGLE)
     assert result.outdated_pads == 1
 
 
