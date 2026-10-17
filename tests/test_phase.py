@@ -196,6 +196,102 @@ def test_arcs_count_their_true_length():
     assert points[0] == (0, 0) and points[-1] == (2 * MM, 0)
 
 
+# --- Model limits: the band round Δt --------------------------------------------------------
+
+def coupled_turn(back: bool = False):
+    """A tightly coupled pair (0.1 mm gap on 0.2 mm of laminate; P at y = 0, N at 0.25)
+    running +x, then round a 90° turn towards +y with P outside (2 mm centreline radius)
+    and on to y = 6; with `back`, a second turn the other way (an S) and on to x = 24."""
+    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.25)), pad=200_000)
+    board.path("D_P", (0, 0), (10, 0)).turn("D_P", (10, 2), 2.0, -90, 0).path("D_P", (12, 2), (12, 6))
+    board.path("D_N", (0, 0.25), (10, 0.25)).turn("D_N", (10, 2), 1.75, -90, 0).path("D_N", (11.75, 2), (11.75, 6))
+    if not back:
+        return board.part("J1", (1, "D_P", (12, 6)), (2, "D_N", (11.75, 6)), pad=200_000).snapshot()
+    board.turn("D_P", (14, 6), 2.0, 180, 90).path("D_P", (14, 8), (24, 8))
+    board.turn("D_N", (14, 6), 2.25, 180, 90).path("D_N", (14, 8.25), (24, 8.25))
+    return board.part("J1", (1, "D_P", (24, 8)), (2, "D_N", (24, 8.25)), pad=200_000).snapshot()
+
+
+def rounded_bump(radius_mm: float):
+    """The 1 mm-pitch pair with N leaving it at x = 10 through four arcs of `radius_mm`
+    and two legs 1.2 mm apart (centre to centre), 2 mm up, back on it at x = 12.4."""
+    board = boards.ends(boards.Board()).path("D_P", (0, 0), (50, 0))
+    r, top = radius_mm, 3.0
+    board.path("D_N", (0, 1), (10, 1)).turn("D_N", (10, 1 + r), r, -90, 0).path("D_N", (10 + r, 1 + r), (10 + r, top))
+    board.turn("D_N", (10.6 + r, top), 0.6, 180, 90).turn("D_N", (10.6 + r, top), 0.6, 90, 0)
+    board.path("D_N", (11.2 + r, top), (11.2 + r, 1 + r)).turn("D_N", (11.2 + 2 * r, 1 + r), r, 180, 270)
+    return board.path("D_N", (11.2 + 2 * r, 1), (50, 1)).snapshot()
+
+
+def from_u1(snapshot):
+    """The pair walked from U1 (J1 sorts first, so that is the flipped direction)."""
+    return only_pair(snapshot, flipped=frozenset({"D_P"}))
+
+
+def test_a_straight_pair_has_no_model_limits():
+    result = only_pair(boards.matched())
+    assert result.band_ps.shape == (len(result.dt_ps), 2) and not result.band_ps.any()
+
+
+def test_a_coupled_turn_may_make_up_to_9_percent_more_skew_and_a_turn_back_takes_it_away():
+    """The full-wave study: a coupled arc or corner makes 8.5–8.8 % more skew than its
+    length difference. Above the +Δt a turn with P outside makes, the band runs 0 to 9 %
+    of it; the error is systematic, so an S (the same turn back) closes it again."""
+    result = from_u1(coupled_turn())
+    assert result.p.start.label == "U1.1"
+    made = result.dt_ps[-1]
+    assert made == pytest.approx(0.25 * math.pi / 2 * unit_delay(coupled_turn(), gap=100_000), rel=0.02)
+    assert result.band_ps[-1, 0] == pytest.approx(0.0, abs=0.01)
+    assert result.band_ps[-1, 1] == pytest.approx(0.09 * made, rel=0.05)
+    before = result.along_nm < 9 * MM
+    assert not result.band_ps[before].any()  # the straight before it: nothing
+    assert np.all(result.band_ps[:, 1] >= -1e-9) and np.all(result.band_ps[:, 1] <= 0.09 * made * 1.1)
+    halfway = int(np.argmin(np.linalg.norm(result.centre_nm[:, :2] - np.array((11.326, 0.674)) * MM, axis=1)))
+    assert result.band_ps[halfway, 1] == pytest.approx(0.045 * made, rel=0.3)  # it widens along the turn
+    s_curve = from_u1(coupled_turn(back=True))
+    middle = int(np.argmin(np.abs(s_curve.centre_nm[:, 1] - 4 * MM)))  # on the leg between the turns
+    assert s_curve.band_ps[middle, 1] == pytest.approx(0.09 * made, rel=0.05)
+    assert s_curve.dt_ps[-1] == pytest.approx(0.0, abs=0.05) and np.abs(s_curve.band_ps[-1]).max() < 0.02
+
+
+def test_a_tight_meander_of_one_side_may_make_10_to_20_percent_less_skew():
+    """The study's largest error: a tight meander (sharp corners, legs closer than three
+    widths) makes 17–20 % less skew than its extra length. Walked from J1, N's bump at
+    x = 47 comes first and makes −Δt; the band shows the known error, 10–20 % less; P's
+    bump at x = 2 takes both away."""
+    result = only_pair(boards.compensated_far())
+    plateau = (result.along_nm > 5 * MM) & (result.along_nm < 45 * MM)
+    made = float(np.median(result.dt_ps[plateau]))
+    assert made < -2.0
+    low, high = result.band_ps[plateau].T
+    assert np.median(low) == pytest.approx(-0.1 * made, rel=0.1) and np.median(high) == pytest.approx(-0.2 * made, rel=0.1)
+    assert np.abs(result.band_ps[-1]).max() < 0.1 * abs(made)  # the compensating bump: the same error back
+
+
+@pytest.mark.parametrize("radius_mm, tight", [(0.6, False), (0.3, True)])
+def test_a_looser_meander_gets_no_band_and_a_tight_arc_the_full_one(radius_mm, tight):
+    """Arcs of 4 widths and legs 7 widths apart: nothing was measured there, so no band.
+    Arcs of 2 widths with the same legs: tight, −10 to −20 %."""
+    result = from_u1(rounded_bump(radius_mm))
+    after = result.along_nm > 20 * MM
+    made = float(np.median(result.dt_ps[after]))
+    assert made < -10.0  # N is longer: Δt < 0
+    low, high = np.median(result.band_ps[after], axis=0)
+    if tight:
+        assert low == pytest.approx(0.1 * abs(made), rel=0.1) and high == pytest.approx(0.2 * abs(made), rel=0.1)
+    else:
+        assert not result.band_ps.any()
+    assert not result.band_ps[result.along_nm < 9 * MM].any()
+
+
+def test_the_frame_carries_the_band_round_dt_and_what_it_means():
+    result = only_pair(coupled_turn())
+    header, arrays = protocol.FrameDecoder().feed(phase.pair_frame(result, 1))[0]
+    assert header["band_note"] == phase.BAND_NOTE == "known model error at tight features (one full-wave study, 2026-10-16)"
+    assert arrays["band_lo"].shape == arrays["band_hi"].shape == arrays["dt"].shape
+    assert arrays["band_hi"][-1] == pytest.approx(result.band_ps[-1, 1], abs=1e-3)
+
+
 # --- Delay sources ------------------------------------------------------------------------
 
 PROJECT = {

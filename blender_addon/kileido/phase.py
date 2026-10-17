@@ -963,15 +963,20 @@ def measured_pairs():
         data = board.phase.get(key)
         if not data or data.get("shorts") or "along" not in data or "dt" not in data:
             continue
-        out.append({"name": data.get("name", key), "start": data["start"]["label"], "end": data["end"]["label"],
-                    "along_mm": [float(value) / 1e6 for value in data["along"]],
-                    "dt_ps": [float(value) for value in data["dt"]],
-                    "dt_read_ps": [float(value) for value in data.get("dt_read", data["dt"])],
-                    "excursions": list(data.get("excursions", ())), "skew_ps": float(data.get("skew_ps", 0.0)),
+        pair = {"name": data.get("name", key), "start": data["start"]["label"], "end": data["end"]["label"],
+                "along_mm": [float(value) / 1e6 for value in data["along"]],
+                "dt_ps": [float(value) for value in data["dt"]],
+                "dt_read_ps": [float(value) for value in data.get("dt_read", data["dt"])],
+                "excursions": list(data.get("excursions", ())), "skew_ps": float(data.get("skew_ps", 0.0)),
                     "max_ps": float(data.get("max_ps", 0.0)), "delay_p_ps": data.get("delay_p_ps"),
                     "delay_n_ps": data.get("delay_n_ps"), "length_p_mm": data.get("length_p_mm"),
-                    "length_n_mm": data.get("length_n_mm"), "sources": list(data.get("sources", ())),
-                    "flipped": bool(data.get("flipped", False))})
+                "length_n_mm": data.get("length_n_mm"), "sources": list(data.get("sources", ())),
+                "flipped": bool(data.get("flipped", False))}
+        if "band_lo" in data and "band_hi" in data:  # the model limits: the bridge sends them round Δt
+            pair["dt_lo_ps"] = [float(dt) + float(lo) for dt, lo in zip(data["dt"], data["band_lo"])]
+            pair["dt_hi_ps"] = [float(dt) + float(hi) for dt, hi in zip(data["dt"], data["band_hi"])]
+            pair["band_note"] = str(data.get("band_note", ""))
+        out.append(pair)
     return out
 
 

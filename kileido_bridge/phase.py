@@ -40,6 +40,22 @@ GROUND_REACH_NM = 2_000_000  # pour edges farther than this are not looked at (p
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
 
+# Model limits: where the centreline rule is known to be off. A full-wave study (2026-10-16,
+# _dev/docs/bend-meander-findings.md) found on one pair geometry (0.2 mm traces, 0.25 mm gap,
+# 0.12 mm of laminate) that a coupled arc or corner makes 8.5–8.8 % MORE skew than its length
+# difference (two radii and a four-corner turn: a property of the pair's coupling, not of the
+# radius) and that a tight meander of a side running alone (arcs of 1.25 track widths, legs
+# 1.5 widths apart) makes 17–20 % LESS than its extra length (one geometry, three meshes);
+# the odd-mode delay on straights was right to 0.1 %. Δt is not corrected: `PairPhase.band_ps`
+# shows that known error round it, each limit applied to the Δt its own features made. A
+# looser meander gets none: nothing was measured there.
+BEND_EXCESS = (0.0, 0.09)  # a coupled arc or corner: this much more skew than its length difference
+TIGHT_MEANDER = (-0.20, -0.10)  # a tight meander of a lone side: this much less than its extra length makes
+TIGHT_WIDTHS = 3.0  # a corner radius, or the spacing of a side's own legs, under this many track widths is tight
+SHARP_RAD = math.radians(30)  # a kink this large at one vertex is a sharp corner; a sampled arc kinks less per vertex
+TURN_RAD = math.radians(0.1)  # a smaller kink is two collinear tracks
+BAND_NOTE = "known model error at tight features (one full-wave study, 2026-10-16)"  # the chart's legend and metadata
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -162,6 +178,11 @@ class PairPhase:
     # (k,) ps: Δt as a probe on each trace would read it (modes.apparent_dt, for the settings'
     # rise time): the geometric Δt where skew is made, fading as its common mode falls behind.
     read_dt_ps: np.ndarray | None = field(default=None, repr=False)
+    # (k, 2) ps, below and above dt_ps: the known model error at tight features by each
+    # reading, from the model limits at the top of this module (BEND_EXCESS on the Δt the
+    # pair's coupled arcs and corners made, TIGHT_MEANDER on the Δt a side's tight meanders
+    # made; see _band). (0, 0) on a straight pair. Δt itself is not corrected.
+    band_ps: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def skew_ps(self) -> float:
@@ -478,6 +499,140 @@ def _pads(route: channels.Route, trace: Trace, side: str, heights: dict[str, int
     return found
 
 
+# --- Model limits: where the centreline rule is known to be off ----------------------------
+
+def _corners(walk: _Walk) -> tuple[np.ndarray, np.ndarray]:
+    """Per vertex: how far the copper turns there in the layer's plane (radians, unsigned;
+    0 at a barrel's ends and between collinear tracks) and the corner's radius (nm): a
+    sampled arc's from its chords, 0 at a sharp corner (a kink of SHARP_RAD or more at one
+    vertex: KiCad's arcs are sampled finer than that), inf where the copper does not turn."""
+    turn, radius = np.zeros(len(walk.xyz)), np.full(len(walk.xyz), np.inf)
+    if len(walk.xyz) < 3:
+        return turn, radius
+    step = np.diff(walk.xyz[:, :2], axis=0)
+    length = np.hypot(step[:, 0], step[:, 1])
+    flat = (length > 0) & (np.diff(walk.xyz[:, 2]) == 0)
+    angle = np.abs(np.arctan2(step[:-1, 0] * step[1:, 1] - step[:-1, 1] * step[1:, 0],
+                              (step[:-1] * step[1:]).sum(axis=1)))
+    angle[~(flat[:-1] & flat[1:]) | (angle < TURN_RAD)] = 0.0
+    turn[1:-1] = angle
+    with np.errstate(divide="ignore", invalid="ignore"):
+        chord = np.minimum(length[:-1], length[1:]) / (2 * np.tan(angle / 2))
+    radius[1:-1] = np.where(angle == 0, np.inf, np.where(angle >= SHARP_RAD, 0.0, chord))
+    return turn, radius
+
+
+def _turned(along: np.ndarray, turn: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The turn added up along the copper, each vertex's kink spread from the middle of the
+    piece before it to the middle of the piece after it (so a sampled arc turns evenly
+    along its length): (where, total) for np.interp."""
+    at = np.flatnonzero(turn > 0)
+    if not len(at):
+        return np.array([0.0]), np.array([0.0])
+    first, last = (along[at - 1] + along[at]) / 2, (along[at] + along[at + 1]) / 2
+    rate = turn[at] / np.maximum(last - first, 1.0)
+    where, change = np.concatenate((first, last)), np.concatenate((rate, -rate))
+    order = np.argsort(where, kind="stable")
+    where, slope = where[order], np.cumsum(change[order])
+    return where, np.concatenate(([0.0], np.cumsum(slope[:-1] * np.diff(where))))
+
+
+def _own_legs(s: np.ndarray, xyz: np.ndarray, width: float) -> np.ndarray:
+    """Per sample: whether the side's own copper comes back within TIGHT_WIDTHS widths of it
+    (edge to edge) the long way round: a meander's facing legs, not the next sample."""
+    apart = np.sqrt(((xyz[:, None, :] - xyz[None, :, :]) ** 2).sum(axis=2))
+    around = np.abs(s[:, None] - s[None, :])
+    return ((apart - width < TIGHT_WIDTHS * width) & (around > 1.4 * apart) & (around > 0)).any(axis=1)
+
+
+def _meanders(walk: _Walk, s: np.ndarray, xyz: np.ndarray, partner: np.ndarray, pitch: float,
+              track_nm: float) -> list[tuple[float, float, tuple[float, float]]]:
+    """This side's meanders: each a stretch of its copper [from, to] (nm) and the limit that
+    applies to the Δt it made. A meander is where the side parts from its partner by more
+    than a track width beyond the pair's pitch (its alignment samples `s`, `xyz` against the
+    partner's samples), reaching back and forward over short pieces (chords of an arc,
+    legs under TIGHT_WIDTHS widths) to the straight the feature leaves and the one it
+    rejoins. Tight when a corner in it has a radius under TIGHT_WIDTHS widths or its own
+    legs come that close; a looser meander, or a straight that merely parts (a fan-out),
+    gets no limit (and none of a coupled bend either)."""
+    width = float(np.median(walk.widths[walk.widths > 0])) if (walk.widths > 0).any() else track_nm
+    nearest = np.sqrt(((xyz[:, None, :] - partner[None, :, :]) ** 2).sum(axis=2)).min(axis=1)
+    departed = nearest - pitch > track_nm
+    if not departed.any():
+        return []
+    turn, radius = _corners(walk)
+    along = walk.along
+    piece = np.diff(along)
+    short = TIGHT_WIDTHS * width
+    close = _own_legs(s, xyz, width)
+    edges = np.diff(np.concatenate(([0], departed.astype(np.int8), [0])))
+    stretches = []
+    for first, last in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1):
+        v0 = max(int(np.searchsorted(along, s[first], side="right")) - 1, 0)
+        while v0 > 0 and piece[v0 - 1] < short:
+            v0 -= 1
+        v1 = min(int(np.searchsorted(along, s[last], side="left")), len(along) - 1)
+        while v1 < len(along) - 1 and piece[v1] < short:
+            v1 += 1
+        low, high = float(along[v0]), float(along[v1])
+        if stretches and low <= stretches[-1][1]:
+            low = stretches.pop()[0]
+        stretches.append((low, high))
+    found = []
+    for low, high in stretches:
+        at = (along >= low) & (along <= high)
+        tight = bool(((turn[at] > 0) & (radius[at] < short)).any() or close[(s >= low) & (s <= high)].any())
+        found.append((low, high, TIGHT_MEANDER if tight else (0.0, 0.0)))
+    return found
+
+
+def _band(walks: tuple, samples: tuple, matched: np.ndarray, p_at: np.ndarray, n_at: np.ndarray, dt: np.ndarray,
+          model_: delays.DelayModel, heights: dict[str, int], track_nm: float) -> np.ndarray:
+    """(k, 2) ps: the known model error at tight features, below and above Δt by each reading.
+
+    Each step between readings is classed by what made its Δt increment: a meander of one
+    side (_meanders: the steps whose reading on that side falls in it), else a coupled bend
+    (the pair coupled by the delay model's own criterion, COUPLED_WITHIN_H, and either side
+    turning there). The increments of each class are added up like Δt itself and the
+    class's limit applied to the sum: the errors are systematic (a turn the other way takes
+    its share back), so the band widens through a feature and only a compensating feature
+    of the same kind closes it. Straights, vias and width changes add nothing."""
+    count = len(dt)
+    band = np.zeros((count, 2))
+    if count < 2 or track_nm <= 0:
+        return band
+    apart = np.linalg.norm(p_at - n_at, axis=1)
+    pitch = float(np.median(apart))
+    turned, meanders = [], []
+    for side, (walk, (s, xyz)) in enumerate(zip(walks, samples)):
+        where, total = _turned(walk.along, _corners(walk)[0])
+        turned.append(lambda x, where=where, total=total: np.interp(x, where, total))
+        meanders.append(_meanders(walk, s, xyz, samples[1 - side][1], pitch, track_nm))
+    layer_at = {height: layer for layer, height in heights.items()}
+    heights_at = np.array([model_.structure(layer_at.get(int(round(z)), ""))[1] for z in p_at[:, 2]])
+    coupled = (heights_at > 0) & (apart - track_nm < COUPLED_WITHIN_H * heights_at)
+    turning = sum(np.diff(turned[side](matched[:, side])) for side in range(2)) > TURN_RAD
+    factor = np.zeros((count - 1, 2))  # each step's (low, high) limit on its own Δt increment
+    factor[coupled[:-1] & coupled[1:] & turning] = BEND_EXCESS
+    rank = {(0.0, 0.0): 0, TIGHT_MEANDER: 1}  # a step in two sides' meanders: the tighter
+    for side in range(2):
+        s = samples[side][0]
+        margin = float(s[1] - s[0]) if len(s) > 1 else 0.0  # the matching may stumble a sample before a feature
+        for low, high, limit in sorted(meanders[side], key=lambda found: rank[found[2]]):
+            inside = (matched[:, side] >= low - margin) & (matched[:, side] <= high + margin)
+            factor[inside[:-1] | inside[1:]] = limit
+    # One unknown factor per limit, within its range: the Δt its steps made is added up and
+    # the range applied to the sum; the band is the sum of the limits' ranges.
+    for limit in (BEND_EXCESS, TIGHT_MEANDER):
+        on = np.all(factor == limit, axis=1)
+        if on.any():
+            made = np.concatenate(([0.0], np.cumsum(np.diff(dt) * on)))
+            edges_ps = np.column_stack((limit[0] * made, limit[1] * made))
+            band[:, 0] += edges_ps.min(axis=1)
+            band[:, 1] += edges_ps.max(axis=1)
+    return band
+
+
 def find_excursions(along: np.ndarray, dt: np.ndarray, tolerance_ps: float, min_length_nm: float):
     """(first index, last index) of every stretch where |Δt| > tolerance for at least min_length."""
     over = np.abs(dt) > tolerance_ps
@@ -533,10 +688,14 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
                                np.where(waiting_p, s_b[j], np.interp(f_b, np.arange(len(b)), s_b))))
     reached = np.column_stack((np.where(waiting_p, np.interp(f_a, np.arange(len(a)), t_p), t_p[i]),
                                np.where(waiting_p, t_n[j], np.interp(f_b, np.arange(len(b)), t_n))))
-    centre = np.where(waiting_p[:, None], (_at(a, f_a) + b[j]) / 2, (a[i] + _at(b, f_b)) / 2)
+    p_at = np.where(waiting_p[:, None], _at(a, f_a), a[i])  # the two matched points of each reading
+    n_at = np.where(waiting_p[:, None], b[j], _at(b, f_b))
+    centre = (p_at + n_at) / 2
     along = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(centre, axis=0), axis=1))))
     widths = [piece.width for piece in (*p.pieces, *n.pieces) if piece.kind == "track"]
-    width = float(np.median(np.hypot(*(a[i, :2] - b[j, :2]).T))) + (float(np.median(widths)) if widths else 0.0)
+    track = float(np.median(widths)) if widths else 0.0
+    width = float(np.median(np.hypot(*(a[i, :2] - b[j, :2]).T))) + track
+    band = _band(walks, ((s_a, a), (s_b, b)), matched, p_at, n_at, dt, model_, heights, track)
     # The even mode's lag behind the odd mode at each reading, along P's copper and along N's.
     behind = [np.interp(matched[:, column], walk.along, walk.lag) if walk.lag is not None else np.zeros(len(matched))
               for column, walk in enumerate(walks)]
@@ -576,7 +735,7 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
                      width, excursions, crossings,
                      tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads, lines,
                      matched_nm=matched, delays_ps=reached, lag_ps=lag,
-                     read_dt_ps=modes.apparent_dt(reached, lag, settings.rise_ps))
+                     read_dt_ps=modes.apparent_dt(reached, lag, settings.rise_ps), band_ps=band)
 
 
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
@@ -875,6 +1034,7 @@ def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
                    "length_mm": loop.length_nm / 1e6}
                   for side, route in (("P", p), ("N", n)) for loop in route.loops],
         "sources": list(result.sources), "warnings": list(result.warnings),
+        "band_note": BAND_NOTE,  # what the band round Δt in the centreline arrays means
         "ids": list(dict.fromkeys(p.item_ids + n.item_ids)),
         "pads": list(result.pads),
         "lines": list(result.lines),
@@ -889,4 +1049,6 @@ def pair_frame(result: PairPhase | Shorted, revision: int) -> bytes:
               for side, trace in zip("pn", result.traces)}
     centreline = {"along": result.along_nm, "dt": result.dt_ps,  # Δt along the pair: the chart export
                   "dt_read": result.read_dt_ps if result.read_dt_ps is not None else result.dt_ps}  # as a probe reads it
+    if result.band_ps is not None:  # the model limits, below and above dt
+        centreline["band_lo"], centreline["band_hi"] = result.band_ps[:, 0], result.band_ps[:, 1]
     return protocol.phase_pair_message(info, traces, revision, centreline)

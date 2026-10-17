@@ -3,7 +3,10 @@
 x: mm along the pair from the start end; y: Δt = t_P − t_N in ps (Δt < 0: P's edge is
 ahead there, Δt > 0: N's), and dashed beside it Δt as a probe on each trace would read it:
 the same where skew is made, fading as its common mode falls behind the edge (the bridge's
-modes.apparent_dt, for the Edge rise time setting). A band at ± the marker tolerance, every excursion (|Δt| above it
+modes.apparent_dt, for the Edge rise time setting). Shaded along the Δt line, where the pair
+has them, the known model error at tight features: a coupled bend makes up to 9 % more skew
+than its length difference and a tight meander of a lone side 10–20 % less (the bridge's
+phase._band, from one full-wave study of 2026-10-16; Δt itself is not corrected). A band at ± the marker tolerance, every excursion (|Δt| above it
 for longer than the marker length) shaded, and over each plot the pair's ends, its
 end-to-end skew and its largest |Δt|. All plots share one y scale, so the pairs compare at a
 glance. The SVG carries its numbers too, in a <metadata> block (JSON), and `csv` writes
@@ -12,21 +15,34 @@ them as rows (pair, mm, ps) for anything that reads tables.
 Pure Python: no Blender, no numpy, so a test draws it headless. The pairs come from
 phase.measured_pairs(): {"name", "start", "end", "along_mm", "dt_ps", "excursions"
 [{"at_mm", "length_mm", "peak_ps"}], "skew_ps", "max_ps", "delay_p_ps", "delay_n_ps",
-"length_p_mm", "length_n_mm", "sources", "flipped"}.
+"length_p_mm", "length_n_mm", "sources", "flipped"}, and when the bridge sent them
+"dt_lo_ps", "dt_hi_ps" (the model limits, below and above dt_ps) and "band_note" (what
+they are, for the legend and the metadata).
 """
 
 import html
 import json
 import math
+import textwrap
 
 WIDTH, HEIGHT = 560, 210  # one plot
 LEFT, RIGHT, TOP, BOTTOM = 52, 14, 34, 34  # margins inside a plot: axis numbers, nothing, title row, x axis
 HEADER = 44  # the chart's title
-FOOTER = 54  # the key
+FOOTER = 54  # the key; the model limits' lines, when there are any, add to it
+CHAR_PX = 6.4  # about the width of a character of the key's text, to wrap it to the chart
 FONT = "Helvetica, Arial, sans-serif"
 LINE, BAND, EXCURSION, GRID, AXIS, TEXT, DIM = "#2a78d6", "#dcefdc", "#f5a623", "#e4e4e4", "#999999", "#222222", "#666666"
 READ = "#0b6b45"  # Δt as read on the traces
+LIMITS = "#2a78d6"  # the model limits, shaded along the Δt line
 MIN_SCALE_PS = 2.0  # the y axis spans at least ± this
+
+
+def _limits(pair) -> tuple[list, list] | None:
+    """The model limits as drawn: (below, above), one value per sample, or None."""
+    low, high = pair.get("dt_lo_ps"), pair.get("dt_hi_ps")
+    if not low or not high or not (len(low) == len(high) == len(pair["dt_ps"])):
+        return None
+    return [float(v) for v in low], [float(v) for v in high]
 
 
 def columns_for(count: int) -> int:
@@ -34,8 +50,13 @@ def columns_for(count: int) -> int:
 
 
 def y_limit(pairs, tolerance_ps: float) -> float:
-    """± the y range: a round number above the largest |Δt| and twice the tolerance."""
+    """± the y range: a round number above the largest |Δt| (its model limits included)
+    and twice the tolerance."""
     largest = max([abs(float(value)) for pair in pairs for value in pair["dt_ps"]] + [0.0])
+    for pair in pairs:
+        limits = _limits(pair)
+        if limits:
+            largest = max([largest] + [abs(value) for edge in limits for value in edge])
     return _round_up(max(largest * 1.05, 2 * tolerance_ps, MIN_SCALE_PS))
 
 
@@ -74,7 +95,14 @@ def svg(pairs, tolerance_ps: float, min_length_mm: float, title: str = "") -> st
     pairs = [pair for pair in pairs if len(pair["along_mm"]) >= 2]
     columns = columns_for(len(pairs))
     rows = max(1, (len(pairs) + columns - 1) // columns)
-    width, height = WIDTH * columns, HEADER + HEIGHT * rows + FOOTER
+    width = WIDTH * columns
+    note = _band_note(pairs)  # the band's name on a line of its own, then what it means (the bridge's
+    limits = [f"Shaded: {note}."] + textwrap.wrap(  # phase.BEND_EXCESS and TIGHT_MEANDER, in words)
+        "A coupled bend makes up to 9 % more skew than its length difference, a tight meander of a side running "
+        "alone (a corner radius or leg spacing under 3 track widths) 10–20 % less: the shading applies those to "
+        "the Δt each feature made. Δt itself is not corrected.",
+        max(40, int((width - 28) / CHAR_PX))) if note else []
+    height = HEADER + HEIGHT * rows + FOOTER + 16 * len(limits)
     limit = y_limit(pairs, tolerance_ps)
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
            f'font-family="{FONT}" font-size="12" fill="{TEXT}">',
@@ -97,8 +125,15 @@ def svg(pairs, tolerance_ps: float, min_length_mm: float, title: str = "") -> st
     out.append(f'<text x="14" y="{y + 16}" fill="{DIM}">Dashed: Δt as a probe on each trace would read it, fading where '
                f'its common mode has fallen behind the edge. Skew: the end-to-end delay difference. The numbers are in '
                f'this file\'s &lt;metadata&gt; and in the .csv beside it.</text>')
+    for index, line in enumerate(limits):
+        out.append(f'<text x="14" y="{y + 32 + 16 * index}" fill="{DIM}">{html.escape(line)}</text>')
     out.append("</svg>")
     return "\n".join(out) + "\n"
+
+
+def _band_note(pairs) -> str:
+    """What the shading along the Δt line means, from the first pair that has it."""
+    return next((str(pair["band_note"]) for pair in pairs if pair.get("band_note") and _limits(pair)), "")
 
 
 def _plot(pair, ox: float, oy: float, limit: float, tolerance_ps: float) -> list:
@@ -133,6 +168,12 @@ def _plot(pair, ox: float, oy: float, limit: float, tolerance_ps: float) -> list
         out.append(f'<line x1="{x(tick):.1f}" x2="{x(tick):.1f}" y1="{y1}" y2="{y1 + 4}" stroke="{AXIS}"/>')
         out.append(f'<text x="{x(tick):.1f}" y="{y1 + 16}" text-anchor="middle" fill="{DIM}">{_number(tick)}</text>')
     out.append(f'<rect x="{x0}" y="{y0}" width="{x1 - x0}" height="{y1 - y0}" fill="none" stroke="{AXIS}"/>')
+    limits = _limits(pair)
+    if limits:  # the model limits: a shape between the band's two edges, under the lines
+        low, high = limits
+        edges = [f"{x(a):.1f},{y(d):.1f}" for a, d in zip(along, low)] + \
+                [f"{x(a):.1f},{y(d):.1f}" for a, d in zip(along[::-1], high[::-1])]
+        out.append(f'<polygon points="{" ".join(edges)}" fill="{LIMITS}" fill-opacity="0.18" stroke="none"/>')
     read = [float(v) for v in pair.get("dt_read_ps", dt)]
     if len(read) == len(along):
         dashed = " ".join(f"{x(a):.1f},{y(d):.1f}" for a, d in zip(along, read))
@@ -151,6 +192,7 @@ def _data(pairs, tolerance_ps: float, min_length_mm: float, title: str) -> dict:
     """The numbers behind the chart, as the <metadata> block carries them."""
     return {"format": "kls-dynamic-phase-chart 1", "board": title,
             "tolerance_ps": tolerance_ps, "min_length_mm": min_length_mm,
+            "band_note": _band_note(pairs),  # what dt_lo_ps and dt_hi_ps are
             "pairs": [{"name": pair["name"], "start": pair["start"], "end": pair["end"],
                        "flipped": bool(pair.get("flipped")),
                        "delay_p_ps": _f(pair.get("delay_p_ps")), "delay_n_ps": _f(pair.get("delay_n_ps")),
@@ -161,7 +203,9 @@ def _data(pairs, tolerance_ps: float, min_length_mm: float, title: str) -> dict:
                                        "peak_ps": _f(e["peak_ps"])} for e in pair.get("excursions", ())],
                        "along_mm": [round(float(v), 4) for v in pair["along_mm"]],
                        "dt_ps": [round(float(v), 4) for v in pair["dt_ps"]],
-                       "dt_read_ps": [round(float(v), 4) for v in pair.get("dt_read_ps", pair["dt_ps"])]}
+                       "dt_read_ps": [round(float(v), 4) for v in pair.get("dt_read_ps", pair["dt_ps"])],
+                       "dt_lo_ps": [round(v, 4) for v in (_limits(pair) or (pair["dt_ps"], []))[0]],
+                       "dt_hi_ps": [round(v, 4) for v in (_limits(pair) or ([], pair["dt_ps"]))[1]]}
                       for pair in pairs]}
 
 
@@ -170,14 +214,17 @@ def _f(value, digits: int = 4):
 
 
 def csv(pairs) -> str:
-    """One row per sample: pair, mm along the pair, Δt in ps; a header line first."""
-    lines = ["pair,start,end,along_mm,dt_ps,dt_read_ps"]
+    """One row per sample: pair, mm along the pair, Δt in ps (as made, as read, and the
+    model limits below and above it: Δt itself without them); a header line first."""
+    lines = ["pair,start,end,along_mm,dt_ps,dt_read_ps,dt_lo_ps,dt_hi_ps"]
     for pair in pairs:
         name = _field(pair["name"])
         start, end = _field(pair["start"]), _field(pair["end"])
         read = pair.get("dt_read_ps", pair["dt_ps"])
-        for along, dt, seen in zip(pair["along_mm"], pair["dt_ps"], read):
-            lines.append(f"{name},{start},{end},{float(along):.4f},{float(dt):.4f},{float(seen):.4f}")
+        low, high = _limits(pair) or (pair["dt_ps"], pair["dt_ps"])
+        for along, dt, seen, lo, hi in zip(pair["along_mm"], pair["dt_ps"], read, low, high):
+            lines.append(f"{name},{start},{end},{float(along):.4f},{float(dt):.4f},{float(seen):.4f},"
+                         f"{float(lo):.4f},{float(hi):.4f}")
     return "\n".join(lines) + "\n"
 
 

@@ -5,6 +5,8 @@ B.Cu, εr 4.0 everywhere. Pairs run along x at a 1 mm pitch (P at y = 0, N at y 
 from U1 (x = 0) to J1 (x = 50).
 """
 
+import math
+
 from kileido_bridge import model
 
 MM = 1_000_000
@@ -28,22 +30,22 @@ def nm(point):
 
 class Board:
     def __init__(self):
-        self.tracks, self.vias, self.pads, self.footprints, self.zones = [], [], [], [], []
+        self.tracks, self.arcs, self.vias, self.pads, self.footprints, self.zones = [], [], [], [], [], []
         self._count = 0
 
     def _id(self, prefix):
         self._count += 1
         return f"{prefix}-{self._count}"
 
-    def part(self, reference, *pins, layer="F.Cu"):
-        """A footprint; each pin is (number, net, (x, y) mm)."""
+    def part(self, reference, *pins, layer="F.Cu", pad=PAD):
+        """A footprint; each pin is (number, net, (x, y) mm) with a square pad `pad` nm wide."""
         footprint_id = self._id(reference)
         x0, y0 = nm(pins[0][2])
         self.footprints.append(model.Footprint(footprint_id, reference, (x0, y0), 0.0, "top", ()))
         for number, net, where in pins:
             x, y = nm(where)
-            square = ((x - PAD // 2, y - PAD // 2), (x + PAD // 2, y - PAD // 2),
-                      (x + PAD // 2, y + PAD // 2), (x - PAD // 2, y + PAD // 2))
+            square = ((x - pad // 2, y - pad // 2), (x + pad // 2, y - pad // 2),
+                      (x + pad // 2, y + pad // 2), (x - pad // 2, y + pad // 2))
             self.pads.append(model.Pad(f"{reference}.{number}", footprint_id, str(number), net, (x, y), None,
                                        {layer: ((square,),)}))
         return self
@@ -52,6 +54,23 @@ class Board:
         """Tracks through `points` (mm)."""
         for a, b in zip(points, points[1:]):
             self.tracks.append(model.Track(self._id("t"), layer, net, nm(a), nm(b), WIDTH))
+        return self
+
+    def arc(self, net, start, mid, end, layer="F.Cu"):
+        """An arc through three points (mm)."""
+        self.arcs.append(model.Arc(self._id("a"), layer, net, nm(start), nm(mid), nm(end), WIDTH))
+        return self
+
+    def turn(self, net, centre, radius, from_deg, to_deg, layer="F.Cu"):
+        """An arc of `radius` (mm) about `centre`, from one bearing to another (degrees,
+        counter-clockwise positive), as one arc per 90 degrees or less."""
+        bearing = from_deg
+        while bearing != to_deg:
+            step = max(-90, min(90, to_deg - bearing))
+            points = [(centre[0] + radius * math.cos(math.radians(bearing + part * step / 2)),
+                       centre[1] + radius * math.sin(math.radians(bearing + part * step / 2))) for part in range(3)]
+            self.arc(net, *points, layer=layer)
+            bearing += step
         return self
 
     def via(self, net, where, top="F.Cu", bottom="B.Cu"):
@@ -66,7 +85,7 @@ class Board:
 
     def snapshot(self):
         outline = model.Outline(((tuple(nm(p) for p in ((-5, -5), (55, -5), (55, 15), (-5, 15))),),))
-        return model.BoardSnapshot("phase.kicad_pcb", {}, tuple(self.tracks), (), tuple(self.vias),
+        return model.BoardSnapshot("phase.kicad_pcb", {}, tuple(self.tracks), tuple(self.arcs), tuple(self.vias),
                                    tuple(self.pads), tuple(self.footprints), tuple(self.zones), outline, STACKUP, (), {})
 
 
