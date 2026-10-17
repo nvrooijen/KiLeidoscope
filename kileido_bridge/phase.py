@@ -567,13 +567,20 @@ def _meanders(walk: _Walk, s: np.ndarray, xyz: np.ndarray, partner: np.ndarray, 
     edges = np.diff(np.concatenate(([0], departed.astype(np.int8), [0])))
     stretches = []
     for first, last in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1):
+        # From where it parts, back over the feature's own short pieces to the straight it
+        # leaves, and on to the one it rejoins; parting on a straight (the side its partner
+        # bumps away from) keeps to where it parts, not the whole straight and beyond.
+        low, high = float(s[first]), float(s[last])
         v0 = max(int(np.searchsorted(along, s[first], side="right")) - 1, 0)
-        while v0 > 0 and piece[v0 - 1] < short:
-            v0 -= 1
+        if v0 < len(piece) and piece[v0] < short:
+            while v0 > 0 and piece[v0 - 1] < short:
+                v0 -= 1
+            low = float(along[v0])
         v1 = min(int(np.searchsorted(along, s[last], side="left")), len(along) - 1)
-        while v1 < len(along) - 1 and piece[v1] < short:
-            v1 += 1
-        low, high = float(along[v0]), float(along[v1])
+        if v1 > 0 and piece[v1 - 1] < short:
+            while v1 < len(along) - 1 and piece[v1] < short:
+                v1 += 1
+            high = float(along[v1])
         if stretches and low <= stretches[-1][1]:
             low = stretches.pop()[0]
         stretches.append((low, high))
@@ -638,7 +645,9 @@ def _bend_correction(walks: tuple, matched: np.ndarray, p_at: np.ndarray, n_at: 
         where, total = _turned(walk.along, _corners(walk)[0])
         turns.append(np.diff(np.interp(matched[:, column], where, total)))
     same_layer = (p_at[:, 2] == n_at[:, 2])
-    together = (np.minimum(turns[0], turns[1]) > TURN_RAD / 2) & same_layer[:-1] & same_layer[1:] & ~in_meander
+    # The pair turns on a step where either side does: on a tight arc the matching often moves
+    # only one side per step (the other waits), and both sides' turning together would miss it.
+    together = (turns[0] + turns[1] > TURN_RAD) & same_layer[:-1] & same_layer[1:] & ~in_meander
     if not together.any():
         return np.zeros(count)
     gaps = np.maximum(np.linalg.norm(p_at - n_at, axis=1) - track_nm, 0.0)  # edge to edge at each reading

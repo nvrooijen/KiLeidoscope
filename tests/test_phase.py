@@ -262,6 +262,25 @@ def test_a_coupled_turn_makes_1_plus_epsilon_times_its_length_difference_and_a_t
     assert s_curve.dt_ps[-1] == pytest.approx(0.0, abs=0.05)
 
 
+def test_a_bump_on_one_side_after_the_turn_leaves_the_turns_correction_alone():
+    """N bumps away from P 1 mm after a tight turn (sharp corners, a tight meander). P runs
+    straight past it: P's stretch beside the bump is not a meander reaching back over the
+    turn's short chords, so the turn keeps its (1 + ε); the bump itself gets the meander band."""
+    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.25)), pad=200_000)
+    board.path("D_P", (0, 0), (10, 0)).turn("D_P", (10, 0.6), 0.6, -90, 0).path("D_P", (10.6, 0.6), (10.6, 8))
+    board.path("D_N", (0, 0.25), (10, 0.25)).turn("D_N", (10, 0.6), 0.35, -90, 0)
+    board.path("D_N", (10.35, 0.6), (10.35, 1.6), (9.6, 1.6), (9.6, 2.2), (10.35, 2.2), (10.35, 8))
+    snapshot = board.part("J1", (1, "D_P", (10.6, 8)), (2, "D_N", (10.35, 8)), pad=200_000).snapshot()
+    result = from_u1(snapshot)
+    plain = 0.25 * math.pi / 2 * unit_delay(snapshot, gap=100_000)
+    after_turn = int(np.argmin(np.linalg.norm(result.centre_nm[:, :2] - np.array((10.475, 1.1)) * MM, axis=1)))
+    # Within 4 %: on an arc this tight (0.475 mm, about 3 widths) the steps at its two ends are
+    # only partly counted. Before the meander's reach was kept to its own short pieces, P's
+    # straight beside the bump reached back over the turn's chords and took 10 % off.
+    assert result.dt_ps[after_turn] == pytest.approx((1 + bend_model(snapshot)) * plain, rel=0.04)
+    assert result.band_ps[-1, 1] - result.band_ps[-1, 0] > 0  # the bump's own band
+
+
 def test_the_bend_excess_tends_to_nothing_as_the_pair_parts_and_is_not_applied_inside():
     """Loose coupling gives the length rule back; stripline is left to it (not checked there)."""
     snapshot = coupled_turn()
