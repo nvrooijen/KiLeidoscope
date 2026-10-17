@@ -32,36 +32,36 @@ The DRC column's **Dynamic phase** button measures every pair at once and lists 
 ## How it is calculated
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="dynamic-phase-dark.svg">
-  <img src="dynamic-phase-light.svg" alt="KiCad 10 feeds the bridge. The bridge finds pairs, builds each side's copper graph, chooses matching ends, walks each side adding up delay from the delay model, aligns P and N, computes delta t, marks excursions, recomputes changed pairs live and sends frames to Blender, which draws them. Panel settings go back to the bridge." width="680">
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/dynamic-phase-dark.svg">
+  <img src="../assets/dynamic-phase-light.svg" alt="KiCad 10 feeds the bridge. The bridge finds pairs, builds each side's copper graph, chooses matching ends, walks each side adding up delay from the delay model, aligns P and N, computes delta t, marks excursions, recomputes changed pairs live and sends frames to Blender, which draws them. Panel settings go back to the bridge." width="680">
 </picture>
 
 Green runs in the bridge, orange in the Blender add-on. Each step with its code and what it assumes:
 
-**1. Find pairs** · [`channels.find_channels()`](../../kileido_bridge/channels.py)
+**1. Find pairs** · [`channels.find_channels()`](../kileido_bridge/channels.py)
 Nets are paired by KiCad's differential-pair naming (`_P`/`_N`, `+`/`-`). A 2-pad part joining pair nets on both sides, such as AC-coupling caps, chains them into one channel: `TX_P → C1 → TX_C_P` with `TX_N → C2 → TX_C_N`. Can be turned off with *Through series parts*.
 *Assumes:* series parts have exactly two pads. A pair joined to more than two others is not chained.
 
-**2. Copper graph per side** · [`channels.build_graph()`](../../kileido_bridge/channels.py)
+**2. Copper graph per side** · [`channels.build_graph()`](../kileido_bridge/channels.py)
 Track and arc ends are nodes. An end landing inside another track splits that track there, as KiCad connects a T. Vias and pads are nodes that touching ends connect to; stacked vias and vias in pads are joined.
 *Assumes:* two pieces touch when an end lies within half a track width. Zones (pours) don't join the route; they only change its speed (see Delay model).
 
-**3. Matching ends, route** · [`channels.pair_routes()`](../../kileido_bridge/channels.py)
+**3. Matching ends, route** · [`channels.pair_routes()`](../kileido_bridge/channels.py)
 The possible ends are pads with a single connection. Of the parts both sides reach, the two farthest apart over P and N together become the pair's ends, so both sides always end on the same parts. Each side's route is the shortest copper path between them. Any other end (an ESD diode, a second receiver) is a branch: listed and warned about, but not walked.
 *Assumes:* a branch's loading and reflections don't count. Where a side has a loop, the shorter path is used without a warning.
 
-**4. Walk and add up delay** · [`phase._walk()`](../../kileido_bridge/phase.py)
+**4. Walk and add up delay** · [`phase._walk()`](../kileido_bridge/phase.py)
 Each side is walked from the start end. Every track piece adds its length times the unit delay τ of its layer (see [Delay model](#delay-model)). A via adds its barrel between the two layers it connects, and a pad or series part adds the straight line between where the tracks meet it:
 
 $$t(s) = \sum_{\text{pieces up to } s} \ell_i \, \tau_i$$
 
 *Assumes:* delay doesn't depend on frequency, and there is no loss. A capacitor counts only as the distance across it.
 
-**5. Resample, align P and N** · [`phase._resample()`, `_align()`](../../kileido_bridge/phase.py)
+**5. Resample, align P and N** · [`phase._resample()`, `_align()`](../kileido_bridge/phase.py)
 Both sides are sampled evenly along their copper, at most 400 points and at least 0.05 mm apart. Dynamic time warping then matches the two sample sequences by 3D distance, counting only the distance beyond each point's nearest point on the other side. Running side by side costs nothing at any pitch, and where one side meanders, the other side's position waits.
 *Assumes:* where P and N split far apart (breakouts to different pins), points are matched only by being near each other, and Δt there means less.
 
-**6. Δt along the pair** · [`phase.analyze()`, `_nearby()`](../../kileido_bridge/phase.py)
+**6. Δt along the pair** · [`phase.analyze()`, `_nearby()`](../kileido_bridge/phase.py)
 Each matched point is projected onto the partner's copper, so the result doesn't depend on the sampling step. Δt is the delay difference gathered from the start up to that point:
 
 $$\Delta t(s) = t_P(s) - t_N(s')$$
@@ -69,18 +69,18 @@ $$\Delta t(s) = t_P(s) - t_N(s')$$
 with $s'$ the matched point on N. Δt < 0: P's edge is ahead there; Δt > 0: N's is.
 *Assumes:* a direction; see [Which end to start from](#which-end-to-start-from).
 
-**7. Excursions** · [`phase.find_excursions()`](../../kileido_bridge/phase.py)
+**7. Excursions** · [`phase.find_excursions()`](../kileido_bridge/phase.py)
 Wherever |Δt| stays above *Marker above (ps)* for at least *Marker longer than (mm)*, a marker at the start of that stretch, with its peak Δt and the [mode lag](#common-mode-and-mode-lag) over it. Defaults: 1 ps over 5 mm.
 
-**8. Live: changed pairs only** · [`phase.PhaseTracker`](../../kileido_bridge/phase.py)
+**8. Live: changed pairs only** · [`phase.PhaseTracker`](../kileido_bridge/phase.py)
 A pair is recomputed only when its copper, the delay inputs (stackup, project file, netclasses) or the settings change. Each poll spends at most 80 ms; pairs left over follow on the next polls.
 
-**9. Frames to Blender** · [`phase.pair_frame()`](../../kileido_bridge/phase.py), [`protocol.phase_pair_message()`](../../kileido_bridge/protocol.py)
-For each side: its path, and at every point the delay from the start, the lead over the partner and the track width. Plus via lands, both ends, excursions, branches, delay sources and warnings. Blender draws them in [`blender_addon/kileido/phase.py`](../../blender_addon/kileido/phase.py).
+**9. Frames to Blender** · [`phase.pair_frame()`](../kileido_bridge/phase.py), [`protocol.phase_pair_message()`](../kileido_bridge/protocol.py)
+For each side: its path, and at every point the delay from the start, the lead over the partner and the track width. Plus via lands, both ends, excursions, branches, delay sources and warnings. Blender draws them in [`blender_addon/kileido/phase.py`](../blender_addon/kileido/phase.py).
 
 ## Delay model
 
-The unit delay τ (ps/mm) of each piece comes from [`delays.py`](../../kileido_bridge/delays.py). The first source that applies wins, and the pair list names which one was used.
+The unit delay τ (ps/mm) of each piece comes from [`delays.py`](../kileido_bridge/delays.py). The first source that applies wins, and the pair list names which one was used.
 
 | Source | Unit delay | Used when |
 |---|---|---|
@@ -192,7 +192,7 @@ with skew the total delay difference of the pair. The two views are the same onl
 
 ## Validation
 
-The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) are checked in [`tests/test_phase.py`](../../tests/test_phase.py), and drawn headless in Blender by [`tests/blender/run_phase.py`](../../tests/blender/run_phase.py).
+The synthetic boards in [`tests/phase_boards.py`](../tests/phase_boards.py) are checked in [`tests/test_phase.py`](../tests/test_phase.py), and drawn headless in Blender by [`tests/blender/run_phase.py`](../tests/blender/run_phase.py).
 
 | Board | What the test checks |
 |---|---|
@@ -213,16 +213,16 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 | Known model error | a coupled 90° turn's band reaches 9 % of the Δt it makes and an S closes it again; a tight bump's band is 10–20 % of its Δt, a looser bump's none; a straight pair has none |
 | No εr in the stackup | FR-4 is used and named as the source |
 | Microstrip vs stripline | microstrip is faster |
-| Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../../tests/field_solver.py)), which itself matches Kirschning and Jansen and Hammerstad and Jensen within 0.4 % |
+| Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../tests/field_solver.py)), which itself matches Kirschning and Jansen and Hammerstad and Jensen within 0.4 % |
 | The two traces' signals | from the model's skew, odd-mode delays and mode lag, the two voltages along the pair rebuilt with the modal solution above (every step a delay or a half-sum, done in the frequency domain) and compared with the full-wave run's probes on the demo's cases A and B, with every straight's coordinates rounded so that both traces' edges sit on the mesh alike (in earlier runs a rounding remainder after an arc put one trace's edges just off the mesh lines, the simulation gave the two traces different widths, and the common mode grew along every straight; those runs were discarded). Just after the U-turn the two lie within 2–3 ps of each other, the common-mode doublet included (figure below): the full-wave common mode is 0.16–0.17 of the launched pulse against 0.144 from the turn's centreline skew, 1.1–1.2 times (A's and B's meshes), in line with the extra skew a tight coupled turn makes (see [Assumptions](#assumptions-and-what-isnt-modelled)). Along the straight that follows it stays within 4.5 % of 0.160 for 20 mm, as the two-mode solution says, and after B's bumps 0.030 is left against the model's 0.026. The serpentine's common-mode swing reads 1.35 times the model's on A and 1.0 times on B. One run per case, three cells per dielectric height. A probe's timing on one trace mixes the two modes, so a full-wave per-trace Δt is not the skew the tool computes once common mode exists; the charts compare the common mode instead (second figure) |
 | Common mode along the pair | the full-wave common mode against the model's two-mode prediction on A and B (second figure): the turn makes it in both, B's bumps 2 mm later cut it from 0.17 to 0.030 (model 0.026), A's bumps at J1 raise it from 0.14 to 0.22–0.25 (model 0.24), since the turn's pulse is 24 ps behind by then and the two do not cancel, and the serpentine's bends swing it in both; at J1's ports the common-mode peak is 25 % of the differential one for A and 3.3 % for B (model 26 % and 2.6 %) |
 | Even mode and mode lag | the even mode is slower than the odd mode on an outer layer, equal inside, the lone line's far apart and a line twice as wide for touching traces; the far-compensated board's excursion carries a lag proportional to its length (about 6 ps over 45 mm at the 1 mm pitch), the locally compensated one under a tenth of that, a stripline pair none. Against the field solver with a magnetic wall at the pair's midline (run on 2026-10-16, not in the repository) Kirschning and Jansen's even mode is within 1 % on the demo pair, the MIPI pair and the test boards' pair; the lag per mm, a difference of two roots, reads 1 to 10 % above the solver's (demo pair 0.33 against 0.30 ps/mm). In the full-wave runs of the demo the differential pulse, the half-difference of the probes side by side, runs at 5.73 ps/mm on the straights, and the common-mode doublet, the half-sum, timed by the zero crossing between its two lobes, falls behind it by 0.32–0.36 ps/mm on A's two straights, B's and a U-turn alone, with the model's 0.33 inside that range; on a finite board with its plane 3 mm beyond the copper and a mesh of three cells per dielectric height (one run per case, no finer mesh tried) |
 | Stackup from the board file | εr is read from the `.kicad_pcb` text |
 | Live tracker | recomputes only changed pairs, spreads work over polls, follows Blender's settings |
 
-<img src="common-mode-waveforms.png" alt="P and N voltages 8 mm along the demo pair, just after the U-turn: the full-wave run's probes and the two-mode reconstruction from dynamic phase lie within 2 to 3 ps of each other, the common-mode doublet included, 0.165 of the launched pulse in the full wave against 0.144 from the model" width="760">
+<img src="../assets/common-mode-waveforms.png" alt="P and N voltages 8 mm along the demo pair, just after the U-turn: the full-wave run's probes and the two-mode reconstruction from dynamic phase lie within 2 to 3 ps of each other, the common-mode doublet included, 0.165 of the launched pulse in the full wave against 0.144 from the model" width="760">
 
-<img src="common-mode-along.png" alt="Common mode along the demo pair for cases A and B, the full-wave run against the model's two-mode prediction: the turn makes it, it stays flat along the straights, B's bumps right after cut it, A's bumps at the far end raise it" width="760">
+<img src="../assets/common-mode-along.png" alt="Common mode along the demo pair for cases A and B, the full-wave run against the model's two-mode prediction: the turn makes it, it stays flat along the straights, B's bumps right after cut it, A's bumps at the far end raise it" width="760">
 
 **Still to do:** compare the end-to-end P and N delays with KiCad's own time-domain tuning on a real board with a tuning profile. They should match wherever the pair runs at the profile's gap, and differ by the lone stretches' few percent elsewhere.
 
@@ -242,10 +242,10 @@ The synthetic boards in [`tests/phase_boards.py`](../../tests/phase_boards.py) a
 
 | File | Contents |
 |---|---|
-| [`kileido_bridge/channels.py`](../../kileido_bridge/channels.py) | pairs, channels through series parts, copper graph, ends and routes |
-| [`kileido_bridge/delays.py`](../../kileido_bridge/delays.py) | delay model: tuning profiles, microstrip, stripline, vias |
-| [`kileido_bridge/phase.py`](../../kileido_bridge/phase.py) | walk, alignment, Δt, excursions, the known model error band, live tracker, frames |
-| [`kileido_bridge/phase_findings.py`](../../kileido_bridge/phase_findings.py) | the DRC column's Dynamic phase button: every pair as a findings file |
-| [`blender_addon/kileido/phase_chart.py`](../../blender_addon/kileido/phase_chart.py) | the Δt chart: SVG and CSV |
-| [`blender_addon/kileido/phase.py`](../../blender_addon/kileido/phase.py) | drawing: tint, pulses, glow, via light, markers, labels |
-| [`blender_addon/kileido/high_speed_panel.py`](../../blender_addon/kileido/high_speed_panel.py) | the High speed column: Dynamic phase settings and pair list |
+| [`kileido_bridge/channels.py`](../kileido_bridge/channels.py) | pairs, channels through series parts, copper graph, ends and routes |
+| [`kileido_bridge/delays.py`](../kileido_bridge/delays.py) | delay model: tuning profiles, microstrip, stripline, vias |
+| [`kileido_bridge/phase.py`](../kileido_bridge/phase.py) | walk, alignment, Δt, excursions, the known model error band, live tracker, frames |
+| [`kileido_bridge/phase_findings.py`](../kileido_bridge/phase_findings.py) | the DRC column's Dynamic phase button: every pair as a findings file |
+| [`blender_addon/kileido/phase_chart.py`](../blender_addon/kileido/phase_chart.py) | the Δt chart: SVG and CSV |
+| [`blender_addon/kileido/phase.py`](../blender_addon/kileido/phase.py) | drawing: tint, pulses, glow, via light, markers, labels |
+| [`blender_addon/kileido/high_speed_panel.py`](../blender_addon/kileido/high_speed_panel.py) | the High speed column: Dynamic phase settings and pair list |
