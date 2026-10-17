@@ -1,10 +1,13 @@
 # Dynamic phase
 
-KiCad 10 matches a differential pair by its total delay, end to end. A pair can match there and still run out of phase in between. For example, a bend near one end that is only compensated at the far end leaves P and N apart in time over everything between. Where they are apart, part of the differential signal turns into common mode, which radiates and picks up noise. Correcting the skew at the far end doesn't undo that.
+KiCad 10 matches a differential pair by its total delay, end to end [1]. A pair can match there and still run out of phase in between. For example, a bend near one end that is only compensated at the far end leaves P and N apart in time over everything between. Where they are apart, part of the differential signal turns into common mode, which radiates and picks up noise [2], [3]. Correcting the skew at the far end doesn't undo that.
 
 Dynamic phase shows how far P and N are apart in time **at every point along the pair**, live while you route in KiCad.
 
-<!-- Screenshot: a pair in Blender with the red/blue tint, pulses and an amber excursion marker. -->
+<p align="center"><img src="../assets/dynamic-phase-case-A.gif" width="760" alt="Case A, animated: delta t along the pair rises to 8 ps at the U-turn and stays there for 73 mm, apart from the serpentine's swings, until two bumps at J1 bring it back to zero. A cursor on the chart follows a pulse that travels along the pair in the field view below, red under P and blue under N."></p>
+<p align="center"><img src="../assets/dynamic-phase-case-B.gif" width="760" alt="Case B, animated: delta t rises to 8 ps at the U-turn and drops back to zero 2 mm later at two bumps, then only swings with the serpentine. A cursor on the chart follows a pulse that travels along the pair in the field view below, red under P and blue under N."></p>
+
+**Fig. 1.** Dynamic phase's Δt along a demo pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) while a 25 ps pulse travels from U1 to J1: case A above, case B below. Both start with the same U-turn, which leaves P 8 ps behind N. A fixes it with two bumps at J1, 73 mm later; B fixes it 2 mm after the turn. Both pairs match end to end, yet in A P runs 8 ps behind for 73 mm, while in B only the serpentine's own swings remain. The cursor follows the pulse; under each chart is the field under the pair from a 3D full-wave simulation (openEMS [4]), red as under P and blue as under N. Dashed lines: the ±1 ps marker tolerance.
 
 ## What you see
 
@@ -36,7 +39,9 @@ The DRC column's **Dynamic phase** button measures every pair at once and lists 
   <img src="../assets/dynamic-phase-light.svg" alt="KiCad 10 feeds the bridge. The bridge finds pairs, builds each side's copper graph, chooses matching ends, walks each side adding up delay from the delay model, aligns P and N, computes delta t, marks excursions, recomputes changed pairs live and sends frames to Blender, which draws them. Panel settings go back to the bridge." width="680">
 </picture>
 
-Green runs in the bridge, orange in the Blender add-on. Each step with its code and what it assumes:
+**Fig. 2.** How dynamic phase is calculated. Green runs in the bridge, orange in the Blender add-on.
+
+Each step with its code and what it assumes:
 
 **1. Find pairs** · [`channels.find_channels()`](../kileido_bridge/channels.py)
 Nets are paired by KiCad's differential-pair naming (`_P`/`_N`, `+`/`-`). A 2-pad part joining pair nets on both sides, such as AC-coupling caps, chains them into one channel: `TX_P → C1 → TX_C_P` with `TX_N → C2 → TX_C_N`. Can be turned off with *Through series parts*.
@@ -51,20 +56,20 @@ The possible ends are pads with a single connection. Of the parts both sides rea
 *Assumes:* a branch's loading and reflections don't count. Where a side has a loop, the shorter path is used without a warning.
 
 **4. Walk and add up delay** · [`phase._walk()`](../kileido_bridge/phase.py)
-Each side is walked from the start end. Every track piece adds its length times the unit delay τ of its layer (see [Delay model](#delay-model)). A via adds its barrel between the two layers it connects, and a pad or series part adds the straight line between where the tracks meet it:
+Each side is walked from the start end. Every track piece adds its length times the unit delay τ of its layer, the delay of a uniform transmission line [5], [3] (see [Delay model](#delay-model)). A via adds its barrel between the two layers it connects, and a pad or series part adds the straight line between where the tracks meet it:
 
-$$t(s) = \sum_{\text{pieces up to } s} \ell_i \, \tau_i$$
+$$t(s) = \sum_{\text{pieces up to } s} \ell_i \, \tau_i \tag{1}$$
 
 *Assumes:* delay doesn't depend on frequency, and there is no loss. A capacitor counts only as the distance across it.
 
 **5. Resample, align P and N** · [`phase._resample()`, `_align()`](../kileido_bridge/phase.py)
-Both sides are sampled evenly along their copper, at most 400 points and at least 0.05 mm apart. Dynamic time warping then matches the two sample sequences by 3D distance, counting only the distance beyond each point's nearest point on the other side. Running side by side costs nothing at any pitch, and where one side meanders, the other side's position waits.
+Both sides are sampled evenly along their copper, at most 400 points and at least 0.05 mm apart. Dynamic time warping [6] then matches the two sample sequences by 3D distance, counting only the distance beyond each point's nearest point on the other side. Running side by side costs nothing at any pitch, and where one side meanders, the other side's position waits.
 *Assumes:* where P and N split far apart (breakouts to different pins), points are matched only by being near each other, and Δt there means less.
 
 **6. Δt along the pair** · [`phase.analyze()`, `_nearby()`](../kileido_bridge/phase.py)
-Each matched point is projected onto the partner's copper, so the result doesn't depend on the sampling step. Δt is the delay difference gathered from the start up to that point:
+Each matched point is projected onto the partner's copper, so the result doesn't depend on the sampling step. Δt is the delay difference gathered from the start up to that point, the intra-pair skew [3] taken at every point instead of only at the ends:
 
-$$\Delta t(s) = t_P(s) - t_N(s')$$
+$$\Delta t(s) = t_P(s) - t_N(s') \tag{2}$$
 
 with $s'$ the matched point on N. Δt < 0: P's edge is ahead there; Δt > 0: N's is.
 *Assumes:* a direction; see [Which end to start from](#which-end-to-start-from).
@@ -85,76 +90,76 @@ The unit delay τ (ps/mm) of each piece comes from [`delays.py`](../kileido_brid
 | Source | Unit delay | Used when |
 |---|---|---|
 | KiCad tuning profile | the profile's ps/mm for that layer, taken as the pair's at the entry's own width and gap; where the pair runs at another gap, one side alone, or beside a pour, scaled by the estimate's εeff ratio (below); vias by override, or ps/mm × height | the net's netclass has a tuning profile (Board Setup › Tuning Profiles) |
-| Microstrip estimate | $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$, with $\varepsilon_\text{eff}$ of the coupled pair at the gap there | outer layers, with εr from the board's stackup |
-| Stripline estimate | $\tau = \sqrt{\varepsilon_r}\,/\,c$ | inner layers, with εr from the board's stackup |
+| Microstrip estimate | $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$ [5], with $\varepsilon_\text{eff}$ of the coupled pair at the gap there | outer layers, with εr from the board's stackup |
+| Stripline estimate | $\tau = \sqrt{\varepsilon_r}\,/\,c$ [5] | inner layers, with εr from the board's stackup |
 | FR-4 default | εr = 4.2 in the formulas above | the stackup gives no dielectric constant |
 
 Here $1/c$ = 3.3356 ps/mm. For microstrip, with $u = w/h$ (track width over the dielectric thickness to the next copper layer) and $g = s/h$ (the gap to the partner, edge to edge, measured every 50 µm along the route):
 
-- a lone trace has Hammerstad and Jensen's static $\varepsilon_\text{eff}(u)$;
-- in a coupled pair the differential signal runs in the odd mode, with more of its field in the air between the two traces: Kirschning and Jansen's odd-mode $\varepsilon_\text{eff}(u, g)$, which is lower and tends to the lone trace's as $g$ grows. So a stretch where one side meanders away or breaks out runs at the lone trace's speed.
+- a lone trace has Hammerstad and Jensen's static $\varepsilon_\text{eff}(u)$ [7];
+- in a coupled pair the differential signal runs in the odd mode, with more of its field in the air between the two traces: Kirschning and Jansen's odd-mode $\varepsilon_\text{eff}(u, g)$ [8], which is lower and tends to the lone trace's as $g$ grows. So a stretch where one side meanders away or breaks out runs at the lone trace's speed.
 
-On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) that gives 5.70 ps/mm, against 5.79 from KiCad's calculator (a lone trace: 5.99).
+On this project's MIPI pair (117 µm wide, 102 µm apart, 121 µm of εr 4.5) that gives 5.70 ps/mm, against 5.79 from KiCad's calculator [1] (a lone trace: 5.99).
 
-With a tuning profile the profile's number is kept as the level and the estimate only supplies the change: KiCad's calculator worked the entry's delay out for the pair at the entry's width and gap, so that is where it holds exactly, and a stretch where P and N part is multiplied by $\sqrt{\varepsilon_\text{eff}(\text{gap there}) / \varepsilon_\text{eff}(\text{profile gap})}$. KiCad itself charges the one number to every track, which is why its pair tuning works only on coupled stretches and its docs send you to the single-track tuner for the rest; here the two agree wherever the pair runs at the profile's gap, and a lone bump reads a few percent slower, as it is.
+With a tuning profile the profile's number is kept as the level and the estimate only supplies the change: KiCad's calculator worked the entry's delay out for the pair at the entry's width and gap, so that is where it holds exactly, and a stretch where P and N part is multiplied by $\sqrt{\varepsilon_\text{eff}(\text{gap there}) / \varepsilon_\text{eff}(\text{profile gap})}$, the ratio of the two unit delays $\tau = \sqrt{\varepsilon_\text{eff}}/c$ [5]. KiCad itself charges the one number to every track, which is why its pair tuning works only on coupled stretches and its docs send you to the single-track tuner for the rest [1]; here the two agree wherever the pair runs at the profile's gap, and a lone bump reads a few percent slower, as it is.
 
-Beside a pour of another net on the same layer (a grounded coplanar waveguide), the trace runs faster again. A conformal mapping of the cross-section (Ghione and Naldi's method, with the pair's midline as an electric wall for the odd mode) gives $\varepsilon_\text{eff}$ with and without the pour; that ratio scales the value above. Against a 2D field solver it is within 1.5 %; a pour a quarter of a dielectric height away makes the MIPI pair about 3 % faster.
+Beside a pour of another net on the same layer (a grounded coplanar waveguide), the trace runs faster again. A conformal mapping of the cross-section (Ghione and Naldi's method [9], with the pair's midline as an electric wall for the odd mode) gives $\varepsilon_\text{eff}$ with and without the pour; that ratio scales the value above. Against a 2D field solver (the repository's own, [`tests/field_solver.py`](../tests/field_solver.py)) it is within 1.5 %; a pour a quarter of a dielectric height away makes the MIPI pair about 3 % faster.
 
-For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
+For stripline the field is entirely in the dielectric, so $\varepsilon_\text{eff} = \varepsilon_r$ whatever the width [5]; different dielectrics above and below are averaged by thickness. A via barrel is $\sqrt{\varepsilon_r}/c$ times the height between the two layers it connects, with εr of the dielectrics it passes.
 
 ### Common mode and mode lag
 
-A coupled pair carries two modes: the odd (differential) mode, whose field sits partly in the air between the traces, and the even (common) mode. On microstrip the even mode's effective permittivity is the higher, so it is the slower; in a homogeneous dielectric (stripline) the two travel at the same speed. Kirschning and Jansen's static even mode, with $u = w/h$ and $g = s/h$:
+A coupled pair carries two modes: the odd (differential) mode, whose field sits partly in the air between the traces, and the even (common) mode. On microstrip the even mode's effective permittivity is the higher, so it is the slower; in a homogeneous dielectric (stripline) the two travel at the same speed. Kirschning and Jansen's static even mode [8], with $u = w/h$ and $g = s/h$:
 
-$$v = u\,\frac{20 + g^2}{10 + g^2} + g\,e^{-g}, \qquad \varepsilon_\text{eff,e} = \frac{\varepsilon_r + 1}{2} + \frac{\varepsilon_r - 1}{2}\left(1 + \frac{10}{v}\right)^{-a(v)\,b(\varepsilon_r)}$$
+$$v = u\,\frac{20 + g^2}{10 + g^2} + g\,e^{-g}, \qquad \varepsilon_\text{eff,e} = \frac{\varepsilon_r + 1}{2} + \frac{\varepsilon_r - 1}{2}\left(1 + \frac{10}{v}\right)^{-a(v)\,b(\varepsilon_r)} \tag{3}$$
 
-with $a$ and $b$ Hammerstad and Jensen's functions of the lone line, so that a pair far apart ($g \to \infty$, $v \to u$) has both modes become the lone line. The odd mode is the one in the delay model above. Each mode's unit delay is $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$, and the mode lag per mm is
+with $a$ and $b$ Hammerstad and Jensen's functions of the lone line [7], so that a pair far apart ($g \to \infty$, $v \to u$) has both modes become the lone line. The odd mode is the one in the delay model above. Each mode's unit delay is $\tau = \sqrt{\varepsilon_\text{eff}}\,/\,c$ [5], and the mode lag per mm is
 
-$$\tau_\text{e} - \tau_\text{o} = \frac{\sqrt{\varepsilon_\text{eff,e}} - \sqrt{\varepsilon_\text{eff,o}}}{c}.$$
+$$\tau_\text{e} - \tau_\text{o} = \frac{\sqrt{\varepsilon_\text{eff,e}} - \sqrt{\varepsilon_\text{eff,o}}}{c}. \tag{4}$$
 
-Skew turns differential signal into common mode. With P behind N by a small $\delta$, $V_P(t) = v(t - \delta)$ and $V_N(t) = -v(t)$, so to first order
+Skew turns differential signal into common mode [2], [3]. With P behind N by a small $\delta$, $V_P(t) = v(t - \delta)$ and $V_N(t) = -v(t)$, so to first order (derived below as (8))
 
-$$V_\text{diff} = \frac{V_P - V_N}{2} \approx v\!\left(t - \tfrac{\delta}{2}\right), \qquad V_\text{cm} = \frac{V_P + V_N}{2} \approx -\frac{\delta}{2}\,\frac{dv}{dt}$$
+$$V_\text{diff} = \frac{V_P - V_N}{2} \approx v\!\left(t - \tfrac{\delta}{2}\right), \qquad V_\text{cm} = \frac{V_P + V_N}{2} \approx -\frac{\delta}{2}\,\frac{dv}{dt} \tag{5}$$
 
-a common-mode pulse shaped like the edge's derivative, of order $\delta / t_r$ of the differential amplitude for a rise time $t_r$. A compensating bump $L$ mm further on makes the opposite pulse, aligned with the differential edge as it is then; the first one has fallen behind by $(\tau_\text{e} - \tau_\text{o})\,L$, and the two cancel only while that lag is small against $t_r$. That is the mode lag dynamic phase reports for each excursion (the lag per mm at the gap there, added up along both sides of the stretch; 0 where a side runs alone and on stripline): compare it with your edge's rise time. On the common-mode demo's pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) the lag is about 0.33 ps/mm, so a fix 73 mm along the pair from the turn (case A, the serpentine included) comes 24 ps late for a 25 ps edge and leaves two common-mode pulses (the full-wave run's two modes run 0.32–0.36 ps/mm apart, 23–26 ps over that stretch), while a fix 2 mm away (case B) cancels; the full-wave run gives a common-mode peak at J1 of 25 % of the differential one for A against 3.3 % for B (the two-mode solution from the model: 26 % and 2.6 %). With a tuning profile the lag is in the profile's scale, as the delay is. Beside a pour the odd mode's ratio is applied to both modes; the pour's own effect on the even mode is not modelled.
+a common-mode pulse shaped like the edge's derivative, of order $\delta / t_r$ of the differential amplitude for a rise time $t_r$. A compensating bump $L$ mm further on makes the opposite pulse, aligned with the differential edge as it is then; the first one has fallen behind by $(\tau_\text{e} - \tau_\text{o})\,L$, and the two cancel only while that lag is small against $t_r$. That is the mode lag dynamic phase reports for each excursion (the lag per mm at the gap there, added up along both sides of the stretch; 0 where a side runs alone and on stripline): compare it with your edge's rise time. On the common-mode demo's pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) the lag is about 0.33 ps/mm, so a fix 73 mm along the pair from the turn (case A, the serpentine included) comes 24 ps late for a 25 ps edge and leaves two common-mode pulses (the full-wave run's [4] two modes run 0.32–0.36 ps/mm apart, 23–26 ps over that stretch), while a fix 2 mm away (case B) cancels; the full-wave run gives a common-mode peak at J1 of 25 % of the differential one for A against 3.3 % for B (the two-mode solution from the model: 26 % and 2.6 %). With a tuning profile the lag is in the profile's scale, as the delay is. Beside a pour the odd mode's ratio is applied to both modes; the pour's own effect on the even mode is not modelled.
 
 ### The equations behind it
 
-Everything above follows from one standard result. For a symmetric coupled pair that is lossless, uniform along its length $z$ and terminated in its modal impedances (no reflections), the coupled telegrapher's equations separate into two modes that never exchange energy, the even (common) and the odd (differential), each with its own velocity $v = 1/\tau$, $\tau = \sqrt{\varepsilon_\text{eff}}/c$ (Tripathi 1975 for the general inhomogeneous case; Pozar, coupled lines, for the symmetric one). Whatever the two conductors carry at $z = 0$ arrives at $z$ as
+Everything above follows from one standard result. For a symmetric coupled pair that is lossless, uniform along its length $z$ and terminated in its modal impedances (no reflections), the coupled telegrapher's equations separate into two modes that never exchange energy, the even (common) and the odd (differential), each with its own velocity $v = 1/\tau$, $\tau = \sqrt{\varepsilon_\text{eff}}/c$: Tripathi [10] for the general inhomogeneous case, Pozar [5] for the symmetric one, Hall and Heck [2] in the time domain. Whatever the two conductors carry at $z = 0$ arrives at $z$ as
 
-$$V_P(z,t) = e\!\left(t - \tau_\text{e} z\right) + o\!\left(t - \tau_\text{o} z\right), \qquad V_N(z,t) = e\!\left(t - \tau_\text{e} z\right) - o\!\left(t - \tau_\text{o} z\right),$$
+$$V_P(z,t) = e\!\left(t - \tau_\text{e} z\right) + o\!\left(t - \tau_\text{o} z\right), \qquad V_N(z,t) = e\!\left(t - \tau_\text{e} z\right) - o\!\left(t - \tau_\text{o} z\right), \tag{6}$$
 
-with $e(t) = \tfrac12\,[V_P(0,t) + V_N(0,t)]$ and $o(t) = \tfrac12\,[V_P(0,t) - V_N(0,t)]$. This is exact under those assumptions; the rest is algebra on it.
+with $e(t) = \tfrac12\,[V_P(0,t) + V_N(0,t)]$ and $o(t) = \tfrac12\,[V_P(0,t) - V_N(0,t)]$. This is exact under those assumptions; (7)–(11) are algebra on it.
 
-**Far-end crosstalk is the same velocity difference.** A step $s(t)$ on P with N quiet gives $e = o = s/2$, so at the far end of $\ell$ mm
+**Far-end crosstalk is the same velocity difference.** A step $s(t)$ on P with N quiet gives $e = o = s/2$, so by (6), at the far end of $\ell$ mm
 
-$$V_N(\ell,t) = \tfrac12\,[\,s(t - \tau_\text{e}\ell) - s(t - \tau_\text{o}\ell)\,] \approx -\tfrac{\ell}{2}\,(\tau_\text{e} - \tau_\text{o})\,s'(t - \tau_\text{o}\ell),$$
+$$V_N(\ell,t) = \tfrac12\,[\,s(t - \tau_\text{e}\ell) - s(t - \tau_\text{o}\ell)\,] \approx -\tfrac{\ell}{2}\,(\tau_\text{e} - \tau_\text{o})\,s'(t - \tau_\text{o}\ell), \tag{7}$$
 
-the textbook far-end crosstalk of microstrip, zero on stripline where $\tau_\text{e} = \tau_\text{o}$ (Hall and Heck; Johnson and Graham). The mode lag dynamic phase reports is $\ell\,(\tau_\text{e} - \tau_\text{o})$, the same quantity.
+the textbook far-end crosstalk of microstrip, zero on stripline where $\tau_\text{e} = \tau_\text{o}$ [2], [11]. The mode lag dynamic phase reports is $\ell\,(\tau_\text{e} - \tau_\text{o})$, the same quantity.
 
-**Skew is mode conversion.** P behind N by $\delta$ at $z = 0$, $V_P = s(t - \delta)$ and $V_N = -s(t)$, gives
+**Skew is mode conversion** [2]. P behind N by $\delta$ at $z = 0$, $V_P = s(t - \delta)$ and $V_N = -s(t)$, gives by the definitions under (6) and a Taylor expansion about $t - \delta/2$
 
-$$e(t) = \tfrac12\,[\,s(t - \delta) - s(t)\,] = -\tfrac{\delta}{2}\,s'\!\left(t - \tfrac{\delta}{2}\right) + O(\delta^3), \qquad o(t) = \tfrac12\,[\,s(t - \delta) + s(t)\,] = s\!\left(t - \tfrac{\delta}{2}\right) + O(\delta^2).$$
+$$e(t) = \tfrac12\,[\,s(t - \delta) - s(t)\,] = -\tfrac{\delta}{2}\,s'\!\left(t - \tfrac{\delta}{2}\right) + O(\delta^3), \qquad o(t) = \tfrac12\,[\,s(t - \delta) + s(t)\,] = s\!\left(t - \tfrac{\delta}{2}\right) + O(\delta^2). \tag{8}$$
 
-In Bockelman and Eisenstadt's mixed-mode parameters the same statement in the frequency domain is $S_\text{cd21} = \tfrac12\,(S_{21,P} - S_{21,N}) = \tfrac12\,e^{-j\omega T}\,(e^{-j\omega\delta} - 1)$ for two lines of delay $T$ and $T + \delta$, so
+In Bockelman and Eisenstadt's mixed-mode parameters [12] the same statement in the frequency domain is $S_\text{cd21} = \tfrac12\,(S_{21,P} - S_{21,N}) = \tfrac12\,e^{-j\omega T}\,(e^{-j\omega\delta} - 1)$ for two lines of delay $T$ and $T + \delta$, so
 
-$$|S_\text{cd21}| = |\sin(\pi f \delta)|,$$
+$$|S_\text{cd21}| = |\sin(\pi f \delta)|, \tag{9}$$
 
-with its first peak at $f = 1/(2\delta)$: the measure channel standards use for intra-pair skew.
+with its first peak at $f = 1/(2\delta)$.
 
-**Why a distant fix does not undo it.** After $\ell$ mm coupled, the common-mode pulse is at $t = \tau_\text{e}\ell$ while the differential edge is at $\tau_\text{o}\ell$: behind by $\Delta\tau = \ell\,(\tau_\text{e} - \tau_\text{o})$, the mode lag. A bump there that delays N by $\delta$ converts again, with the opposite sign and aligned with the edge as it is then, so the common mode that remains is
+**Why a distant fix does not undo it.** After $\ell$ mm coupled, the common-mode pulse is at $t = \tau_\text{e}\ell$ while the differential edge is at $\tau_\text{o}\ell$: behind by $\Delta\tau = \ell\,(\tau_\text{e} - \tau_\text{o})$, the mode lag. A bump there that delays N by $\delta$ converts again, with the opposite sign and aligned with the edge as it is then, so by (6) and (8) the common mode that remains is
 
-$$e_\text{left}(t) = \tfrac{\delta}{2}\,\big[\,s'(t - \tau_\text{o}\ell - \tfrac{\delta}{2}) - s'(t - \tau_\text{e}\ell - \tfrac{\delta}{2})\,\big] \approx -\tfrac{\delta}{2}\,\Delta\tau\;s''\!\left(t - \tau_\text{o}\ell - \tfrac{\delta}{2}\right)$$
+$$e_\text{left}(t) = \tfrac{\delta}{2}\,\big[\,s'(t - \tau_\text{o}\ell - \tfrac{\delta}{2}) - s'(t - \tau_\text{e}\ell - \tfrac{\delta}{2})\,\big] \approx -\tfrac{\delta}{2}\,\Delta\tau\;s''\!\left(t - \tau_\text{o}\ell - \tfrac{\delta}{2}\right) \tag{10}$$
 
 for $\Delta\tau$ small against the edge's rise time $t_r$.
 
-**What a probe on each trace reads, the drift.** A probe on P sees the differential edge plus the sliding common-mode pulse, on N the inverted edge plus the same pulse, and the timing of each moves as the pulse slides. For one skew $\delta$ followed by a lag $\Delta\tau$, timing each trace at the 50 % point of its pulse's running integral and keeping first order in $\delta$,
+**What a probe on each trace reads, the drift.** A probe on P sees the differential edge plus the sliding common-mode pulse, on N the inverted edge plus the same pulse, and the timing of each moves as the pulse slides. For one skew $\delta$ followed by a lag $\Delta\tau$, timing each trace at the 50 % point of its pulse's running integral and keeping first order in $\delta$, (6) and (8) give
 
-$$\Delta t_\text{read} = \delta\,e^{-\Delta\tau^2 / 2\sigma^2}, \qquad \sigma = t_r / 2.56$$
+$$\Delta t_\text{read} = \delta\,e^{-\Delta\tau^2 / 2\sigma^2}, \qquad \sigma = t_r / 2.56 \tag{11}$$
 
-for a Gaussian edge: the skew reads in full where it is made and fades as its common mode falls behind, until the two edges are aligned again and the skew lives only in a common-mode pulse running behind them. Dynamic phase computes this along the route for any distribution of skew (`modes.apparent_dt`: the two-mode solution step by step, in the frequency domain, on a Gaussian edge of the *Edge rise time* setting) and carries it as a second curve, Δt as read, in the chart export; on stripline the two coincide. It is what a two-channel probe or a field solver's per-trace timing shows, not the skew itself, which is why neither is a measurement of Δt past the first discontinuity.
+for a Gaussian edge, whose 10–90 % rise time is $2.56\,\sigma$: the skew reads in full where it is made and fades as its common mode falls behind, until the two edges are aligned again and the skew lives only in a common-mode pulse running behind them. Dynamic phase computes this along the route for any distribution of skew (`modes.apparent_dt`: the two-mode solution step by step, in the frequency domain, on a Gaussian edge of the *Edge rise time* setting) and carries it as a second curve, Δt as read, in the chart export; on stripline the two coincide. It is what a two-channel probe or a field solver's per-trace timing shows, not the skew itself, which is why neither is a measurement of Δt past the first discontinuity.
 
-Its size next to the differential signal is then of order $\delta\,\Delta\tau / t_r^2$, within a factor of a few that depends on the edge's shape; once $\Delta\tau$ exceeds the edge the two pulses no longer overlap and what is left is simply the whole common mode, twice over. On the demo's case A, $\delta$ = 8 ps, $\Delta\tau$ = 24 ps (73 mm of coupled pair between the turn and the bumps) and $t_r$ ≈ 25 ps: the order-of-magnitude form gives 0.3, the exact expression for a Gaussian pulse of that rise time 0.43, the two-mode solution from the run's own launched pulse 0.26, and the full-wave run gives 0.25 (the common-mode peak over the differential peak at J1's ports), so all agree within a factor of two. Case B, $\Delta\tau$ under 1 ps, gives 0.02; the full-wave run gives 0.033 and the two-mode solution 0.026. One run each, three cells per dielectric height.
+By (10), its size next to the differential signal is then of order $\delta\,\Delta\tau / t_r^2$, within a factor of a few that depends on the edge's shape; once $\Delta\tau$ exceeds the edge the two pulses no longer overlap and what is left is simply the whole common mode, twice over. On the demo's case A, $\delta$ = 8 ps, $\Delta\tau$ = 24 ps (73 mm of coupled pair between the turn and the bumps) and $t_r$ ≈ 25 ps: the order-of-magnitude form gives 0.3, the exact expression for a Gaussian pulse of that rise time 0.43, the two-mode solution from the run's own launched pulse 0.26, and the full-wave run [4] gives 0.25 (the common-mode peak over the differential peak at J1's ports), so all agree within a factor of two. Case B, $\Delta\tau$ under 1 ps, gives 0.02; the full-wave run gives 0.033 and the two-mode solution 0.026. One run each, three cells per dielectric height.
 
 ### Why Δt holds up when the estimate is off
 
@@ -168,7 +173,7 @@ Its size next to the differential signal is then of order $\delta\,\Delta\tau / 
 - **Microstrip:** no solder mask (delay a few % too low), zero copper thickness, and the next copper layer is assumed to be the reference plane.
 - **No plane underneath** (a plain coplanar waveguide, a 2-layer board without a pour on the other side, a plane several layers down) is not detected: a whole plane on the next copper layer is always assumed. Finding out what really lies under each trace is a field solver's job; a tuning profile with your own numbers covers such a board.
 - **Coupling** is modelled on outer layers: from the gap, by the estimate; with a tuning profile, the profile's number at its own gap scaled by that estimate's ratio (see above). On inner layers (stripline) coupling doesn't change the speed.
-- **Tight bends and meanders** count by their centreline length. A full-wave study on one pair geometry (0.2 mm traces, 0.25 mm apart, 0.12 mm of laminate; extrapolated over three meshes) found that a coupled 180° turn makes about 9 % more skew than its length difference, at both radii tried and with 45° corners alike, and that two tight bumps on one side (corner radius 1.25 track widths, legs 1.5 widths apart) make 17–20 % less skew than the length rule gives, mostly from their corners and partly from their legs' coupling to each other. Neither is corrected; the [Δt chart](#the-δt-chart) shades them as a band, 0 to +9 % on a coupled bend and −10 to −20 % on a tight meander (a corner radius or leg spacing under 3 track widths). A looser meander gets no band, since nothing was measured there.
+- **Tight bends and meanders** count by their centreline length. A full-wave study (openEMS [4]) on one pair geometry (0.2 mm traces, 0.25 mm apart, 0.12 mm of laminate; extrapolated over three meshes) found that a coupled 180° turn makes about 9 % more skew than its length difference, at both radii tried and with 45° corners alike, and that two tight bumps on one side (corner radius 1.25 track widths, legs 1.5 widths apart) make 17–20 % less skew than the length rule gives, mostly from their corners and partly from their legs' coupling to each other. Neither is corrected; the [Δt chart](#the-δt-chart) shades them as a band, 0 to +9 % on a coupled bend and −10 to −20 % on a tight meander (a corner radius or leg spacing under 3 track widths). A looser meander gets no band, since nothing was measured there.
 - **Grounded coplanar waveguide** is modelled on outer layers without a tuning profile: at each point, the distance to the nearest pour of another net on the same layer speeds that stretch up (a pour past 10 dielectric heights changes nothing). The pour is taken as one straight edge at that distance; stitching vias and the pour's own width are not considered.
 - **Vias** are treated as a piece of line. Pad and antipad capacitance and the via stub are ignored.
 - **Branches** (ESD stubs, second receivers) are shown but their loading isn't modelled.
@@ -184,9 +189,9 @@ Its size next to the differential signal is then of order $\delta\,\Delta\tau / 
 
 ## Which end to start from
 
-Δt is gathered from the start end. Walked from the other end, it becomes
+Δt is gathered from the start end. Walked from the other end, it becomes, by (2),
 
-$$\Delta t'(s) = \text{skew} - \Delta t(s)$$
+$$\Delta t'(s) = \text{skew} - \Delta t(s) \tag{12}$$
 
 with skew the total delay difference of the pair. The two views are the same only when total skew is 0. Start from the driver: *Flip start* in the pair list walks a pair from its other end. For a pair driven from both ends (USB, for example) both views matter.
 
@@ -207,36 +212,54 @@ The synthetic boards in [`tests/phase_boards.py`](../tests/phase_boards.py) are 
 | Unfinished route | reported |
 | Arcs | count their true length, not their chords |
 | Tuning profile | the pair at the profile's own gap reads the profile's number exactly; a lone bump on one side runs slower; a single-ended entry and an inner layer are not scaled |
-| Lone trace, full wave | one trace of the coupled test pair (0.2 mm wide, 0.25 mm gap, 0.12 mm over εr 4.1) alone, in a 3D FDTD run (openEMS, not part of the repository): 5.876 ps/mm against the estimate's 5.865 (0.2 %); its ratio to the coupled pair 1.0316 against the estimate's 1.0311, which is the ratio the profile scaling uses. Single mesh, 8 cells per dielectric height; the same mesh put the pair within 0.1 % of a finer one |
+| Lone trace, full wave | one trace of the coupled test pair (0.2 mm wide, 0.25 mm gap, 0.12 mm over εr 4.1) alone, in a 3D FDTD run (openEMS [4], not part of the repository): 5.876 ps/mm against the estimate's 5.865 (0.2 %); its ratio to the coupled pair 1.0316 against the estimate's 1.0311, which is the ratio the profile scaling uses. Single mesh, 8 cells per dielectric height; the same mesh put the pair within 0.1 % of a finer one |
 | Findings file | an excursion, a short, a loop, a branch and an unfinished side become findings the findings reader takes whole, every target found on the board |
 | Chart | every pair on one scale, the excursions shaded, the numbers in the SVG and the CSV |
 | Known model error | a coupled 90° turn's band reaches 9 % of the Δt it makes and an S closes it again; a tight bump's band is 10–20 % of its Δt, a looser bump's none; a straight pair has none |
 | No εr in the stackup | FR-4 is used and named as the source |
 | Microstrip vs stripline | microstrip is faster |
-| Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../tests/field_solver.py)), which itself matches Kirschning and Jansen and Hammerstad and Jensen within 0.4 % |
-| The two traces' signals | from the model's skew, odd-mode delays and mode lag, the two voltages along the pair rebuilt with the modal solution above (every step a delay or a half-sum, done in the frequency domain) and compared with the full-wave run's probes on the demo's cases A and B, with every straight's coordinates rounded so that both traces' edges sit on the mesh alike (in earlier runs a rounding remainder after an arc put one trace's edges just off the mesh lines, the simulation gave the two traces different widths, and the common mode grew along every straight; those runs were discarded). Just after the U-turn the two lie within 2–3 ps of each other, the common-mode doublet included (figure below): the full-wave common mode is 0.16–0.17 of the launched pulse against 0.144 from the turn's centreline skew, 1.1–1.2 times (A's and B's meshes), in line with the extra skew a tight coupled turn makes (see [Assumptions](#assumptions-and-what-isnt-modelled)). Along the straight that follows it stays within 4.5 % of 0.160 for 20 mm, as the two-mode solution says, and after B's bumps 0.030 is left against the model's 0.026. The serpentine's common-mode swing reads 1.35 times the model's on A and 1.0 times on B. One run per case, three cells per dielectric height. A probe's timing on one trace mixes the two modes, so a full-wave per-trace Δt is not the skew the tool computes once common mode exists; the charts compare the common mode instead (second figure) |
-| Common mode along the pair | the full-wave common mode against the model's two-mode prediction on A and B (second figure): the turn makes it in both, B's bumps 2 mm later cut it from 0.17 to 0.030 (model 0.026), A's bumps at J1 raise it from 0.14 to 0.22–0.25 (model 0.24), since the turn's pulse is 24 ps behind by then and the two do not cancel, and the serpentine's bends swing it in both; at J1's ports the common-mode peak is 25 % of the differential one for A and 3.3 % for B (model 26 % and 2.6 %) |
-| Even mode and mode lag | the even mode is slower than the odd mode on an outer layer, equal inside, the lone line's far apart and a line twice as wide for touching traces; the far-compensated board's excursion carries a lag proportional to its length (about 6 ps over 45 mm at the 1 mm pitch), the locally compensated one under a tenth of that, a stripline pair none. Against the field solver with a magnetic wall at the pair's midline (run on 2026-10-16, not in the repository) Kirschning and Jansen's even mode is within 1 % on the demo pair, the MIPI pair and the test boards' pair; the lag per mm, a difference of two roots, reads 1 to 10 % above the solver's (demo pair 0.33 against 0.30 ps/mm). In the full-wave runs of the demo the differential pulse, the half-difference of the probes side by side, runs at 5.73 ps/mm on the straights, and the common-mode doublet, the half-sum, timed by the zero crossing between its two lobes, falls behind it by 0.32–0.36 ps/mm on A's two straights, B's and a U-turn alone, with the model's 0.33 inside that range; on a finite board with its plane 3 mm beyond the copper and a mesh of three cells per dielectric height (one run per case, no finer mesh tried) |
+| Coupled pair, and one beside a pour | within 1.5 % of a 2D field solver ([`tests/field_solver.py`](../tests/field_solver.py)), which itself matches Kirschning and Jansen [8] and Hammerstad and Jensen [7] within 0.4 % |
+| The two traces' signals | from the model's skew, odd-mode delays and mode lag, the two voltages along the pair rebuilt with the modal solution (6) (every step a delay or a half-sum, done in the frequency domain) and compared with the full-wave run's probes on the demo's cases A and B, with every straight's coordinates rounded so that both traces' edges sit on the mesh alike (in earlier runs a rounding remainder after an arc put one trace's edges just off the mesh lines, the simulation gave the two traces different widths, and the common mode grew along every straight; those runs were discarded). Just after the U-turn the two lie within 2–3 ps of each other, the common-mode doublet included (Fig. 3): the full-wave common mode is 0.16–0.17 of the launched pulse against 0.144 from the turn's centreline skew, 1.1–1.2 times (A's and B's meshes), in line with the extra skew a tight coupled turn makes (see [Assumptions](#assumptions-and-what-isnt-modelled)). Along the straight that follows it stays within 4.5 % of 0.160 for 20 mm, as the two-mode solution says, and after B's bumps 0.030 is left against the model's 0.026. The serpentine's common-mode swing reads 1.35 times the model's on A and 1.0 times on B. One run per case, three cells per dielectric height. A probe's timing on one trace mixes the two modes, so a full-wave per-trace Δt is not the skew the tool computes once common mode exists; the charts compare the common mode instead (Fig. 4) |
+| Common mode along the pair | the full-wave common mode against the model's two-mode prediction on A and B (Fig. 4): the turn makes it in both, B's bumps 2 mm later cut it from 0.17 to 0.030 (model 0.026), A's bumps at J1 raise it from 0.14 to 0.22–0.25 (model 0.24), since the turn's pulse is 24 ps behind by then and the two do not cancel, and the serpentine's bends swing it in both; at J1's ports the common-mode peak is 25 % of the differential one for A and 3.3 % for B (model 26 % and 2.6 %) |
+| Even mode and mode lag | the even mode is slower than the odd mode on an outer layer, equal inside, the lone line's far apart and a line twice as wide for touching traces; the far-compensated board's excursion carries a lag proportional to its length (about 6 ps over 45 mm at the 1 mm pitch), the locally compensated one under a tenth of that, a stripline pair none. Against the field solver with a magnetic wall at the pair's midline (run on 2026-10-16, not in the repository) Kirschning and Jansen's even mode [8] is within 1 % on the demo pair, the MIPI pair and the test boards' pair; the lag per mm, a difference of two roots, reads 1 to 10 % above the solver's (demo pair 0.33 against 0.30 ps/mm). In the full-wave runs [4] of the demo the differential pulse, the half-difference of the probes side by side, runs at 5.73 ps/mm on the straights, and the common-mode doublet, the half-sum, timed by the zero crossing between its two lobes, falls behind it by 0.32–0.36 ps/mm on A's two straights, B's and a U-turn alone, with the model's 0.33 inside that range; on a finite board with its plane 3 mm beyond the copper and a mesh of three cells per dielectric height (one run per case, no finer mesh tried) |
 | Stackup from the board file | εr is read from the `.kicad_pcb` text |
 | Live tracker | recomputes only changed pairs, spreads work over polls, follows Blender's settings |
 
 <img src="../assets/common-mode-waveforms.png" alt="P and N voltages 8 mm along the demo pair, just after the U-turn: the full-wave run's probes and the two-mode reconstruction from dynamic phase lie within 2 to 3 ps of each other, the common-mode doublet included, 0.165 of the launched pulse in the full wave against 0.144 from the model" width="760">
 
+**Fig. 3.** Case A, 8 mm along the pair, just after the U-turn: the two voltages from the full-wave run [4] (solid) and rebuilt by (6) from dynamic phase's skew, delays and mode lag (dashed), with their common mode.
+
 <img src="../assets/common-mode-along.png" alt="Common mode along the demo pair for cases A and B, the full-wave run against the model's two-mode prediction: the turn makes it, it stays flat along the straights, B's bumps right after cut it, A's bumps at the far end raise it" width="760">
+
+**Fig. 4.** The common mode along the pair for cases A and B: the full-wave run [4] against the two-mode solution (6) fed with dynamic phase's numbers.
 
 **Still to do:** compare the end-to-end P and N delays with KiCad's own time-domain tuning on a real board with a tuning profile. They should match wherever the pair runs at the profile's gap, and differ by the lone stretches' few percent elsewhere.
 
 ## References
 
-- M. Kirschning and R. H. Jansen, "Accurate wide-range design equations for the frequency-dependent characteristic of parallel coupled microstrip lines," IEEE Transactions on Microwave Theory and Techniques, vol. 32, no. 1, pp. 83–90, 1984: the even and odd modes.
-- E. Hammerstad and Ø. Jensen, "Accurate models for microstrip computer-aided design," IEEE MTT-S International Microwave Symposium Digest, 1980, pp. 407–409: the lone line.
-- G. Ghione and C. Naldi, "Coplanar waveguides for MMIC applications: effect of upper shielding, conductor backing, finite-extent ground planes, and line-to-line coupling," IEEE Transactions on Microwave Theory and Techniques, vol. 35, no. 3, pp. 260–267, 1987: the pour beside the pair.
-- D. M. Pozar, Microwave Engineering, 4th ed., Wiley, 2012: coupled lines, even and odd modes.
-- S. H. Hall and H. L. Heck, Advanced Signal Integrity for High-Speed Digital Designs, Wiley, 2009: modal decomposition, the two mode velocities and far-end crosstalk, differential-to-common conversion.
-- E. Bogatin, Signal and Power Integrity — Simplified, 3rd ed., Pearson, 2018: differential pairs, skew and common mode.
-- V. K. Tripathi, "Asymmetric coupled transmission lines in an inhomogeneous medium," IEEE Transactions on Microwave Theory and Techniques, vol. 23, no. 9, pp. 734–739, 1975: the two modes of a coupled line with two velocities, the solution the equations above rest on.
-- D. E. Bockelman and W. R. Eisenstadt, "Combined differential and common-mode scattering parameters: theory and simulation," IEEE Transactions on Microwave Theory and Techniques, vol. 43, no. 7, pp. 1530–1539, 1995: mixed-mode S-parameters, $S_\text{cd21}$.
-- H. W. Johnson and M. Graham, High-Speed Digital Design: A Handbook of Black Magic, Prentice Hall, 1993: far-end crosstalk from the modal velocity difference.
+[1] KiCad Developers, "PCB Editor: Length tuning," in *KiCad 10.0 Documentation*. [Online]. Available: https://docs.kicad.org/10.0/en/pcbnew/pcbnew.html. Accessed: Oct. 16, 2026.
+
+[2] S. H. Hall and H. L. Heck, *Advanced Signal Integrity for High-Speed Digital Designs*. Hoboken, NJ, USA: Wiley, 2009.
+
+[3] E. Bogatin, *Signal and Power Integrity—Simplified*, 3rd ed. Boston, MA, USA: Pearson, 2018.
+
+[4] T. Liebig, A. Rennings, S. Held, and D. Erni, "openEMS – a free and open source equivalent-circuit (EC) FDTD simulation platform supporting cylindrical coordinates suitable for the analysis of traveling wave MRI applications," *Int. J. Numer. Model.: Electron. Netw., Devices Fields*, vol. 26, no. 6, pp. 680–696, Nov. 2013, doi: 10.1002/jnm.1875.
+
+[5] D. M. Pozar, *Microwave Engineering*, 4th ed. Hoboken, NJ, USA: Wiley, 2012.
+
+[6] H. Sakoe and S. Chiba, "Dynamic programming algorithm optimization for spoken word recognition," *IEEE Trans. Acoust., Speech, Signal Process.*, vol. 26, no. 1, pp. 43–49, Feb. 1978.
+
+[7] E. Hammerstad and Ø. Jensen, "Accurate models for microstrip computer-aided design," in *IEEE MTT-S Int. Microw. Symp. Dig.*, Washington, DC, USA, May 1980, pp. 407–409.
+
+[8] M. Kirschning and R. H. Jansen, "Accurate wide-range design equations for the frequency-dependent characteristic of parallel coupled microstrip lines," *IEEE Trans. Microw. Theory Techn.*, vol. 32, no. 1, pp. 83–90, Jan. 1984.
+
+[9] G. Ghione and C. Naldi, "Coplanar waveguides for MMIC applications: Effect of upper shielding, conductor backing, finite-extent ground planes, and line-to-line coupling," *IEEE Trans. Microw. Theory Techn.*, vol. 35, no. 3, pp. 260–267, Mar. 1987.
+
+[10] V. K. Tripathi, "Asymmetric coupled transmission lines in an inhomogeneous medium," *IEEE Trans. Microw. Theory Techn.*, vol. 23, no. 9, pp. 734–739, Sep. 1975.
+
+[11] H. W. Johnson and M. Graham, *High-Speed Digital Design: A Handbook of Black Magic*. Englewood Cliffs, NJ, USA: Prentice Hall, 1993.
+
+[12] D. E. Bockelman and W. R. Eisenstadt, "Combined differential and common-mode scattering parameters: Theory and simulation," *IEEE Trans. Microw. Theory Techn.*, vol. 43, no. 7, pp. 1530–1539, Jul. 1995.
 
 ## Code
 
