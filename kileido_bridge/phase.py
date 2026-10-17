@@ -40,16 +40,16 @@ GROUND_REACH_NM = 2_000_000  # pour edges farther than this are not looked at (p
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
 
-# Model limits: where the centreline rule is known to be off. A full-wave study (2026-10-16,
-# _dev/docs/bend-meander-findings.md) found on one pair geometry (0.2 mm traces, 0.25 mm gap,
-# 0.12 mm of laminate) that a coupled arc or corner makes 8.5–8.8 % MORE skew than its length
-# difference (two radii and a four-corner turn: a property of the pair's coupling, not of the
-# radius) and that a tight meander of a side running alone (arcs of 1.25 track widths, legs
-# 1.5 widths apart) makes 17–20 % LESS than its extra length (one geometry, three meshes);
-# the odd-mode delay on straights was right to 0.1 %. Δt is not corrected: `PairPhase.band_ps`
-# shows that known error round it, each limit applied to the Δt its own features made. A
-# looser meander gets none: nothing was measured there.
-BEND_EXCESS = (0.0, 0.09)  # a coupled arc or corner: this much more skew than its length difference
+# Where the centreline rule is off. A full-wave study (2026-10-16, _dev/docs/bend-meander-
+# findings.md) found on one pair geometry (0.2 mm traces, 0.25 mm gap, 0.12 mm of laminate)
+# that a coupled arc or corner makes 8.5–8.8 % MORE skew than its length difference (two
+# radii and a four-corner turn: a property of the pair's coupling, not of the radius), as the
+# coupled pair's equations in the turn's angle predict (delays.coupled_bend_excess): Δt is
+# corrected for that (_bend_correction). A tight meander of a side running alone (arcs of
+# 1.25 track widths, legs 1.5 widths apart) made 17–20 % LESS than its extra length (one
+# geometry, three meshes), with no model behind it yet: Δt is not corrected there, and
+# `PairPhase.band_ps` shows that known error round it. A looser meander gets no band:
+# nothing was measured there. The odd-mode delay on straights was right to 0.1 %.
 TIGHT_MEANDER = (-0.20, -0.10)  # a tight meander of a lone side: this much less than its extra length makes
 TIGHT_WIDTHS = 3.0  # a corner radius, or the spacing of a side's own legs, under this many track widths is tight
 SHARP_RAD = math.radians(30)  # a kink this large at one vertex is a sharp corner; a sampled arc kinks less per vertex
@@ -179,9 +179,8 @@ class PairPhase:
     # rise time): the geometric Δt where skew is made, fading as its common mode falls behind.
     read_dt_ps: np.ndarray | None = field(default=None, repr=False)
     # (k, 2) ps, below and above dt_ps: the known model error at tight features by each
-    # reading, from the model limits at the top of this module (BEND_EXCESS on the Δt the
-    # pair's coupled arcs and corners made, TIGHT_MEANDER on the Δt a side's tight meanders
-    # made; see _band). (0, 0) on a straight pair. Δt itself is not corrected.
+    # reading, TIGHT_MEANDER on the Δt a side's tight meanders made (see _band). (0, 0)
+    # without one. Δt itself is not corrected there (coupled bends are: _bend_correction).
     band_ps: np.ndarray | None = field(default=None, repr=False)
 
     @property
@@ -586,51 +585,83 @@ def _meanders(walk: _Walk, s: np.ndarray, xyz: np.ndarray, partner: np.ndarray, 
     return found
 
 
-def _band(walks: tuple, samples: tuple, matched: np.ndarray, p_at: np.ndarray, n_at: np.ndarray, dt: np.ndarray,
-          model_: delays.DelayModel, heights: dict[str, int], track_nm: float) -> np.ndarray:
-    """(k, 2) ps: the known model error at tight features, below and above Δt by each reading.
-
-    Each step between readings is classed by what made its Δt increment: a meander of one
-    side (_meanders: the steps whose reading on that side falls in it), else a coupled bend
-    (the pair coupled by the delay model's own criterion, COUPLED_WITHIN_H, and either side
-    turning there). The increments of each class are added up like Δt itself and the
-    class's limit applied to the sum: the errors are systematic (a turn the other way takes
-    its share back), so the band widens through a feature and only a compensating feature
-    of the same kind closes it. Straights, vias and width changes add nothing."""
-    count = len(dt)
-    band = np.zeros((count, 2))
+def _meander_steps(walks: tuple, samples: tuple, matched: np.ndarray, p_at: np.ndarray, n_at: np.ndarray,
+                   track_nm: float) -> tuple[np.ndarray, np.ndarray]:
+    """Each step between readings that lies in a meander of one side (_meanders: the steps
+    whose reading on that side falls in it, tight, loose or a fan-out): ((k − 1,) in one,
+    (k − 1, 2) the limit on its own Δt increment, (0, 0) where none applies)."""
+    count = len(matched)
+    inside_any, factor = np.zeros(max(count - 1, 0), bool), np.zeros((max(count - 1, 0), 2))
     if count < 2 or track_nm <= 0:
-        return band
-    apart = np.linalg.norm(p_at - n_at, axis=1)
-    pitch = float(np.median(apart))
-    turned, meanders = [], []
-    for side, (walk, (s, xyz)) in enumerate(zip(walks, samples)):
-        where, total = _turned(walk.along, _corners(walk)[0])
-        turned.append(lambda x, where=where, total=total: np.interp(x, where, total))
-        meanders.append(_meanders(walk, s, xyz, samples[1 - side][1], pitch, track_nm))
-    layer_at = {height: layer for layer, height in heights.items()}
-    heights_at = np.array([model_.structure(layer_at.get(int(round(z)), ""))[1] for z in p_at[:, 2]])
-    coupled = (heights_at > 0) & (apart - track_nm < COUPLED_WITHIN_H * heights_at)
-    turning = sum(np.diff(turned[side](matched[:, side])) for side in range(2)) > TURN_RAD
-    factor = np.zeros((count - 1, 2))  # each step's (low, high) limit on its own Δt increment
-    factor[coupled[:-1] & coupled[1:] & turning] = BEND_EXCESS
+        return inside_any, factor
+    pitch = float(np.median(np.linalg.norm(p_at - n_at, axis=1)))
     rank = {(0.0, 0.0): 0, TIGHT_MEANDER: 1}  # a step in two sides' meanders: the tighter
-    for side in range(2):
-        s = samples[side][0]
+    for side, (walk, (s, xyz)) in enumerate(zip(walks, samples)):
         margin = float(s[1] - s[0]) if len(s) > 1 else 0.0  # the matching may stumble a sample before a feature
-        for low, high, limit in sorted(meanders[side], key=lambda found: rank[found[2]]):
+        found = _meanders(walk, s, xyz, samples[1 - side][1], pitch, track_nm)
+        for low, high, limit in sorted(found, key=lambda entry: rank[entry[2]]):
             inside = (matched[:, side] >= low - margin) & (matched[:, side] <= high + margin)
-            factor[inside[:-1] | inside[1:]] = limit
-    # One unknown factor per limit, within its range: the Δt its steps made is added up and
-    # the range applied to the sum; the band is the sum of the limits' ranges.
-    for limit in (BEND_EXCESS, TIGHT_MEANDER):
-        on = np.all(factor == limit, axis=1)
-        if on.any():
-            made = np.concatenate(([0.0], np.cumsum(np.diff(dt) * on)))
-            edges_ps = np.column_stack((limit[0] * made, limit[1] * made))
-            band[:, 0] += edges_ps.min(axis=1)
-            band[:, 1] += edges_ps.max(axis=1)
+            step = inside[:-1] | inside[1:]
+            inside_any |= step
+            factor[step] = limit
+    return inside_any, factor
+
+
+def _band(dt: np.ndarray, factor: np.ndarray) -> np.ndarray:
+    """(k, 2) ps: the known model error at tight meanders, below and above Δt by each reading.
+    The Δt increments of the steps in a tight meander (_meander_steps) are added up like Δt
+    itself and TIGHT_MEANDER applied to the sum: the error is systematic, so the band widens
+    through a meander and only a compensating one closes it. Elsewhere it adds nothing."""
+    band = np.zeros((len(dt), 2))
+    on = np.all(factor == TIGHT_MEANDER, axis=1) if len(factor) else np.zeros(0, bool)
+    if on.any():
+        made = np.concatenate(([0.0], np.cumsum(np.diff(dt) * on)))
+        edges_ps = np.column_stack((TIGHT_MEANDER[0] * made, TIGHT_MEANDER[1] * made))
+        band[:, 0], band[:, 1] = edges_ps.min(axis=1), edges_ps.max(axis=1)
     return band
+
+
+def _bend_correction(walks: tuple, matched: np.ndarray, p_at: np.ndarray, n_at: np.ndarray, dt: np.ndarray,
+                     model_: delays.DelayModel, heights: dict[str, int], track_nm: float,
+                     in_meander: np.ndarray) -> np.ndarray:
+    """(k,) ps to add to Δt by each reading for the pair's bends. Where both sides turn
+    together on one layer, the Δt the length rule gives that step is (1 + ε) times too
+    small, ε = model_.bend_excess at the gap there (delays.coupled_bend_excess: the coupled
+    pair's equations in the turn's angle; about 0 for a loose pair). The steps' extra ε·ΔΔt
+    is added up: a turn the other way takes its share back. A step in a meander of one side
+    is left to that meander's own limit (_band)."""
+    count = len(dt)
+    if count < 2 or track_nm <= 0:
+        return np.zeros(count)
+    turns = []
+    for column, walk in enumerate(walks):
+        where, total = _turned(walk.along, _corners(walk)[0])
+        turns.append(np.diff(np.interp(matched[:, column], where, total)))
+    same_layer = (p_at[:, 2] == n_at[:, 2])
+    together = (np.minimum(turns[0], turns[1]) > TURN_RAD / 2) & same_layer[:-1] & same_layer[1:] & ~in_meander
+    if not together.any():
+        return np.zeros(count)
+    gaps = np.maximum(np.linalg.norm(p_at - n_at, axis=1) - track_nm, 0.0)  # edge to edge at each reading
+    layer_at = {height: layer for layer, height in heights.items()}
+    excess, cache = np.zeros(count - 1), {}
+    for k in np.flatnonzero(together):
+        layer = layer_at.get(int(round(p_at[k, 2])))
+        if layer is None:
+            continue
+        key = (layer, round((gaps[k] + gaps[k + 1]) / 2 / 2_000) * 2_000)  # the gap: 2 um
+        if key not in cache:
+            cache[key] = model_.bend_excess(layer, int(track_nm), key[1])
+        excess[k] = cache[key]
+    return np.concatenate(([0.0], np.cumsum(np.diff(dt) * excess)))
+
+
+def _shifted(walk: _Walk, at: np.ndarray, extra: np.ndarray) -> _Walk:
+    """The walk with `extra` ps added to its delays, given at `at` along its copper (the
+    readings') and carried between and past them, its crossings' arrival times too."""
+    at = np.maximum.accumulate(at)
+    crossings = [replace(crossing, reached_ps=crossing.reached_ps + float(np.interp(crossing.at_nm, at, extra)))
+                 for crossing in walk.crossings]
+    return replace(walk, delay=walk.delay + np.interp(walk.along, at, extra), crossings=crossings)
 
 
 def find_excursions(along: np.ndarray, dt: np.ndarray, tolerance_ps: float, min_length_nm: float):
@@ -695,7 +726,13 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     widths = [piece.width for piece in (*p.pieces, *n.pieces) if piece.kind == "track"]
     track = float(np.median(widths)) if widths else 0.0
     width = float(np.median(np.hypot(*(a[i, :2] - b[j, :2]).T))) + track
-    band = _band(walks, ((s_a, a), (s_b, b)), matched, p_at, n_at, dt, model_, heights, track)
+    in_meander, limits = _meander_steps(walks, ((s_a, a), (s_b, b)), matched, p_at, n_at, track)
+    bends = _bend_correction(walks, matched, p_at, n_at, dt, model_, heights, track, in_meander)
+    if bends.any():  # half to each side, so the pair's mean delay stays and P − N is the corrected Δt
+        dt = dt + bends
+        reached = reached + np.column_stack((bends, -bends)) / 2
+        walks = (_shifted(walks[0], matched[:, 0], bends / 2), _shifted(walks[1], matched[:, 1], -bends / 2))
+    band = _band(dt, limits)
     # The even mode's lag behind the odd mode at each reading, along P's copper and along N's.
     behind = [np.interp(matched[:, column], walk.along, walk.lag) if walk.lag is not None else np.zeros(len(matched))
               for column, walk in enumerate(walks)]

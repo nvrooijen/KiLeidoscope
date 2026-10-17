@@ -28,6 +28,11 @@ A coupled pair also has an even (common) mode, slower on microstrip than the odd
 mode (its field sits more in the dielectric) and as fast inside: `mode_lag` is how
 many ps per mm the common mode falls behind the differential signal on a stretch,
 what phase.py adds up over an excursion.
+
+Where a coupled microstrip pair turns, it makes more skew than its length difference:
+`bend_excess` is that share, from the two modes' permittivities and their impedance
+ratio (Kirschning and Jansen's static even- and odd-mode impedances, as KiCad's own
+calculator has them); phase.py multiplies the skew each coupled turn makes by 1 + it.
 """
 
 import fnmatch
@@ -40,6 +45,7 @@ from pathlib import Path
 from . import model
 
 PS_PER_MM_VACUUM = 1e9 / 299_792_458  # 1 / c: 3.3356 ps per mm
+FREE_SPACE_OHM = 376.730313  # the impedance of free space, Z_F0
 AS_PER_PS = 1_000_000  # KiCad's delay unit: attoseconds
 FR4_EPSILON_R = 4.2
 PROFILE = "tuning profile"
@@ -76,6 +82,11 @@ class DelayModel:
                  ground_nm: float | None = None) -> float:
         """ps per mm the pair's even (common) mode runs behind its odd (differential)
         mode on this stretch, τ_even − τ_odd: 0 alone, on stripline, or when unknown."""
+        return 0.0
+
+    def bend_excess(self, layer: str, width_nm: int, gap_nm: float | None) -> float:
+        """How much more skew than its length difference the pair makes where it turns
+        here, as a share (0.086: 8.6 % more): 0 alone, on stripline, or when unknown."""
         return 0.0
 
 
@@ -192,6 +203,54 @@ def microstrip_epsilon_even(epsilon_r: float, width_nm: float, height_nm: float,
         s = max(ground_nm, 1.0) / h
         effective *= _coplanar_epsilon(epsilon_r, u, g, s) / _coplanar_epsilon(epsilon_r, u, g, None)
     return effective
+
+
+def _single_microstrip_air(u: float) -> float:
+    """Impedance (ohm) of a lone microstrip of width/height `u` with air for its dielectric
+    (Hammerstad and Jensen 1980); with εeff it is this over √εeff."""
+    f = 6 + (2 * math.pi - 6) * math.exp(-((30.666 / u) ** 0.7528))
+    return FREE_SPACE_OHM / (2 * math.pi) * math.log(f / u + math.sqrt(1 + 4 / (u * u)))
+
+
+@functools.lru_cache(maxsize=65_536)
+def microstrip_impedance_ratio(epsilon_r: float, width_nm: float, height_nm: float, gap_nm: float) -> float:
+    """Z_even / Z_odd of a coupled microstrip pair `gap_nm` apart (edge to edge): Kirschning
+    and Jansen's static even- and odd-mode impedances (1984), as KiCad's own calculator
+    has them (pcb_calculator, c_microstrip.cpp): each mode's impedance is the lone line's,
+    √(εeff,lone / εeff,mode) times it, over 1 − Q·Z_air/Z_F0, with Q4 for the even mode and
+    Q10 for the odd. Tends to 1 as the gap widens. Static, zero thickness, no cover."""
+    h = max(height_nm, 1.0)
+    u = max(width_nm, 1.0) / h
+    g = max(gap_nm, 1.0) / h
+    z_air = _single_microstrip_air(u)
+    q1 = 0.8695 * u ** 0.194
+    q2 = 1 + 0.7519 * g + 0.189 * g ** 2.31
+    q3 = 0.1975 + (16.6 + (8.4 / g) ** 6) ** -0.387 + math.log(g ** 10 / (1 + (g / 3.4) ** 10)) / 241
+    q4 = 2 * q1 / (q2 * (math.exp(-g) * u ** q3 + (2 - math.exp(-g)) * u ** -q3))
+    q5 = 1.794 + 1.14 * math.log(1 + 0.638 / (g + 0.517 * g ** 2.43))
+    q6 = 0.2305 + math.log(g ** 10 / (1 + (g / 5.8) ** 10)) / 281.3 + math.log(1 + 0.598 * g ** 1.154) / 5.1
+    q7 = (10 + 190 * g * g) / (1 + 82.3 * g ** 3)
+    q8 = math.exp(-6.5 - 0.95 * math.log(g) - (g / 0.15) ** 5)
+    q9 = math.log(q7) * (q8 + 1 / 16.5)
+    q10 = (q2 * q4 - q5 * math.exp(math.log(u) * q6 * u ** -q9)) / q2
+    odd = microstrip_epsilon(epsilon_r, width_nm, height_nm, gap_nm)
+    even = microstrip_epsilon_even(epsilon_r, width_nm, height_nm, gap_nm)
+    return math.sqrt(odd / even) * (1 - q10 * z_air / FREE_SPACE_OHM) / (1 - q4 * z_air / FREE_SPACE_OHM)
+
+
+def coupled_bend_excess(epsilon_even: float, epsilon_odd: float, impedance_ratio: float) -> float:
+    """ε in skew = (1 + ε) · (the pair's length difference) · τ_odd for a coupled pair
+    turning: the telegrapher equations of the two traces in the turn's angle, each trace's
+    own inductance and capacitance per radian at its own radius, to first order in the
+    pitch over the radius (the dynamic phase guide, equation (12)):
+
+        1 + ε = (ε_e + ε_o + 2 (Z_e/Z_o) √(ε_e ε_o)) / (2 √ε_o (√ε_e + √ε_o))
+
+    0 for an uncoupled pair (Z_e = Z_o, ε_e = ε_o); +8.6 % for the 0.2 mm / 0.25 mm / 0.12 mm
+    demo pair, where the full wave gave +8.5 % and +8.8 % at two radii and +7.7 % with 45° corners."""
+    root_e, root_o = math.sqrt(epsilon_even), math.sqrt(epsilon_odd)
+    return ((epsilon_even + epsilon_odd + 2 * impedance_ratio * root_e * root_o)
+            / (2 * root_o * (root_e + root_o)) - 1)
 
 
 def _k_ratio(k2: float) -> float:
@@ -342,6 +401,22 @@ class StackupDelays(DelayModel):
             anchor = microstrip_epsilon(epsilon_r, geometry[0] or width, height, geometry[1])
             per_root = profile.layers[layer] / math.sqrt(anchor)
         return max(0.0, per_root * (math.sqrt(even) - math.sqrt(odd)))
+
+    def bend_excess(self, layer: str, width_nm: int, gap_nm: float | None) -> float:
+        """`coupled_bend_excess` from the stackup estimate's two modes at the gap here, on an
+        outer layer. A ratio, so a tuning profile's scale does not enter. 0 alone, without a
+        dielectric height, and on stripline: there it was not checked."""
+        if gap_nm is None or not self._outer(layer):
+            return 0.0
+        beside = self._dielectric.get(layer, [])
+        height = beside[0].thickness_nm if beside else 0
+        if not height:
+            return 0.0
+        epsilon_r, _ = self._epsilon(beside)
+        width = width_nm or height
+        return coupled_bend_excess(microstrip_epsilon_even(epsilon_r, width, height, gap_nm),
+                                   microstrip_epsilon(epsilon_r, width, height, gap_nm),
+                                   microstrip_impedance_ratio(epsilon_r, width, height, gap_nm))
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
                length_nm: float) -> tuple[float, str]:

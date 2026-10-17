@@ -4,9 +4,9 @@ x: mm along the pair from the start end; y: Δt = t_P − t_N in ps (Δt < 0: P'
 ahead there, Δt > 0: N's), and dashed beside it Δt as a probe on each trace would read it:
 the same where skew is made, fading as its common mode falls behind the edge (the bridge's
 modes.apparent_dt, for the Edge rise time setting). Shaded along the Δt line, where the pair
-has them, the known model error at tight features: a coupled bend makes up to 9 % more skew
-than its length difference and a tight meander of a lone side 10–20 % less (the bridge's
-phase._band, from one full-wave study of 2026-10-16; Δt itself is not corrected). A band at ± the marker tolerance, every excursion (|Δt| above it
+has them, the known model error at tight meanders: one of a lone side makes 10–20 % less
+skew than its extra length (the bridge's phase._band, from one full-wave study of
+2026-10-16; Δt itself is not corrected there). A band at ± the marker tolerance, every excursion (|Δt| above it
 for longer than the marker length) shaded, and over each plot the pair's ends, its
 end-to-end skew and its largest |Δt|. All plots share one y scale, so the pairs compare at a
 glance. The SVG carries its numbers too, in a <metadata> block (JSON), and `csv` writes
@@ -97,10 +97,10 @@ def svg(pairs, tolerance_ps: float, min_length_mm: float, title: str = "") -> st
     rows = max(1, (len(pairs) + columns - 1) // columns)
     width = WIDTH * columns
     note = _band_note(pairs)  # the band's name on a line of its own, then what it means (the bridge's
-    limits = [f"Shaded: {note}."] + textwrap.wrap(  # phase.BEND_EXCESS and TIGHT_MEANDER, in words)
-        "A coupled bend makes up to 9 % more skew than its length difference, a tight meander of a side running "
-        "alone (a corner radius or leg spacing under 3 track widths) 10–20 % less: the shading applies those to "
-        "the Δt each feature made. Δt itself is not corrected.",
+    limits = [f"Shaded: {note}."] + textwrap.wrap(  # phase.TIGHT_MEANDER, in words)
+        "A tight meander of a side running alone (a corner radius or leg spacing under 3 track widths) makes "
+        "10–20 % less skew than its extra length: the shading applies that to the Δt each meander made. Δt "
+        "itself is not corrected there; coupled bends are.",
         max(40, int((width - 28) / CHAR_PX))) if note else []
     height = HEADER + HEIGHT * rows + FOOTER + 16 * len(limits)
     limit = y_limit(pairs, tolerance_ps)

@@ -233,25 +233,43 @@ def test_a_straight_pair_has_no_model_limits():
     assert result.band_ps.shape == (len(result.dt_ps), 2) and not result.band_ps.any()
 
 
-def test_a_coupled_turn_may_make_up_to_9_percent_more_skew_and_a_turn_back_takes_it_away():
-    """The full-wave study: a coupled arc or corner makes 8.5–8.8 % more skew than its
-    length difference. Above the +Δt a turn with P outside makes, the band runs 0 to 9 %
-    of it; the error is systematic, so an S (the same turn back) closes it again."""
+def bend_model(snapshot, gap=100_000):
+    heights = protocol.layer_heights_nm(snapshot)[0]
+    return delays.StackupDelays(snapshot.stackup.layers, heights).bend_excess("F.Cu", boards.WIDTH, gap)
+
+
+def test_a_coupled_turn_makes_1_plus_epsilon_times_its_length_difference_and_a_turn_back_takes_it_away():
+    """A coupled pair turning makes (1 + ε) times the skew of its length difference, ε from
+    the two modes and their impedance ratio (delays.coupled_bend_excess). The 90° turn with
+    P outside reads that; the straight before it nothing, halfway round half; an S (the same
+    turn back) takes all of it back. P and N each carry half the correction, so their
+    delays still differ by Δt. No band: a bend is corrected, not shaded."""
+    plain = 0.25 * math.pi / 2 * unit_delay(coupled_turn(), gap=100_000)  # the length rule
+    epsilon = bend_model(coupled_turn())
+    assert epsilon == pytest.approx(0.40, abs=0.01)  # this tight pair: Z_even/Z_odd 1.69 (model only)
     result = from_u1(coupled_turn())
     assert result.p.start.label == "U1.1"
-    made = result.dt_ps[-1]
-    assert made == pytest.approx(0.25 * math.pi / 2 * unit_delay(coupled_turn(), gap=100_000), rel=0.02)
-    assert result.band_ps[-1, 0] == pytest.approx(0.0, abs=0.01)
-    assert result.band_ps[-1, 1] == pytest.approx(0.09 * made, rel=0.05)
-    before = result.along_nm < 9 * MM
-    assert not result.band_ps[before].any()  # the straight before it: nothing
-    assert np.all(result.band_ps[:, 1] >= -1e-9) and np.all(result.band_ps[:, 1] <= 0.09 * made * 1.1)
+    assert result.dt_ps[-1] == pytest.approx((1 + epsilon) * plain, rel=0.02)
+    assert result.skew_ps == pytest.approx(result.dt_ps[-1], abs=0.02)
+    assert np.allclose(result.delays_ps[:, 0] - result.delays_ps[:, 1], result.dt_ps)
+    assert np.abs(result.dt_ps[result.along_nm < 9 * MM]).max() < 1e-9  # the straight before it: nothing
     halfway = int(np.argmin(np.linalg.norm(result.centre_nm[:, :2] - np.array((11.326, 0.674)) * MM, axis=1)))
-    assert result.band_ps[halfway, 1] == pytest.approx(0.045 * made, rel=0.3)  # it widens along the turn
+    assert result.dt_ps[halfway] == pytest.approx((1 + epsilon) * plain / 2, rel=0.15)
+    assert not result.band_ps.any()
     s_curve = from_u1(coupled_turn(back=True))
     middle = int(np.argmin(np.abs(s_curve.centre_nm[:, 1] - 4 * MM)))  # on the leg between the turns
-    assert s_curve.band_ps[middle, 1] == pytest.approx(0.09 * made, rel=0.05)
-    assert s_curve.dt_ps[-1] == pytest.approx(0.0, abs=0.05) and np.abs(s_curve.band_ps[-1]).max() < 0.02
+    assert s_curve.dt_ps[middle] == pytest.approx((1 + epsilon) * plain, rel=0.02)
+    assert s_curve.dt_ps[-1] == pytest.approx(0.0, abs=0.05)
+
+
+def test_the_bend_excess_tends_to_nothing_as_the_pair_parts_and_is_not_applied_inside():
+    """Loose coupling gives the length rule back; stripline is left to it (not checked there)."""
+    snapshot = coupled_turn()
+    assert bend_model(snapshot, 100_000) > bend_model(snapshot, 300_000) > bend_model(snapshot, 1_000_000) > 0
+    assert bend_model(snapshot, 3_000_000) < 0.005
+    heights = protocol.layer_heights_nm(snapshot)[0]
+    assert delays.StackupDelays(snapshot.stackup.layers, heights).bend_excess("In1.Cu", boards.WIDTH, 100_000) == 0.0
+    assert delays.StackupDelays(snapshot.stackup.layers, heights).bend_excess("F.Cu", boards.WIDTH, None) == 0.0
 
 
 def test_a_tight_meander_of_one_side_may_make_10_to_20_percent_less_skew():
@@ -469,6 +487,27 @@ def test_the_field_solver_still_gives_its_numbers():
     import field_solver
     width, gap, ground, solved = FIELD_SOLVER[0]
     assert field_solver.eps_eff(width, 1.0, gap, ground, 4.5) == pytest.approx(solved, rel=1e-3)
+    er, width, gap, (even, odd, ratio) = PAIR_MODES[0]
+    assert field_solver.pair_modes(width, 1.0, gap, er) == pytest.approx((even, odd, ratio), rel=1e-3)
+
+
+# The field solver's two modes of a pair without a pour (24 cells per dielectric height):
+# (er, width, gap in dielectric heights, (eps_eff even, eps_eff odd, Z_even / Z_odd)). The
+# common-mode demo pair, this board's MIPI pair and the test boards' tight pair.
+PAIR_MODES = ((4.1, 0.2 / 0.12, 0.25 / 0.12, (3.2384, 2.9147, 1.1181)),
+              (4.5, 0.117 / 0.121, 0.102 / 0.121, (3.4326, 2.9168, 1.3681)),
+              (4.0, 0.75, 0.5, (3.0448, 2.5790, 1.6934)))
+
+
+@pytest.mark.parametrize("er, width, gap, solved", PAIR_MODES)
+def test_the_bend_excess_inputs_are_near_the_field_solver(er, width, gap, solved):
+    """Kirschning and Jansen's even mode and impedance ratio within 1 % and 3 % of the 2D
+    solver, so the bend excess they give is within 2 points of the solver's."""
+    h = 120_000
+    even, odd = delays.microstrip_epsilon_even(er, width * h, h, gap * h), delays.microstrip_epsilon(er, width * h, h, gap * h)
+    ratio = delays.microstrip_impedance_ratio(er, width * h, h, gap * h)
+    assert even == pytest.approx(solved[0], rel=0.01) and ratio == pytest.approx(solved[2], rel=0.03)
+    assert delays.coupled_bend_excess(even, odd, ratio) == pytest.approx(delays.coupled_bend_excess(*solved), abs=0.02)
 
 
 def test_a_pour_beside_the_pair_makes_it_faster():

@@ -10,11 +10,14 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 
 
-def capacitance(w, h, gap, sg, eps_r, cells_per_h=24, far=14.0, odd=True):
-    """Half-domain capacitance per unit length / eps0. Lengths in units of h."""
+def capacitance(w, h, gap, sg, eps_r, cells_per_h=24, far=14.0, odd=True, even=False):
+    """Half-domain capacitance per unit length / eps0. Lengths in units of h. `even`: the
+    pair's even mode instead (a magnetic wall at the pair's midline, the strip gap/2 from it)."""
     d = h / cells_per_h
-    x0 = gap / 2 if odd else 0.0  # the strip's inner edge (lone trace: the domain starts at its middle)
-    inner, outer = x0, x0 + w if odd else w / 2
+    pair = odd or even
+    x0 = gap / 2 if pair else 0.0  # the strip's inner edge (lone trace: the domain starts at its middle)
+    inner, outer = x0, x0 + w if pair else w / 2
+    odd = odd and not even  # from here on: an electric wall at the midline, else a magnetic one
     width = outer + (sg if sg is not None else 0.0) + far * h
     nx, ny = int(round(width / d)) + 1, int(round((h + far * h) / d)) + 1
     jh = int(round(h / d))  # the interface row
@@ -66,6 +69,14 @@ def capacitance(w, h, gap, sg, eps_r, cells_per_h=24, far=14.0, odd=True):
 
 def eps_eff(w, h, gap, sg, eps_r, **options):
     return capacitance(w, h, gap, sg, eps_r, **options) / capacitance(w, h, gap, sg, 1.0, **options)
+
+
+def pair_modes(w, h, gap, eps_r, **options):
+    """(eps_eff even, eps_eff odd, Z_even / Z_odd) of a coupled pair without a pour: Z = 1 / (c √(C C_air))."""
+    c = {(mode, er): capacitance(w, h, gap, None, er, odd=mode == "odd", even=mode == "even", **options)
+         for mode in ("even", "odd") for er in (eps_r, 1.0)}
+    ratio = math.sqrt(c[("odd", eps_r)] * c[("odd", 1.0)] / (c[("even", eps_r)] * c[("even", 1.0)]))
+    return c[("even", eps_r)] / c[("even", 1.0)], c[("odd", eps_r)] / c[("odd", 1.0)], ratio
 
 
 if __name__ == "__main__":
