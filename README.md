@@ -40,6 +40,7 @@ Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Be
 - Flex and rigid-flex boards (beta): bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
 - LLM review on the 3D board: paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the [LLM guide](docs/llm-review.md).
+- Dynamic phase for differential pairs: how far P and N are apart in time at every point along the pair, live while you route, and how much common mode a skew leaves behind. See [Dynamic phase](#dynamic-phase) below and the [dynamic phase guide](docs/high-speed/dynamic-phase.md).
 
 <p align="center">
   <img src="assets/llm-return-vias.png" width="640" align="middle" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC).">
@@ -70,6 +71,56 @@ Right: the cut plane opens the board and shows its cross section, with each via 
 </p>
 <p align="center"><sub>Left: IMS mode: an LED board on a copper base in Realistic mode. In KiCad it is a plain 2-layer board; KiLeidoscope draws its metal base. See the <a href="docs/ims.md">IMS guide</a>.<br>
 Right: flex mode (beta): the flex template folded in Blender from a few marks on its Bend and Stiffener layers in KiCad, with its coverlay and stiffeners. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
+
+## Dynamic phase
+
+KiCad 10 matches a differential pair by its total delay, end to end. A pair can match there and still run out of phase in between: a bend near one end that is only compensated at the far end leaves P and N apart in time over everything between. Where they are apart, part of the differential signal turns into common mode, which radiates and picks up noise, and a correction at the far end does not undo it. Dynamic phase, in the High speed column, shows that time difference Δt at every point along each pair while you route, marks where it stays above your tolerance, exports a Δt chart (SVG and CSV) and lists its findings in the DRC column. The [dynamic phase guide](docs/high-speed/dynamic-phase.md) has every step, assumption and check.
+
+### The equations
+
+Each side is walked from the driver end, adding up each piece's length times its unit delay (tracks, via barrels, the hop across a series part), and the two sides are matched point by point:
+
+$$t(z) = \sum_{\text{pieces up to } z} \ell_i\,\tau_i, \qquad \Delta t(z) = t_P(z) - t_N(z'), \qquad \tau = \frac{\sqrt{\varepsilon_\text{eff}}}{c}$$
+
+with $z'$ the point on N matched to $z$ on P. τ comes from the netclass's KiCad tuning profile where it has one: the profile's ps/mm holds where the pair runs at the profile's own gap, and a stretch at another gap, or one side alone, is scaled by the estimates' $\sqrt{\varepsilon_\text{eff}}$ ratio. Without a profile it comes from closed-form estimates: Hammerstad and Jensen for a lone microstrip, Kirschning and Jansen's odd mode for a coupled pair at the gap measured every 50 µm, Ghione and Naldi's conformal mapping beside a pour, and $\varepsilon_r$ itself on stripline.
+
+On a uniform, lossless coupled line the two traces carry two modes that do not exchange energy, the even (common) and the odd (differential), each with its own unit delay (Tripathi; Pozar):
+
+$$V_{P,N}(z,t) = e\!\left(t - \tau_\text{e} z\right) \pm o\!\left(t - \tau_\text{o} z\right)$$
+
+A skew δ turns part of the differential edge $s(t)$ into a common-mode pulse shaped like the edge's derivative; in mixed-mode S-parameters (Bockelman and Eisenstadt) that is $|S_\text{cd21}|$:
+
+$$e(t) \approx -\frac{\delta}{2}\,s'\!\left(t - \frac{\delta}{2}\right), \qquad |S_\text{cd21}| = |\sin(\pi f \delta)|$$
+
+On microstrip the even mode is the slower one, so over $\ell$ mm of coupled pair that pulse falls behind the edge by the mode lag, which dynamic phase reports for each excursion (Kirschning and Jansen's even mode; on stripline it is zero). It is the same velocity difference that causes far-end crosstalk (Hall and Heck; Johnson and Graham):
+
+$$\Delta\tau = \ell\,(\tau_\text{e} - \tau_\text{o})$$
+
+A compensating bump that far along makes the opposite pulse, aligned with the edge as it is then, so the two cancel only while $\Delta\tau$ is small against the edge's rise time $t_r$; what is left is about $-\tfrac{\delta}{2}\,\Delta\tau\,s''$. For the same reason a probe on each trace does not read δ itself past the skew, but a value that fades as the common mode falls behind. The chart draws it dashed beside Δt, for a Gaussian edge of the *Edge rise time* setting:
+
+$$\Delta t_\text{read} = \delta\,e^{-\Delta\tau^2 / 2\sigma^2}, \qquad \sigma = t_r / 2.56$$
+
+### How far it is checked
+
+- Unit delays: within 1.5 % of a 2D field solver for a coupled pair and for one beside a pour; the even mode within 1 %.
+- One lone trace in a 3D full-wave run (openEMS, not part of KiLeidoscope): 5.876 ps/mm against the estimate's 5.865.
+- Mode lag on a test pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1): 0.33 ps/mm from the model, 0.32–0.36 in the full-wave run.
+- Common mode left at the connector, as a fraction of the differential peak, on two routes of that pair with the same skew: 25 % when it is compensated 73 mm later (model 26 %), 3.3 % when compensated 2 mm later (model 2.6 %).
+- Known limits, not corrected: a tight coupled bend makes about 9 % more skew than its length difference, and a tight meander of one side 17–20 % less than its extra length (one pair geometry each). The Δt chart shades this known error as a band wherever a pair has such features.
+
+The full-wave numbers come from one run each on one mesh, except the bend and meander ones, which are extrapolated over three meshes. They check the model; only a measurement on a real board checks the board.
+
+### Sources
+
+- M. Kirschning and R. H. Jansen, "Accurate wide-range design equations for the frequency-dependent characteristic of parallel coupled microstrip lines," *IEEE Trans. Microwave Theory Tech.*, vol. 32, no. 1, pp. 83–90, 1984.
+- E. Hammerstad and Ø. Jensen, "Accurate models for microstrip computer-aided design," *IEEE MTT-S Int. Microwave Symp. Digest*, 1980, pp. 407–409.
+- G. Ghione and C. Naldi, "Coplanar waveguides for MMIC applications: effect of upper shielding, conductor backing, finite-extent ground planes, and line-to-line coupling," *IEEE Trans. Microwave Theory Tech.*, vol. 35, no. 3, pp. 260–267, 1987.
+- V. K. Tripathi, "Asymmetric coupled transmission lines in an inhomogeneous medium," *IEEE Trans. Microwave Theory Tech.*, vol. 23, no. 9, pp. 734–739, 1975.
+- D. E. Bockelman and W. R. Eisenstadt, "Combined differential and common-mode scattering parameters: theory and simulation," *IEEE Trans. Microwave Theory Tech.*, vol. 43, no. 7, pp. 1530–1539, 1995.
+- D. M. Pozar, *Microwave Engineering*, 4th ed., Wiley, 2012.
+- S. H. Hall and H. L. Heck, *Advanced Signal Integrity for High-Speed Digital Designs*, Wiley, 2009.
+- H. W. Johnson and M. Graham, *High-Speed Digital Design: A Handbook of Black Magic*, Prentice Hall, 1993.
+- E. Bogatin, *Signal and Power Integrity — Simplified*, 3rd ed., Pearson, 2018.
 
 ## Architecture
 
