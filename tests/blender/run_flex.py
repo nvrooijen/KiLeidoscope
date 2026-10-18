@@ -8,6 +8,7 @@ blender --background --factory-startup --python tests/blender/run_flex.py
 import json
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -296,6 +297,118 @@ def bends_frames(*bends):
     return b"".join(snapshot_frames(snapshot, flex=flex_checks.report(snapshot, STACK)))
 
 
+def castellation_frames():
+    """The fixture with its right part (x 23..40 mm) flex, a bend across it, a plated 1 mm
+    drill on its right edge at y = 15 mm (a castellated pad) and a polyimide stiffener."""
+    snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    mm = 1_000_000
+    pad = next(p for p in snapshot["pads"] if p.get("drill"))
+    square = [[[[39 * mm, 14 * mm], [41 * mm, 14 * mm], [41 * mm, 16 * mm], [39 * mm, 16 * mm]]]]
+    snapshot["pads"].append({**pad, "id": "55555555-5555-4555-8555-555555555556", "number": "2",
+                             "pos": [40 * mm, 15 * mm], "drill": [mm, mm], "drill_shape": "circle",
+                             "polygons": {"F.Cu": square, "B.Cu": square}})
+    snapshot = snapshot_from_jsonable(snapshot)
+    drawings = (model.Drawing("zone", "User.1", "closed", ((23 * mm, -mm), (41 * mm, -mm), (41 * mm, 31 * mm),
+                                                           (23 * mm, 31 * mm))),
+                model.Drawing("bend", "User.2", "line", ((26 * mm, -mm), (26 * mm, 31 * mm))),
+                model.Drawing("bend text", "User.2", "text", ((26 * mm + 500_000, -2 * mm),), "90° R1"),
+                model.Drawing("stiffener", "User.3", "closed",
+                              ((34 * mm, 2 * mm), (37 * mm, 2 * mm), (37 * mm, 6 * mm), (34 * mm, 6 * mm))),
+                model.Drawing("stiffener text", "User.3", "text", ((35 * mm, 4 * mm),), "Polyimide 0.1 mm bottom"))
+    names = dict(snapshot.layer_display_names, **{"User.1": "Flex", "User.2": "Bend", "User.3": "Stiffener"})
+    snapshot = model.BoardSnapshot(snapshot.board_name, names, snapshot.tracks, snapshot.arcs, snapshot.vias,
+                                   snapshot.pads, snapshot.footprints, snapshot.zones, snapshot.outline,
+                                   snapshot.stackup, snapshot.warnings, snapshot.read_timings_ms,
+                                   snapshot.graphics, drawings)
+    return b"".join(snapshot_frames(snapshot, flex=flex_checks.report(snapshot, STACK)))
+
+
+def check_castellation(scene):
+    """A drill on the flex's board edge: the flex's faces and outline walls take the hole
+    mask as the rigid board's do, so the half hole and the wall across it are open (they
+    were amber film). A polyimide stiffener keeps a solid material: its holes are cut in it."""
+    from kileido import holes
+    apply.load_frames(castellation_frames())
+    scene.kileido_fold = 0.0
+    folded = fold._folded_collection()
+    outline = folded.objects["KLS folded outline"]
+    flex = state.board.materials["flex"]
+    plot = flex.node_tree.nodes.get("KLS holes plot")
+    assert plot is not None and plot.image == bpy.data.images[holes.IMAGE], "the flex is holed"
+    centre = foldmath.world_xy([(40_000_000, 15_000_000)], state.board.origin_nm)[0]
+    materials = [slot.name for slot in outline.data.materials]
+    walls = [face for face in outline.data.polygons if abs(face.normal.z) < 0.5
+             and abs(face.center.x - centre[0]) < 1e-6 and min(v for v in (
+                 outline.data.vertices[k].co.y for k in face.vertices)) < centre[1] < max(
+                 outline.data.vertices[k].co.y for k in face.vertices)]
+    assert walls and {materials[face.material_index] for face in walls} == {flex.name}, walls
+    mask = bpy.data.images[holes.IMAGE]
+    pixels = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
+    mask.pixels.foreach_get(pixels)
+    pixels = pixels.reshape(mask.size[1], mask.size[0], 4)
+    xmin, ymin, xmax, ymax = holes._bounds
+    pixel = max(xmax - xmin, ymax - ymin) / holes.RESOLUTION
+    column, row = int((centre[0] - 0.25e-3 - xmin) / pixel), int((centre[1] - ymin) / pixel)
+    assert pixels[row, column, 3] > 0.99, pixels[row, column]  # inside the board, inside the drill
+    # The mask reaches past the outline: the wall on it samples a whole hole, not the image's
+    # last half pixel (half open: a see-through band across the hole, in flex and FR4 alike).
+    edge = int((centre[0] - xmin) / pixel)
+    around = pixels[row, edge - 1:edge + 2, 3]  # the pixels either side of the outline: all in the image, all open
+    assert len(around) == 3 and around.min() > 0.99, (edge, mask.size[0], around)
+    stiffener = folded.objects["KLS stiffener 1"]
+    assert [m.name for m in stiffener.data.materials] == ["KLS Stiffener polyimide"], stiffener.data.materials[:]
+    assert "KLS holes plot" not in stiffener.data.materials[0].node_tree.nodes
+    # Seen straight down on a white background: the half hole is clear (not seen through
+    # amber film, which read dark brown), the film beside it amber.
+    hole, film = (centre[0] - 0.25e-3, centre[1]), (centre[0] - 1.0e-3, centre[1] + 1.6e-3)
+    in_hole, on_film = rendered_colors(scene, (hole, film))
+    assert in_hole.min() > 0.95, in_hole
+    assert on_film[2] < 0.6 < on_film[0], on_film
+
+
+def rendered_colors(scene, points):
+    """Cycles, straight down on a glowing white sheet under the board: the sRGB colour at
+    each world xy."""
+    from bpy_extras.object_utils import world_to_camera_view
+    middle = np.mean(points, axis=0)
+    bpy.ops.mesh.primitive_plane_add(size=0.01, location=(*middle, -0.01))
+    sheet = bpy.context.active_object
+    white = bpy.data.materials.new("KLS flex test white")
+    white.use_nodes = True
+    glow = white.node_tree.nodes.new("ShaderNodeEmission")
+    glow.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    white.node_tree.links.new(glow.outputs[0], next(n for n in white.node_tree.nodes
+                                                    if n.type == "OUTPUT_MATERIAL").inputs["Surface"])
+    sheet.data.materials.append(white)
+    data = bpy.data.cameras.new("KLS flex test camera")
+    data.type, data.ortho_scale, data.clip_start, data.clip_end = "ORTHO", 0.004, 1e-4, 1.0
+    camera = bpy.data.objects.new("KLS flex test camera", data)
+    scene.collection.objects.link(camera)
+    camera.location = (*middle, 0.005)  # looking down -z, inside the factory scene's cube
+    scene.camera = camera
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples, scene.cycles.use_denoising = 8, False
+    scene.view_settings.view_transform = "Standard"  # rendered colours as they are
+    scene.render.resolution_x = scene.render.resolution_y = 200
+    path = Path(tempfile.gettempdir()) / "kileido_flex_castellation.png"
+    scene.render.filepath = str(path)
+    try:
+        bpy.ops.render.render(write_still=True)
+        image = bpy.data.images.load(str(path), check_existing=False)
+        width, height = image.size
+        pixels = np.array(image.pixels[:], np.float32).reshape(height, width, 4)[:, :, :3]
+        bpy.data.images.remove(image)
+        found = []
+        for x, y in points:
+            u, v, _ = world_to_camera_view(scene, camera, Vector((x, y, 0.0)))
+            found.append(pixels[int(v * height), int(u * width)])
+        return found
+    finally:
+        scene.camera = None
+        bpy.data.objects.remove(camera)
+        bpy.data.objects.remove(sheet)
+
+
 def check_steps(scene):
     """The folding sequence in the panel, and what runs into what at the end of each step."""
     apply.load_frames(bends_frames((26, "90° R1 #1"), (33, "90° R1 #2")))
@@ -532,6 +645,7 @@ def main():
         check_twist(scene)
         check_ribbon(scene)
         check_cone(scene)
+        check_castellation(scene)
         check_steps(scene)
         check_animation(scene)
         check_uninstall(scene)

@@ -787,7 +787,7 @@ def _stiffener_mesh(stiffener, plan):
     work.to_mesh(mesh)
     work.free()
     look, _ = foldmath.stiffener_look(stiffener.get("material", ""))
-    mesh.materials.append(board.materials[{"metal": "stiffener_metal", "polyimide": "flex"}.get(look, "board_core")])
+    mesh.materials.append(board.materials[{"metal": "stiffener_metal", "polyimide": "stiffener_polyimide"}.get(look, "board_core")])
     return mesh
 
 

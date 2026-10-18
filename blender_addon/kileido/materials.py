@@ -87,7 +87,12 @@ def create_all():
         # they stand on a hole's rim and the hole mask would cut them in half.
         "board_edge": make("KLS Board edge", FALLBACK_CORE),
         "ims_base": make("KLS IMS base", ims.COLORS["AL"]),
+        # The board's faces and outline walls on the flex: holed like the board faces they
+        # replace (fold._flex_faces), so drills and castellations stay open there.
         "flex": make("KLS Flex polyimide", POLYIMIDE, POLYIMIDE_ALPHA),
+        # A polyimide stiffener: the same film, not holed: its drill holes are cut into its
+        # solid (fold._stiffener_mesh), and the hole mask would cut their walls in half.
+        "stiffener_polyimide": make("KLS Stiffener polyimide", POLYIMIDE, POLYIMIDE_ALPHA),
         "stiffener_metal": make("KLS Stiffener metal", STIFFENER_METAL),
         # Its bare drill walls: the same metal, never see-through (they stand inside the hole mask).
         "ims_wall": make("KLS IMS hole wall", ims.COLORS["AL"]),
@@ -776,9 +781,10 @@ def set_color_mode(mode):
     paint_tents()
     for key in ("ims_base", "ims_wall"):
         _paint_ims_base(board.materials[key], realistic)
-    paint(board.materials["flex"], POLYIMIDE)
-    set_surface(board.materials["flex"], realistic, 0.0, 0.25)  # the coverlay is glossy
-    _tint_see_through(board.materials["flex"], POLYIMIDE)
+    for key in ("flex", "stiffener_polyimide"):
+        paint(board.materials[key], POLYIMIDE)
+        set_surface(board.materials[key], realistic, 0.0, 0.25)  # the coverlay is glossy
+        _tint_see_through(board.materials[key], POLYIMIDE)
     paint(board.materials["stiffener_metal"], STIFFENER_METAL)
     set_surface(board.materials["stiffener_metal"], realistic, 1.0, 0.35)
     paint(board.materials["via_resin"], section.RESIN)
@@ -850,6 +856,8 @@ def _tint_see_through(material, color, tint=FILM_TINT):
     for node in material.node_tree.nodes:
         if node.type == "BSDF_TRANSPARENT":
             node.inputs["Color"].default_value = (*linear, 1.0)
+        elif node.name == holes.TINT:  # the film's tint, clear in its holes (holes._clear_where_open)
+            node.outputs[0].default_value = (*linear, 1.0)
 
 
 def _paint_ims_base(material, realistic):
