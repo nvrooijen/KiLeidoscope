@@ -45,7 +45,7 @@ They get the DRC column's markers on the board, confirm and dismiss, and a click
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/dynamic-phase-dark.svg">
-  <img src="../assets/dynamic-phase-light.svg" alt="KiCad 10 feeds the bridge. The bridge finds pairs, builds each side's copper graph, chooses matching ends, walks each side adding up delay from the delay model, aligns P and N, computes delta t, marks excursions, recomputes changed pairs live and sends frames to Blender, which draws them. Panel settings go back to the bridge." width="680">
+  <img src="../assets/dynamic-phase-light.svg" alt="KiCad 10 feeds the bridge. The bridge finds pairs, builds each side's copper graph, chooses matching ends, walks each side adding up KiCad's delays (the tuning profile's one delay per layer, vias, pad-to-die), aligns P and N, computes delta t, marks excursions, recomputes changed pairs live and sends frames to Blender, which draws them. Panel settings go back to the bridge." width="680">
 </picture>
 
 **Fig. 2.** How dynamic phase is calculated. Green runs in the bridge, orange in the Blender add-on.

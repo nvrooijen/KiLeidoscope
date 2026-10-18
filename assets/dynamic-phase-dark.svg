@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="680" height="930" viewBox="0 0 680 930" role="img">
 <title>Dynamic phase: how it is calculated</title>
-<desc>KiCad 10 gives the board, stackup, netclasses and tuning profiles to the KiLeidoscope bridge. In the bridge: find pairs, build each side's copper graph, choose matching ends and route, walk and add up delay from the delay model (tuning profile, microstrip, stripline, via barrel, FR-4 fallback), align P and N, compute delta t, mark excursions, recompute changed pairs live and send frames to Blender. The Blender add-on draws the result; its panel settings go back to the bridge.</desc>
+<desc>KiCad 10 gives the board, stackup, netclasses and tuning profiles to the KiLeidoscope bridge. In the bridge: find pairs, build each side's copper graph, choose matching ends and route, walk and add up KiCad's delays (the tuning profile's one delay per layer, found through the net's netclass; a via's override or its delay per mm of height; the pads' pad-to-die delays; KiCad's time-domain and via-height switches honoured), align P and N, compute delta t, mark excursions, recompute changed pairs live and send frames to Blender. The Blender add-on draws the result; its panel settings go back to the bridge.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
 <style>
@@ -15,7 +15,7 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
 </defs>
 <rect x="40" y="40" width="600" height="54" rx="4" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
 <text class="th" x="340" y="62" text-anchor="middle" fill="#FFFFFF">KiCad 10</text>
-<text class="ts" x="340" y="81" text-anchor="middle" fill="#D6DDF5">board over IPC · stackup · netclasses · tuning profiles (.kicad_pro)</text>
+<text class="ts" x="340" y="81" text-anchor="middle" fill="#D6DDF5">board over IPC · stackup · netclasses · pad-to-die delays · tuning profiles (.kicad_pro)</text>
 
 <rect class="frame" x="24" y="110" width="632" height="680" rx="8"/>
 <text class="lbl" x="40" y="132">kileido_bridge/</text>
@@ -63,26 +63,26 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
 <text class="code" x="220" y="763" text-anchor="middle" fill="#3B6D11">pair_frame() → protocol.phase_pair_message()</text>
 
 <line class="arr" x1="220" y1="704" x2="220" y2="720" marker-end="url(#arrow)"/>
-<text class="lbl" x="420" y="276">delays.py · StackupDelays</text>
+<text class="lbl" x="420" y="276">delays.py · ProfileDelays</text>
 <rect x="420" y="286" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
-<text class="th" x="530" y="308" text-anchor="middle" fill="#173404">Tuning profile</text>
+<text class="th" x="530" y="308" text-anchor="middle" fill="#173404">Tuning profile: τ per layer</text>
 <text class="code" x="530" y="327" text-anchor="middle" fill="#3B6D11">tuning_profiles()</text>
 
 <rect x="420" y="352" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
-<text class="th" x="530" y="374" text-anchor="middle" fill="#173404">Outer: microstrip</text>
-<text class="code" x="530" y="393" text-anchor="middle" fill="#3B6D11">microstrip_epsilon()</text>
+<text class="th" x="530" y="374" text-anchor="middle" fill="#173404">Netclass → profile</text>
+<text class="code" x="530" y="393" text-anchor="middle" fill="#3B6D11">kicad_reader.net_classes()</text>
 
 <rect x="420" y="418" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
-<text class="th" x="530" y="440" text-anchor="middle" fill="#173404">Inner: stripline</text>
-<text class="code" x="530" y="459" text-anchor="middle" fill="#3B6D11">track(): εeff = εr</text>
+<text class="th" x="530" y="440" text-anchor="middle" fill="#173404">Via: override, else per mm</text>
+<text class="code" x="530" y="459" text-anchor="middle" fill="#3B6D11">barrel()</text>
 
 <rect x="420" y="484" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
-<text class="th" x="530" y="506" text-anchor="middle" fill="#173404">Via barrel</text>
-<text class="code" x="530" y="525" text-anchor="middle" fill="#3B6D11">barrel()</text>
+<text class="th" x="530" y="506" text-anchor="middle" fill="#173404">Pad-to-die delay</text>
+<text class="code" x="530" y="525" text-anchor="middle" fill="#3B6D11">model.Pad.die_delay_ps</text>
 
 <rect x="420" y="550" width="220" height="54" rx="4" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
-<text class="th" x="530" y="572" text-anchor="middle" fill="#173404">No εr: FR-4 4.2</text>
-<text class="code" x="530" y="591" text-anchor="middle" fill="#3B6D11">_epsilon()</text>
+<text class="th" x="530" y="572" text-anchor="middle" fill="#173404">KiCad's switches honoured</text>
+<text class="code" x="530" y="591" text-anchor="middle" fill="#3B6D11">time_domain() · via_height()</text>
 
 <line class="arr" x1="420" y1="379" x2="402" y2="379" marker-end="url(#arrow)"/>
 <line class="arr" x1="220" y1="94" x2="220" y2="144" marker-end="url(#arrow)"/>
