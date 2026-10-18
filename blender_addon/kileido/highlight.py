@@ -31,6 +31,8 @@ def apply_selection(header):
                        "finding": board.highlight.get("finding", set())}  # the shown finding's stays
     board.highlight_components = {"footprints": set(header.get("footprints", ())),
                                   "pads": set(header.get("pads", ()))}
+    from . import phase
+    phase.refresh_highlight(redraw=False)  # a selected pair under dynamic phase shows white there
     refresh()
     focus.refresh()
 
@@ -44,7 +46,12 @@ def refresh(layer=None, kind=None):
     """
     if board.collection is None or board.in_snapshot:
         return
-    wanted = board.highlight
+    from . import phase
+    # A selected pair under dynamic phase: its trace copies are the highlight of its route;
+    # the rest of its copper (vias with their barrels, stubs, leftover pieces) turns white.
+    taken, white = phase.selection_split()
+    wanted = {name: chosen - taken for name, chosen in board.highlight.items()}
+    wanted["phase"] = white
     if kind in (None, "tracks"):
         _refresh_tracks(wanted, layer)
     if kind in (None, "vias"):
@@ -172,6 +179,7 @@ def _refresh_pads(wanted, component_pads, only_layer=None):
     pads of selected components (red-orange): a sheet just above each pad's outer
     copper surface (no side walls, so nothing is coplanar with the copper's)."""
     chosen_by_kind = {"selected": wanted["selected"] | component_pads, "pair": wanted["pair"],
+                      "phase": wanted.get("phase", set()),
                       "finding": wanted.get("finding", set())}
     for source in _copper_sources("pads"):
         layer = source["kls_copper"][0]

@@ -40,11 +40,18 @@ Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Be
 - Flex and rigid-flex boards (beta): bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
 - LLM review on the 3D board: paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the [LLM guide](docs/llm-review.md).
+- Dynamic phase: how far a differential pair's P and N are apart in time at every point along the pair, live as you route, from the pair's tuning profile in KiCad. See the [dynamic phase guide](docs/dynamic-phase.md).
 
 <p align="center">
-  <img src="assets/llm-return-vias.png" width="640" align="middle" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC).">
+  <img src="assets/llm-return-vias-crop.png" width="430" align="middle" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC).">
+  &nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/dynamic-phase-sweep-dark.gif">
+    <img src="assets/dynamic-phase-sweep-light.gif" width="353" align="middle" alt="Dynamic phase on a board's differential pairs: pulses travel along each pair, P red and N blue, the tint showing where the two are apart in time, with amber markers on the pairs. First on the rendered board, then again in X-ray mode.">
+  </picture>
 </p>
-<p align="center"><sub>LLM review: a layer change without a return via, as an LLM reported it. KiLeidoscope measures the nearest return vias against the limit, red past it, and draws the two vias the LLM suggests where it put them, checked by KiCad's DRC. See the <a href="docs/llm-review.md">LLM guide</a>.</sub></p>
+<p align="center"><sub>Left: LLM review: a layer change without a return via, as an LLM reported it. KiLeidoscope measures the nearest return vias against the limit, red past it, and draws the two vias the LLM suggests where it put them, checked by KiCad's DRC. See the <a href="docs/llm-review.md">LLM guide</a>.<br>
+Right: dynamic phase: pulses travel along each pair at P's and N's own delays, and the tint shows where they are apart in time, on the board and in X-ray mode. See the <a href="docs/dynamic-phase.md">dynamic phase guide</a>.</sub></p>
 
 <p align="center">
   <img src="assets/collisions.png" width="290" align="middle" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">

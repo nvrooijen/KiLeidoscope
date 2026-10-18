@@ -1,8 +1,8 @@
 """Bookmark tabs on the KiLeidoscope sidebar's left edge. Each opens its column left of
-the KiLeidoscope panel (Studio, IMS, Flex, DRC, LLM), one at a time, and the sidebar widens to make room;
-clicking the open tab again closes it. A mode switched on in its column keeps its tab lit
-(a bright stripe on its outer edge) once the column is closed; one the board cannot have
-is greyed.
+the KiLeidoscope panel (Studio, IMS, Flex, DRC, LLM, Diff pairs), one at a time, and the sidebar
+widens to make room; clicking the open tab again closes it. A mode switched on in its column
+keeps its tab lit (a bright stripe on its outer edge) once the column is closed; one the board
+cannot have is greyed.
 
 The tabs are drawn in the 3D view (Blender's panels cannot colour a button or turn its
 text), so they have no tooltip or hover. A press on one reaches `KILEIDO_OT_column_tab`
@@ -28,7 +28,8 @@ TABS = (("STUDIO", "Studio", (0.36, 0.60, 0.56)),  # a teal, neither board colou
         ("IMS", "IMS", (0.38, 0.56, 0.78)),  # aluminium blue
         ("FLEX", "Flex", (0.82, 0.52, 0.14)),  # polyimide amber
         ("DRC", "DRC", (0.80, 0.24, 0.24)),  # DRC red
-        ("LLM", "LLM", (0.56, 0.38, 0.80)))  # LLM purple
+        ("LLM", "LLM", (0.56, 0.38, 0.80)),  # LLM purple
+        ("HIGH_SPEED", "Diff pairs", (0.83, 0.33, 0.49)))  # the pair tint's pink
 NONE = "NONE"
 GREY = (0.42, 0.42, 0.42)  # a tab whose mode this board cannot have
 # key -> a function telling the tab's mode: "on", "off" or "unavailable" (set by the add-on).

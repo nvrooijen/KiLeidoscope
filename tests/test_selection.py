@@ -48,9 +48,10 @@ def test_selecting_a_pour_highlights_its_net_with_its_pads():
     assert highlight(_snapshot(), frozenset({"gnd-plane"})) == (("J1-3", "g-via", "g1", "gnd-plane"), ())
 
 
-def test_selecting_a_via_highlights_its_net():
-    assert highlight(_snapshot(), frozenset({"n-via"})) == (("J1-2", "n-arc", "n-via", "n1"),
-                                                             ("J1-1", "p-via", "p1", "p2"))
+def test_selecting_the_n_side_still_shows_p_as_the_selection():
+    """A pair reads the same whichever side was clicked: P red-orange, N blue."""
+    assert highlight(_snapshot(), frozenset({"n-via"})) == (("J1-1", "p-via", "p1", "p2"),
+                                                             ("J1-2", "n-arc", "n-via", "n1"))
 
 
 def test_selecting_both_nets_of_a_pair_keeps_the_pair_colours():

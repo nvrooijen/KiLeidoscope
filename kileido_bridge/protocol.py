@@ -29,7 +29,7 @@ DTYPES = {"<i4", "|u1", "<f4"}  # "|" = single byte, no byte order
 DEFAULT_THICKNESS_NM = 1_600_000  # board thickness when the stackup cannot give one
 # Every frame type the bridge sends (here and in loop.py); the add-on's client.py lists the same ones.
 MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
-                 "appearance", "selection", "status", "export", "findings")
+                 "appearance", "selection", "status", "export", "findings", "phase_list", "phase_pair")
 _LENGTH = struct.Struct(">I")
 
 
@@ -289,6 +289,17 @@ def layer_heights_nm(snapshot: model.BoardSnapshot) -> tuple[dict[str, int], int
     return heights, DEFAULT_THICKNESS_NM, ["Stackup height unavailable; showing evenly spaced layers over 1.6 mm"]
 
 
+def kicad_layer_z(snapshot: model.BoardSnapshot) -> dict[str, int]:
+    """Copper heights as KiCad measures a via (BOARD_STACKUP::GetLayerDistance): F.Cu and
+    B.Cu at their outer faces, an inner layer halfway through its copper, so the distance
+    between two layers is KiCad's via height. Without a full stackup, layer_heights_nm's."""
+    heights, _, warnings = layer_heights_nm(snapshot)
+    if warnings:
+        return heights
+    copper = {entry.name: entry.thickness_nm or 0 for entry in snapshot.stackup.layers if entry.type == "copper"}
+    return {name: z if name in ("F.Cu", "B.Cu") else z - copper.get(name, 0) // 2 for name, z in heights.items()}
+
+
 def board_origin_nm(snapshot: model.BoardSnapshot) -> tuple[int, int]:
     """Centre of the Edge.Cuts bounding box; the live bridge fixes it at its first snapshot."""
     points = [p for polygon in snapshot.outline.polygons for ring in polygon for p in ring]
@@ -357,3 +368,31 @@ def snapshot_frames(snapshot: model.BoardSnapshot, revision: int = 1,
             *messages_for(snapshot, all_keys(snapshot), revision),
             flex_message(flex, revision),
             encode_frame({"type": "snapshot_end", "revision": revision})]
+
+
+# --- Dynamic phase of differential pairs (kileido_bridge/phase.py) ------------------------
+# Not part of a snapshot: the bridge sends them after it, and when a pair's copper changes.
+# Blender asks for other settings with a `phase_settings` frame (client.request_phase_settings).
+
+def phase_list_message(keys, settings: dict, warnings, pending: int, revision: int) -> bytes:
+    """The pairs that exist now (Blender drops any other), the settings they were
+    computed with, and how many are still waiting for their turn."""
+    return encode_frame({"type": "phase_list", "revision": revision, "keys": list(keys),
+                         "settings": settings, "warnings": list(warnings), "pending": pending})
+
+
+def phase_pair_message(info: dict, traces: dict, revision: int, centreline: dict | None = None) -> bytes:
+    """One pair: its terminals, delays and markers in the header; per side ("p", "n")
+    its path in walking order (`<side>_xyz`: x, y, z in nm), the delay from the start
+    (`<side>_t`, ps), how far that side is ahead of its partner (`<side>_lead`, ps;
+    negative: lagging) and the track width (`<side>_width`, nm) at each point. `centreline`:
+    Δt along the pair for the chart export, `along` (nm along the centreline) and `dt` (ps)."""
+    arrays = {}
+    for side, (xyz, delay, lead, width) in traces.items():
+        arrays[f"{side}_xyz"] = np.rint(xyz).astype("<i4").reshape(-1, 3)
+        arrays[f"{side}_t"] = np.asarray(delay, dtype="<f4")
+        arrays[f"{side}_lead"] = np.asarray(lead, dtype="<f4")
+        arrays[f"{side}_width"] = np.rint(width).astype("<i4")
+    for name, values in (centreline or {}).items():
+        arrays[name] = np.rint(values).astype("<i4") if name == "along" else np.asarray(values, dtype="<f4")
+    return encode_frame({"type": "phase_pair", "revision": revision, **info}, arrays)

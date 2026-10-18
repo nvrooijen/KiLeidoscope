@@ -54,15 +54,17 @@ def highlight_nets(snapshot: model.BoardSnapshot, nets: frozenset[str]) -> tuple
     tracks, arcs, vias, zones (power planes) and footprint pads, so tracks routed
     later join in.
 
-    When both nets of a pair are selected (a diff-pair tuning pattern owns both),
-    the "+"/"P" net stays the selection and the "-"/"N" net shows as its partner.
+    A differential pair always shows its "+"/"P" net as the selection and its
+    "-"/"N" net as the partner, whichever of the two was clicked (and when a
+    diff-pair tuning pattern selects both), so P reads red and N blue everywhere,
+    as in the dynamic-phase view.
     """
     if not nets:
         return (), ()
     items = (*snapshot.tracks, *snapshot.arcs, *snapshot.vias, *snapshot.zones, *snapshot.pads)
     all_nets = {item.net for item in items}
-    primary = {net for net in nets
-               if not (net[-1:] in ("-", "N") and diff_pair_partner(net, all_nets) in nets)}
+    primary = {diff_pair_partner(net, all_nets) if net[-1:] in ("-", "N") and diff_pair_partner(net, all_nets)
+               else net for net in nets}
     partners = {partner for net in primary
                 if (partner := diff_pair_partner(net, all_nets)) is not None} - primary
     selected = tuple(sorted({item.id for item in items if item.net in primary}))

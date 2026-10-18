@@ -61,6 +61,7 @@ class BridgeServer:
         self.candidate_deadline = 0.0
         self.needs_snapshot = False
         self.select_requests = []
+        self.phase_settings = None  # the viewer's last `phase_settings` request, not yet taken
         self.findings_requests = []
         self.adopt_requested = False  # the user pressed Resync in Blender
         self.outgoing = bytearray()
@@ -135,6 +136,8 @@ class BridgeServer:
             ids = [str(item) for item in header.get("ids", ())][:MAX_SELECT_IDS]
             extend, center = bool(header.get("extend", False)), bool(header.get("center", False))
             self.select_requests.append((ids, extend, center, bool(header.get("exact", False))))
+        elif header.get("type") == "phase_settings":  # the panel's dynamic-phase settings; the latest wins
+            self.phase_settings = header
         elif header.get("type") == "findings":  # confirm/dismiss a finding, Run DRC, Copy prompt, ...
             action, key, source = header.get("action"), header.get("key", ""), header.get("source", "drc")
             checks = header.get("checks", [])  # a prompt's check ids; unknown ones are dropped later
@@ -202,6 +205,9 @@ class BridgeServer:
         requests, self.select_requests = self.select_requests, []
         return requests
 
+    def take_phase_settings(self) -> dict | None:
+        settings, self.phase_settings = self.phase_settings, None
+        return settings
     def take_findings_requests(self) -> list[FindingsRequest]:
         """The findings requests, oldest first."""
         requests, self.findings_requests = self.findings_requests, []
