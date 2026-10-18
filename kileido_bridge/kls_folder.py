@@ -28,6 +28,9 @@ import json
 import os
 import re
 import shutil
+import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -113,6 +116,26 @@ def _state_from(raw) -> State:
     return state
 
 
+# One write at a time, whatever the folder: a prompt and a DRC run that both `ensure`
+# the .gitignore at once would otherwise rename over each other (and, on Windows, trip
+# over the resolve that guards the path, which holds the file open for a moment).
+_WRITE_LOCK = threading.Lock()
+
+
+def _replace(partial: str, path: Path) -> None:
+    """`os.replace`, retried for half a second: on Windows a reader (ours, or an indexer)
+    that holds the target open makes it fail with access denied until it lets go."""
+    deadline = time.monotonic() + 0.5
+    while True:
+        try:
+            os.replace(partial, path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 class KlsFolder:
     """The `.kileidoscope` folder of one saved board; `available` False for an unsaved one."""
 
@@ -151,12 +174,23 @@ class KlsFolder:
         return path
 
     def _write(self, relative, data: bytes) -> Path:
-        """The only writer: atomically, and only inside the root."""
-        path = self._within(relative)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        partial = path.with_name(path.name + ".partial")
-        partial.write_bytes(data)
-        os.replace(partial, path)
+        """The only writer: atomically, one at a time, and only inside the root."""
+        with _WRITE_LOCK:
+            path = self._within(relative)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # A temp name of its own per write, so another process landing the same file
+            # never takes it away.
+            handle, partial = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".partial")
+            try:
+                with os.fdopen(handle, "wb") as f:
+                    f.write(data)
+                _replace(partial, path)
+            except BaseException:
+                try:
+                    os.unlink(partial)
+                except OSError:
+                    pass
+                raise
         return path
 
     def _remove(self, relative) -> None:
