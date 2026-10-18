@@ -87,6 +87,21 @@ def test_compensation_close_to_the_mismatch_is_not_an_excursion():
     assert len(only_pair(snapshot, min_length_nm=1 * MM).excursions) == 1  # the user's distance decides
 
 
+def test_an_excursions_peak_is_what_the_stretch_holds_not_a_one_reading_spike():
+    """Where P and N reach their vias or fan out at different points, a reading or two compares
+    them at different places and Δt spikes (CSI_D0 on the CX3 board: +6.0 ps where the pair
+    holds +4.3). The peak is the largest |Δt| held over PEAK_HOLD_NM."""
+    along = np.arange(60) * 0.1 * MM  # a reading every 0.1 mm
+    dt = np.full(60, 4.3)
+    dt[30] = 6.0  # one reading at a via pair
+    assert phase.held_peak(along, dt, 0, 59) == pytest.approx(4.3)
+    assert phase.held_peak(along, -dt, 0, 59) == pytest.approx(-4.3)
+    dt[20:30] = 5.0  # a millimetre at 5 ps: that holds
+    assert phase.held_peak(along, dt, 0, 59) == pytest.approx(5.0)
+    short = np.array([4.3, 6.0, 4.3])  # a stretch shorter than the hold: its plain largest
+    assert phase.held_peak(along[:3], short, 0, 2) == 6.0
+
+
 def test_a_layer_change_adds_each_via_barrel_between_its_layers():
     snapshot = boards.layer_change()
     result = only_pair(snapshot)

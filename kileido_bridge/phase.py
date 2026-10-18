@@ -44,6 +44,7 @@ from . import channels, delays, model, protocol
 SAMPLES = 400  # per side at most; longer routes get a longer step
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
+PEAK_HOLD_NM = 500_000  # an excursion's peak holds over this much of the pair (held_peak)
 
 
 
@@ -96,7 +97,7 @@ class Excursion:
     pos: tuple[float, float, float]  # nm, where it starts
     at_nm: float  # along the centreline
     length_nm: float
-    peak_ps: float  # signed, the largest |Δt| of the stretch
+    peak_ps: float  # signed, the largest |Δt| the stretch holds over PEAK_HOLD_NM (held_peak)
     item_id: str  # the P track there
     item_ids: tuple[str, ...] = ()  # the copper of both sides along the stretch, in walking order
 
@@ -366,6 +367,22 @@ def find_excursions(along: np.ndarray, dt: np.ndarray, tolerance_ps: float, min_
     return [(int(a), int(b)) for a, b in zip(starts, stops) if along[b] - along[a] >= min_length_nm]
 
 
+def held_peak(along: np.ndarray, dt: np.ndarray, first: int, last: int) -> float:
+    """The peak Δt (signed) of the stretch first..last that holds over PEAK_HOLD_NM along the
+    pair: at each reading the smallest |Δt| within half that either side, and the largest of
+    those. Where the two sides reach a via pair or fan out at different points, a reading or
+    two compares P and N at different places and spikes; that does not set the peak. A
+    stretch shorter than the hold: its plain largest |Δt|."""
+    magnitude, span = np.abs(dt[first:last + 1]), along[first:last + 1]
+    if span[-1] - span[0] < PEAK_HOLD_NM:
+        return float(dt[first + int(magnitude.argmax())])
+    low = np.searchsorted(span, span - PEAK_HOLD_NM / 2, side="left")
+    high = np.searchsorted(span, span + PEAK_HOLD_NM / 2, side="right")
+    held = np.array([magnitude[a:b].min() for a, b in zip(low, high)])
+    k = int(held.argmax())
+    return float(np.sign(dt[first + k]) * held[k])  # one sign throughout: |Δt| stays above the tolerance
+
+
 # --- A pair -------------------------------------------------------------------------------
 
 def _orient(p: channels.Route, n: channels.Route, flipped: bool) -> tuple[channels.Route, channels.Route]:
@@ -419,7 +436,7 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     width = float(np.median(np.hypot(*(a[i, :2] - b[j, :2]).T))) + track
     excursions = tuple(
         Excursion(tuple(float(v) for v in centre[first]), float(along[first]), float(along[last] - along[first]),
-                  float(dt[first + int(np.abs(dt[first:last + 1]).argmax())]),
+                  held_peak(along, dt, first, last),
                   next((item for item in items_p[i[first]:] if item), ""),
                   tuple(dict.fromkeys(item for item in (*items_p[i[first]:i[last] + 1], *items_n[j[first]:j[last] + 1])
                                       if item)))
