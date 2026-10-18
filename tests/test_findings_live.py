@@ -17,9 +17,10 @@ from kileido_bridge.live_copy import LiveBoardCopy
 from kileido_bridge.loop import BridgeRuntime
 from kileido_bridge.protocol import encode_frame
 from kileido_bridge.server import MAX_FINDINGS_REQUESTS, BridgeServer
-from test_live_link import FakeReader, addon_client, exchange, fixture
+from test_live_link import FakeReader, addon_client, fixture
 
 LIMIT = 3000  # the watch works on threads of its own: allow it a few seconds
+UNTIL_S = 20.0  # ...waited for by the clock (`until_frames`): on a busy CI runner a prompt has taken over 3 s
 
 
 class FakeBoard:
@@ -69,8 +70,31 @@ def payloads(frames):
     return [header["findings"] for header, _ in frames if header["type"] == "findings"]
 
 
+def until_frames(runtime, client, until, seconds=UNTIL_S):
+    """The frames received until `until(frames)` holds, as `exchange` but by the clock: the
+    watch's threads run when they get the CPU. On a timeout it says where the last findings
+    payload stood (its status, the prompt's and the DRC's state), so a failure shows which
+    step never finished."""
+    received, deadline = [], time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        received.extend(client.poll_io())  # sends hello/resync if queued; frames read here count too
+        runtime.step()
+        received.extend(client.poll_io())
+        if until(received):
+            return received
+        time.sleep(0.001)
+    sent = payloads(received)
+    last = sent[-1] if sent else {}
+
+    def state(part):
+        found = last.get(part) or {}
+        return f"{found.get('state')!r}" + (f" ({found['error']})" if found.get("error") else "")
+    raise AssertionError(f"condition not reached in {seconds:g} s; {len(sent)} findings payloads, the last: status "
+                         f"{last.get('status')!r}, prompt {state('prompt')}, drc {state('drc')}")
+
+
 def until_payload(runtime, client, test):
-    frames = exchange(runtime, client, lambda f: any(test(p) for p in payloads(f)), limit=LIMIT)
+    frames = until_frames(runtime, client, lambda f: any(test(p) for p in payloads(f)))
     return next(p for p in reversed(payloads(frames)) if test(p))
 
 
@@ -106,8 +130,8 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
     runtime, reader, client, project = live(tmp_path, monkeypatch)
     track = reader.snapshot.tracks[0]
     with connected(runtime, client):
-        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
-                          and any(p["status"] == "none" for p in payloads(f)), limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
+                          and any(p["status"] == "none" for p in payloads(f)))
         none = payloads(frames)[-1]
         assert none["folder"] == str(project / ".kileidoscope") and none["drc"]["state"] == "idle"
         assert set(none["sources"]) == {"drc", "phase", "file"}
@@ -162,8 +186,8 @@ def test_a_resync_sends_the_findings_again_after_the_snapshot(tmp_path, monkeypa
     with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "ok")
         client.request_resync()
-        frames = exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
-                          and any(h["type"] == "findings" for h, _ in f), limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f)
+                          and any(h["type"] == "findings" for h, _ in f))
         types = [h["type"] for h, _ in frames]
         assert types.index("findings") > types.index("snapshot_end")
         assert file_rows(payloads(frames)[-1])[0]["title"] == "Stub on the clock"
@@ -193,7 +217,7 @@ def test_a_disconnect_keeps_the_folder_and_the_keys(tmp_path, monkeypatch):
         assert runtime.reader is None and runtime.findings.folder is folder
         assert payload["status"] == "ok" and file_rows(payload)[0]["key"] == key  # not renamed without the board
         client.request_resync()  # a viewer that reconnects meanwhile gets the list too
-        frames = exchange(runtime, client, lambda f: any(h["type"] == "findings" for h, _ in f), limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(h["type"] == "findings" for h, _ in f))
         assert file_rows(payloads(frames)[-1])[0]["key"] == key
 
 
@@ -245,7 +269,7 @@ def test_a_board_saved_after_the_link_started_gets_its_folder(tmp_path, monkeypa
         until_payload(runtime, client, lambda p: p["status"] == "unsaved")
         assert runtime.copy.project_dir == ""
         board_file.write_text(FakeBoard.contents, encoding="utf-8")  # the user saves
-        frames = exchange(runtime, client, lambda f: any(p["status"] == "none" for p in payloads(f)), limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(p["status"] == "none" for p in payloads(f)))
         payload = payloads(frames)[-1]
         assert payload["folder"] == str(project / ".kileidoscope")
         assert runtime.board_path == str(board_file) and runtime.copy.project_dir == str(project)
@@ -267,8 +291,8 @@ def test_run_drc_checks_a_frozen_copy_of_the_open_board(tmp_path, monkeypatch):
     with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         request(client, "run_drc")
-        frames = exchange(runtime, client, lambda f: any(p["sources"]["drc"]["status"] == "ok"
-                                                         for p in payloads(f)), limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(p["sources"]["drc"]["status"] == "ok"
+                                                         for p in payloads(f)))
         states = [p["drc"]["state"] for p in payloads(frames)]
         assert "running" in states and states[-1] == "idle"
         payload = payloads(frames)[-1]
@@ -371,8 +395,8 @@ def test_a_prompt_runs_kicads_drc_first_and_names_what_it_found(tmp_path, monkey
     with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         client.request_findings("prompt", "", "file", checks=["decap.distance"])
-        frames = exchange(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f))
-                          and any(p["sources"]["drc"]["status"] == "ok" for p in payloads(f)), limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f))
+                          and any(p["sources"]["drc"]["status"] == "ok" for p in payloads(f)))
         assert "running" in [p["drc"]["state"] for p in payloads(frames)]  # the DRC tab shows it running
         assert texts == [FakeBoard.contents]  # on the same board text as the prompt's run
         assert len(drcs) == 1 and sum(drcs[0].values()) == 1 and all(k.startswith("drc.") for k in drcs[0])
@@ -408,8 +432,7 @@ def test_copy_prompt_freezes_a_run_its_findings_echo(tmp_path, monkeypatch):
         assert [row["measurable"] for row in payload["catalogue"]] == [False, True, False]  # distance measures
         assert payload["groups"][1] == {"id": "decap", "title": "Decoupling"}
         client.request_findings("prompt", "", "file", checks=["decap.distance", "not.a_check", "hs.stub"])
-        frames = exchange(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f)),
-                          limit=LIMIT)
+        frames = until_frames(runtime, client, lambda f: any(p["prompt"]["state"] == "ready" for p in payloads(f)))
         assert "making" in [p["prompt"]["state"] for p in payloads(frames)]
         prompt = payloads(frames)[-1]["prompt"]
         stamp = kls_folder.stamp(FakeBoard.contents)
@@ -438,7 +461,7 @@ def write_progress(project, data):
 
 def until_progress_read(runtime, client, test):
     """Step until the watch has read the progress file (`test` on what it parsed)."""
-    exchange(runtime, client, lambda _frames: test(runtime.findings._progress[0]), limit=LIMIT)
+    until_frames(runtime, client, lambda _frames: test(runtime.findings._progress[0]))
     return runtime.findings.result()[1]["progress"]
 
 
