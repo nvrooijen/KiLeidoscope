@@ -13,9 +13,9 @@ laminate face it is on the top side, at or below the bottom face on the bottom s
 between (inner copper, a blind via's floor) only through holes reach it.
 
 Blue is the board's area (outline_mask): 1 inside the Edge.Cuts outline, 0 outside, and
-0 past the image too (it covers only the outline's box; the texture clips). Copper drawn
-past the edge (castellated pads, edge fingers) is milled away by the fab, so copper,
-via, plating, paste and highlight materials turn see-through outside it
+0 past the image too (it covers the outline's box and a little more; the texture clips).
+Copper drawn past the edge (castellated pads, edge fingers) is milled away by the fab, so
+copper, via, plating, paste and highlight materials turn see-through outside it
 (`clip_to_board`). The board, its mask and the IMS base already have the outline's
 shape; the plated board edge stands outside it on purpose and keeps its own material.
 """
@@ -30,8 +30,9 @@ from .placement import laminate_faces
 from .state import board
 
 RESOLUTION = 2048  # long side; ~22 um per pixel on the reference board, edges sharpened in shading
+EDGE_PIXELS = 2  # the mask reaches this far past the outline's box (`set_bounds`)
 IMAGE = "KLS holes"
-HOLED = ("board", "board_bottom", "board_edge", "ims_base", "vias", "via_rings", "highlight_selected",
+HOLED = ("board", "board_bottom", "board_edge", "ims_base", "flex", "vias", "via_rings", "highlight_selected",
          "highlight_pair", "highlight_finding")  # + copper:<layer>
 CLIPPED = ("vias", "via_rings", "plating", "plating_bare", "solder", "highlight_selected", "highlight_pair",
            "highlight_selected_barrel", "highlight_pair_barrel", "highlight_finding")  # + copper:<layer>
@@ -45,6 +46,7 @@ WALL_RAMP = (0.02, 0.12)  # their coverage ramp: about a pixel past the outline 
 CLIP_TEXTURE = "KLS board plot"  # a clipped material's sample of the mask (`clip_to_board`)
 CLIP_OFF = "KLS board clip off"  # 1: no outline to clip to, everything shows
 CLIP_EDGE = "KLS board clip edge"  # the coverage ramp: crisp at 0.5, or `WALL_RAMP`
+TINT = "KLS see-through tint"  # a film's tint on what shows through it (`_clear_where_open`)
 
 _sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
 _bounds = None
@@ -76,9 +78,13 @@ def set_pads(xy_m, size_m, angle, oval):
 def set_bounds(bounds, outline=None):
     """The board outline's box (xmin, ymin, xmax, ymax, metres), and its edges (a, b),
     each (n, 2): the board area copper is clipped to. No edges given: the last ones
-    stay; empty edges: nothing is clipped."""
+    stay; empty edges: nothing is clipped. The mask covers the box and `EDGE_PIXELS`
+    past it: a wall on the outline would otherwise sample the image's last half pixel,
+    half a hole, and a drill on the edge (a castellation) showed a see-through band."""
     global _bounds, _outline
-    _bounds = tuple(float(value) for value in bounds)
+    xmin, ymin, xmax, ymax = (float(value) for value in bounds)
+    margin = EDGE_PIXELS * max(xmax - xmin, ymax - ymin, 1e-9) / RESOLUTION
+    _bounds = (xmin - margin, ymin - margin, xmax + margin, ymax + margin)
     if outline is not None:
         _outline = tuple(np.asarray(part, np.float64).reshape(-1, 2) for part in outline)
     rebuild()
@@ -319,7 +325,31 @@ def _multiply_coverage(material, coverage, name):
         factor = mix.inputs[0]
         before = factor.links[0].from_socket if factor.is_linked else factor.default_value
         links.new(shading.math_node(tree, "MULTIPLY", before, coverage), factor)
+        _clear_where_open(tree, mix, coverage)
     focus.set_render_method(material)
+
+
+def _clear_where_open(tree, mix, coverage):
+    """A see-through tinted like a film (amber polyimide, coverlay: materials._tint_see_through)
+    is clear where `coverage` opens the material: a hole through the film shows what lies
+    behind it as it is. The tint is kept in an RGB node `TINT`, white where open."""
+    transparent = mix.inputs[1].links[0].from_node if mix.inputs[1].is_linked else None
+    if transparent is None or transparent.type != "BSDF_TRANSPARENT":
+        return
+    color = transparent.inputs["Color"]
+    if color.is_linked:  # already clear where another coverage opens it
+        tint = color.links[0].from_socket
+    else:
+        rgb = tree.nodes.new("ShaderNodeRGB")
+        rgb.name = TINT
+        rgb.outputs[0].default_value = color.default_value[:]
+        tint = rgb.outputs[0]
+    clear = tree.nodes.new("ShaderNodeMix")
+    clear.data_type = "RGBA"
+    shading.typed_socket(clear.inputs, "A").default_value = (1.0, 1.0, 1.0, 1.0)
+    tree.links.new(coverage, clear.inputs["Factor"])
+    tree.links.new(tint, shading.typed_socket(clear.inputs, "B"))
+    tree.links.new(shading.typed_socket(clear.outputs, "Result"), color)
 
 
 def clip_to_board(material):
