@@ -65,8 +65,9 @@ OLD_BLOOM = "KLS Bloom"  # a compositor group earlier versions set on the scene;
 SCALE_NODE, WIDTH_NODE, PULSE_NODE, BRIGHT_NODE = ("KLS phase scale", "KLS phase pulse width", "KLS phase pulses",
                                                    "KLS phase brightness")
 COLOUR_NODE = "KLS phase colours"  # 1: the tint shows; 0 (Colours off): only the pulses light the trace
-PULSES = 4  # per trace, evenly spaced over the loop
+PULSES = 4  # clocks per trace: the most pulses a loop can carry (the panel's Number of pulses), evenly spaced
 CLOCK_NODES = tuple(f"KLS phase clock {index}" for index in range(PULSES))
+PARKED = -1e3  # a clock no pulse uses: before every start terminal, so it lights nothing
 NODES_VERSION = 6  # materials built by an older add-on (a saved .blend) are rebuilt
 LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from the start terminal
 SELECTED = "kls_selected"  # per trace copy (an object property the material reads): 1 for the selected pair
@@ -185,7 +186,7 @@ def _pulse(tree, delay):
     width, fade = _value(tree, WIDTH_NODE, _pulse_width()), _value(tree, TAIL_NODE, _pulse_tail())
     lit = None
     for name in CLOCK_NODES:
-        gap = _math(tree, "SUBTRACT", delay, _value(tree, name, -1e3))  # > 0: not reached yet
+        gap = _math(tree, "SUBTRACT", delay, _value(tree, name, PARKED))  # > 0: not reached yet
         offset = _math(tree, "DIVIDE", gap, width)
         head = _math(tree, "EXPONENT", _math(tree, "MULTIPLY", _math(tree, "MULTIPLY", offset, offset), -1.0))
         fading = _math(tree, "EXPONENT", _math(tree, "DIVIDE", _math(tree, "MINIMUM", gap, 0.0), fade))
@@ -362,9 +363,10 @@ def _set_clock(scene, seconds):
                   for data in board.phase.values())
     period = longest + 6 * width + _pulse_tail() * 4  # in before the start, out with its tail past the end
     rate = max(0.1, float(getattr(scene, "kileido_phase_pulse_rate", 30.0)))
+    count = max(1, min(PULSES, int(getattr(scene, "kileido_phase_pulse_count", 1))))
     _set(PULSE_NODE, 1.0)
-    for index, name in enumerate(CLOCK_NODES):  # evenly spaced over the loop
-        _set(name, (seconds * rate + index * period / PULSES) % period - 3 * width)
+    for index, name in enumerate(CLOCK_NODES):  # the panel's number, evenly spaced over the loop; the rest parked
+        _set(name, (seconds * rate + index * period / count) % period - 3 * width if index < count else PARKED)
 
 
 def _cycles_viewport(scene):

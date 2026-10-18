@@ -145,7 +145,11 @@ def main():
         assert not bpy.app.timers.is_registered(phase._pulse_tick)
         scene.frame_set(scene.frame_start + 13)  # the next frame moves them on
         assert nodes[phase.CLOCK_NODES[0]].outputs[0].default_value > expected
-        # Four pulses, each a quarter of a loop behind the one before.
+        # One pulse by default (short pairs): the other clocks parked, lighting nothing.
+        clocks = [nodes[name].outputs[0].default_value for name in phase.CLOCK_NODES]
+        assert scene.kileido_phase_pulse_count == 1 and clocks[1:] == [phase.PARKED] * (phase.PULSES - 1)
+        # Four on request, each a quarter of a loop behind the one before.
+        scene.kileido_phase_pulse_count = 4
         width = phase._pulse_width()
         longest = max(max(data['delay_p_ps'], data['delay_n_ps']) for data in state.board.phase.values())
         period = longest + 6 * width + 4 * phase._pulse_tail()  # the slowest pair sets the loop
@@ -211,7 +215,7 @@ def main():
         assert labels["D_P start"].hide_get() and not p_trace.hide_get()
         scene.kileido_phase_show = False
         assert p_trace.hide_get() and start.hide_get()
-        # Closing the High speed column, or switching the section off, hides everything.
+        # Closing the Diff pairs column, or switching it off (Enable), hides everything.
         scene.kileido_phase_show = True
         for off in (("kileido_column", "NONE"), ("kileido_phase_enabled", False)):
             setattr(scene, *off)

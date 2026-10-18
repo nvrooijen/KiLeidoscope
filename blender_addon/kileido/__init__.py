@@ -398,14 +398,20 @@ WRAP_CACHE = 2_000  # wrapped texts kept: the sidebar redraws often, its texts r
 _wrapped = {}
 
 
+def _width(context, margin=WRAP_MARGIN_PX):
+    """The px a line has in the column being drawn: its share of the sidebar's current
+    width less `margin` (unscaled px)."""
+    scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
+    return max(80 * scale, (context.region.width if context.region else 300 * scale) * _share - margin * scale)
+
+
 def _wrap(context, text, margin=WRAP_MARGIN_PX):
     """Lines that fit the sidebar at its current width less `margin` (unscaled px; Blender
     cuts a longer label in its middle): each line measured in the UI font (blf) at the UI
     scale, words kept whole unless one alone is too wide. Without a font to measure with,
     ~8 px per character."""
     scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
-    width = max(80 * scale, (context.region.width if context.region else 300 * scale) * _share
-                - margin * scale)
+    width = _width(context, margin)
     points = context.preferences.ui_styles[0].widget.points if context.preferences.ui_styles else 11
     key = (text, int(width), points, scale)
     if key not in _wrapped:
@@ -600,7 +606,7 @@ def _column_switched():
 
 def _draw_high_speed(layout, scene):
     """The High speed column (high_speed_panel.py): dynamic phase and the pair list."""
-    high_speed_panel.draw(layout, bpy.context, _wrap, _swatch)
+    high_speed_panel.draw(layout, bpy.context, _wrap, _swatch, _width)
 
 
 def _high_speed_state():
@@ -1629,8 +1635,8 @@ def _scene_properties():
                         "ink follows the copper, so traces under it show by their relief at any opacity",
             update=lambda self, context: cosmetics.apply_silk_settings()),
         "kileido_phase_enabled": BoolProperty(
-            name="Dynamic phase", default=True,
-            description="Show dynamic phase (colours, pulses, markers) while the High speed column is open",
+            name="Diff pairs", default=True,
+            description="Show dynamic phase (colours, pulses, markers) while the Diff pairs column is open",
             update=lambda self, context: phase.refresh_visibility()),
         "kileido_phase_show": BoolProperty(
             name="Dynamic phase", default=True,
@@ -1653,6 +1659,10 @@ def _scene_properties():
                                                       "them, and a render has them in place on every frame "
                                                       "(stills and animations)")),
             default="LIVE", update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_count": IntProperty(
+            name="Number of pulses", default=1, min=1, max=phase.PULSES,
+            description="Pulses on each trace at once, evenly spaced over the loop. One suits short pairs",
+            update=lambda self, context: phase.set_pulses()),
         "kileido_phase_pulse_rate": FloatProperty(
             name="Pulse speed", default=30.0, min=0.1, soft_min=5.0, soft_max=500.0, precision=0,
             description="Picoseconds of signal travel shown per second"),

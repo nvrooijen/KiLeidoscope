@@ -1056,7 +1056,7 @@ class KILEIDO_OT_findings_run_drc(bpy.types.Operator):
 class KILEIDO_OT_findings_run_phase(bpy.types.Operator):
     bl_idname = "kileido.findings_run_phase"
     bl_label = "Dynamic phase"
-    bl_description = ("Measure every differential pair's dynamic phase now and list here what the High speed "
+    bl_description = ("Measure every differential pair's dynamic phase now and list here what the Diff pairs "
                       "column marks: stretches where P and N run out of phase, shorts, loops and unfinished sides")
 
     @classmethod

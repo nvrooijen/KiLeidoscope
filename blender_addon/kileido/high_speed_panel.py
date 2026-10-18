@@ -1,5 +1,5 @@
-"""The High speed column: signal-integrity views left of the KiLeidoscope panel,
-opened by its bookmark tab (columns.py). Sections: Dynamic phase."""
+"""The Diff pairs column: the dynamic phase of differential pairs, left of the KiLeidoscope
+panel, opened by its bookmark tab (columns.py)."""
 
 import textwrap
 from pathlib import Path
@@ -181,19 +181,19 @@ class KILEIDO_OT_phase_export(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def draw(layout, context, wrap, swatch):
-    """The High speed column. `wrap(context, text)` and `swatch(kind, color)` are the
-    KiLeidoscope panel's own helpers."""
-    header, body = layout.panel("KILEIDO_dynamic_phase", default_closed=False)
-    header.prop(context.scene, "kileido_phase_enabled", text="")
-    header.label(text="Dynamic phase")
-    header.operator(KILEIDO_OT_phase_help.bl_idname, text="", icon="QUESTION", emboss=False)
-    if body is not None:
-        body.active = context.scene.kileido_phase_enabled
-        _draw_dynamic_phase(body, context, wrap, swatch)
+def draw(layout, context, wrap, swatch, width):
+    """The Diff pairs column (its tab names it, so no title): Enable and the help, then the
+    settings and the pair list. `wrap(context, text)`, `swatch(kind, color)` and
+    `width(context)` (px a line has) are the KiLeidoscope panel's own helpers."""
+    top = layout.row()
+    top.prop(context.scene, "kileido_phase_enabled", text="Enable")
+    top.operator(KILEIDO_OT_phase_help.bl_idname, text="", icon="QUESTION", emboss=False)
+    body = layout.column()
+    body.active = context.scene.kileido_phase_enabled
+    _draw_dynamic_phase(body, context, wrap, swatch, width)
 
 
-def _draw_dynamic_phase(layout, context, wrap, swatch):
+def _draw_dynamic_phase(layout, context, wrap, swatch, width):
     scene = context.scene
     row = layout.row(align=True)
     row.prop(scene, "kileido_phase_show", text="Colours")
@@ -212,11 +212,12 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
     if scene.kileido_phase_pulse_clock == "TIMELINE":
         for line in wrap(context, "The frame sets the pulses: Play animates them, and renders show them."):
             pulses.label(text=line, icon="INFO")
+    pulses.prop(scene, "kileido_phase_pulse_count", text="Number of pulses")
     pulses.prop(scene, "kileido_phase_pulse_rate", text="Pulse speed (ps/s)")
     pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
     pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
     pulses.prop(scene, "kileido_phase_pulse_glow", text="Pulse brightness")
-    _draw_legend(layout.box().column(align=True), context, wrap, swatch)
+    _draw_legend(layout.box().column(align=True), context, wrap, swatch, width)
     info = layout.column(align=True)
     guess = phase.sources_warning()
     if guess:
@@ -249,16 +250,23 @@ def _draw_dynamic_phase(layout, context, wrap, swatch):
 
 
 BAR_TILES = 48
+ICON_PX = 16  # unscaled: the width Blender draws a label's icon at, however narrow the label
 
 
-def _draw_legend(column, context, wrap, swatch):
+def _draw_legend(column, context, wrap, swatch, width):
     """What the colours and markers mean: a colour bar from P red through white (in phase)
     to N blue over the colour scale, then the markers and how to read the pulses. A panel
     has no gradient widget: the bar is BAR_TILES full-bleed icons side by side, which an
-    aligned row packs edge to edge."""
+    aligned row packs edge to edge. Each icon is drawn ICON_PX wide from its tile's left
+    and the next tile paints over the rest, so the last one reaches past its tile: the
+    bar leaves it that much room, or it would stick out of the box."""
     scale = context.scene.kileido_phase_scale_ps
-    column.label(text="Dynamic phase: how far P and N are apart")
-    bar = column.row(align=True)
+    for line in wrap(context, "Dynamic phase: how far P and N are apart"):  # wrapped: a narrow column cut it off
+        column.label(text=line)
+    icon_px = ICON_PX * (context.preferences.system.ui_scale or 1.0)
+    room = column.split(factor=max(0.5, 1.0 - icon_px / width(context)), align=True)
+    bar = room.row(align=True)
+    room.label(text="")  # under the last tile's icon
     for index in range(BAR_TILES):
         share = index / (BAR_TILES - 1) * 2 - 1  # -1: P at the scale's end; 0: in phase; 1: N at its end
         side = phase.COLORS["p" if share < 0 else "n"]
