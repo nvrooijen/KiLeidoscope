@@ -145,7 +145,9 @@ def test_both_sides_end_on_the_same_parts():
 def test_pads_that_connect_twice_still_end_or_carry_the_route():
     result = only_pair(boards.pass_through())  # J1.1 and D1's pads each connect twice
     assert {result.p.start.label, result.p.end.label} == {"J1.1", "U1.1"}
-    assert result.p.length_nm == pytest.approx(49.9 * MM)  # to where the copper first reaches J1.1's pad
+    # the copper runs on to J1.1's centre, so it counts from there, straight to the pad's edge (KiCad's
+    # clipLineToPad); the second short track lying over it is not on the route
+    assert result.p.length_nm == pytest.approx(50 * MM)
     assert not result.p.branches  # the signal runs through D1, it does not branch to it
     assert {pad["id"] for pad in result.pads if pad["side"] == "p"} == {"J1.1", "D1.1", "D1.2", "U1.1"}
     assert [branch.terminal.label for branch in result.n.branches] == ["D1.3"]
@@ -279,6 +281,99 @@ def test_a_profiles_number_counts_every_mm_as_kicad_does():
     bumped = phase.analyze_board(pair((0, 0), *boards.bump(2, 0, -2.0), (50, 0)), model_)[0][0]
     assert bumped.delay_p_ps - straight.delay_p_ps == pytest.approx(6.0 * 4.0)  # 4 mm more copper
     assert bumped.sources == ("tuning profile 'Fast'",)
+
+
+def test_short_pieces_are_walked_not_hopped():
+    """Pieces shorter than half a track width (a fine zig-zag, a piece of no length) whose
+    ends meet exactly are copper KiCad counts in full; joining their ends as touching
+    would collapse them into one straight hop."""
+    zigzag = [(10, 0)]
+    for k in range(20):  # 0.06 mm pieces, under half the 0.15 mm width: 4.8 mm of copper over 2.4 mm
+        x = 10 + 0.12 * k
+        zigzag += [(x, 0.06), (x + 0.06, 0.06), (x + 0.06, 0), (x + 0.12, 0)]
+    board = boards.ends(boards.Board())
+    board.path("D_P", (0, 0), *zigzag, (20, 0), (20, 0), (50, 0))  # (20, 0) twice: a track of no length
+    board.path("D_N", (0, 1), (50, 1))
+    result = only_pair(board.snapshot())
+    copper = 10 + 4.8 + (50 - 12.4)
+    assert result.p.length_nm == pytest.approx(copper * MM)
+    assert not any(piece.kind == "hop" for piece in result.p.pieces)
+    assert result.delay_p_ps == pytest.approx(copper * unit_delay())
+
+
+def test_ends_that_do_not_meet_still_join_within_half_a_width():
+    """A track end that stops short of the next track's end, or lands beside a track's
+    middle, still connects there, as KiCad's connectivity has it: the gap is a hop, the
+    middle a T."""
+    board = boards.ends(boards.Board())
+    board.path("D_P", (0, 0), (20, 0)).path("D_P", (20.05, 0), (50, 0))  # 0.05 mm short of the next end
+    board.path("D_N", (0, 1), (30, 1)).path("D_N", (30, 1), (30, 3))  # a stub off N's route...
+    board.path("D_N", (30, 1.04), (50, 1))  # ...and N's route on, starting 0.04 mm beside the corner
+    result = only_pair(board.snapshot())
+    assert result.p.complete and result.n.complete
+    assert result.p.length_nm == pytest.approx(50 * MM)
+    assert [piece.kind for piece in result.p.pieces] == ["track", "hop", "track"]
+    assert result.delay_p_ps == pytest.approx(49.95 * unit_delay())  # KiCad counts the tracks, not the gap
+    assert result.n.length_nm == pytest.approx((30 + math.dist((30, 1.04), (50, 1))) * MM, abs=0.05 * MM)
+
+
+# --- Vias and pads, as KiCad 10 counts them (pcbnew/length_delay_calculation) ----------------
+
+def test_a_via_counts_kicads_stackup_distance_between_the_outermost_layers_ending_in_it():
+    """KiCad's via height (BOARD_STACKUP::GetLayerDistance) counts outer copper whole and
+    inner copper half, between the outermost layers whose copper ends in the via."""
+    board = boards.ends(boards.Board())
+    board.pads[-2:] = []  # J1 on the bottom instead
+    board.part("J1", (1, "D_P", (50, 0)), (2, "D_N", (50, 1)), layer="B.Cu")
+    for net, y in (("D_P", 0), ("D_N", 1)):
+        board.path(net, (0, y), (10, y)).via(net, (10, y)).path(net, (10, y), (20, y), layer="In1.Cu")
+        board.via(net, (20, y)).path(net, (20, y), (30, y), layer="In2.Cu")
+        board.via(net, (30, y)).path(net, (30, y), (50, y), layer="B.Cu")
+    result = only_pair(board.snapshot())
+    # F.Cu 35 + 200 dielectric + half of In1's 35; In1 half + 1000 + In2 half; In2 half + 200 + B.Cu 35 (um)
+    assert [c.length_nm for c in result.crossings if c.side == "P"] == [252_500, 1_035_000, 252_500]
+    assert result.delay_p_ps == pytest.approx(10 * 6.0 + 10 * 7.0 + 10 * 7.0 + 20 * 6.0 + 7.0 * 1.54)
+
+    board.path("D_P", (10, 0), (10, -2), layer="B.Cu")  # copper on B.Cu ending in the first via too
+    first = next(c for c in only_pair(board.snapshot()).crossings if c.side == "P" and c.pos == (10 * MM, 0))
+    assert first.length_nm == 1_540_000  # F.Cu to B.Cu, the whole board
+
+
+def test_a_track_ending_inside_a_via_pad_counts_from_the_via_centre():
+    """KiCad cuts a track end inside a via's pad at the pad's edge and joins it to the via
+    centre by a straight line (clipLineToVia), wherever in the pad the track ends."""
+    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 1)))
+    board.part("J1", (1, "D_P", (50, -5)), (2, "D_N", (50, -6)), layer="B.Cu")
+    board.path("D_P", (0, 0), (19.8, 0)).via("D_P", (20, 0))  # stops 0.2 mm short of the centre
+    board.path("D_P", (20, -0.2), (20, -5), (50, -5), layer="B.Cu")  # starts 0.2 mm below it, at right angles
+    board.path("D_N", (0, 1), (19, 1)).via("D_N", (19, 1)).path("D_N", (19, 1), (19, -6), (50, -6), layer="B.Cu")
+    result = only_pair(board.snapshot())
+    # the via pad's radius is 0.3 mm: F.Cu 19.7 + 0.3, B.Cu 0.3 + 4.7 + 30
+    assert result.delay_p_ps == pytest.approx(20.0 * 6.0 + 35.0 * 6.0 + 7.0 * 1.54)
+
+
+def test_a_track_ending_on_a_pad_centre_counts_straight_from_it_and_one_ending_elsewhere_as_it_runs():
+    """KiCad cuts a track that ends exactly on a pad's centre at the pad's edge and joins it
+    to the centre by a straight line (clipLineToPad); one ending elsewhere in the pad counts
+    from its end."""
+    board = boards.ends(boards.Board())
+    board.path("D_P", (0, 0), (0, 0.15), (0.1, 0.15), (0.1, 0), (50, 0))  # a wiggle inside U1's 0.4 mm pad
+    board.path("D_N", (0.1, 1), (50, 1))  # starts 0.1 mm off the pad's centre
+    result = only_pair(board.snapshot())
+    assert result.delay_p_ps == pytest.approx(50.0 * 6.0)  # straight from the centre, not 0.3 mm of wiggle
+    assert result.delay_n_ps == pytest.approx(49.9 * 6.0)
+
+
+def test_copper_dead_ending_without_a_pad_is_a_branch():
+    """A stub that ends in no pad is copper KiCad counts and the route leaves out: listed and
+    warned about like a branch to a pad."""
+    board = boards.ends(boards.Board())
+    board.path("D_P", (0, 0), (50, 0)).path("D_P", (25, 0), (25, 0.5))
+    board.path("D_N", (0, 1), (50, 1))
+    result = only_pair(board.snapshot())
+    assert [(b.terminal.label, b.length_nm) for b in result.p.branches] == [("track end", pytest.approx(0.5 * MM))]
+    assert "P side has 1 branch" in result.warnings
+    assert result.delay_p_ps == pytest.approx(50 * unit_delay())
 
 
 def test_a_pair_without_a_tuning_profile_is_listed_not_measured():

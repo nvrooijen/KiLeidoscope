@@ -9,14 +9,18 @@ touch (an end inside another track's copper, as KiCad connects them), and vias
 and pads are nodes their touching ends connect to. Terminals are the pads at the
 ends of the routed path, pads with one connection; with more than two (a stub to
 an ESD diode, multi-drop), the two farthest apart along the copper are the route's
-ends and the others are branches. The route is the shortest path between them.
+ends and the others are branches, as is copper that dead-ends without a pad. The
+route is the shortest path between them.
 
-Lengths follow the copper from the track end inside the start pad to the track end
-inside the end pad, nothing clipped at the pad outlines: as KiCad counts them, whose
-length calculation runs from the pad centre to the copper's edge. A via or plated hole
-adds its barrel between the two layers it connects (from `protocol.layer_heights_nm`);
-a pad or series part in the middle counts as the straight line between where the
-tracks meet it.
+Lengths are counted as KiCad 10 counts a net's (pcbnew/length_delay_calculation): the
+copper as it runs, except that a track ending inside a via's pad is cut at the pad's
+edge and joined to the via centre by a straight line (clipLineToVia), and so is one
+ending exactly on a pad's centre, at that pad's edge (clipLineToPad); a track ending
+elsewhere in a pad counts from where it ends. A via adds its barrel over KiCad's
+stackup distance between the outermost layers whose copper ends in it, the heights
+passed in being KiCad's (`protocol.kicad_layer_z`); a plated pad changing layers adds
+none, as KiCad charges vias only. A series part in the middle counts as the straight
+line between where the tracks meet it.
 """
 
 import heapq
@@ -45,17 +49,22 @@ class Terminal:
 @dataclass(frozen=True)
 class Piece:
     """One stretch of a route, in walking order."""
-    kind: str  # "track" (a track or arc), "hop" (straight across a pad or part), "barrel"
+    # "track" (a track or arc); "hop" (straight across a gap between where one track ends and the
+    # next begins: walked, no delay, as KiCad counts the tracks alone); "centre" (KiCad's straight
+    # line from where a track leaves a via's or pad's copper to its centre); "part" (straight
+    # across a series part); "barrel"
+    kind: str
     item_id: str
     layer: str
     to_layer: str  # a barrel's far layer; else the same as `layer`
     points: tuple[model.Point, ...]
-    length_nm: float  # along the copper; a barrel's height between its two layers
+    length_nm: float  # along the copper; a barrel's height as KiCad counts it (see `joins`)
     width: int = 0
     span: tuple[str, str] = ("", "")  # a barrel's via or hole layers (top, bottom)
     net: str = ""
     diameter: int = 0  # a barrel's via land
     drill: int = 0  # and its hole
+    joins: tuple[str, str] = ("", "")  # a via barrel's outermost layers with copper ending in it: what KiCad charges
 
 
 @dataclass(frozen=True)
@@ -347,18 +356,22 @@ def build_graph(items: "NetItems", heights: dict[str, int], links=()) -> _Graph:
                 relative = np.asarray(tip, np.float64) - starts
                 t = np.clip((relative * span).sum(axis=1) / squared, 0.0, 1.0)
                 gap = np.hypot(*(relative - t[:, None] * span).T)
-                for hit in np.flatnonzero(gap <= reach):
+                hits = [hit for hit in np.flatnonzero(gap <= reach) if chords[hit][0] != index]
+                # A tip that meets another track's end exactly is joined there and nowhere
+                # else by reach: within half a width of it, a run of short pieces (a fine
+                # zig-zag, a chamfer) would otherwise merge into one node and lose its copper.
+                met = any(min(math.dist(tip, polylines[chords[hit][0]][2][0]),
+                              math.dist(tip, polylines[chords[hit][0]][2][-1])) <= CONTACT_NM for hit in hits)
+                for hit in hits:
                     other, chord, a, b, width = chords[hit]
-                    if other == index:
-                        continue
                     other_points = polylines[other][2]
-                    near = max(width / 2, CONTACT_NM)
-                    if math.dist(tip, other_points[0]) <= near:
-                        merge.union(end(layer, tip), end(layer, other_points[0]))
-                    elif math.dist(tip, other_points[-1]) <= near:
-                        merge.union(end(layer, tip), end(layer, other_points[-1]))
-                    else:
-                        splits.setdefault(other, []).append((chord, float(t[hit]), tip))
+                    # The other track's nearer end: a piece shorter than half a width has both in reach.
+                    to_end, other_end = min((math.dist(tip, other_points[0]), other_points[0]),
+                                            (math.dist(tip, other_points[-1]), other_points[-1]))
+                    if to_end <= (CONTACT_NM if met else max(width / 2, CONTACT_NM)):
+                        merge.union(end(layer, tip), end(layer, other_end))
+                    elif to_end > max(width / 2, CONTACT_NM):
+                        splits.setdefault(other, []).append((chord, float(t[hit]), tip))  # a T
     for index, (item_id, layer, points, length, width) in enumerate(polylines):
         # Cut at the splits; each part keeps its share of the true (arc) length.
         scale = length / max(_polyline_length(points), 1e-9)
@@ -710,6 +723,15 @@ def _route(ends: _Ends, first: int, second: int, references: dict[str, str]) -> 
             pads.append((along[joint], leaf))  # a pad the route runs through or over: no stub, not a branch
             continue
         branches.append(Branch(_terminal(graph, leaf, references, adjacent), along[joint], distances[joint]))
+    if any(graph.kind[node] == "pad" for node in candidates):  # pads end the route: copper dead-ending elsewhere is a stub
+        for node, neighbours in adjacent.items():
+            if node in on_route or graph.kind[node] != "end" or len({other for other, _ in neighbours}) != 1:
+                continue
+            distances = _distances(adjacent, node)[0]
+            joint = min((other for other in on_route if other in distances), key=lambda other: distances[other],
+                        default=None)
+            if joint is not None and distances[joint] > 0:  # KiCad counts it; the route leaves it out
+                branches.append(Branch(_terminal(graph, node, references, adjacent), along[joint], distances[joint]))
     reached = _distances(adjacent, first)[0]
     complete = all(node in reached for node in range(len(graph.kind)) if graph.kind[node] == "pad")
     pads = tuple(graph.item[node] for _, node in sorted(pads, key=lambda entry: entry[0]))
@@ -813,31 +835,165 @@ def _drill(hub) -> int:
     return min(hub.drill) if isinstance(hub, model.Pad) and hub.drill else 0
 
 
+_INSIDE = object()  # a track wholly inside a via's or pad's copper
+
+
+class _Land:
+    """A via's pad, or a pad, where KiCad cuts a track's end back to the centre: the copper
+    inside it becomes a straight line from the centre to where the track leaves it. A via
+    does it wherever in its pad the track ends (clipLineToVia), a pad only for a track
+    ending exactly on its centre (clipLineToPad)."""
+
+    def __init__(self, item, centred: bool = False):
+        self.item = item
+        self.centre = item.pos
+        self.via = isinstance(item, model.Via)
+        self.centred = centred  # a pad: the net's copper inside it runs on to its centre (`_reaches_centre`)
+        self.started = False  # cutting a track's start that began on this land
+
+    def inside(self, point, layer: str) -> bool:
+        if self.via:
+            return math.dist(point, self.centre) <= self.item.diameter / 2
+        return _on_pad(self.item, layer, point)
+
+    def applies(self, end, layer: str) -> bool:
+        return self.inside(end, layer) and (self.via or self.centred or tuple(end) == tuple(self.centre))
+
+    def _crossing(self, inner, outer, layer: str) -> model.Point:
+        low, high = 0.0, 1.0
+        for _ in range(40):
+            middle = (low + high) / 2
+            point = (inner[0] + (outer[0] - inner[0]) * middle, inner[1] + (outer[1] - inner[1]) * middle)
+            low, high = (middle, high) if self.inside(point, layer) else (low, middle)
+        return (round(inner[0] + (outer[0] - inner[0]) * low), round(inner[1] + (outer[1] - inner[1]) * low))
+
+    def cut_start(self, points, layer: str):
+        """The track's points from where it leaves the land on; None to keep it whole,
+        _INSIDE when all of it lies inside."""
+        if not self.started:
+            if not self.applies(points[0], layer):
+                return None
+            self.started = True
+        for index, point in enumerate(points):
+            if not self.inside(point, layer):
+                if index == 0 or (index == 1 and tuple(points[0]) == tuple(self.centre)):
+                    return None  # already straight out from the centre (or starting outside): nothing to change
+                return (self._crossing(points[index - 1], point, layer), *points[index:])
+        return _INSIDE
+
+    def cut_end(self, pieces: list, end) -> bool:
+        """Cut the route's last tracks back to where they enter the land and join them to the
+        centre; False (nothing changed) when KiCad would not cut here."""
+        tail = len(pieces)
+        while tail and pieces[tail - 1].kind in ("track", "hop", "centre"):
+            tail -= 1
+        run = pieces[tail:]
+        if not run or not self.applies(end, run[-1].layer):
+            return False
+        for index, step in reversed([(i, k) for i, piece in enumerate(run) for k in range(len(piece.points) - 1)]):
+            piece = run[index]
+            outer, inner = piece.points[step], piece.points[step + 1]
+            if self.inside(outer, piece.layer):
+                continue
+            if index == len(run) - 1 and step == len(piece.points) - 2 and tuple(inner) == tuple(self.centre):
+                return False  # already straight in to the centre: nothing to change
+            crossing = self._crossing(inner, outer, piece.layer)
+            kept = (*piece.points[:step + 1], crossing)
+            whole = _polyline_length(piece.points)
+            del pieces[tail + index:]
+            pieces.append(replace(piece, points=kept,
+                                  length_nm=piece.length_nm * _polyline_length(kept) / whole if whole else 0.0))
+            pieces.append(Piece("centre", "", piece.layer, piece.layer, (crossing, self.centre),
+                                math.dist(crossing, self.centre), net=piece.net))
+            return True
+        return False  # all of it inside: KiCad keeps it
+
+
+def _reaches_centre(graph: _Graph, adjacent, entry: int, pad: model.Pad) -> bool:
+    """Does the copper inside `pad` join the route's track end `entry` to a track end on the
+    pad's centre? KiCad's chain then ends on the centre, and it cuts it at the pad's edge,
+    though the route enters the pad at its first track end inside."""
+    if graph.kind[entry] != "end":
+        return False
+    layer, seen, todo = graph.layer[entry], {entry}, [entry]
+    while todo:
+        node = todo.pop()
+        if tuple(graph.pos[node]) == tuple(pad.pos):
+            return True
+        for other, edge in adjacent.get(node, ()):
+            if (other not in seen and edge.kind == "track" and edge.layer == layer
+                    and all(_on_pad(pad, layer, point) for point in edge.points)):
+                seen.add(other)
+                todo.append(other)
+    return False
+
+
 def _pieces(graph: _Graph, steps, heights: dict[str, int]) -> tuple[Piece, ...]:
-    """The path's tracks in walking order, with a barrel wherever it changes layer
-    and a straight hop across pads and series parts."""
+    """The path's tracks in walking order, with a barrel wherever it changes layer and a
+    straight hop across series parts; track ends in vias and pads as KiCad counts them
+    (`_Land`). `heights`: KiCad's layer heights, so a barrel is KiCad's via height."""
+    joined: dict[int, set[str]] = {}  # via node -> the layers whose copper ends in it
+    for edge in graph.edges:
+        if edge.kind == "port":
+            for end in (edge.a, edge.b):
+                if graph.kind[end] == "via":
+                    joined.setdefault(end, set()).add(edge.layer)
+    adjacent = _adjacency(graph)
+
+    def land_at(node, entry):  # the via or pad `node`, the route meeting it at node `entry`
+        item = graph.item[node]
+        return _Land(item, isinstance(item, model.Pad) and _reaches_centre(graph, adjacent, entry, item))
+
     pieces: list[Piece] = []
-    point, layer = None, None
+    point, layer, land = None, None, None  # land: the via or pad the next track starts in
+    across = False  # a series part crossed since the last track
+    first = None  # the land the route starts on: nothing walked before it to hop from
+    if steps and graph.kind[steps[0][0]] in ("via", "pad"):
+        land = first = land_at(steps[0][0], steps[0][2])
     for before, edge, node in steps:
         if layer is not None and edge.layer and edge.layer != layer:
             hub = graph.item[before]  # the via or plated pad the layer change happens in
             at = graph.pos[before]
-            span = ((hub.layer_top, hub.layer_bottom) if isinstance(hub, model.Via)
-                    else (hub.layers[0], hub.layers[-1]) if isinstance(hub, model.Pad) else (layer, edge.layer))
-            pieces.append(Piece("barrel", getattr(hub, "id", ""), layer, edge.layer, (at, at),
-                                float(abs(heights.get(layer, 0) - heights.get(edge.layer, 0))), 0, span,
-                                getattr(hub, "net", ""), getattr(hub, "diameter", 0), _drill(hub)))
+            if isinstance(hub, model.Via):  # KiCad: the stackup distance between the outermost layers ending in it
+                outer = sorted(joined.get(before, set()) | {layer, edge.layer}, key=lambda name: heights.get(name, 0))
+                joins, height = (outer[-1], outer[0]), abs(heights.get(outer[-1], 0) - heights.get(outer[0], 0))
+                span = (hub.layer_top, hub.layer_bottom)
+            else:  # a plated pad: KiCad charges vias only
+                joins, height = (layer, edge.layer), 0
+                span = (hub.layers[0], hub.layers[-1]) if isinstance(hub, model.Pad) else (layer, edge.layer)
+            pieces.append(Piece("barrel", getattr(hub, "id", ""), layer, edge.layer, (at, at), float(height), 0, span,
+                                getattr(hub, "net", ""), getattr(hub, "diameter", 0), _drill(hub), joins))
             point = point if point is not None else at
         if edge.layer:
             layer = edge.layer
         if edge.kind == "track":
-            points = edge.points if edge.a == before else edge.points[::-1]
-            if point is not None and point != points[0]:
-                pieces.append(Piece("hop", "", layer, layer, (point, points[0]), math.dist(point, points[0]),
+            points, length = edge.points if edge.a == before else edge.points[::-1], edge.length
+            if land is not None and not land.via and not land.started:  # does the copper it starts in reach the centre?
+                land.centred = _reaches_centre(graph, adjacent, before, land.item)
+            cut = land.cut_start(points, layer) if land is not None else None
+            if cut is not _INSIDE:  # else the straight line from the centre stands for it
+                if cut is not None:
+                    if point is not None and point != land.centre and land is not first:
+                        pieces.append(Piece("part" if across else "hop", "", layer, layer, (point, land.centre),
+                                            math.dist(point, land.centre), net=edge.net))
+                    pieces.append(Piece("centre", "", layer, layer, (land.centre, cut[0]),
+                                        math.dist(land.centre, cut[0]), net=edge.net))
+                    length *= _polyline_length(cut) / max(_polyline_length(points), 1e-9)
+                    points, point = cut, cut[0]
+                land = None
+                if point is not None and point != points[0]:
+                    pieces.append(Piece("part" if across else "hop", "", layer, layer, (point, points[0]),
+                                        math.dist(point, points[0]), net=edge.net))
+                across = False
+                pieces.append(Piece("track", edge.item_id, layer, layer, tuple(points), length, edge.width,
                                     net=edge.net))
-            pieces.append(Piece("track", edge.item_id, layer, layer, tuple(points), edge.length, edge.width,
-                                net=edge.net))
-            point = points[-1]
+                point = points[-1]
+        elif edge.kind == "link":
+            across = True
         elif point is None and graph.kind[node] != "pad":
             point = graph.pos[node]  # the route starts through a via in its pad
+        if graph.kind[node] in ("via", "pad"):
+            land = land_at(node, before)
+            if point is not None and land.cut_end(pieces, point):
+                point = land.centre
     return tuple(pieces)

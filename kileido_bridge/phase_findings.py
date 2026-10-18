@@ -95,10 +95,13 @@ def _route_findings(result: phase.PairPhase, layer_at) -> list[dict]:
                 _highlight(loop.item_ids) + [{"tool": "label", "at": _pt(loop.pos, None, loop.layer),
                                               "text": f"{loop.length_nm / 1e6:.1f} mm loop"}]))
         for branch in route.branches:
+            dead_end = branch.terminal.label == "track end"
             found.append(_finding(
                 "phase.branch", "info", f"{name}: {side} side branches to {branch.terminal.label}",
                 f"A branch {branch.length_nm / 1e6:.1f} mm long leaves the route {branch.at_nm / 1e6:.1f} mm from "
-                f"the start (an ESD diode, a second receiver). It is not walked, and its loading is not modelled.",
+                + ("the start and ends in no pad: copper left over, which KiCad's delay counts. It is not walked."
+                   if dead_end else
+                   "the start (an ESD diode, a second receiver). It is not walked, and its loading is not modelled."),
                 {"at_mm": round(branch.at_nm / 1e6, 2), "length_mm": round(branch.length_nm / 1e6, 2)},
                 _highlight((branch.terminal.item_id,))))
     parts = [{terminal.label.partition(".")[0] for terminal in (route.start, route.end) if "." in terminal.label}

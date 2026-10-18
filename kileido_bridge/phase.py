@@ -204,7 +204,8 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
     for piece in route.pieces:
         z = heights.get(piece.layer, 0)
         if piece.kind == "barrel":
-            barrel = model_.barrel(piece.net, piece.layer, piece.to_layer, piece.span, piece.length_nm)
+            barrel = model_.barrel(piece.net, *(piece.joins if piece.joins[0] else (piece.layer, piece.to_layer)),
+                                   piece.span, piece.length_nm)
             if barrel is None:
                 raise ValueError(f"no delay for {piece.net}'s via")  # _unprofiled catches it first
             ps, source = barrel
@@ -222,6 +223,7 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
         if unit is None:
             raise ValueError(f"no delay for {piece.net} on {piece.layer}")  # _unprofiled catches it first
         sources.add(unit.source)
+        per_mm = 0.0 if piece.kind == "hop" else unit.ps_per_mm  # a gap between tracks: KiCad counts the tracks alone
         points = piece.points
         chords = [math.dist(a, b) for a, b in zip(points, points[1:])]
         scale = piece.length_nm / sum(chords) if sum(chords) else 0.0
@@ -229,7 +231,7 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
             add(points[0], z, piece.item_id, piece.width, piece.net)  # also where a barrel ended at the via centre
         for point, chord in zip(points[1:], chords):
             s += chord * scale
-            t += chord * scale * unit.ps_per_mm / 1e6
+            t += chord * scale * per_mm / 1e6
             add(point, z, piece.item_id, piece.width, piece.net)
     if not xyz:
         add(route.start.pos, heights.get(route.start.layer, 0), "")
@@ -447,13 +449,13 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
 def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | None = None,
                   settings: Settings = Settings()) -> tuple[list[PairPhase], list[str]]:
     """Every pair on the board at once (tests and tools): (results, warnings)."""
-    heights = protocol.layer_heights_nm(snapshot)[0]
+    heights, positions = protocol.layer_heights_nm(snapshot)[0], protocol.kicad_layer_z(snapshot)
     model_ = model_ or delays.ProfileDelays()
     by_net = channels.items_by_net(snapshot)
     references = {footprint.id: footprint.reference for footprint in snapshot.footprints}
     results, warnings = [], []
     for channel in channels.find_channels(snapshot, settings.follow_series):
-        result, warning = _analyze_channel(channel, by_net, heights, references, model_, settings)
+        result, warning = _analyze_channel(channel, by_net, heights, references, model_, settings, positions)
         if result is not None:
             results.append(result)
         if warning:
@@ -480,12 +482,15 @@ def _unprofiled(routes, model_: delays.DelayModel) -> str:
     return ""
 
 
-def _analyze_channel(channel, by_net, heights, references, model_, settings):
+def _analyze_channel(channel, by_net, heights, references, model_, settings, positions=None):
+    """`heights` place the copper in 3D; `positions` are KiCad's layer heights, which set the
+    via barrels' delay (protocol.kicad_layer_z; `heights` when not given)."""
     p_items, n_items = channels.combined(by_net, channel.p_nets), channels.combined(by_net, channel.n_nets)
     items = channels.combined(by_net, channel.nets)
     net_ids = tuple(item.id for kind in (items.tracks, items.arcs, items.vias, items.pads) for item in kind)
     touching = channels.contacts(p_items, n_items, heights)
-    routes = channels.pair_routes(p_items, n_items, heights, references, channel.p_links, channel.n_links)
+    routes = channels.pair_routes(p_items, n_items, positions or heights, references, channel.p_links,
+                                  channel.n_links)
     reason = _unprofiled(routes, model_)
     if touching:
         measured = analyze(channel, *routes, model_, heights, settings) if None not in routes and not reason else None
@@ -529,6 +534,7 @@ class PhaseTracker:
         self._model = None
         self._model_key = ""
         self._heights = {}
+        self._positions = {}
         self._listed = None
         self._error = ""  # the last `failed` message sent
 
@@ -570,6 +576,7 @@ class PhaseTracker:
             return False
         self._inputs_stamp = stamp
         self._heights = protocol.layer_heights_nm(snapshot)[0]
+        self._positions = protocol.kicad_layer_z(snapshot)
         project = delays.read_project(self.project_file)
         nets = self.wanted_nets()
         from_project = delays.net_profiles_from_project(
@@ -621,7 +628,7 @@ class PhaseTracker:
             fingerprints[channel.key] = fingerprint
             try:
                 result, warnings[channel.key] = _analyze_channel(channel, self._by_net, self._heights, references,
-                                                                 self._model, self.settings)
+                                                                 self._model, self.settings, self._positions)
                 frame = pair_frame(result, revision) if result is not None else b""
             except Exception as exc:  # this pair only: the others are still measured, it is tried again when it changes
                 result, warnings[channel.key] = None, f"{channel.name}: not measured ({type(exc).__name__}: {exc})"

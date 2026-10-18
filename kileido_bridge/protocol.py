@@ -289,6 +289,17 @@ def layer_heights_nm(snapshot: model.BoardSnapshot) -> tuple[dict[str, int], int
     return heights, DEFAULT_THICKNESS_NM, ["Stackup height unavailable; showing evenly spaced layers over 1.6 mm"]
 
 
+def kicad_layer_z(snapshot: model.BoardSnapshot) -> dict[str, int]:
+    """Copper heights as KiCad measures a via (BOARD_STACKUP::GetLayerDistance): F.Cu and
+    B.Cu at their outer faces, an inner layer halfway through its copper, so the distance
+    between two layers is KiCad's via height. Without a full stackup, layer_heights_nm's."""
+    heights, _, warnings = layer_heights_nm(snapshot)
+    if warnings:
+        return heights
+    copper = {entry.name: entry.thickness_nm or 0 for entry in snapshot.stackup.layers if entry.type == "copper"}
+    return {name: z if name in ("F.Cu", "B.Cu") else z - copper.get(name, 0) // 2 for name, z in heights.items()}
+
+
 def board_origin_nm(snapshot: model.BoardSnapshot) -> tuple[int, int]:
     """Centre of the Edge.Cuts bounding box; the live bridge fixes it at its first snapshot."""
     points = [p for polygon in snapshot.outline.polygons for ring in polygon for p in ring]
