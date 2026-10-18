@@ -299,6 +299,7 @@ def test_dynamic_phase_from_the_drc_column_lists_its_excursions(tmp_path, monkey
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import phase_boards
     runtime, reader, client, project = live(tmp_path, monkeypatch, snapshot=phase_boards.compensated_far())
+    phase_boards.project_file(project)  # board.kicad_pro beside the board: its tuning profile
     with connected(runtime, client):
         until_payload(runtime, client, lambda p: p["status"] == "none")
         request(client, "run_phase", source="phase")
@@ -306,9 +307,8 @@ def test_dynamic_phase_from_the_drc_column_lists_its_excursions(tmp_path, monkey
         assert payload["phase"] == {"state": "idle", "error": ""}
         source = payload["sources"]["phase"]
         assert source["tool"].startswith("Dynamic phase; 1 pair measured")
-        row, *notes = source["findings"]  # the excursion, then a note on each tight meander (info)
+        (row,) = source["findings"]
         assert row["check"] == "phase.excursion" and row["draws"][0]["ids"] and row["draws"][1]["tool"] == "label"
-        assert [note["check"] for note in notes] == ["phase.note", "phase.note"]
         written = json.loads((project / ".kileidoscope" / "board.phase.kls-findings.json").read_text(encoding="utf-8"))
         assert written["findings"][0]["check"] == "phase.excursion"
         assert payload["sources"]["drc"]["status"] == "none"  # KiCad's DRC was not run

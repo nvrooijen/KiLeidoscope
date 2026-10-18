@@ -956,9 +956,12 @@ def test_a_finding_selection_highlights_its_items_not_their_nets():
         runtime.close()
 
 
-def test_dynamic_phase_follows_edits_and_the_panel_settings():
+def test_dynamic_phase_follows_edits_and_the_panel_settings(tmp_path, monkeypatch):
     sys.path.insert(0, str(ROOT / "tests"))
+    import kileido_bridge.loop as loop_module
     import phase_boards
+    phase_boards.project_file(tmp_path)  # the tuning profile, in board.kicad_pro beside the saved board
+    monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(tmp_path / "board.kicad_pcb"))
     snapshot = phase_boards.two_channels()
     reader = FakeReader(snapshot)
     server = BridgeServer(port=0, token="test-secret")

@@ -53,20 +53,6 @@ def test_the_csv_has_one_row_per_sample_and_quotes_names_with_commas():
     assert rows[3][3:] == ["1.0000", "-0.8000"] and len(rows) == 4
 
 
-def test_the_pairs_notes_go_into_the_numbers_not_the_drawing():
-    """Where KiCad's one delay per layer is known to be off, the bridge sends notes: the
-    SVG's metadata carries them; the plot shows Δt as KiCad's number gives it."""
-    chart = _chart()
-    note = {"kind": "coupled turn", "at_mm": 0.5, "length_mm": 1.0, "made_ps": 5.0, "add_ps": 0.425,
-            "text": "Coupled turn: +5.0 ps of Δt", "ids": ["t1"]}
-    turned = _pair("HDMI_D0_P/N", [0.0, 2.5, 5.0, 5.0, 5.0], notes=[note])
-    text = chart.svg([turned], 1.0, 5.0)
-    assert text.count("<polyline") == 1 and "<polygon" not in text
-    data = json.loads(re.search(r"<metadata><!\[CDATA\[(.*?)\]\]></metadata>", text, re.S).group(1))
-    assert data["pairs"][0]["notes"] == [{"kind": "coupled turn", "at_mm": 0.5, "length_mm": 1.0, "made_ps": 5.0,
-                                          "add_ps": 0.425, "text": "Coupled turn: +5.0 ps of Δt"}]
-
-
 def test_an_empty_chart_still_draws():
     chart = _chart()
     text = chart.svg([], 1.0, 5.0)

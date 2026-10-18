@@ -4,15 +4,13 @@ x: mm along the pair from the start end; y: Δt = t_P − t_N in ps (Δt < 0: P'
 ahead there, Δt > 0: N's). A band at ± the marker tolerance, every excursion (|Δt| above it
 for longer than the marker length) shaded, and over each plot the pair's ends, its
 end-to-end skew and its largest |Δt|. All plots share one y scale, so the pairs compare at a
-glance. The SVG carries its numbers too, in a <metadata> block (JSON, the pair's notes
-included: where KiCad's one delay per layer is known to be off), and `csv` writes them as
-rows (pair, mm, ps) for anything that reads tables.
+glance. The SVG carries its numbers too, in a <metadata> block (JSON), and `csv` writes
+them as rows (pair, mm, ps) for anything that reads tables.
 
 Pure Python: no Blender, no numpy, so a test draws it headless. The pairs come from
 phase.measured_pairs(): {"name", "start", "end", "along_mm", "dt_ps", "excursions"
 [{"at_mm", "length_mm", "peak_ps"}], "skew_ps", "max_ps", "delay_p_ps", "delay_n_ps",
-"length_p_mm", "length_n_mm", "sources", "flipped", "notes" [{"kind", "at_mm", "length_mm",
-"made_ps", "add_ps", "text"}]}.
+"length_p_mm", "length_n_mm", "sources", "flipped"}.
 """
 
 import html
@@ -151,9 +149,6 @@ def _data(pairs, tolerance_ps: float, min_length_mm: float, title: str) -> dict:
                        "length_p_mm": _f(pair.get("length_p_mm")), "length_n_mm": _f(pair.get("length_n_mm")),
                        "skew_ps": _f(pair["skew_ps"]), "max_abs_ps": _f(pair["max_ps"]),
                        "sources": list(pair.get("sources", ())),
-                       "notes": [{"kind": note["kind"], "at_mm": _f(note["at_mm"]), "length_mm": _f(note["length_mm"]),
-                                  "made_ps": _f(note["made_ps"]), "add_ps": _f(note["add_ps"]), "text": note["text"]}
-                                 for note in pair.get("notes", ())],
                        "excursions": [{"at_mm": _f(e["at_mm"]), "length_mm": _f(e["length_mm"]),
                                        "peak_ps": _f(e["peak_ps"])} for e in pair.get("excursions", ())],
                        "along_mm": [round(float(v), 4) for v in pair["along_mm"]],

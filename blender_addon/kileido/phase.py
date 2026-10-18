@@ -800,8 +800,8 @@ def selection_split():
     if _shown():
         for key in selected_pairs():
             data = board.phase[key]
-            if data.get("shorts"):
-                continue  # its trace copies carry only the pulses: the selection keeps its highlight
+            if data.get("shorts") or data.get("unprofiled"):
+                continue  # trace copies with only the pulses, or none: the selection keeps its highlight
             route = set(data.get("ids", ()))
             pads = {pad.get("id", "") for pad in data.get("pads", ())}
             taken |= set(data.get("net_ids", ())) | route | pads
@@ -909,8 +909,10 @@ def sync_list():
         for row in rows:
             data = board.phase[row.key]
             row.name = short_name(data)
-            row.route = "SHORT" if data.get("shorts") else f"{data['start']['label']} → {data['end']['label']}"
+            row.route = ("SHORT" if data.get("shorts") else "NO PROFILE" if data.get("unprofiled")
+                         else f"{data['start']['label']} → {data['end']['label']}")
             row.shorted = bool(data.get("shorts"))
+            row.unprofiled = bool(data.get("unprofiled"))
             row.loops = len(data.get("loops", ()))
             row.skew_ps = float(data.get("skew_ps", 0.0))
             row.max_ps = float(data.get("max_ps", 0.0))
@@ -937,9 +939,10 @@ def selected_pairs():
 
 
 def _highlighted():
-    """Selected pairs whose trace copies take over their highlight: not a shorted pair,
+    """Selected pairs whose trace copies take over their highlight: not a pair without a
+    tuning profile (no copies), nor a shorted pair,
     whose copies only carry the pulses up to the short."""
-    return [key for key in selected_pairs() if not board.phase[key].get("shorts")]
+    return [key for key in selected_pairs() if not board.phase[key].get("shorts") and not board.phase[key].get("unprofiled")]
 
 
 def flip_selected():
@@ -971,7 +974,7 @@ def measured_pairs():
                     "max_ps": float(data.get("max_ps", 0.0)), "delay_p_ps": data.get("delay_p_ps"),
                     "delay_n_ps": data.get("delay_n_ps"), "length_p_mm": data.get("length_p_mm"),
                 "length_n_mm": data.get("length_n_mm"), "sources": list(data.get("sources", ())),
-                "flipped": bool(data.get("flipped", False)), "notes": list(data.get("notes", ()))}
+                "flipped": bool(data.get("flipped", False))}
         out.append(pair)
     return out
 
@@ -982,12 +985,3 @@ def export_path():
         path = Path(board.board_path)
         return str(path.with_name(f"{path.stem}_dynamic_phase.svg"))
     return str(Path.home() / "dynamic_phase.svg")
-
-
-def sources_warning():
-    """The delay source the pairs use when it is not KiCad's tuning profile: the FR-4 guess
-    first, else the stackup estimate; "" when every pair has a profile."""
-    used = {source for data in board.phase.values() for source in data.get("sources", ())}
-    return next((source for source in sorted(used) if source.startswith("FR-4")), "") or next(
-        (source for source in sorted(used) if not source.startswith("tuning profile")), "")
-

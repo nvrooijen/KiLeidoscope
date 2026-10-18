@@ -49,10 +49,11 @@ def main():
         snapshot = phase_boards.two_channels()
         apply.load_frames(b"".join(snapshot_frames(snapshot)))
         tracker = PhaseTracker(clock=lambda: 0.0)  # no time budget: every pair in one poll
+        tracker.set_project(phase_boards.project_file(tempfile.mkdtemp(prefix="kls-phase-")))  # the test profile
         apply.load_frames(b"".join(tracker.update(snapshot, revision=1)))
         slots = {key: phase._slot(key) for key in ("D_P", "E_P")}
         assert set(state.board.phase) == {"D_P", "E_P"}
-        assert state.board.phase["D_P"]["notes"] and draws(state.board.phase["D_P"])  # a note on each tight meander
+        assert draws(state.board.phase["D_P"])
 
         # Both traces get a see-through copy over their copper: the lead over the partner and
         # the delay from the start at each point. N's detour at x = 47 comes first from J1,
@@ -199,7 +200,7 @@ def main():
         # The pair list in the panel.
         rows = scene.kileido_phase_pairs
         assert [row.key for row in rows] == ["D_P", "E_P"] and rows[0].excursions == 1
-        assert rows[0].route == "J1.1/2 → U1.1/2" and abs(rows[0].skew_ps) < 1e-3  # coupling sampled every 50 um
+        assert rows[0].route == "J1.1/2 → U1.1/2" and abs(rows[0].skew_ps) < 1e-3  # matched end to end
 
         # A click on a trace copy from above picks the pair's copper; on a terminal marker, its pads.
         bpy.context.view_layer.update()
@@ -318,6 +319,12 @@ def main():
         assert not loop.hide_get() and set(loop["kls_phase_ids"]) == detour
         assert [(row.shorted, row.loops) for row in rows] == [(False, 1)]
         assert draws(state.board.phase["D_P"])
+        # Without a tuning profile KiCad has no delay: the pair is listed, nothing is drawn.
+        bare = PhaseTracker(clock=lambda: 0.0)
+        apply.load_frames(b"".join(bare.update(looped, revision=7)))
+        assert [(row.key, row.unprofiled, row.route) for row in rows] == [("D_P", True, "NO PROFILE")]
+        assert not len(p_trace.data.vertices) and not len(loop.data.vertices)
+        assert phase.selection_split() == (set(), set()) and draws(state.board.phase["D_P"])
 
     finally:
         kileido.unregister()

@@ -23,6 +23,7 @@ class KILEIDO_PG_phase_pair(bpy.types.PropertyGroup):
     max_ps: FloatProperty()
     excursions: IntProperty()
     shorted: BoolProperty()  # P touches N: no numbers
+    unprofiled: BoolProperty()  # no tuning profile in KiCad: no numbers
     loops: IntProperty()
 
 
@@ -51,6 +52,10 @@ class KILEIDO_UL_phase_pairs(bpy.types.UIList):
             row.alert = True
             first.label(text=item.name, icon="CANCEL")
             for value in ("SHORT", "", ""):
+                numbers.label(text=value)
+        elif item.unprofiled:
+            first.label(text=item.name, icon="INFO")
+            for value in ("NO PROFILE", "", ""):
                 numbers.label(text=value)
         else:
             first.label(text=item.name, icon="ERROR" if item.excursions or item.loops else "BLANK1")
@@ -218,12 +223,6 @@ def _draw_dynamic_phase(layout, context, wrap, swatch, width):
     pulses.prop(scene, "kileido_phase_pulse_glow", text="Pulse brightness")
     _draw_legend(layout.box().column(align=True), context, wrap, swatch, width)
     info = layout.column(align=True)
-    guess = phase.sources_warning()
-    if guess:
-        text = (f"Delay: {guess}, no tuning profile or dielectric constant found" if guess.startswith("FR-4")
-                else f"Delay: {guess} where a pair has no KiCad tuning profile")
-        for index, line in enumerate(wrap(context, text)):
-            info.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
     pending = board.phase_list.get("pending", 0)
     if pending:
         info.label(text=f"Measuring {pending} more pair{'s' if pending > 1 else ''}…", icon="TIME")
@@ -251,7 +250,6 @@ def _draw_dynamic_phase(layout, context, wrap, swatch, width):
 
 BAR_TILES = 48
 ICON_PX = 16  # unscaled: the width Blender draws a label's icon at, however narrow the label
-NOTE_MARGIN_PX = 80  # unscaled: an icon, a box's margins and a note's select button
 
 
 def _draw_legend(column, context, wrap, swatch, width):
@@ -303,9 +301,22 @@ def _draw_shorted(context, box, data, wrap):
                       icon="RESTRICT_SELECT_OFF").ids = "\n".join(short["ids"])
 
 
+def _draw_unprofiled(context, box, data, wrap):
+    """A pair KiCad has no delay for: why, and where to set one."""
+    for index, line in enumerate(wrap(context, f"{data['unprofiled']}: not measured")):
+        box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+    for text in ("Set a tuning profile in KiCad (Board Setup › Tuning Profiles) on the pair's netclass, "
+                 "with a delay for every layer it runs on.", f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"):
+        for line in wrap(context, text):
+            box.label(text=line)
+
+
 def _draw_pair(context, box, data, wrap):
     if data.get("shorts"):
         _draw_shorted(context, box, data, wrap)
+        return
+    if data.get("unprofiled"):
+        _draw_unprofiled(context, box, data, wrap)
         return
     row = box.row(align=True)
     row.label(text=f"{data['start']['label']} → {data['end']['label']}")
@@ -343,14 +354,6 @@ def _draw_pair(context, box, data, wrap):
     for warning in data.get("warnings", ()):
         if " loop: " not in warning:  # each loop has its own line above
             box.label(text=warning, icon="INFO")
-    for note in data.get("notes", ()):  # where KiCad's one delay per layer is known to be off
-        line = box.row(align=True)
-        text = line.column(align=True)
-        for index, part in enumerate(wrap(context, f"{note['at_mm']:.1f} mm: {note['text']}", NOTE_MARGIN_PX)):
-            text.label(text=part, icon="INFO" if index == 0 else "BLANK1")
-        if note.get("ids"):
-            line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
-                          icon="RESTRICT_SELECT_OFF").ids = "\n".join(note["ids"])
 
 
 CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip, KILEIDO_OT_phase_flip_selected,

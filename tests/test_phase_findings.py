@@ -15,7 +15,7 @@ STAMP = "abcd1234"
 
 
 def convert(snapshot, settings=phase.Settings()):
-    results, warnings = phase.analyze_board(snapshot, settings=settings)
+    results, warnings = phase.analyze_board(snapshot, boards.delay_model(), settings)
     return phase_findings.convert(results, warnings, settings, protocol.layer_heights_nm(snapshot)[0], STAMP)
 
 
@@ -30,23 +30,20 @@ def test_an_excursion_is_a_warning_with_its_copper_lit_and_a_label_at_its_start(
     data = convert(snapshot)
     assert data["format"] == "kls-findings 1" and data["stamp"] == STAMP and data["run"] == ""
     assert data["tool"] == "Dynamic phase; 1 pair measured; markers above 1 ps for 5 mm"
-    finding, *notes = data["findings"]  # warnings first; then a note on each tight meander
+    (finding,) = data["findings"]
     assert finding["check"] == "phase.excursion" and finding["severity"] == "warning"
     assert "P and N" in finding["title"] and "apart over" in finding["title"]
     assert "walked from J1.1/2" in finding["message"] and "End-to-end skew" in finding["message"]  # J1: the start end
     assert set(finding["values"]) == {"peak_ps", "length_mm", "at_mm", "skew_ps"}
     assert finding["values"]["length_mm"] > 40 and abs(finding["values"]["skew_ps"]) < 0.01
-    assert [note["check"] for note in notes] == ["phase.note"] * 2 and all(n["severity"] == "info" for n in notes)
-    assert " tight meander at " in notes[0]["title"] and notes[0]["values"]["add_ps"] > 0  # N's bump, from J1
-    assert set(notes[0]["values"]) == {"at_mm", "made_ps", "add_ps"} and notes[0]["draw"][0]["targets"]
     highlight, label = finding["draw"]
     assert highlight["tool"] == "highlight" and len(highlight["targets"]) >= 2
     assert all(target.startswith("uuid:t-") for target in highlight["targets"])  # both sides' tracks along the stretch
     assert label["tool"] == "label" and label["at"].endswith("@F.Cu") and " ps over " in label["text"]
     payload = resolved(snapshot, data)
     assert payload["status"] == "ok" and payload["tool"] == data["tool"] and not payload["problems"]
-    row, *rows = payload["findings"]
-    assert row["check"] == "phase.excursion" and not row["problems"] and not any(r["problems"] for r in rows)
+    (row,) = payload["findings"]
+    assert row["check"] == "phase.excursion" and not row["problems"]
     lit = row["draws"][0]
     assert lit["tool"] == "highlight" and set(lit["ids"]) == {t[5:] for t in highlight["targets"]}
     assert row["draws"][1]["tool"] == "label"

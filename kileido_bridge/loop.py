@@ -389,14 +389,14 @@ class BridgeRuntime:
         """The differential pairs whose copper, delay inputs or settings changed; after a
         full snapshot every pair (Blender drops frames it queued before the snapshot).
 
-        Delays come from the board text (the live copy: epsilon_r) and the project
-        file (tuning profiles); KiCad says which netclass each pair net has."""
+        Delays come from the project file's tuning profiles; KiCad says which netclass
+        each pair net has."""
         with self.lock:  # the server takes Blender's requests on the main thread
             request = self.server.take_phase_settings()
         if request is not None:
             self.phase.configure(request)
         project = str(Path(self.board_path).with_suffix(".kicad_pro")) if self.board_path else ""
-        self.phase.set_files(self._appearance_source(), project)
+        self.phase.set_project(project)
         board = getattr(self.reader, "board", None)
 
         def read_netclasses(nets):

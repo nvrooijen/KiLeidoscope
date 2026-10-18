@@ -5,8 +5,7 @@ pairs column marks becomes a finding, so it gets the DRC column's list, its mark
 board, confirm and dismiss, and select-in-KiCad: an excursion (|Δt| above the marker
 tolerance for longer than the marker length) is a warning with the stretch's copper lit and
 a label at its start; a short an error; a loop a warning; an unfinished side, ends on
-different parts, a branch and a note (where KiCad's one delay per layer is known to be
-off) are info. Pure: no files, no KiCad. The loop writes the file
+different parts, a branch and a pair without a tuning profile are info. Pure: no files, no KiCad. The loop writes the file
 (kls_folder) and the findings watch reads it back like KiCad's DRC's, so every target is
 resolved on the live board and the text shown as text.
 """
@@ -31,10 +30,15 @@ def convert(results, warnings, settings: phase.Settings, heights: dict[str, int]
         if isinstance(result, phase.Shorted):
             found.append(_short(result))
             continue
+        if isinstance(result, phase.Unprofiled):
+            found.append(_finding("phase.unprofiled", "info", f"{result.channel.name}: {result.reason}",
+                                  "KiCad has no delay for this pair, so dynamic phase does not measure it. Set a "
+                                  "tuning profile (Board Setup > Tuning Profiles) on its netclass, with a delay for "
+                                  "every layer it runs on.", {}, []))
+            continue
         pairs += 1
         found += [_excursion(result, excursion, settings, layer_at) for excursion in result.excursions]
         found += _route_findings(result, layer_at)
-        found += [_note(result, note) for note in result.notes]
     found += [_unmeasured(text) for text in warnings]
     found.sort(key=lambda finding: SEVERITY_ORDER[finding["severity"]])
     tool = (f"{TOOL}; {pairs} pair{'' if pairs == 1 else 's'} measured; markers above {settings.tolerance_ps:g} ps "
@@ -57,14 +61,6 @@ def _excursion(result: phase.PairPhase, excursion: phase.Excursion, settings: ph
                     f"differential signal runs as common mode there. End-to-end skew {result.skew_ps:+.1f} ps.",
                     {"peak_ps": round(excursion.peak_ps, 2), "length_mm": round(length, 2), "at_mm": round(at, 2),
                      "skew_ps": round(result.skew_ps, 2)}, draws)
-
-
-def _note(result: phase.PairPhase, note: phase.Note) -> dict:
-    at = note.at_nm / 1e6
-    return _finding("phase.note", "info", f"{result.channel.name}: {note.kind} at {at:.1f} mm, add {note.add_ps:+.1f} ps",
-                    f"{note.text}. KiCad's delay is one number per layer; Δt after it and the skew are not corrected "
-                    f"for this.", {"at_mm": round(at, 2), "made_ps": round(note.made_ps, 2),
-                                   "add_ps": round(note.add_ps, 2)}, _highlight(note.item_ids))
 
 
 def _short(result: phase.Shorted) -> dict:

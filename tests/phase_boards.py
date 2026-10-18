@@ -5,9 +5,11 @@ B.Cu, εr 4.0 everywhere. Pairs run along x at a 1 mm pitch (P at y = 0, N at y 
 from U1 (x = 0) to J1 (x = 50).
 """
 
+import json
 import math
+from pathlib import Path
 
-from kileido_bridge import model
+from kileido_bridge import delays, model
 
 MM = 1_000_000
 WIDTH = 150_000
@@ -22,6 +24,38 @@ STACKUP = model.Stackup((
     model.StackupLayer("dielectric 3", "dielectric", 200_000, "FR4", 4.0, 0.02),
     model.StackupLayer("B.Cu", "copper", 35_000, None, None, None),
 ))
+
+
+# KiCad's numbers for the tests: one tuning profile, on every net's netclass.
+PROFILE = delays.TuningProfile("Test", {"F.Cu": 6.0, "In1.Cu": 7.0, "In2.Cu": 7.0, "B.Cu": 6.0}, via_ps_per_mm=7.0)
+PROJECT = {"net_settings": {"classes": [{"name": "Default", "tuning_profile": "Test"}]},
+           "tuning_profiles": {"tuning_profiles_impedance_geometric": [{
+               "profile_name": "Test", "via_prop_delay": 7_000_000,
+               "layer_entries": [{"signal_layer": layer, "delay": round(ps * delays.AS_PER_PS)}
+                                 for layer, ps in PROFILE.layers.items()]}]}}
+
+
+class EveryNet(dict):
+    """net -> profile name: `name` for every net."""
+
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    def get(self, net, default=None):
+        return self.name
+
+
+def delay_model(profile=PROFILE):
+    """Every net on `profile`, as its netclass's tuning profile would put it."""
+    return delays.ProfileDelays({profile.name: profile}, EveryNet(profile.name))
+
+
+def project_file(folder) -> str:
+    """PROJECT written as a .kicad_pro in `folder`: what the live tracker reads."""
+    path = Path(folder) / "board.kicad_pro"
+    path.write_text(json.dumps(PROJECT), encoding="utf-8")
+    return str(path)
 
 
 def nm(point):

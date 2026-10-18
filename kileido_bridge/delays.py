@@ -1,61 +1,46 @@
-"""Propagation delay per length of copper, by layer: what turns a route into time.
+"""Propagation delay per length of copper, by layer: KiCad's tuning profile numbers.
 
-`DelayModel` is the whole interface the phase analysis uses. One delay per layer,
-charged to every track of the net, as KiCad's own time-domain tuning does. Sources, in
-order:
+`DelayModel` is the whole interface the phase analysis uses: one delay per layer,
+charged to every track of the net, as KiCad's own time-domain tuning does. It comes
+from KiCad 10's tuning profile on the net's netclass (Board Setup > Tuning Profiles,
+stored in the project file `.kicad_pro` under "tuning_profiles"; the netclass names its
+profile in "net_settings"). Its unit delays are attoseconds per mm (KiCad's
+`IU_PER_PS_PER_MM` = 1e6); a via takes an override for its layers, else the profile's
+via delay per mm of stackup height it crosses.
 
-1. KiCad 10's tuning profile on the net's netclass (Board Setup > Tuning Profiles,
-   stored in the project file `.kicad_pro` under "tuning_profiles"; the netclass
-   names its profile in "net_settings"). Its unit delays are attoseconds per mm
-   (KiCad's `IU_PER_PS_PER_MM` = 1e6); a via takes an override for its layers,
-   else the profile's via delay per mm of stackup height it crosses. This is KiCad's
-   number, used as it is.
-2. Without a profile, a stackup estimate with epsilon_r from the board file (KiCad
-   10.0.3's IPC stackup has none, see kicad_reader._stackup): √εr inside (stripline),
-   a lone microstrip on the outer layers (Hammerstad and Jensen).
-3. FR-4, εr 4.2, when the stackup gives no dielectric constant: clearly a guess,
-   and named as the source.
-
-Where one number per layer is known to be off (P and N apart, coupled turns, tight
-meanders), phase.py says so in a note instead of correcting it.
+Without a profile, or on a layer the profile has no delay for, there is no number:
+KiCad has none either, and the pair is not measured (phase.Unprofiled).
 """
 
 import fnmatch
 import json
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import model
-
-PS_PER_MM_VACUUM = 1e9 / 299_792_458  # 1 / c: 3.3356 ps per mm
 AS_PER_PS = 1_000_000  # KiCad's delay unit: attoseconds
-FR4_EPSILON_R = 4.2
 PROFILE = "tuning profile"
-STACKUP = "stackup estimate"
-DEFAULT = "FR-4 default (εr 4.2)"
 
 
 @dataclass(frozen=True)
 class UnitDelay:
     ps_per_mm: float
-    source: str  # "tuning profile 'USB'", "stackup estimate", "FR-4 default (εr 4.2)"
+    source: str  # "tuning profile 'USB'"
 
 
 class DelayModel:
-    """Delay of track and via copper; override both methods."""
+    """Delay of track and via copper; None where there is no number."""
 
-    def track(self, net: str, layer: str, width_nm: int) -> UnitDelay:
-        raise NotImplementedError
+    def profile(self, net: str) -> str:
+        """The name of the net's tuning profile, "" for none."""
+        return ""
+
+    def track(self, net: str, layer: str, width_nm: int) -> UnitDelay | None:
+        return None
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
-               length_nm: float) -> tuple[float, str]:
+               length_nm: float) -> tuple[float, str] | None:
         """(ps, source) of a via or plated hole carrying the signal between two layers."""
-        raise NotImplementedError
-
-    def structure(self, layer: str) -> str:
-        """"microstrip" or "stripline" for a trace on `layer`; "" when unknown."""
-        return ""
+        return None
 
 
 @dataclass(frozen=True)
@@ -104,97 +89,35 @@ def read_project(path: str) -> dict:
         return {}
 
 
-def microstrip_epsilon(epsilon_r: float, width_nm: float, height_nm: float) -> float:
-    """Static εeff of a lone microstrip (Hammerstad and Jensen 1980): zero thickness, no
-    solder mask, no dispersion."""
-    u = max(width_nm, 1.0) / max(height_nm, 1.0)
-    a = 1 + math.log((u ** 4 + (u / 52) ** 2) / (u ** 4 + 0.432)) / 49 + math.log(1 + (u / 18.1) ** 3) / 18.7
-    b = 0.564 * ((epsilon_r - 0.9) / (epsilon_r + 3)) ** 0.053
-    return (epsilon_r + 1) / 2 + (epsilon_r - 1) / 2 * (1 + 10 / u) ** (-a * b)
+class ProfileDelays(DelayModel):
+    """The nets' tuning profiles: `profiles` by name, `net_profiles` net -> profile name."""
 
-
-class StackupDelays(DelayModel):
-    """Tuning profile first, then the stackup estimate, then FR-4."""
-
-    def __init__(self, stackup: tuple[model.StackupLayer, ...], heights: dict[str, int],
-                 profiles: dict[str, TuningProfile] | None = None, net_profiles: dict[str, str] | None = None):
-        self.stackup = tuple(stackup)
-        self.heights = heights
+    def __init__(self, profiles: dict[str, TuningProfile] | None = None, net_profiles: dict[str, str] | None = None):
         self.profiles = profiles or {}
-        self.net_profiles = net_profiles or {}  # net -> profile name ("" for none)
-        self._dielectric = self._neighbours()
-
-    def _neighbours(self) -> dict[str, list[model.StackupLayer]]:
-        """Copper layer -> the dielectrics right above and below it."""
-        found = {}
-        layers = self.stackup
-        for index, entry in enumerate(layers):
-            if entry.type != "copper":
-                continue
-            beside = []
-            for step in (-1, 1):
-                other = index + step
-                while 0 <= other < len(layers) and layers[other].type not in ("dielectric", "copper"):
-                    other += step  # mask and silkscreen are not the signal's dielectric
-                if 0 <= other < len(layers) and layers[other].type == "dielectric":
-                    beside.append(layers[other])
-            found[entry.name] = beside
-        return found
+        self.net_profiles = {} if net_profiles is None else net_profiles  # net -> profile name ("" for none)
 
     def _profile(self, net: str) -> TuningProfile | None:
         return self.profiles.get(self.net_profiles.get(net, ""))
 
-    def _epsilon(self, dielectrics) -> tuple[float, str]:
-        known = [(entry.epsilon_r, entry.thickness_nm or 1) for entry in dielectrics if entry.epsilon_r]
-        if not known:
-            return FR4_EPSILON_R, DEFAULT
-        return sum(e * t for e, t in known) / sum(t for _, t in known), STACKUP
+    def profile(self, net: str) -> str:
+        found = self._profile(net)
+        return found.name if found is not None else ""
 
-    def track(self, net: str, layer: str, width_nm: int) -> UnitDelay:
+    def track(self, net: str, layer: str, width_nm: int) -> UnitDelay | None:
         profile = self._profile(net)
-        if profile is not None and layer in profile.layers:
-            return UnitDelay(profile.layers[layer], f"{PROFILE} '{profile.name}'")
-        beside = self._dielectric.get(layer, [])
-        epsilon_r, source = self._epsilon(beside)
-        if self._outer(layer):
-            height = (beside[0].thickness_nm if beside else None) or width_nm or 1
-            effective = microstrip_epsilon(epsilon_r, width_nm or height, height)
-        else:
-            effective = epsilon_r  # stripline: the field is all in the dielectric
-        return UnitDelay(PS_PER_MM_VACUUM * math.sqrt(effective), source)
-
-    def _outer(self, layer: str) -> bool:
-        """An outer layer: microstrip over one dielectric."""
-        return len(self._dielectric.get(layer, [])) == 1 or layer in ("F.Cu", "B.Cu")
-
-    def structure(self, layer: str) -> str:
-        return "microstrip" if self._outer(layer) else "stripline"
+        if profile is None or layer not in profile.layers:
+            return None
+        return UnitDelay(profile.layers[layer], f"{PROFILE} '{profile.name}'")
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
-               length_nm: float) -> tuple[float, str]:
+               length_nm: float) -> tuple[float, str] | None:
         profile = self._profile(net)
-        if profile is not None:
-            for signal, via, ps in profile.via_overrides:
-                if signal == {from_layer, to_layer} and via == set(span):
-                    return ps, f"{PROFILE} '{profile.name}'"
-            if profile.via_ps_per_mm > 0:
-                return profile.via_ps_per_mm * length_nm / 1e6, f"{PROFILE} '{profile.name}'"
-        low, high = sorted((self.heights.get(from_layer, 0), self.heights.get(to_layer, 0)))
-        epsilon_r, source = self._epsilon(self._dielectrics_between(low, high))
-        return PS_PER_MM_VACUUM * math.sqrt(epsilon_r) * length_nm / 1e6, source
-
-    def _dielectrics_between(self, low: int, high: int) -> list[model.StackupLayer]:
-        """The dielectrics a barrel from height `low` to `high` passes through."""
-        found, above, pending = [], None, []
-        for entry in self.stackup:  # top to bottom
-            if entry.type == "copper" and entry.name in self.heights:
-                height = self.heights[entry.name]
-                if above is not None and low <= height and above <= high:
-                    found += pending
-                above, pending = height, []
-            elif entry.type == "dielectric":
-                pending.append(entry)
-        return found
+        if profile is None:
+            return None
+        for signal, via, ps in profile.via_overrides:
+            if signal == {from_layer, to_layer} and via == set(span):
+                return ps, f"{PROFILE} '{profile.name}'"
+        return profile.via_ps_per_mm * length_nm / 1e6, f"{PROFILE} '{profile.name}'"
 
 
 def net_profiles_from_project(project: dict, nets, netclasses: dict[str, str] | None = None) -> dict[str, str]:
