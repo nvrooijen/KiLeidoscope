@@ -33,8 +33,8 @@ def convert(results, warnings, settings: phase.Settings, heights: dict[str, int]
         if isinstance(result, phase.Unprofiled):
             found.append(_finding("phase.unprofiled", "info", f"{result.channel.name}: {result.reason}",
                                   "KiCad has no delay for this pair, so dynamic phase does not measure it. Set a "
-                                  "tuning profile (Board Setup > Tuning Profiles) on its netclass, with a delay for "
-                                  "every layer it runs on.", {}, []))
+                                  "tuning profile (Board Setup > Tuning Profiles) on its netclass, with time-domain "
+                                  "tuning on and a delay for every layer it runs on.", {}, []))
             continue
         pairs += 1
         found += [_excursion(result, excursion, settings, layer_at) for excursion in result.excursions]

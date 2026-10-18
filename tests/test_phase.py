@@ -304,6 +304,68 @@ def test_a_pair_without_a_tuning_profile_is_listed_not_measured():
     assert listing[0][0]["keys"] == ["D_P"] and listing[1][0]["unprofiled"]
 
 
+def test_a_profile_with_time_domain_tuning_off_is_not_measured():
+    """KiCad charges 0 ps to everything on such a profile; dynamic phase lists the pair
+    with the reason instead of showing a number KiCad does not."""
+    entry = PROJECT["tuning_profiles"]["tuning_profiles_impedance_geometric"][0]
+    project = {**PROJECT, "tuning_profiles": {"tuning_profiles_impedance_geometric": [
+        {**entry, "enable_time_domain_tuning": False}]}}
+    profiles = delays.tuning_profiles(project)
+    assert not profiles["Fast"].time_domain and delays.tuning_profiles(PROJECT)["Fast"].time_domain
+    model_ = delays.ProfileDelays(profiles, {"D_P": "Fast", "D_N": "Fast"})
+    assert model_.track("D_P", "F.Cu", boards.WIDTH) is None
+    assert model_.barrel("D_P", "F.Cu", "B.Cu", ("F.Cu", "B.Cu"), 1e6) is None
+    assert not model_.time_domain("D_P") and model_.time_domain("GND")  # no profile at all: not this reason
+    off = delays.TuningProfile("Test", boards.PROFILE.layers, 7.0, time_domain=False)
+    (result,), warnings = phase.analyze_board(boards.matched(), boards.delay_model(off))
+    assert isinstance(result, phase.Unprofiled) and not warnings
+    assert result.reason == "Time-domain tuning is off in KiCad for tuning profile 'Test'"
+
+
+def test_vias_add_no_delay_when_the_board_counts_no_stackup_height():
+    """KiCad's StackupHeight() is 0 with the design rules' option off, so its vias add no
+    delay, overrides included; the barrels here add none either and say why."""
+    assert delays.via_height(PROJECT) and delays.via_height({})  # absent: KiCad's default, on
+    off = {**PROJECT, "board": {"design_settings": {"rules": {"use_height_for_length_calcs": False}}}}
+    assert not delays.via_height(off)
+    model_ = delays.ProfileDelays(delays.tuning_profiles(PROJECT), {"D_P": "Fast"}, via_height=False)
+    assert model_.barrel("D_P", "F.Cu", "B.Cu", ("F.Cu", "B.Cu"), 1e6) == (0.0, delays.NO_VIA_HEIGHT)  # the override too
+    assert model_.barrel("GND", "F.Cu", "B.Cu", ("F.Cu", "B.Cu"), 1e6) is None  # still no profile
+    (result,), _ = phase.analyze_board(boards.layer_change(), boards.delay_model(via_height=False))
+    assert len(result.crossings) == 2 and all(crossing.delay_ps == 0.0 for crossing in result.crossings)
+    assert result.delay_p_ps == pytest.approx(50 * unit_delay())  # 20 mm F.Cu + 30 mm B.Cu, both 6 ps/mm
+    assert result.sources == tuple(sorted((delays.NO_VIA_HEIGHT, "tuning profile 'Test'")))
+
+
+def test_pad_to_die_delays_count_at_both_ends_as_kicad_adds_them():
+    """U1's dies put P 2 ps behind N before any copper and J1's make it up: matched end to
+    end, out of phase along the whole pair. Walked from J1 (the default start) P is ahead."""
+    result = only_pair(boards.die_delays())
+    assert result.p.start.label == "J1.1"  # the start: the end whose label sorts first
+    assert np.allclose(result.dt_ps, -2.0, atol=1e-6)  # J1.1 has no die delay, J1.2 2 ps: P ahead everywhere
+    assert result.delay_p_ps == pytest.approx(3.0 + 50 * unit_delay())  # J1.1 0 + copper + U1.1 3
+    assert result.delay_n_ps == pytest.approx(3.0 + 50 * unit_delay())  # J1.2 2 + copper + U1.2 1
+    assert result.skew_ps == pytest.approx(0.0)
+    [excursion] = result.excursions  # from the first point over the whole pair
+    assert excursion.at_nm == 0 and excursion.length_nm == pytest.approx(50 * MM, rel=0.02)
+    assert excursion.peak_ps == pytest.approx(-2.0)
+    assert {"pad-to-die delay of J1.2", "pad-to-die delay of U1.1", "pad-to-die delay of U1.2"} <= set(result.sources)
+    assert "pad-to-die delay of J1.1" not in result.sources
+    assert result.traces[0].delay_ps[0] == pytest.approx(0.0) and result.traces[1].delay_ps[0] == pytest.approx(2.0)
+    flipped = only_pair(boards.die_delays(), flipped=frozenset({result.channel.key}))
+    assert np.allclose(flipped.dt_ps, 2.0, atol=1e-6)  # (3): skew − Δt
+    header, _ = protocol.FrameDecoder().feed(phase.pair_frame(result, 1))[0]
+    assert header["delay_p_ps"] == pytest.approx(303.0) and header["skew_ps"] == pytest.approx(0.0)
+
+
+def test_a_changed_die_delay_recomputes_the_pair():
+    tracker = unhurried()
+    tracker.update(boards.matched(), revision=1)
+    frames = decoded(tracker.update(boards.die_delays(), revision=2))  # the same copper, new die delays
+    assert [header["type"] for header, _ in frames] == ["phase_pair"]
+    assert frames[0][0]["max_ps"] == pytest.approx(2.0)
+
+
 def tracker_without_project():
     return phase.PhaseTracker(clock=lambda: 0.0)
 

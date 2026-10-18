@@ -46,9 +46,10 @@ class EveryNet(dict):
         return self.name
 
 
-def delay_model(profile=PROFILE):
-    """Every net on `profile`, as its netclass's tuning profile would put it."""
-    return delays.ProfileDelays({profile.name: profile}, EveryNet(profile.name))
+def delay_model(profile=PROFILE, via_height=True):
+    """Every net on `profile`, as its netclass's tuning profile would put it; `via_height`
+    the board's stackup-height option for vias."""
+    return delays.ProfileDelays({profile.name: profile}, EveryNet(profile.name), via_height)
 
 
 def project_file(folder) -> str:
@@ -71,8 +72,9 @@ class Board:
         self._count += 1
         return f"{prefix}-{self._count}"
 
-    def part(self, reference, *pins, layer="F.Cu", pad=PAD):
-        """A footprint; each pin is (number, net, (x, y) mm) with a square pad `pad` nm wide."""
+    def part(self, reference, *pins, layer="F.Cu", pad=PAD, die=None):
+        """A footprint; each pin is (number, net, (x, y) mm) with a square pad `pad` nm wide.
+        `die`: pin number -> KiCad's pad-to-die delay (ps)."""
         footprint_id = self._id(reference)
         x0, y0 = nm(pins[0][2])
         self.footprints.append(model.Footprint(footprint_id, reference, (x0, y0), 0.0, "top", ()))
@@ -81,7 +83,7 @@ class Board:
             square = ((x - pad // 2, y - pad // 2), (x + pad // 2, y - pad // 2),
                       (x + pad // 2, y + pad // 2), (x - pad // 2, y + pad // 2))
             self.pads.append(model.Pad(f"{reference}.{number}", footprint_id, str(number), net, (x, y), None,
-                                       {layer: ((square,),)}))
+                                       {layer: ((square,),)}, die_delay_ps=float((die or {}).get(number, 0.0))))
         return self
 
     def path(self, net, *points, layer="F.Cu"):
@@ -137,6 +139,14 @@ def bump(x, y, away):
 
 def matched():
     board = ends(Board())
+    return board.path("D_P", (0, 0), (50, 0)).path("D_N", (0, 1), (50, 1)).snapshot()
+
+
+def die_delays():
+    """The matched pair with KiCad pad-to-die delays: U1 3 ps on P and 1 ps on N, J1 none on
+    P and 2 ps on N. Matched end to end, out of phase by 2 ps everywhere."""
+    board = Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 1)), die={1: 3.0, 2: 1.0})
+    board.part("J1", (1, "D_P", (50, 0)), (2, "D_N", (50, 1)), die={2: 2.0})
     return board.path("D_P", (0, 0), (50, 0)).path("D_N", (0, 1), (50, 1)).snapshot()
 
 

@@ -11,10 +11,12 @@ ends of the routed path, pads with one connection; with more than two (a stub to
 an ESD diode, multi-drop), the two farthest apart along the copper are the route's
 ends and the others are branches. The route is the shortest path between them.
 
-Lengths follow the copper from where the route leaves the start pad to where it
-enters the end pad. A via or plated hole adds its barrel between the two layers
-it connects (from `protocol.layer_heights_nm`); a pad or series part in the middle
-counts as the straight line between where the tracks meet it.
+Lengths follow the copper from the track end inside the start pad to the track end
+inside the end pad, nothing clipped at the pad outlines: as KiCad counts them, whose
+length calculation runs from the pad centre to the copper's edge. A via or plated hole
+adds its barrel between the two layers it connects (from `protocol.layer_heights_nm`);
+a pad or series part in the middle counts as the straight line between where the
+tracks meet it.
 """
 
 import heapq

@@ -630,7 +630,7 @@ def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) 
     return model.Pad(item.id.value, "", item.number, item.net.name, _point(item.position),
                      diameter if diameter != (0, 0) else None, dict(shapes.get(item.id.value, {})),
                      _DRILL_SHAPES.get(item.padstack.drill.shape), float(item.padstack.angle.to_radians()),
-                     *_symbol_pin(item))
+                     *_symbol_pin(item), _die_delay(item))
 
 
 def _symbol_pin(item) -> tuple[str, str]:
@@ -647,6 +647,16 @@ def _symbol_pin(item) -> tuple[str, str]:
     if pin.no_connect:
         kind = f"{kind}+no_connect" if kind else "no_connect"
     return pin.name, kind
+
+
+def _die_delay(item) -> float:
+    """KiCad's pad-to-die delay in ps (a pad property since KiCad 10, sent as attoseconds);
+    0 without one. kipy 0.7 has no accessor for it: read from the pad's private `_proto`,
+    0 when a release lacks it (the pair's delays then miss what KiCad adds for the die)."""
+    proto = getattr(item, "_proto", None)
+    if proto is None or not hasattr(proto, "pad_to_die_delay") or not proto.HasField("pad_to_die_delay"):
+        return 0.0
+    return proto.pad_to_die_delay.value_as / 1e6  # attoseconds -> ps
 
 
 def _convert_zone(item) -> tuple[model.ZoneFill, ...]:

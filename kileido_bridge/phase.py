@@ -20,8 +20,11 @@ waits. Each matched sample is then projected onto the other side's copper, so Δ
 does not depend on the sampling step. The centreline is the midpoint of each match.
 
 The delay is KiCad's: one number per layer, from the net's tuning profile
-(delays.py). A pair without one, or with copper on a layer its profile has no delay
-for, is listed but not measured (`Unprofiled`).
+(delays.py), plus each end pad's pad-to-die delay (a KiCad pad property): the start
+pad's before the first copper, so it offsets Δt along the whole pair; the end pad's after
+the last, so it is in the end-to-end skew but at no point of the copper. A pair without a
+profile, with one whose time-domain tuning is off, or with copper on a layer its profile
+has no delay for, is listed but not measured (`Unprofiled`).
 
 Each via or plated hole a route passes through is kept (`Crossing`: position,
 layers, barrel length, delay) for return-path and via-stub analyses to reuse.
@@ -121,8 +124,9 @@ class Shorted:
 
 @dataclass(frozen=True)
 class Unprofiled:
-    """A pair KiCad has no delay for: no tuning profile on a net's netclass, or copper on
-    a layer the profile has no delay for. Listed, not measured; `reason` says which."""
+    """A pair KiCad has no delay for: no tuning profile on a net's netclass, a profile with
+    time-domain tuning off, or copper on a layer the profile has no delay for. Listed, not
+    measured; `reason` says which."""
     channel: channels.Channel
     reason: str
     net_ids: tuple = ()
@@ -174,12 +178,20 @@ class _Walk:
     nets: list  # (v,) net of the piece each vertex ends
     crossings: list
     sources: set
+    die: tuple  # (start, end) pad-to-die delays (ps); the start's is in `delay`, the end's is added to the total
 
 
 def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: dict[str, int]) -> _Walk:
     xyz, along, delay, items, widths, nets = [], [], [], [], [], []
     crossings, sources = [], set()
-    s = t = 0.0
+    # KiCad's pad-to-die delay of the two end pads, as KiCad adds it to a net's total: the
+    # start pad's is spent before the first copper, the end pad's after the last.
+    pads = {pad.id: pad for pad in route.pads}
+    die = tuple(pads[end.item_id].die_delay_ps if end.item_id in pads else 0.0 for end in (route.start, route.end))
+    for end, ps in zip((route.start, route.end), die):
+        if ps:
+            sources.add(f"pad-to-die delay of {end.label}")
+    s, t = 0.0, die[0]
 
     def add(point, layer_z, item_id, width=0, net=""):
         xyz.append((point[0], point[1], layer_z))
@@ -224,7 +236,7 @@ def _walk(route: channels.Route, side: str, model_: delays.DelayModel, heights: 
     first = next((width for width in widths if width), 0)
     widths = [width or first for width in widths]  # a route that starts through a via
     return _Walk(np.asarray(xyz, np.float64), np.asarray(along), np.asarray(delay), items,
-                 np.asarray(widths, np.float64), nets, crossings, sources)
+                 np.asarray(widths, np.float64), nets, crossings, sources, die)
 
 
 def _resample(walk: _Walk, step: float) -> tuple[np.ndarray, np.ndarray, list, np.ndarray]:
@@ -425,7 +437,8 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     crossings = tuple(replace(crossing, lead_ps=float(np.interp(crossing.at_nm, s, lead)))
                       for walk, s, lead in zip(walks, (s_a, s_b), leads) for crossing in walk.crossings)
     pads = tuple(_pads(p, traces[0], "p", heights) + _pads(n, traces[1], "n", heights))
-    return PairPhase(channel, p, n, flipped, centre, dt, along, float(walks[0].delay[-1]), float(walks[1].delay[-1]),
+    return PairPhase(channel, p, n, flipped, centre, dt, along,
+                     float(walks[0].delay[-1] + walks[0].die[1]), float(walks[1].delay[-1] + walks[1].die[1]),
                      width, excursions, crossings,
                      tuple(sorted(walks[0].sources | walks[1].sources)), tuple(warnings), traces, pads,
                      matched_nm=matched, delays_ps=reached)
@@ -450,11 +463,15 @@ def analyze_board(snapshot: model.BoardSnapshot, model_: delays.DelayModel | Non
 
 def _unprofiled(routes, model_: delays.DelayModel) -> str:
     """Why KiCad has no delay for these routes ("" when it has one for every piece): a net
-    without a tuning profile, or the layers its profile has no delay for."""
+    without a tuning profile, a profile with time-domain tuning off (KiCad then charges 0 ps
+    to everything on it), or the layers its profile has no delay for."""
     pieces = [piece for route in routes if route is not None for piece in route.pieces]
     bare = sorted({piece.net for piece in pieces if piece.net and not model_.profile(piece.net)})
     if bare:
         return "no tuning profile in KiCad for " + ", ".join(bare)
+    off = sorted({model_.profile(piece.net) for piece in pieces if piece.net and not model_.time_domain(piece.net)})
+    if off:
+        return "time-domain tuning is off in KiCad for tuning profile " + ", ".join(repr(name) for name in off)
     missing = sorted({piece.layer for piece in pieces if piece.kind != "barrel" and piece.net
                       and model_.track(piece.net, piece.layer, piece.width) is None})
     if missing:
@@ -484,7 +501,7 @@ def _analyze_channel(channel, by_net, heights, references, model_, settings):
 # --- Live: recompute only pairs whose copper changed ---------------------------------------
 
 def _pad_key(pad: model.Pad):
-    return pad.id, pad.net, pad.pos, pad.number, pad.footprint_id, pad.layers
+    return pad.id, pad.net, pad.pos, pad.number, pad.footprint_id, pad.layers, pad.die_delay_ps
 
 
 class PhaseTracker:
@@ -559,8 +576,10 @@ class PhaseTracker:
             project, nets, {net: netclass for net, (netclass, _) in self.netclasses.items()})
         net_profiles = {net: self.netclasses.get(net, ("", ""))[1] or from_project.get(net, "") for net in nets}
         profiles = delays.tuning_profiles(project)
-        self._model = delays.ProfileDelays(profiles, net_profiles)
-        self._model_key = repr((sorted(self._heights.items()), sorted(profiles.items()), sorted(net_profiles.items())))
+        height = delays.via_height(project)
+        self._model = delays.ProfileDelays(profiles, net_profiles, height)
+        self._model_key = repr((sorted(self._heights.items()), sorted(profiles.items()), sorted(net_profiles.items()),
+                                height))
         return True
 
     def update(self, snapshot: model.BoardSnapshot, revision: int, read_netclasses=None) -> list[bytes]:

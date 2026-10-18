@@ -7,7 +7,7 @@ Dynamic phase shows how far P and N are apart in time **at every point along the
 <p align="center"><img src="../assets/dynamic-phase-case-A.gif" width="760" alt="Case A, animated: delta t along the pair rises to about 8 ps at the U-turn and stays there for 73 mm, apart from the serpentine's swings, until two bumps at J1 bring it back to zero. A cursor on the chart follows a pulse that travels along the pair in the field view below, red under P and blue under N."></p>
 <p align="center"><img src="../assets/dynamic-phase-case-B.gif" width="760" alt="Case B, animated: delta t rises to about 8 ps at the U-turn and drops back to zero 3 mm later at two bumps, then only swings with the serpentine. A cursor on the chart follows a pulse that travels along the pair in the field view below, red under P and blue under N."></p>
 
-**Fig. 1.** Δt along a demo pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) while a 25 ps pulse travels from U1 to J1: case A above, case B below. Both start with the same U-turn, which makes 8.1 ps of length difference. A fixes it with two bumps at J1, 73 mm later; B fixes it 3 mm after the turn. In A, P runs about 9 ps behind N for 73 mm; in B only the serpentine's own swings remain. The tool reads 8.1 ps at the turn, the length difference. The cursor follows the pulse. Under each chart is the field under the pair from a 3D full-wave simulation (openEMS [4]), red under P and blue under N. Dashed lines: the ±1 ps marker tolerance.
+**Fig. 1.** Δt along a demo pair (0.2 mm traces, 0.25 mm apart, 0.12 mm over εr 4.1) while a 25 ps pulse travels from U1 to J1: case A above, case B below. Both start with the same U-turn, which makes 1.41 mm of length difference, 8.1 ps at the profile's 5.76 ps/mm on F.Cu. A fixes it with two bumps at J1, 73 mm later; B fixes it 3 mm after the turn. In A, P runs about 9 ps behind N for 73 mm; in B only the serpentine's own swings remain. The tool reads 8.1 ps at the turn, the length difference. The cursor follows the pulse. Under each chart is the field under the pair from a 3D full-wave simulation (openEMS [4]), red under P and blue under N. Dashed lines: the ±1 ps marker tolerance.
 
 ## What you see
 
@@ -65,9 +65,9 @@ The possible ends are pads with a single connection. Of the parts both sides rea
 *Assumes:* a branch's loading and reflections don't count. Where a side has a loop, the shorter path is used.
 
 **4. Walk and add up delay** · [`phase._walk()`](../kileido_bridge/phase.py)
-Each side is walked from the start end. Every track piece adds its length times the unit delay τ of its layer, the delay of a uniform transmission line [5], [3] (see [Delay model](#delay-model)). A via adds its barrel between the two layers it connects, and a pad or series part adds the straight line between where the tracks meet it:
+Each side is walked from the start end, beginning with the start pad's pad-to-die delay $t_\text{die}$ where KiCad has one. Every track piece adds its length times the unit delay τ of its layer, the delay of a uniform transmission line [5], [3] (see [Delay model](#delay-model)). A via adds its barrel between the two layers it connects, and a pad or series part adds the straight line between where the tracks meet it; the end pad's pad-to-die delay closes the total:
 
-$$t(s) = \sum_{\text{pieces up to } s} \ell_i \, \tau_i \tag{1}$$
+$$t(s) = t_\text{die} + \sum_{\text{pieces up to } s} \ell_i \, \tau_i \tag{1}$$
 
 *Assumes:* delay doesn't depend on frequency, and there is no loss. A capacitor counts only as the distance across it.
 
@@ -94,9 +94,16 @@ For each side: its path, and at every point the delay from the start, the lead o
 
 ## Delay model
 
-The unit delay τ (ps/mm) of each piece is KiCad's, from [`delays.py`](../kileido_bridge/delays.py): the tuning profile on the net's netclass (Board Setup › Tuning Profiles), one number per layer, charged to every track of the net, as KiCad's own time-domain tuning does [1]. A via takes the profile's override for its layers, else the profile's via delay per mm of height it crosses. The pair box names the profile.
+The unit delay τ (ps/mm) of each piece is KiCad's, from [`delays.py`](../kileido_bridge/delays.py): the tuning profile on the net's netclass (Board Setup › Tuning Profiles), one number per layer, charged to every track of the net whatever its width, as KiCad's own time-domain tuning does [1] (its lookup is by layer alone; the profile's width and gap are routing geometry). A via takes the profile's override for its four layers, else the profile's via delay per mm of stackup height between the two layers the signal changes between. Each end pad adds its pad-to-die delay, a pad property, as KiCad adds it to a net's total delay. The pair box names the profile and the pads with a die delay.
 
-Without a tuning profile KiCad has no delay for a pair, and neither has dynamic phase. The pair is listed as NO PROFILE, with nothing drawn and no numbers; so is a pair with copper on a layer its profile has no delay for, and the box names the layer. Set the profile in KiCad, with a delay for every layer the pair runs on.
+What KiCad switches off stays off here:
+
+- A profile whose time-domain tuning is disabled (`enable_time_domain_tuning` in the project file): KiCad charges 0 ps to everything on it, so its pairs are listed as NO PROFILE, with the reason.
+- The board's stackup-height option for vias (Board Setup › Design Rules › Constraints; `use_height_for_length_calcs` in the project file) unticked: KiCad's vias add no delay, overrides included. Dynamic phase adds none either, and the pair box says so.
+
+Without a tuning profile KiCad has no delay for a pair, and neither has dynamic phase. The pair is listed as NO PROFILE, with nothing drawn and no numbers. So is a pair with copper on a layer its profile has no entry for, and the box names the layer: KiCad charges 0 ps to that copper and still shows a number; here nothing is shown, so a missing row never reads as a fast layer. Set the profile in KiCad, with time-domain tuning on and a delay for every layer the pair runs on.
+
+KiCad's end-to-end delay and dynamic phase's should then agree, up to how a track end inside a pad is counted: both count from the pad centre, KiCad along a straight line to where the track leaves the pad, dynamic phase along the track itself.
 
 ### Why Δt holds up when τ is off
 
@@ -123,7 +130,7 @@ Without a tuning profile KiCad has no delay for a pair, and neither has dynamic 
 
 $$\Delta t'(s) = \text{skew} - \Delta t(s) \tag{3}$$
 
-with skew the total delay difference of the pair. The two views are the same only when total skew is 0. Start from the driver: *Flip start* in the pair list walks a pair from its other end. For a pair driven from both ends (USB, for example) both views matter.
+with skew the total delay difference of the pair, the end pads' die delays included. The two views are the same only when total skew is 0. By default the start is the end whose label sorts first (J1 before U1): a convention, not a guess at the driver. Start from the driver: *Flip start* in the pair list walks a pair from its other end. For a pair driven from both ends (USB, for example) both views matter.
 
 ## Validation
 
@@ -143,12 +150,15 @@ The synthetic boards in [`tests/phase_boards.py`](../tests/phase_boards.py) are 
 | Arcs | count their true length, not their chords |
 | Tuning profile | its number for every track of the net, a bump included, as KiCad does; vias by override or per mm |
 | No tuning profile | the pair is listed, not measured, and says which nets have no profile; a profile without a delay for a layer the pair uses names the layer; a shorted pair without a profile still shows the short |
+| Time-domain tuning off | the pair is listed, not measured, and names the profile |
+| Stackup height for vias off | the barrels add no delay, overrides included, and the pair box says so; the tracks still count |
+| Pad-to-die delay | the start pads' delays offset Δt from the first point on, the end pads' are in the end-to-end skew: a pair matched end to end can be out of phase everywhere; walked from the other end, Δt still equals skew − Δt; a changed die delay is recomputed live |
 | Coupled turn | Δt is the length difference (halfway round, half of it); an S takes it back |
 | Findings file | an excursion, a short, a loop, a branch, an unfinished side and a pair without a profile become findings the findings reader takes whole, every target found on the board |
 | Chart | every pair on one scale, the excursions shaded, the numbers in the SVG, Δt in the CSV |
 | Live tracker | recomputes only changed pairs, spreads work over polls, follows Blender's settings |
 
-**Still to do:** compare the end-to-end delays with KiCad's own time-domain tuning on a real board with a tuning profile. By construction they should be equal.
+**Still to do:** compare the end-to-end delays with KiCad's own time-domain tuning on a real board with a tuning profile. By construction they should be equal; the [Delay model](#delay-model) lists what is matched.
 
 ## References
 

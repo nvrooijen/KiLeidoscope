@@ -120,8 +120,9 @@ PHASE_HELP = (
     "receiver. Skew made up only at the far end does not undo what the stretch in between radiated or picked up.",
     "Colours: P red, N blue, the stronger the further apart they are there. Pulses start together at the start "
     "terminal and travel at each trace's own delay, slowed down: the one in front is ahead.",
-    "Amber markers: |Δt| above your tolerance for longer than your distance. Delays come from the netclass's "
-    "tuning profile, else an estimate from the stackup (see Delay for each pair).",
+    "Amber markers: |Δt| above your tolerance for longer than your distance. Delays are KiCad's: the tuning "
+    "profile on each net's netclass (Board Setup › Tuning Profiles), one number per layer, and the pads' "
+    "pad-to-die delays. A pair without a profile is listed as NO PROFILE, with nothing drawn.",
 )
 
 
@@ -305,8 +306,9 @@ def _draw_unprofiled(context, box, data, wrap):
     """A pair KiCad has no delay for: why, and where to set one."""
     for index, line in enumerate(wrap(context, f"{data['unprofiled']}: not measured")):
         box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
-    for text in ("Set a tuning profile in KiCad (Board Setup › Tuning Profiles) on the pair's netclass, "
-                 "with a delay for every layer it runs on.", f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"):
+    for text in ("Set a tuning profile in KiCad (Board Setup › Tuning Profiles) on the pair's netclass, with "
+                 "time-domain tuning on and a delay for every layer it runs on.",
+                 f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"):
         for line in wrap(context, text):
             box.label(text=line)
 

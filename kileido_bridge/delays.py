@@ -1,15 +1,24 @@
 """Propagation delay per length of copper, by layer: KiCad's tuning profile numbers.
 
 `DelayModel` is the whole interface the phase analysis uses: one delay per layer,
-charged to every track of the net, as KiCad's own time-domain tuning does. It comes
-from KiCad 10's tuning profile on the net's netclass (Board Setup > Tuning Profiles,
-stored in the project file `.kicad_pro` under "tuning_profiles"; the netclass names its
-profile in "net_settings"). Its unit delays are attoseconds per mm (KiCad's
-`IU_PER_PS_PER_MM` = 1e6); a via takes an override for its layers, else the profile's
-via delay per mm of stackup height it crosses.
+charged to every track of the net whatever its width, as KiCad's own time-domain tuning
+does (pcbnew/length_delay_calculation looks the delay up by layer alone). It comes from
+KiCad 10's tuning profile on the net's netclass (Board Setup > Tuning Profiles, stored in
+the project file `.kicad_pro` under "tuning_profiles"; the netclass names its profile in
+"net_settings"). The stored delays are in KiCad's time unit, attoseconds (1e-6 ps), per
+mm; a via takes an override for its four layers, else the profile's via delay per mm of
+stackup height between the two layers the signal changes between.
 
-Without a profile, or on a layer the profile has no delay for, there is no number:
-KiCad has none either, and the pair is not measured (phase.Unprofiled).
+What KiCad switches off stays off here: a profile with time-domain tuning disabled
+("enable_time_domain_tuning") makes KiCad charge 0 ps to everything on it, so its nets
+are not measured; with the board's stackup-height option for vias off
+("use_height_for_length_calcs" in the design rules) KiCad's vias add no delay, overrides
+included, and neither do ours.
+
+Without a profile there is no number: KiCad has none either, and the pair is not
+measured (phase.Unprofiled). On a layer the profile has no entry for KiCad charges 0 ps
+and shows a number; here the pair is not measured either, so a missing row never reads
+as a fast layer.
 """
 
 import fnmatch
@@ -19,6 +28,7 @@ from pathlib import Path
 
 AS_PER_PS = 1_000_000  # KiCad's delay unit: attoseconds
 PROFILE = "tuning profile"
+NO_VIA_HEIGHT = "vias 0 ps: stackup height for vias is off in KiCad's Board Setup"
 
 
 @dataclass(frozen=True)
@@ -33,6 +43,10 @@ class DelayModel:
     def profile(self, net: str) -> str:
         """The name of the net's tuning profile, "" for none."""
         return ""
+
+    def time_domain(self, net: str) -> bool:
+        """False when the net's profile has time-domain tuning switched off in KiCad."""
+        return True
 
     def track(self, net: str, layer: str, width_nm: int) -> UnitDelay | None:
         return None
@@ -49,6 +63,7 @@ class TuningProfile:
     layers: dict = field(default_factory=dict)  # signal layer -> ps/mm
     via_ps_per_mm: float = 0.0  # of stackup height crossed
     via_overrides: tuple = ()  # ({signal layers}, {via layers}, ps)
+    time_domain: bool = True  # "enable_time_domain_tuning"; off, KiCad charges 0 ps to everything on the profile
 
 
 def tuning_profiles(project: dict) -> dict[str, TuningProfile]:
@@ -63,7 +78,8 @@ def tuning_profiles(project: dict) -> dict[str, TuningProfile]:
                                frozenset((row["via_layer_from"], row["via_layer_to"])),
                                float(row["delay"]) / AS_PER_PS) for row in entry.get("via_overrides") or ())
             profiles[entry["profile_name"]] = TuningProfile(
-                entry["profile_name"], layers, float(entry.get("via_prop_delay", 0)) / AS_PER_PS, overrides)
+                entry["profile_name"], layers, float(entry.get("via_prop_delay", 0)) / AS_PER_PS, overrides,
+                bool(entry.get("enable_time_domain_tuning", True)))
         except (KeyError, TypeError, ValueError):
             continue  # a profile KiCad would not load either
     return profiles
@@ -79,6 +95,15 @@ def netclass_profiles(project: dict) -> tuple[dict[str, str], list[tuple[str, st
     return classes, patterns
 
 
+def via_height(project: dict) -> bool:
+    """Whether the board counts stackup height for vias (Board Setup > Design Rules >
+    Constraints; KiCad's default). Off, KiCad's StackupHeight() is 0 and a via adds no delay."""
+    try:
+        return bool(project["board"]["design_settings"]["rules"].get("use_height_for_length_calcs", True))
+    except (KeyError, TypeError, AttributeError):
+        return True
+
+
 def read_project(path: str) -> dict:
     """The project file as JSON, or {} (no project, unreadable, being written)."""
     if not path:
@@ -92,9 +117,11 @@ def read_project(path: str) -> dict:
 class ProfileDelays(DelayModel):
     """The nets' tuning profiles: `profiles` by name, `net_profiles` net -> profile name."""
 
-    def __init__(self, profiles: dict[str, TuningProfile] | None = None, net_profiles: dict[str, str] | None = None):
+    def __init__(self, profiles: dict[str, TuningProfile] | None = None, net_profiles: dict[str, str] | None = None,
+                 via_height: bool = True):
         self.profiles = profiles or {}
         self.net_profiles = {} if net_profiles is None else net_profiles  # net -> profile name ("" for none)
+        self.via_height = via_height  # the board's stackup-height option for vias (via_height())
 
     def _profile(self, net: str) -> TuningProfile | None:
         return self.profiles.get(self.net_profiles.get(net, ""))
@@ -103,17 +130,23 @@ class ProfileDelays(DelayModel):
         found = self._profile(net)
         return found.name if found is not None else ""
 
+    def time_domain(self, net: str) -> bool:
+        found = self._profile(net)
+        return found is None or found.time_domain
+
     def track(self, net: str, layer: str, width_nm: int) -> UnitDelay | None:
         profile = self._profile(net)
-        if profile is None or layer not in profile.layers:
+        if profile is None or not profile.time_domain or layer not in profile.layers:
             return None
         return UnitDelay(profile.layers[layer], f"{PROFILE} '{profile.name}'")
 
     def barrel(self, net: str, from_layer: str, to_layer: str, span: tuple[str, str],
                length_nm: float) -> tuple[float, str] | None:
         profile = self._profile(net)
-        if profile is None:
+        if profile is None or not profile.time_domain:
             return None
+        if not self.via_height:
+            return 0.0, NO_VIA_HEIGHT  # KiCad: StackupHeight() is 0, so no via delay, overrides included
         for signal, via, ps in profile.via_overrides:
             if signal == {from_layer, to_layer} and via == set(span):
                 return ps, f"{PROFILE} '{profile.name}'"

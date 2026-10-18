@@ -106,6 +106,20 @@ def test_reader_takes_the_schematic_pin():
     assert _symbol_pin(SimpleNamespace(_proto=proto)) == ("VDD_3", "power_in")
     proto.symbol_pin.type, proto.symbol_pin.no_connect = ElectricalPinType.EPT_BIDIRECTIONAL, True
     assert _symbol_pin(SimpleNamespace(_proto=proto)) == ("VDD_3", "bidirectional+no_connect")
+
+
+def test_the_pad_to_die_delay_is_read_in_ps():
+    """KiCad sends a pad's pad-to-die delay as attoseconds; kipy 0.7 has no accessor."""
+    from types import SimpleNamespace
+
+    from kipy.proto.board.board_types_pb2 import Pad
+
+    from kileido_bridge.kicad_reader import _die_delay
+
+    proto = Pad()
+    assert _die_delay(SimpleNamespace(_proto=proto)) == 0.0 and _die_delay(SimpleNamespace()) == 0.0
+    proto.pad_to_die_delay.value_as = 2_500_000
+    assert _die_delay(SimpleNamespace(_proto=proto)) == 2.5
     r1 = [f for f in parsed(named(board()))["footprints"] if f["ref"] == "R1"]
     assert [f["dnp"] for f in r1] == [False, True] and all("uuid" in f for f in r1)  # same reference twice
 
