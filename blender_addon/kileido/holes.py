@@ -47,6 +47,7 @@ CLIP_TEXTURE = "KLS board plot"  # a clipped material's sample of the mask (`cli
 CLIP_OFF = "KLS board clip off"  # 1: no outline to clip to, everything shows
 CLIP_EDGE = "KLS board clip edge"  # the coverage ramp: crisp at 0.5, or `WALL_RAMP`
 TINT = "KLS see-through tint"  # a film's tint on what shows through it (`_clear_where_open`)
+FILMS = ("flex",)  # the holed materials that are a tinted film: clear in their holes
 
 _sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
 _bounds = None
@@ -325,8 +326,15 @@ def _multiply_coverage(material, coverage, name):
         factor = mix.inputs[0]
         before = factor.links[0].from_socket if factor.is_linked else factor.default_value
         links.new(shading.math_node(tree, "MULTIPLY", before, coverage), factor)
-        _clear_where_open(tree, mix, coverage)
+        if _is_film(material):
+            _clear_where_open(tree, mix, coverage)
     focus.set_render_method(material)
+
+
+def _is_film(material) -> bool:
+    """One of `FILMS`: a see-through tinted like a film. Other see-through materials (copper
+    tints, highlights, the dynamic-phase traces) keep their shader as it is."""
+    return any(material is board.materials.get(key) for key in FILMS)
 
 
 def _clear_where_open(tree, mix, coverage):
