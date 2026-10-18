@@ -690,7 +690,7 @@ def _draw_finding(layout, wrap, source_name, finding):
     row.active = not finding.get("faded") and state != "dismissed"
     title = row.row(align=True)
     title.alert = finding.get("severity") == "error" and state != "confirmed"
-    title.active = source_name == "drc" or finding.get("verdict") != "unchecked"
+    title.active = source_name in OWN or finding.get("verdict") != "unchecked"
     icon = {"icon": "CHECKMARK"} if state == "confirmed" else severity_icon(findings_draw.mark(finding))
     text = (wrap(finding.get("title") or finding.get("check") or "?") or ["?"])[0]
     operator = title.operator(KILEIDO_OT_finding_show.bl_idname, text=text, emboss=shown, depress=shown, **icon)
@@ -772,7 +772,8 @@ def _draw_mentions(box, source_name, finding):
 
 
 def _draw_detail(box, wrap, source_name, finding):
-    if source_name != "drc" and finding.get("verdict") in VERDICT_LINES:
+    own = source_name in OWN  # KiCad's DRC and dynamic phase: measured by KiCad or the bridge, no LLM's word to weigh
+    if not own and finding.get("verdict") in VERDICT_LINES:
         _lines(box, wrap, *VERDICT_LINES[finding["verdict"]])
     for rule in finding.get("rules") or ():  # the check's rules the bridge applied: a wrong pair, a non-pair
         line = box.column()
@@ -783,9 +784,9 @@ def _draw_detail(box, wrap, source_name, finding):
         if text:
             _lines(box, wrap, label + text)
     _draw_mentions(box, source_name, finding)
-    if finding.get("confidence"):
+    if finding.get("confidence") and not own:
         box.label(text=f"LLM confidence: {finding['confidence']}")
-    if findings_draw.refuted(finding):
+    if findings_draw.refuted(finding) and not own:
         _lines(box, wrap, REFUTED_LINE, "CHECKMARK")
     disagree = {entry.get("key"): entry for entry in finding.get("disagree") or ()}
     for name, value in (finding.get("values") or {}).items():
@@ -796,9 +797,9 @@ def _draw_detail(box, wrap, source_name, finding):
             line.label(text=f"{label}: claimed {figure(disagree[name]['claimed'])} {unit}, measured "
                             f"{figure(disagree[name]['measured'])} {unit}".replace("  ", " "), icon="ERROR")
         else:
-            line.label(text=f"{label} (LLM): {figure(value)} {unit}".rstrip())
+            line.label(text=f"{label}{'' if own else ' (LLM)'}: {figure(value)} {unit}".rstrip())
     for name, text in (finding.get("values_text") or {}).items():
-        _lines(box, wrap, f"{name.replace('_', ' ')} (LLM): {text}")
+        _lines(box, wrap, f"{name.replace('_', ' ')}{'' if own else ' (LLM)'}: {text}")
     for draw in finding.get("draws") or ():
         _draw_facts(box, wrap, draw)
     for problem in finding.get("problems") or ():

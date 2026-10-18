@@ -57,6 +57,14 @@ def test_compensation_far_from_the_mismatch_is_an_excursion_despite_zero_skew():
     assert excursion.length_nm > 40 * MM
     assert excursion.peak_ps < -plateau
     assert excursion.item_id in {track.id for track in snapshot.tracks if track.net == "D_P"}
+    # Where it peaks (the marker and its label) lies in the stretch; each side's delay range is
+    # the stretch along that trace, as Blender draws it in amber.
+    assert 2 * MM < excursion.peak_pos[0] < 47.3 * MM and excursion.peak_pos[1] == pytest.approx(0.5 * MM)
+    for (low, high), total in zip(excursion.delays_ps, (result.delay_p_ps, result.delay_n_ps)):
+        assert 0 < low < high < total and high - low == pytest.approx(excursion.length_nm / 1e6 * unit_delay(), rel=0.05)
+    header = protocol.FrameDecoder().feed(phase.pair_frame(result, 1))[0][0]
+    (sent,) = header["excursions"]
+    assert sent["peak_x"] == excursion.peak_pos[0] and sent["t_p"] == list(excursion.delays_ps[0])
 
 
 def test_each_side_carries_its_delay_and_how_far_it_is_ahead():
@@ -100,6 +108,25 @@ def test_an_excursions_peak_is_what_the_stretch_holds_not_a_one_reading_spike():
     assert phase.held_peak(along, dt, 0, 59) == pytest.approx(5.0)
     short = np.array([4.3, 6.0, 4.3])  # a stretch shorter than the hold: its plain largest
     assert phase.held_peak(along[:3], short, 0, 2) == 6.0
+
+
+def test_an_excursion_lights_only_the_copper_its_stretch_covers():
+    """A finding lights whole copper items. N's bump at x = 28 makes the skew, P's at x = 20
+    undoes it: the bumps light on both sides; the long straights the 8 mm stretch only partly
+    covers (under half of each) stay dark, or they would light far past it (CX3: a 7.4 mm
+    track lit for 0.1 mm of stretch, beside nothing lit on the other side)."""
+    board = boards.ends(boards.Board())
+    board.path("D_P", (0, 0), *boards.bump(20, 0, -0.25), (50, 0))
+    snapshot = board.path("D_N", (0, 1), *boards.bump(28, 1, 0.25), (50, 1)).snapshot()
+    (excursion,) = only_pair(snapshot).excursions
+    assert 7 * MM < excursion.length_nm < 9 * MM
+    bumps = {track.id for track in snapshot.tracks
+             if all(19.9 * MM <= x <= 20.3 * MM if track.net == "D_P" else 27.9 * MM <= x <= 28.3 * MM
+                    for x in (track.start[0], track.end[0]))}
+    lit = set(excursion.item_ids)
+    assert len(bumps) == 6 and lit <= bumps  # no straight; a leg the stretch starts partway up can stay dark
+    nets = {track.id: track.net for track in snapshot.tracks}
+    assert sorted(nets[item] for item in lit).count("D_P") >= 2 and sorted(nets[item] for item in lit).count("D_N") >= 2
 
 
 def test_a_layer_change_adds_each_via_barrel_between_its_layers():

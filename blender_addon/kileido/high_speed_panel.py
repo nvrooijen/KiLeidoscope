@@ -280,10 +280,13 @@ def _draw_legend(column, context, wrap, swatch, width):
     right.alignment = "RIGHT"
     right.label(text=f"{scale:.2f} ps  N")
     column.separator()
+    tolerance, length = context.scene.kileido_phase_tolerance_ps, context.scene.kileido_phase_min_mm
     for role, text in (("start", "Start of the pair"), ("end", "End of the pair"),
-                       ("excursion", "Out of phase beyond the markers' limits"),
+                       ("excursion", f"P and N over {tolerance:g} ps apart for {length:g} mm or more"),
                        ("short", "P and N shorted"), ("loop", "A loop beside the route")):
-        column.label(text=text, icon_value=swatch("tile", phase.COLORS[role]))
+        for index, line in enumerate(wrap(context, text)):  # wrapped: a narrow column cuts a label in its middle
+            column.label(text=line, **({"icon_value": swatch("tile", phase.COLORS[role])} if index == 0
+                                       else {"icon": "BLANK1"}))
     for line in wrap(context, "White: the selected pair where it is in phase. Pulses start together: "
                               "the one in front is ahead."):
         column.label(text=line)

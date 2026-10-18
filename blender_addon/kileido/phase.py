@@ -46,6 +46,7 @@ GROW_M = 4e-6  # 2 um wider per side, so the copper edge never shows through
 MARKER_HEIGHT_M = 1.0e-3
 MARKER_RADIUS_M = 0.3e-3
 LABEL_SIZE_M = 0.7e-3
+STRETCH_WIDEN = 2.4  # a flagged stretch's amber band: this many track widths wide, under the tinted copy
 # Pure primaries at low emission stay pure in AgX; brighter bleaches them to pink and white.
 COLORS = {"p": (1.0, 0.0, 0.0), "n": (0.0, 0.1, 1.0), "start": (0.15, 0.85, 0.3), "end": (0.7, 0.3, 1.0),
           "excursion": (1.0, 0.65, 0.0), "short": (1.0, 0.0, 0.45), "loop": (0.0, 0.85, 0.85)}
@@ -654,6 +655,26 @@ def _columns(vias, sides=GLOW_SIDES + 4):
     return np.asarray(vertices, np.float64).reshape(-1, 3), faces, np.asarray(delay)
 
 
+def _stretch(data, side, delays):
+    """(vertices, faces) of the amber band along one side's trace where a flagged stretch runs:
+    the trace's points whose delay from the start lies in `delays` (ps, the bridge's t_p or t_n;
+    the delay only grows along a trace, so they are one run), a little wider than the copper
+    and just under its tinted copy. None without a run to draw."""
+    xyz, delay = data.get(f"{side}_xyz"), data.get(f"{side}_t")
+    if xyz is None or delay is None or not delays or len(delays) != 2:
+        return None
+    low, high = sorted(float(value) for value in delays)
+    inside = np.flatnonzero((delay >= low - 1e-6) & (delay <= high + 1e-6))
+    if len(inside) < 2:
+        return None
+    run = slice(int(inside[0]), int(inside[-1]) + 1)
+    vertices, faces, _ = _strip(xyz[run], np.asarray(data[f"{side}_width"][run], np.float64) * STRETCH_WIDEN)
+    if not faces:
+        return None
+    vertices[:, 2] += np.where(vertices[:, 2] < 0, LIFT_M / 2, -LIFT_M / 2)  # nearer the copper than the copy
+    return vertices, faces
+
+
 def _cone(tip, up, height=MARKER_HEIGHT_M, radius=MARKER_RADIUS_M, sides=12):
     """A cone standing on its tip at `tip`, opening along +z (`up` = 1) or -z."""
     angles = np.linspace(0.0, 2 * math.pi, sides, endpoint=False)
@@ -767,15 +788,37 @@ def draw(key):
         set_visible(label, shown and labels)
         active.add(label.name)
     for index, excursion in enumerate(data.get("excursions", ())):
-        xy = transform.xy_m(np.array([[excursion["x"], excursion["y"]]]), board.origin_nm)[0]
-        # On the nearer board face, like the terminals: seen even where the pair runs inside.
-        surface, up = _board_face("B.Cu" if excursion["z"] * 1e-9 < board.thickness_m / 2 else "F.Cu")
+        lit = excursion.get("ids") or [excursion["id"]]
+        for side in ("p", "n"):  # the whole stretch, in amber along both traces
+            band = _stretch(data, side, excursion.get(f"t_{side}"))
+            if band is None:
+                continue
+            stretch = _owned(f"{PREFIX}stretch {side} {slot} {index}", key, _material("excursion"), lit)
+            _mesh(stretch, *band)
+            set_visible(stretch, shown)
+            active.add(stretch.name)
+        # The marker and its numbers where Δt peaks (a frame from an older bridge: where it starts),
+        # on the nearer board face, like the terminals: seen even where the pair runs inside.
+        x, y, z = (excursion.get(f"peak_{axis}", excursion[axis]) for axis in "xyz")
+        xy = transform.xy_m(np.array([[x, y]]), board.origin_nm)[0]
+        surface, up = _board_face("B.Cu" if z * 1e-9 < board.thickness_m / 2 else "F.Cu")
+        tip = (float(xy[0]), float(xy[1]), surface + up * LIFT_M)
         marker = _owned(f"{PREFIX}excursion {slot} {index}", key, _material("excursion"), [excursion["id"]])
         marker["kls_phase_excursion"] = index
-        _mesh(marker, *_cone((float(xy[0]), float(xy[1]), surface + up * LIFT_M), up, MARKER_HEIGHT_M,
-                             1.3 * MARKER_RADIUS_M))
+        _mesh(marker, *_cone(tip, up, MARKER_HEIGHT_M, 1.3 * MARKER_RADIUS_M))
         set_visible(marker, shown)
         active.add(marker.name)
+        # The label reads over the stretch: on the side it runs to from where it starts, clear of the
+        # terminal it may start beside.
+        ahead = 1.0 if x >= excursion["x"] else -1.0
+        if abs(float(x) - float(excursion["x"])) < 1.0:  # the peak where it starts: towards the pair's middle
+            ahead = -1.0 if float(xy[0]) > 0.0 else 1.0
+        label = _label(f"{PREFIX}label excursion {slot} {index}", key, "excursion",
+                       f"{float(excursion['peak_ps']):+.1f} ps over {float(excursion['length_mm']):.1f} mm",
+                       (tip[0] + ahead * 1.6 * MARKER_RADIUS_M, tip[1], tip[2] + up * MARKER_HEIGHT_M), up, lit,
+                       "LEFT" if ahead > 0 else "RIGHT")
+        set_visible(label, shown and labels)
+        active.add(label.name)
     # Where P touches N (a short) and loops beside the route: larger markers on the nearer face.
     for role, entries in (("short", data.get("shorts", ())), ("loop", data.get("loops", ()))):
         for index, entry in enumerate(entries):

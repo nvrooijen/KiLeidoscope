@@ -45,6 +45,7 @@ SAMPLES = 400  # per side at most; longer routes get a longer step
 MIN_STEP_NM = 50_000
 BUDGET_S = 0.08  # per poll; pairs left over follow on the next polls
 PEAK_HOLD_NM = 500_000  # an excursion's peak holds over this much of the pair (held_peak)
+COVERED_SHARE = 0.5  # an excursion lights a copper item when its stretch covers this much of it (_covered)
 
 
 
@@ -100,6 +101,10 @@ class Excursion:
     peak_ps: float  # signed, the largest |Δt| the stretch holds over PEAK_HOLD_NM (held_peak)
     item_id: str  # the P track there
     item_ids: tuple[str, ...] = ()  # the copper of both sides along the stretch, in walking order
+    peak_pos: tuple = ()  # nm, where the peak is (x, y, z on the centreline): the marker and its label
+    # ((P from, P to), (N from, N to)) ps from the start terminal: where along each trace the
+    # stretch runs, as the traces' own delays count it, so Blender can draw it on both
+    delays_ps: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -367,20 +372,45 @@ def find_excursions(along: np.ndarray, dt: np.ndarray, tolerance_ps: float, min_
     return [(int(a), int(b)) for a, b in zip(starts, stops) if along[b] - along[a] >= min_length_nm]
 
 
-def held_peak(along: np.ndarray, dt: np.ndarray, first: int, last: int) -> float:
-    """The peak Δt (signed) of the stretch first..last that holds over PEAK_HOLD_NM along the
-    pair: at each reading the smallest |Δt| within half that either side, and the largest of
-    those. Where the two sides reach a via pair or fan out at different points, a reading or
+def _covered(walk: _Walk, low: float, high: float) -> list[str]:
+    """The copper items of one side that the stretch [low, high] (nm along that side) covers
+    at least COVERED_SHARE of, in walking order. A finding lights whole items: a long track
+    the stretch only touches at one end would light far past it, beside nothing lit on the
+    other side."""
+    total, inside, touched = {}, {}, set()
+    for v in range(1, len(walk.along)):
+        item = walk.items[v]
+        if not item:
+            continue
+        a, b = float(walk.along[v - 1]), float(walk.along[v])
+        total[item] = total.get(item, 0.0) + (b - a)
+        inside[item] = inside.get(item, 0.0) + max(0.0, min(b, high) - max(a, low))
+        if low <= a <= high:
+            touched.add(item)
+    return [item for item, length in total.items()
+            if (inside[item] >= COVERED_SHARE * length if length > 0 else item in touched)]
+
+
+def _held(along: np.ndarray, dt: np.ndarray, first: int, last: int) -> tuple[int, float]:
+    """(reading, signed Δt) of the stretch first..last's peak that holds over PEAK_HOLD_NM along
+    the pair: at each reading the smallest |Δt| within half that either side, and the largest
+    of those. Where the two sides reach a via pair or fan out at different points, a reading or
     two compares P and N at different places and spikes; that does not set the peak. A
     stretch shorter than the hold: its plain largest |Δt|."""
     magnitude, span = np.abs(dt[first:last + 1]), along[first:last + 1]
     if span[-1] - span[0] < PEAK_HOLD_NM:
-        return float(dt[first + int(magnitude.argmax())])
+        k = int(magnitude.argmax())
+        return first + k, float(dt[first + k])
     low = np.searchsorted(span, span - PEAK_HOLD_NM / 2, side="left")
     high = np.searchsorted(span, span + PEAK_HOLD_NM / 2, side="right")
     held = np.array([magnitude[a:b].min() for a, b in zip(low, high)])
     k = int(held.argmax())
-    return float(np.sign(dt[first + k]) * held[k])  # one sign throughout: |Δt| stays above the tolerance
+    return first + k, float(np.sign(dt[first + k]) * held[k])  # one sign throughout: |Δt| stays above the tolerance
+
+
+def held_peak(along: np.ndarray, dt: np.ndarray, first: int, last: int) -> float:
+    """The signed peak Δt of the stretch first..last (`_held`)."""
+    return _held(along, dt, first, last)[1]
 
 
 # --- A pair -------------------------------------------------------------------------------
@@ -434,13 +464,19 @@ def analyze(channel: channels.Channel, p: channels.Route, n: channels.Route, mod
     widths = [piece.width for piece in (*p.pieces, *n.pieces) if piece.kind == "track"]
     track = float(np.median(widths)) if widths else 0.0
     width = float(np.median(np.hypot(*(a[i, :2] - b[j, :2]).T))) + track
-    excursions = tuple(
-        Excursion(tuple(float(v) for v in centre[first]), float(along[first]), float(along[last] - along[first]),
-                  held_peak(along, dt, first, last),
-                  next((item for item in items_p[i[first]:] if item), ""),
-                  tuple(dict.fromkeys(item for item in (*items_p[i[first]:i[last] + 1], *items_n[j[first]:j[last] + 1])
-                                      if item)))
-        for first, last in find_excursions(along, dt, settings.tolerance_ps, settings.min_length_nm))
+    excursions = []
+    for first, last in find_excursions(along, dt, settings.tolerance_ps, settings.min_length_nm):
+        peak_at, peak = _held(along, dt, first, last)
+        lit = tuple(dict.fromkeys((*_covered(walks[0], matched[first, 0], matched[last, 0]),
+                                   *_covered(walks[1], matched[first, 1], matched[last, 1]))))
+        excursions.append(Excursion(
+            tuple(float(v) for v in centre[first]), float(along[first]), float(along[last] - along[first]), peak,
+            next((item for item in items_p[i[first]:] if item), ""),
+            lit or tuple(dict.fromkeys(item for item in (*items_p[i[first]:i[last] + 1], *items_n[j[first]:j[last] + 1])
+                                       if item)),
+            tuple(float(v) for v in centre[peak_at]),
+            tuple((float(reached[first, side]), float(reached[last, side])) for side in (0, 1))))
+    excursions = tuple(excursions)
     warnings = []
     parts = [{terminal.label.partition(".")[0] for terminal in (route.start, route.end) if "." in terminal.label}
              for route in (p, n)]
@@ -774,6 +810,8 @@ def pair_frame(result: PairPhase | Shorted | Unprofiled, revision: int) -> bytes
         "width_nm": result.width_nm, "flipped": result.flipped,
         "excursions": [{"x": e.pos[0], "y": e.pos[1], "z": e.pos[2], "at_mm": e.at_nm / 1e6,
                         "length_mm": e.length_nm / 1e6, "peak_ps": e.peak_ps,
+                        "peak_x": e.peak_pos[0], "peak_y": e.peak_pos[1], "peak_z": e.peak_pos[2],
+                        "t_p": list(e.delays_ps[0]), "t_n": list(e.delays_ps[1]),
                         "id": e.item_id, "ids": list(e.item_ids)}
                        for e in result.excursions],
         "branches": [{"side": side, "label": branch.terminal.label, "id": branch.terminal.item_id,

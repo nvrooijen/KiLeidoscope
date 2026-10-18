@@ -20,7 +20,7 @@ KiLeidoscope's new dynamic phase, found in the Diff pairs column, shows how far 
 - **Tint:** P red, N blue, over each trace. The stronger the colour, the further apart P and N are there. Via lands are tinted too.
 - **Pulses:** start together at the start end and travel at each trace's own delay, slowed down. The pulse in front is ahead.
 - **Via light:** columns in the via barrels, in the colour of the side.
-- **Amber markers:** where |Δt| stays above your tolerance for longer than your minimum length.
+- **Amber:** each stretch where P and N stay more than *Marker above (ps)* apart for at least *Marker longer than (mm)*, drawn in amber along both traces from where it starts to where it ends. A marker sits where Δt peaks, labelled with the peak and the stretch's length, such as *+2.8 ps over 5.3 mm*.
 - **Pink markers:** where P's copper touches N's, a short. A shorted pair has no phase and no numbers. Its pulses run from the start end up to the short and stop there.
 - **Cyan markers:** copper that closes a loop with the route, such as an old route left beside a new one. The pair is measured along the shortest path. The loop's copper is listed, and a click selects it in KiCad.
 - **Pair list:** every pair with its total delay, end-to-end skew and largest |Δt|, a warning icon when it has an excursion or a loop, SHORT for a shorted pair and NO PROFILE for a pair KiCad has no delay for (see [Delay model](#delay-model)).
@@ -41,7 +41,7 @@ The DRC column's **Dynamic phase** button measures every pair at once and lists 
 | Finding | Severity |
 |---|---|
 | Short | error |
-| Excursion (the stretch's copper is lit, with a label at its start) | warning |
+| Excursion (the stretch's copper is lit, with a label at its peak) | warning |
 | Loop | warning |
 | Unfinished side, branch, ends on different parts, no tuning profile | info |
 
@@ -98,7 +98,7 @@ with $s'$ the matched point on N. Δt < 0: P's edge is ahead there; Δt > 0: N's
 *Assumes:* a direction; see [Which end to start from](#which-end-to-start-from).
 
 **7. Excursions** · [`phase.find_excursions()`](../kileido_bridge/phase.py)
-Wherever |Δt| stays above *Marker above (ps)* for at least *Marker longer than (mm)*, a marker at the start of that stretch, with its peak Δt. Defaults: 1 ps over 5 mm.
+Wherever |Δt| stays above *Marker above (ps)* for at least *Marker longer than (mm)*, that stretch is drawn in amber along both traces, with a marker where Δt peaks. The peak is the largest |Δt| the stretch holds over 0.5 mm, so a reading or two where P and N reach their vias or fan out at different points doesn't set it. Defaults: 1 ps over 5 mm.
 
 **8. Live: changed pairs only** · [`phase.PhaseTracker`](../kileido_bridge/phase.py)
 A pair is recomputed only when its copper, the delay inputs (the project file's tuning profiles, the netclasses) or the settings change. Each poll spends at most 80 ms; pairs left over follow on the next polls.

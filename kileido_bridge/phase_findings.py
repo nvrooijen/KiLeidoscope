@@ -4,7 +4,7 @@ Every pair is measured whole (phase.analyze_board, no per-poll budget) and what 
 pairs column marks becomes a finding, so it gets the DRC column's list, its markers on the
 board, confirm and dismiss, and select-in-KiCad: an excursion (|Δt| above the marker
 tolerance for longer than the marker length) is a warning with the stretch's copper lit and
-a label at its start; a short an error; a loop a warning; an unfinished side, ends on
+a label at its peak; a short an error; a loop a warning; an unfinished side, ends on
 different parts, a branch and a pair without a tuning profile are info. Pure: no files, no KiCad. The loop writes the file
 (kls_folder) and the findings watch reads it back like KiCad's DRC's, so every target is
 resolved on the live board and the text shown as text.
@@ -52,7 +52,7 @@ def _excursion(result: phase.PairPhase, excursion: phase.Excursion, settings: ph
     at, length = excursion.at_nm / 1e6, excursion.length_nm / 1e6
     ahead = "N" if excursion.peak_ps > 0 else "P"
     ids = excursion.item_ids or ((excursion.item_id,) if excursion.item_id else ())
-    draws = _highlight(ids) + [{"tool": "label", "at": _pt(excursion.pos, layer_at),
+    draws = _highlight(ids) + [{"tool": "label", "at": _pt(excursion.peak_pos or excursion.pos, layer_at),
                                 "text": f"{excursion.peak_ps:+.1f} ps over {length:.1f} mm"}]
     return _finding("phase.excursion", "warning",
                     f"{name}: P and N {abs(excursion.peak_ps):.1f} ps apart over {length:.1f} mm",

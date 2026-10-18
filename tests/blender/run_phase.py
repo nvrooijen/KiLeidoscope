@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import kileido  # noqa: E402
 import phase_boards  # noqa: E402
-from kileido import apply, high_speed_panel, highlight, packages, phase, pick, state  # noqa: E402
+from kileido import apply, findings, high_speed_panel, highlight, packages, phase, pick, state  # noqa: E402
 from kileido.objects import read_attribute, read_coordinates  # noqa: E402
 from kileido_bridge.phase import PhaseTracker  # noqa: E402
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -28,10 +28,16 @@ def objects(prefix):
 
 class Layout:
     """Stands in for a Blender UI layout: every call gives another, so the panel's own
-    drawing code runs headless."""
+    drawing code runs headless; `texts` keeps every label's text."""
+
+    def __init__(self, texts=None):
+        self.texts = [] if texts is None else texts
+
+    def label(self, text="", **_kwargs):
+        self.texts.append(text)
 
     def __getattr__(self, name):
-        return lambda *args, **kwargs: Layout()
+        return lambda *args, **kwargs: Layout(self.texts)
 
 
 def draws(data):
@@ -196,6 +202,15 @@ def main():
         marker = next(iter(excursions.values()))
         tip = read_coordinates(marker.data)[0]
         assert 0.0 < tip[0] < 0.1 and list(marker["kls_phase_ids"]) == [result.excursions[0].item_id]
+        # The whole stretch in amber along both traces, and the marker's numbers beside it.
+        for side in "pn":
+            band = state.board.collection.all_objects[f"KLS phase stretch {side} {slots['D_P']} 0"]
+            assert len(band.data.polygons) and band.data.materials[0].name == "KLS Phase excursion"
+            assert not band.hide_get() and np.ptp(read_coordinates(band.data)[:, 0]) > 0.04  # the 45 mm between
+        label = state.board.collection.all_objects[f"KLS phase label excursion {slots['D_P']} 0"]
+        excursion = result.excursions[0]
+        assert label.data.body == f"{excursion.peak_ps:+.1f} ps over {excursion.length_nm / 1e6:.1f} mm", label.data.body
+        assert not label.hide_get()
 
         # The pair list in the panel.
         rows = scene.kileido_phase_pairs
@@ -325,6 +340,14 @@ def main():
         assert [(row.key, row.unprofiled, row.route) for row in rows] == [("D_P", True, "NO PROFILE")]
         assert not len(p_trace.data.vertices) and not len(loop.data.vertices)
         assert phase.selection_split() == (set(), set()) and draws(state.board.phase["D_P"])
+        # A dynamic phase finding in the DRC column is the bridge's measurement, not an LLM's word.
+        excursion = {"verdict": "unchecked", "confidence": "high", "message": "|Δt| stays above 1 ps",
+                     "values": {"peak_ps": 2.76, "length_mm": 5.3}}
+        for source, llm in (("phase", False), ("file", True)):
+            box = Layout()
+            findings._draw_detail(box, lambda text: [text], source, excursion)
+            assert ("peak (LLM): 2.76 ps" in box.texts) == llm and ("peak: 2.76 ps" in box.texts) != llm, box.texts
+            assert any("LLM" in line for line in box.texts) == llm, box.texts
 
     finally:
         kileido.unregister()
