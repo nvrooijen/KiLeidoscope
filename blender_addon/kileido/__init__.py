@@ -1692,11 +1692,6 @@ def _scene_properties():
             description="Mark where |Δt| stays above the tolerance for at least this many mm; the marker sits "
                         "where that stretch starts",
             update=phase.send_settings),
-        "kileido_phase_rise_ps": FloatProperty(
-            name="Edge rise time", default=phase.DEFAULTS["rise_ps"], min=1.0, soft_max=200.0, precision=0,
-            description="The signal's 10–90 % rise time. Skew turns into common mode, which falls behind the edge "
-                        "on outer layers; how fast the skew then fades from the two traces depends on this",
-            update=phase.send_settings),
         "kileido_phase_follow_series": BoolProperty(
             name="Follow series parts", default=phase.DEFAULTS["follow_series"],
             description="Measure through 2-pad parts in series on both sides (AC-coupling caps) as one "

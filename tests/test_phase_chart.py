@@ -31,7 +31,7 @@ def test_the_chart_draws_every_pair_on_one_scale_with_its_excursions_and_carries
                    excursions=[{"at_mm": 0.5, "length_mm": 8.5, "peak_ps": 2.8}], skew_ps=0.0, flipped=True)
     text = chart.svg([flat, bumped], 1.0, 5.0, "demo.kicad_pcb")
     assert text.startswith("<svg") and text.rstrip().endswith("</svg>")
-    assert text.count("<polyline") == 4  # per pair: the Δt line and, dashed, Δt as read on the traces
+    assert text.count("<polyline") == 2  # per pair: the Δt line
     assert text.count('fill="#f5a623"') == 1  # the excursion, shaded once
     assert "+2.8 ps" in text and "skew +0.0 ps" in text and "(flipped)" in text
     assert "HDMI_D0_P/N" in text and "demo.kicad_pcb" in text
@@ -48,40 +48,27 @@ def test_the_csv_has_one_row_per_sample_and_quotes_names_with_commas():
     pair = _pair("TX_P/N → TX_C_P/N", [0.0, -0.4, -0.8])
     pair["start"] = "U1.A1/A2, via C1"
     rows = list(csv_module.reader(io.StringIO(chart.csv([pair]))))
-    assert rows[0] == ["pair", "start", "end", "along_mm", "dt_ps", "dt_read_ps", "dt_lo_ps", "dt_hi_ps"]
-    assert rows[1] == ["TX_P/N → TX_C_P/N", "U1.A1/A2, via C1", "J1.1/2", "0.0000", "0.0000", "0.0000", "0.0000", "0.0000"]
-    # No read values or limits given: Δt itself.
-    assert rows[3][3:] == ["1.0000", "-0.8000", "-0.8000", "-0.8000", "-0.8000"] and len(rows) == 4
+    assert rows[0] == ["pair", "start", "end", "along_mm", "dt_ps"]
+    assert rows[1] == ["TX_P/N → TX_C_P/N", "U1.A1/A2, via C1", "J1.1/2", "0.0000", "0.0000"]
+    assert rows[3][3:] == ["1.0000", "-0.8000"] and len(rows) == 4
 
 
-def test_the_model_limits_are_shaded_along_the_line_named_once_and_carried_in_the_numbers():
-    """A coupled turn makes +5 ps, known to be up to 9 % more: the band's shape runs
-    from Δt to Δt + 0.45 ps, the y scale takes the band in, the legend names it once with
-    the bridge's note, and the SVG's metadata and the CSV carry both edges."""
+def test_the_pairs_notes_go_into_the_numbers_not_the_drawing():
+    """Where KiCad's one delay per layer is known to be off, the bridge sends notes: the
+    SVG's metadata carries them; the plot shows Δt as KiCad's number gives it."""
     chart = _chart()
-    note = "known model error at tight features (one full-wave study, 2026-10-16)"
-    dt = [0.0, 2.5, 5.0, 5.0, 5.0]
-    turned = _pair("HDMI_D0_P/N", dt, dt_lo_ps=dt, dt_hi_ps=[0.0, 2.725, 5.45, 5.45, 5.45], band_note=note)
-    plain = _pair("USB_D±", [0.0] * 5)
-    text = chart.svg([turned, plain], 1.0, 5.0)
-    drawn = re.sub(r"<metadata>.*?</metadata>", "", text, flags=re.S)
-    assert drawn.count("<polygon") == 1 and drawn.count(note) == 1  # the band once, its name once in the legend
-    legend = re.sub(r"</text>\s*<text[^>]*>", " ", drawn)  # the key's lines, wrapped to the chart's width, joined
-    assert "10–20 % less" in legend and "not corrected" in legend and "±3 %" not in legend
-    assert f">Shaded: {note}.</text>" in drawn  # the name whole, on a line of its own
-    assert max(len(line) for line in re.findall(r"<text[^>]*>([^<]*)</text>", drawn[drawn.index("Shaded:"):])) < 90
-    assert chart.y_limit([turned], 1.0) == 10.0  # 5.45 ps × 1.05 is past 5: the next step
+    note = {"kind": "coupled turn", "at_mm": 0.5, "length_mm": 1.0, "made_ps": 5.0, "add_ps": 0.425,
+            "text": "Coupled turn: +5.0 ps of Δt", "ids": ["t1"]}
+    turned = _pair("HDMI_D0_P/N", [0.0, 2.5, 5.0, 5.0, 5.0], notes=[note])
+    text = chart.svg([turned], 1.0, 5.0)
+    assert text.count("<polyline") == 1 and "<polygon" not in text
     data = json.loads(re.search(r"<metadata><!\[CDATA\[(.*?)\]\]></metadata>", text, re.S).group(1))
-    assert data["band_note"] == note
-    assert data["pairs"][0]["dt_lo_ps"] == dt and data["pairs"][0]["dt_hi_ps"][2] == 5.45
-    assert data["pairs"][1]["dt_lo_ps"] == data["pairs"][1]["dt_hi_ps"] == [0.0] * 5  # none sent: Δt itself
-    rows = list(csv_module.reader(io.StringIO(chart.csv([turned]))))
-    assert rows[3][4:] == ["5.0000", "5.0000", "5.0000", "5.4500"]
-    assert "<polygon" not in chart.svg([plain], 1.0, 5.0) and note not in chart.svg([plain], 1.0, 5.0)
+    assert data["pairs"][0]["notes"] == [{"kind": "coupled turn", "at_mm": 0.5, "length_mm": 1.0, "made_ps": 5.0,
+                                          "add_ps": 0.425, "text": "Coupled turn: +5.0 ps of Δt"}]
 
 
 def test_an_empty_chart_still_draws():
     chart = _chart()
     text = chart.svg([], 1.0, 5.0)
     assert "<svg" in text and "No measured pair" in text
-    assert chart.csv([]) == "pair,start,end,along_mm,dt_ps,dt_read_ps,dt_lo_ps,dt_hi_ps\n"
+    assert chart.csv([]) == "pair,start,end,along_mm,dt_ps\n"

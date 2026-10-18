@@ -73,7 +73,7 @@ LEAD, DELAY = "kls_lead", "kls_t"  # per point: ps ahead of the partner; ps from
 SELECTED = "kls_selected"  # per trace copy (an object property the material reads): 1 for the selected pair
 _hidden = (set(), set())  # the last selection_split
 TICK_S = 1 / 30
-DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True, "rise_ps": 25.0}
+DEFAULTS = {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True}
 _syncing = False  # the pair list is being rebuilt: its index changes are not clicks
 _clock_start = None  # time.monotonic() when the pulses were launched
 
@@ -139,7 +139,7 @@ def redraw_all():
 # --- Materials ----------------------------------------------------------------------------
 
 def _enabled():
-    """Dynamic phase draws only with the High speed column open and its section on."""
+    """Dynamic phase draws only with the Diff pairs column open and switched on."""
     scene = bpy.context.scene
     return (getattr(scene, "kileido_column", "NONE") == "HIGH_SPEED"
             and bool(getattr(scene, "kileido_phase_enabled", True)))
@@ -848,7 +848,7 @@ def settings():
     return {"tolerance_ps": float(scene.kileido_phase_tolerance_ps),
             "min_length_mm": float(scene.kileido_phase_min_mm),
             "follow_series": bool(scene.kileido_phase_follow_series),
-            "flipped": sorted(flipped()), "rise_ps": float(scene.kileido_phase_rise_ps)}
+            "flipped": sorted(flipped())}
 
 
 def _same_settings(reported):
@@ -856,7 +856,6 @@ def _same_settings(reported):
     try:
         return (abs(float(reported.get("tolerance_ps", -1)) - wanted["tolerance_ps"]) < 1e-6 and
                 abs(float(reported.get("min_length_mm", -1)) - wanted["min_length_mm"]) < 1e-6 and
-                abs(float(reported.get("rise_ps", -1)) - wanted["rise_ps"]) < 1e-6 and
                 bool(reported.get("follow_series")) == wanted["follow_series"] and
                 sorted(reported.get("flipped", ())) == wanted["flipped"])
     except (TypeError, ValueError):
@@ -968,16 +967,11 @@ def measured_pairs():
         pair = {"name": data.get("name", key), "start": data["start"]["label"], "end": data["end"]["label"],
                 "along_mm": [float(value) / 1e6 for value in data["along"]],
                 "dt_ps": [float(value) for value in data["dt"]],
-                "dt_read_ps": [float(value) for value in data.get("dt_read", data["dt"])],
                 "excursions": list(data.get("excursions", ())), "skew_ps": float(data.get("skew_ps", 0.0)),
                     "max_ps": float(data.get("max_ps", 0.0)), "delay_p_ps": data.get("delay_p_ps"),
                     "delay_n_ps": data.get("delay_n_ps"), "length_p_mm": data.get("length_p_mm"),
                 "length_n_mm": data.get("length_n_mm"), "sources": list(data.get("sources", ())),
-                "flipped": bool(data.get("flipped", False))}
-        if "band_lo" in data and "band_hi" in data:  # the model limits: the bridge sends them round Δt
-            pair["dt_lo_ps"] = [float(dt) + float(lo) for dt, lo in zip(data["dt"], data["band_lo"])]
-            pair["dt_hi_ps"] = [float(dt) + float(hi) for dt, hi in zip(data["dt"], data["band_hi"])]
-            pair["band_note"] = str(data.get("band_note", ""))
+                "flipped": bool(data.get("flipped", False)), "notes": list(data.get("notes", ()))}
         out.append(pair)
     return out
 
@@ -991,7 +985,9 @@ def export_path():
 
 
 def sources_warning():
-    """Which delay source the pairs use, when it is only a guess."""
+    """The delay source the pairs use when it is not KiCad's tuning profile: the FR-4 guess
+    first, else the stackup estimate; "" when every pair has a profile."""
     used = {source for data in board.phase.values() for source in data.get("sources", ())}
-    return next((source for source in sorted(used) if source.startswith("FR-4")), "")
+    return next((source for source in sorted(used) if source.startswith("FR-4")), "") or next(
+        (source for source in sorted(used) if not source.startswith("tuning profile")), "")
 

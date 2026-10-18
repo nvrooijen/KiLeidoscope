@@ -205,7 +205,6 @@ def _draw_dynamic_phase(layout, context, wrap, swatch, width):
     column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
     column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
     column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
-    column.prop(scene, "kileido_phase_rise_ps", text="Edge rise time (ps)")
     pulses = layout.column(align=True)
     pulses.active = scene.kileido_phase_pulses
     pulses.row().prop(scene, "kileido_phase_pulse_clock", expand=True)
@@ -221,8 +220,9 @@ def _draw_dynamic_phase(layout, context, wrap, swatch, width):
     info = layout.column(align=True)
     guess = phase.sources_warning()
     if guess:
-        for index, line in enumerate(wrap(context, f"Delay: {guess}, no tuning profile or "
-                                                   "dielectric constant found")):
+        text = (f"Delay: {guess}, no tuning profile or dielectric constant found" if guess.startswith("FR-4")
+                else f"Delay: {guess} where a pair has no KiCad tuning profile")
+        for index, line in enumerate(wrap(context, text)):
             info.label(text=line, icon="ERROR" if index == 0 else "BLANK1")
     pending = board.phase_list.get("pending", 0)
     if pending:
@@ -251,6 +251,7 @@ def _draw_dynamic_phase(layout, context, wrap, swatch, width):
 
 BAR_TILES = 48
 ICON_PX = 16  # unscaled: the width Blender draws a label's icon at, however narrow the label
+NOTE_MARGIN_PX = 80  # unscaled: an icon, a box's margins and a note's select button
 
 
 def _draw_legend(column, context, wrap, swatch, width):
@@ -318,11 +319,6 @@ def _draw_pair(context, box, data, wrap):
     lines = [f"Nets: {', '.join(data['p_nets'] + data['n_nets'])}"]
     if data.get("parts"):
         lines.append("Through " + ", ".join(data["parts"]))
-    kinds = data.get("lines") or ()
-    total = sum(float(line.get("mm", 0.0)) for line in kinds) or 1.0
-    if kinds:
-        lines.append("Line: " + ", ".join(f"{line['kind']} {line['layer']} {100 * float(line['mm']) / total:.0f} %"
-                                          for line in kinds if float(line["mm"]) / total >= 0.005))
     lines.append("Delay: " + "; ".join(data.get("sources", ())))
     for text in lines:
         for line in wrap(context, text):
@@ -330,8 +326,6 @@ def _draw_pair(context, box, data, wrap):
     for excursion in data.get("excursions", ()):
         line = box.row(align=True)
         text = f"{excursion['at_mm']:.1f} mm: {_ps(excursion['peak_ps'], True)} ps over {excursion['length_mm']:.1f} mm"
-        if "mode_lag_ps" in excursion:  # how far the common mode falls behind over the stretch
-            text += f", mode lag {_ps(excursion['mode_lag_ps'])} ps"
         line.label(text=text, icon="ERROR")
         line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
                       icon="RESTRICT_SELECT_OFF").ids = "\n".join(excursion.get("ids") or [excursion["id"]])
@@ -349,6 +343,14 @@ def _draw_pair(context, box, data, wrap):
     for warning in data.get("warnings", ()):
         if " loop: " not in warning:  # each loop has its own line above
             box.label(text=warning, icon="INFO")
+    for note in data.get("notes", ()):  # where KiCad's one delay per layer is known to be off
+        line = box.row(align=True)
+        text = line.column(align=True)
+        for index, part in enumerate(wrap(context, f"{note['at_mm']:.1f} mm: {note['text']}", NOTE_MARGIN_PX)):
+            text.label(text=part, icon="INFO" if index == 0 else "BLANK1")
+        if note.get("ids"):
+            line.operator(KILEIDO_OT_phase_select.bl_idname, text="",
+                          icon="RESTRICT_SELECT_OFF").ids = "\n".join(note["ids"])
 
 
 CLASSES = (KILEIDO_PG_phase_pair, KILEIDO_UL_phase_pairs, KILEIDO_OT_phase_flip, KILEIDO_OT_phase_flip_selected,

@@ -306,8 +306,9 @@ def test_dynamic_phase_from_the_drc_column_lists_its_excursions(tmp_path, monkey
         assert payload["phase"] == {"state": "idle", "error": ""}
         source = payload["sources"]["phase"]
         assert source["tool"].startswith("Dynamic phase; 1 pair measured")
-        (row,) = source["findings"]
+        row, *notes = source["findings"]  # the excursion, then a note on each tight meander (info)
         assert row["check"] == "phase.excursion" and row["draws"][0]["ids"] and row["draws"][1]["tool"] == "label"
+        assert [note["check"] for note in notes] == ["phase.note", "phase.note"]
         written = json.loads((project / ".kileidoscope" / "board.phase.kls-findings.json").read_text(encoding="utf-8"))
         assert written["findings"][0]["check"] == "phase.excursion"
         assert payload["sources"]["drc"]["status"] == "none"  # KiCad's DRC was not run

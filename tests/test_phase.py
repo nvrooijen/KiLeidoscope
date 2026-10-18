@@ -19,10 +19,10 @@ def only_pair(snapshot, **settings):
     return results[0]
 
 
-def unit_delay(snapshot, layer="F.Cu", gap=MM - boards.WIDTH):
-    """The pair's unit delay: coupled at the boards' 1 mm pitch (None: a lone trace)."""
+def unit_delay(snapshot, layer="F.Cu"):
+    """The pair's unit delay: one number per layer, as KiCad's."""
     heights = protocol.layer_heights_nm(snapshot)[0]
-    return delays.StackupDelays(snapshot.stackup.layers, heights).track("D_P", layer, boards.WIDTH, gap).ps_per_mm
+    return delays.StackupDelays(snapshot.stackup.layers, heights).track("D_P", layer, boards.WIDTH).ps_per_mm
 
 
 def test_matched_pair_stays_in_phase():
@@ -49,10 +49,9 @@ def test_compensation_far_from_the_mismatch_is_an_excursion_despite_zero_skew():
     out of phase over the 45 mm between."""
     snapshot = boards.compensated_far()
     result = only_pair(snapshot)
-    assert abs(result.skew_ps) < 1e-3  # the gap, and so the coupling, is sampled every 50 um
+    assert abs(result.skew_ps) < 1e-9
     plateau = 0.5 * unit_delay(snapshot)  # ps: the detour's extra length
     middle = np.abs(result.centre_nm[:, 0] - 25 * MM) < 5 * MM
-    # The detours run away from the partner, less coupled and so a little slower (0.4 %).
     assert np.allclose(result.dt_ps[middle], -plateau, atol=0.02)  # walking from J1: N longer so far
     assert len(result.excursions) == 1
     excursion = result.excursions[0]
@@ -84,7 +83,7 @@ def test_each_side_carries_its_delay_and_how_far_it_is_ahead():
 def test_compensation_close_to_the_mismatch_is_not_an_excursion():
     snapshot = boards.compensated_locally()
     result = only_pair(snapshot)
-    assert abs(result.skew_ps) < 1e-3  # the gap, and so the coupling, is sampled every 50 um
+    assert abs(result.skew_ps) < 1e-9
     assert result.max_abs_ps > 1.0  # out of phase between the detours...
     assert result.excursions == ()  # ...but for only ~2 mm, under the 5 mm default
     assert len(only_pair(snapshot, min_length_nm=1 * MM).excursions) == 1  # the user's distance decides
@@ -156,17 +155,7 @@ def test_pads_that_connect_twice_still_end_or_carry_the_route():
     assert [branch.terminal.label for branch in result.n.branches] == ["D1.3"]
 
 
-def test_the_pair_says_what_kind_of_line_it_is():
-    lines = {(line["layer"], line["kind"]): line["mm"] for line in only_pair(boards.layer_change()).lines}
-    # 1 mm pitch over 0.2 mm of dielectric: 0.85 mm apart edge to edge, beyond 3 dielectric
-    # heights, so each side counts as a lone microstrip; F.Cu to x = 20, B.Cu on.
-    assert set(lines) == {("F.Cu", "microstrip"), ("B.Cu", "microstrip")}
-    assert lines[("F.Cu", "microstrip")] == pytest.approx(20, abs=0.5)
-    grounded = {line["kind"] for line in only_pair(boards.grounded(0.1)).lines}
-    assert grounded == {"grounded coplanar", "microstrip"}  # 40 of 50 mm beside the pour
-    # Between two F.Cu stretches beside a pour, 10 mm on B.Cu with no pour: not a pour borrowed from either end.
-    dive = {(line["layer"], line["kind"]): line["mm"] for line in only_pair(boards.grounded_dive(0.1)).lines}
-    assert dive[("B.Cu", "microstrip")] == pytest.approx(10, abs=0.5) and ("B.Cu", "grounded coplanar") not in dive
+def test_the_pair_lists_every_item_on_its_nets():
     ids = set(only_pair(boards.esd_stub()).net_ids)
     assert {"D1.1", "D1.2"} <= ids  # the stubs' pads too: Blender highlights them white
 
@@ -196,20 +185,22 @@ def test_arcs_count_their_true_length():
     assert points[0] == (0, 0) and points[-1] == (2 * MM, 0)
 
 
-# --- Model limits: the band round Δt --------------------------------------------------------
+# --- Notes: where one delay per layer is known to be off ----------------------------------
 
-def coupled_turn(back: bool = False):
+def coupled_turn(back: bool = False, layer: str = "F.Cu"):
     """A tightly coupled pair (0.1 mm gap on 0.2 mm of laminate; P at y = 0, N at 0.25)
     running +x, then round a 90° turn towards +y with P outside (2 mm centreline radius)
     and on to y = 6; with `back`, a second turn the other way (an S) and on to x = 24."""
-    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.25)), pad=200_000)
-    board.path("D_P", (0, 0), (10, 0)).turn("D_P", (10, 2), 2.0, -90, 0).path("D_P", (12, 2), (12, 6))
-    board.path("D_N", (0, 0.25), (10, 0.25)).turn("D_N", (10, 2), 1.75, -90, 0).path("D_N", (11.75, 2), (11.75, 6))
+    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.25)), pad=200_000, layer=layer)
+    board.path("D_P", (0, 0), (10, 0), layer=layer).turn("D_P", (10, 2), 2.0, -90, 0, layer=layer)
+    board.path("D_P", (12, 2), (12, 6), layer=layer)
+    board.path("D_N", (0, 0.25), (10, 0.25), layer=layer).turn("D_N", (10, 2), 1.75, -90, 0, layer=layer)
+    board.path("D_N", (11.75, 2), (11.75, 6), layer=layer)
     if not back:
-        return board.part("J1", (1, "D_P", (12, 6)), (2, "D_N", (11.75, 6)), pad=200_000).snapshot()
-    board.turn("D_P", (14, 6), 2.0, 180, 90).path("D_P", (14, 8), (24, 8))
-    board.turn("D_N", (14, 6), 2.25, 180, 90).path("D_N", (14, 8.25), (24, 8.25))
-    return board.part("J1", (1, "D_P", (24, 8)), (2, "D_N", (24, 8.25)), pad=200_000).snapshot()
+        return board.part("J1", (1, "D_P", (12, 6)), (2, "D_N", (11.75, 6)), pad=200_000, layer=layer).snapshot()
+    board.turn("D_P", (14, 6), 2.0, 180, 90, layer=layer).path("D_P", (14, 8), (24, 8), layer=layer)
+    board.turn("D_N", (14, 6), 2.25, 180, 90, layer=layer).path("D_N", (14, 8.25), (24, 8.25), layer=layer)
+    return board.part("J1", (1, "D_P", (24, 8)), (2, "D_N", (24, 8.25)), pad=200_000, layer=layer).snapshot()
 
 
 def rounded_bump(radius_mm: float):
@@ -223,110 +214,125 @@ def rounded_bump(radius_mm: float):
     return board.path("D_N", (11.2 + 2 * r, 1), (50, 1)).snapshot()
 
 
-def from_u1(snapshot):
+def from_u1(snapshot, model_=None):
     """The pair walked from U1 (J1 sorts first, so that is the flipped direction)."""
-    return only_pair(snapshot, flipped=frozenset({"D_P"}))
+    results, warnings = phase.analyze_board(snapshot, model_, phase.Settings(flipped=frozenset({"D_P"})))
+    assert len(results) == 1 and not warnings
+    return results[0]
 
 
-def test_a_straight_pair_has_no_model_limits():
-    result = only_pair(boards.matched())
-    assert result.band_ps.shape == (len(result.dt_ps), 2) and not result.band_ps.any()
+def test_a_straight_pair_has_no_notes():
+    assert only_pair(boards.matched()).notes == ()
 
 
-def bend_model(snapshot, gap=100_000):
-    heights = protocol.layer_heights_nm(snapshot)[0]
-    return delays.StackupDelays(snapshot.stackup.layers, heights).bend_excess("F.Cu", boards.WIDTH, gap)
-
-
-def test_a_coupled_turn_makes_1_plus_epsilon_times_its_length_difference_and_a_turn_back_takes_it_away():
-    """A coupled pair turning makes (1 + ε) times the skew of its length difference, ε from
-    the two modes and their impedance ratio (delays.coupled_bend_excess). The 90° turn with
-    P outside reads that; the straight before it nothing, halfway round half; an S (the same
-    turn back) takes all of it back. P and N each carry half the correction, so their
-    delays still differ by Δt. No band: a bend is corrected, not shaded."""
-    plain = 0.25 * math.pi / 2 * unit_delay(coupled_turn(), gap=100_000)  # the length rule
-    epsilon = bend_model(coupled_turn())
-    assert epsilon == pytest.approx(0.40, abs=0.01)  # this tight pair: Z_even/Z_odd 1.69 (model only)
-    result = from_u1(coupled_turn())
+def test_a_coupled_turn_reads_its_length_difference_and_a_note_adds_the_full_wave_share():
+    """KiCad's number counts a coupled turn by its length difference; a full-wave check found
+    such a turn makes about 8.5 % more. Δt reads the length rule (the straight before it
+    nothing, halfway round half) and a note at the turn says what it made and what to add.
+    An S, the same turn back, takes the skew back and has two notes that cancel."""
+    plain = 0.25 * math.pi / 2 * unit_delay(coupled_turn())  # the length rule
+    snapshot = coupled_turn()
+    result = from_u1(snapshot)
     assert result.p.start.label == "U1.1"
-    assert result.dt_ps[-1] == pytest.approx((1 + epsilon) * plain, rel=0.02)
+    assert result.dt_ps[-1] == pytest.approx(plain, rel=0.02)
     assert result.skew_ps == pytest.approx(result.dt_ps[-1], abs=0.02)
     assert np.allclose(result.delays_ps[:, 0] - result.delays_ps[:, 1], result.dt_ps)
     assert np.abs(result.dt_ps[result.along_nm < 9 * MM]).max() < 1e-9  # the straight before it: nothing
     halfway = int(np.argmin(np.linalg.norm(result.centre_nm[:, :2] - np.array((11.326, 0.674)) * MM, axis=1)))
-    assert result.dt_ps[halfway] == pytest.approx((1 + epsilon) * plain / 2, rel=0.15)
-    assert not result.band_ps.any()
+    assert result.dt_ps[halfway] == pytest.approx(plain / 2, rel=0.15)
+    (note,) = result.notes
+    assert note.kind == "coupled turn" and 9 * MM < note.at_nm < 11 * MM and note.length_nm < 4 * MM
+    assert note.made_ps == pytest.approx(plain, rel=0.02) and note.add_ps == pytest.approx(phase.TURN_SHARE * note.made_ps)
+    assert note.text == f"Coupled turn: {note.made_ps:+.1f} ps of Δt, about 8.5 % more in a full-wave check: " \
+                        f"add {note.add_ps:+.1f} ps"
+    arcs = {arc.id for arc in snapshot.arcs}
+    assert arcs <= set(note.item_ids)  # both sides' arcs: select-in-KiCad lights the turn
     s_curve = from_u1(coupled_turn(back=True))
     middle = int(np.argmin(np.abs(s_curve.centre_nm[:, 1] - 4 * MM)))  # on the leg between the turns
-    assert s_curve.dt_ps[middle] == pytest.approx((1 + epsilon) * plain, rel=0.02)
+    assert s_curve.dt_ps[middle] == pytest.approx(plain, rel=0.02)
     assert s_curve.dt_ps[-1] == pytest.approx(0.0, abs=0.05)
+    there, back = s_curve.notes
+    assert there.add_ps == pytest.approx(-back.add_ps, rel=0.02) and there.add_ps > 0
 
 
-def test_a_bump_on_one_side_after_the_turn_leaves_the_turns_correction_alone():
-    """N bumps away from P 1 mm after a tight turn (sharp corners, a tight meander). P runs
-    straight past it: P's stretch beside the bump is not a meander reaching back over the
-    turn's short chords, so the turn keeps its (1 + ε); the bump itself gets the meander band."""
+def test_a_coupled_turn_on_stripline_gets_no_note():
+    """Inside the board the two modes run alike; turns were checked on microstrip only."""
+    assert from_u1(coupled_turn(layer="In1.Cu")).notes == ()
+
+
+def test_a_bump_after_the_turn_has_its_own_note_and_leaves_the_turns_alone():
+    """N bumps away from P 1 mm after a tight turn (sharp corners: a tight meander). P runs
+    straight past it: P's stretch beside the bump does not reach back over the turn's short
+    chords, so the turn keeps its own note and the bump gets one of its own."""
     board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.25)), pad=200_000)
     board.path("D_P", (0, 0), (10, 0)).turn("D_P", (10, 0.6), 0.6, -90, 0).path("D_P", (10.6, 0.6), (10.6, 8))
     board.path("D_N", (0, 0.25), (10, 0.25)).turn("D_N", (10, 0.6), 0.35, -90, 0)
     board.path("D_N", (10.35, 0.6), (10.35, 1.6), (9.6, 1.6), (9.6, 2.2), (10.35, 2.2), (10.35, 8))
     snapshot = board.part("J1", (1, "D_P", (10.6, 8)), (2, "D_N", (10.35, 8)), pad=200_000).snapshot()
     result = from_u1(snapshot)
-    plain = 0.25 * math.pi / 2 * unit_delay(snapshot, gap=100_000)
-    after_turn = int(np.argmin(np.linalg.norm(result.centre_nm[:, :2] - np.array((10.475, 1.1)) * MM, axis=1)))
-    # Within 4 %: on an arc this tight (0.475 mm, about 3 widths) the steps at its two ends are
-    # only partly counted. Before the meander's reach was kept to its own short pieces, P's
-    # straight beside the bump reached back over the turn's chords and took 10 % off.
-    assert result.dt_ps[after_turn] == pytest.approx((1 + bend_model(snapshot)) * plain, rel=0.04)
-    assert result.band_ps[-1, 1] - result.band_ps[-1, 0] > 0  # the bump's own band
+    plain = 0.25 * math.pi / 2 * unit_delay(snapshot)
+    turn, bump = result.notes
+    # Within 4 %: on an arc this tight (0.475 mm, about 3 widths) the steps at its two ends
+    # are only partly counted.
+    assert turn.kind == "coupled turn" and turn.made_ps == pytest.approx(plain, rel=0.04)
+    assert bump.kind == "tight meander" and bump.at_nm > turn.at_nm + turn.length_nm
+    assert bump.made_ps < -5 and bump.add_ps == pytest.approx(phase.TIGHT_SHARE * bump.made_ps)
 
 
-def test_the_bend_excess_tends_to_nothing_as_the_pair_parts_and_is_not_applied_inside():
-    """Loose coupling gives the length rule back; stripline is left to it (not checked there)."""
-    snapshot = coupled_turn()
-    assert bend_model(snapshot, 100_000) > bend_model(snapshot, 300_000) > bend_model(snapshot, 1_000_000) > 0
-    assert bend_model(snapshot, 3_000_000) < 0.005
-    heights = protocol.layer_heights_nm(snapshot)[0]
-    assert delays.StackupDelays(snapshot.stackup.layers, heights).bend_excess("In1.Cu", boards.WIDTH, 100_000) == 0.0
-    assert delays.StackupDelays(snapshot.stackup.layers, heights).bend_excess("F.Cu", boards.WIDTH, None) == 0.0
-
-
-def test_a_tight_meander_of_one_side_may_make_10_to_20_percent_less_skew():
+def test_each_tight_meander_of_a_far_compensated_pair_has_a_note():
     """The study's largest error: a tight meander (sharp corners, legs closer than three
-    widths) makes 17–20 % less skew than its extra length. Walked from J1, N's bump at
-    x = 47 comes first and makes −Δt; the band shows the known error, 10–20 % less; P's
-    bump at x = 2 takes both away."""
-    result = only_pair(boards.compensated_far())
+    widths) makes about 17 % less skew than its extra length. Walked from J1, N's bump at
+    x = 47 comes first and makes −Δt; P's bump at x = 2 takes it back. A note on each: the
+    excursion between them is about 17 % smaller than Δt shows, and at the end they cancel."""
+    snapshot = boards.compensated_far()
+    result = only_pair(snapshot)
     plateau = (result.along_nm > 5 * MM) & (result.along_nm < 45 * MM)
     made = float(np.median(result.dt_ps[plateau]))
     assert made < -2.0
-    low, high = result.band_ps[plateau].T
-    assert np.median(low) == pytest.approx(-0.1 * made, rel=0.1) and np.median(high) == pytest.approx(-0.2 * made, rel=0.1)
-    assert np.abs(result.band_ps[-1]).max() < 0.1 * abs(made)  # the compensating bump: the same error back
+    first, second = result.notes
+    assert first.kind == second.kind == "tight meander" and first.at_nm < 5 * MM and second.at_nm > 45 * MM
+    assert first.made_ps == pytest.approx(made, rel=0.02) and second.made_ps == pytest.approx(-made, rel=0.02)
+    assert first.add_ps == pytest.approx(phase.TIGHT_SHARE * made) and first.add_ps > 0
+    n_bump = {track.id for track in snapshot.tracks if track.net == "D_N" and track.start[0] > 46 * MM}
+    assert n_bump & set(first.item_ids)
 
 
 @pytest.mark.parametrize("radius_mm, tight", [(0.6, False), (0.3, True)])
-def test_a_looser_meander_gets_no_band_and_a_tight_arc_the_full_one(radius_mm, tight):
-    """Arcs of 4 widths and legs 7 widths apart: nothing was measured there, so no band.
-    Arcs of 2 widths with the same legs: tight, −10 to −20 %."""
+def test_a_looser_meander_gets_no_note_and_a_tight_arc_one(radius_mm, tight):
+    """Arcs of 4 widths and legs 7 widths apart: not tight, and without a tuning profile its
+    lone copper gets no note either (the stackup estimate is the lone trace's). Arcs of 2
+    widths with the same legs: tight."""
     result = from_u1(rounded_bump(radius_mm))
-    after = result.along_nm > 20 * MM
-    made = float(np.median(result.dt_ps[after]))
+    made = float(np.median(result.dt_ps[result.along_nm > 20 * MM]))
     assert made < -10.0  # N is longer: Δt < 0
-    low, high = np.median(result.band_ps[after], axis=0)
     if tight:
-        assert low == pytest.approx(0.1 * abs(made), rel=0.1) and high == pytest.approx(0.2 * abs(made), rel=0.1)
+        (note,) = result.notes
+        assert note.kind == "tight meander" and note.made_ps == pytest.approx(made, rel=0.02)
     else:
-        assert not result.band_ps.any()
-    assert not result.band_ps[result.along_nm < 9 * MM].any()
+        assert result.notes == ()
 
 
-def test_the_frame_carries_the_band_round_dt_and_what_it_means():
-    result = only_pair(coupled_turn())
+def test_with_a_tuning_profile_a_bump_away_from_the_partner_gets_a_note():
+    """KiCad's number is the coupled pair's; a lone trace runs about 3 % slower (openEMS on a
+    straight lone trace). With a profile, the looser bump's Δt gets that note."""
+    snapshot = rounded_bump(0.6)
+    heights = protocol.layer_heights_nm(snapshot)[0]
+    model_ = delays.StackupDelays(snapshot.stackup.layers, heights, {"Fast": delays.TuningProfile("Fast", {"F.Cu": 6.0})},
+                                  {"D_P": "Fast", "D_N": "Fast"})
+    result = from_u1(snapshot, model_)
+    (note,) = result.notes
+    assert note.kind == "apart" and note.made_ps < -10 and note.add_ps == pytest.approx(phase.APART_SHARE * note.made_ps)
+    assert note.made_ps == pytest.approx(result.dt_ps[-1], rel=0.02)  # the bump made all of the skew
+
+
+def test_the_frame_carries_the_notes_and_only_dt_along_the_pair():
+    result = from_u1(coupled_turn())
     header, arrays = protocol.FrameDecoder().feed(phase.pair_frame(result, 1))[0]
-    assert header["band_note"] == phase.BAND_NOTE == "known model error at tight features (one full-wave study, 2026-10-16)"
-    assert arrays["band_lo"].shape == arrays["band_hi"].shape == arrays["dt"].shape
-    assert arrays["band_hi"][-1] == pytest.approx(result.band_ps[-1, 1], abs=1e-3)
+    (note,) = header["notes"]
+    assert note["kind"] == "coupled turn" and note["add_ps"] == pytest.approx(result.notes[0].add_ps)
+    assert note["at_mm"] == pytest.approx(result.notes[0].at_nm / 1e6) and note["ids"]
+    assert {"along", "dt"} <= set(arrays) and not {"dt_read", "band_lo", "band_hi"} & set(arrays)
+    assert "lines" not in header and "band_note" not in header
 
 
 # --- Delay sources ------------------------------------------------------------------------
@@ -354,11 +360,9 @@ def test_the_netclass_tuning_profile_sets_the_delay_first():
     snapshot = boards.layer_change()
     heights = protocol.layer_heights_nm(snapshot)[0]
     model_ = delays.StackupDelays(snapshot.stackup.layers, heights, profiles, {"D_P": "Fast", "D_N": "Fast"})
-    assert profiles["Fast"].geometry == {"F.Cu": (150_000, 150_000)}  # the width and gap KiCad computed it for
-    at_gap = model_.track("D_P", "F.Cu", 150_000, 150_000)
-    assert at_gap == delays.UnitDelay(6.0, "tuning profile 'Fast'")  # the pair at the profile's own gap: KiCad's number
-    alone = model_.track("D_P", "F.Cu", boards.WIDTH)
-    assert alone.source == at_gap.source and 6.0 < alone.ps_per_mm < 6.6  # a lone stretch: slower, by the estimate's ratio
+    profiled = model_.track("D_P", "F.Cu", 150_000)
+    assert profiled == delays.UnitDelay(6.0, "tuning profile 'Fast'")  # KiCad's number
+    assert model_.track("D_P", "F.Cu", boards.WIDTH) == profiled  # for every track of the net, as KiCad charges it
     assert model_.track("D_P", "B.Cu", boards.WIDTH).source == delays.STACKUP  # no entry for B.Cu
     assert model_.barrel("D_P", "F.Cu", "B.Cu", ("F.Cu", "B.Cu"), 1e6) == (12.5, "tuning profile 'Fast'")
     assert model_.barrel("D_P", "F.Cu", "In1.Cu", ("F.Cu", "B.Cu"), 0.2e6)[0] == pytest.approx(1.6)
@@ -366,40 +370,22 @@ def test_the_netclass_tuning_profile_sets_the_delay_first():
     assert result.sources == (delays.STACKUP, "tuning profile 'Fast'")
 
 
-def test_a_profiles_number_is_the_pairs_at_its_own_gap_and_scales_away_from_it():
-    """KiCad charges a profile's one delay to every track, but computed it for the pair at
-    the entry's width and gap: so that is where it holds exactly, and a stretch where P and
-    N part is scaled by the estimate's ratio, as the single-ended tuning KiCad's docs send
-    you to for uncoupled stretches would be."""
+def test_a_profiles_number_counts_every_mm_as_kicad_does():
+    """A pair with a profile reads its number times the length, a bump away from the
+    partner included (the note on it says what that misses); an inner layer has its own."""
     heights = protocol.layer_heights_nm(boards.matched())[0]
-    estimate = delays.StackupDelays(boards.STACKUP.layers, heights)
-    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, 100_000)})
+    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0, "In1.Cu": 7.0})
     model_ = delays.StackupDelays(boards.STACKUP.layers, heights, {"Fast": profile}, {"D_P": "Fast", "D_N": "Fast"})
-    anchor = estimate.track("D_P", "F.Cu", boards.WIDTH, 100_000).ps_per_mm
-    for gap in (100_000, 300_000, 2 * MM, None):
-        expected = 6.0 * estimate.track("D_P", "F.Cu", boards.WIDTH, gap).ps_per_mm / anchor
-        assert model_.track("D_P", "F.Cu", boards.WIDTH, gap).ps_per_mm == pytest.approx(expected)
-    assert model_.track("D_P", "F.Cu", boards.WIDTH, 100_000).ps_per_mm == pytest.approx(6.0)
-    assert model_.track("D_P", "F.Cu", boards.WIDTH).ps_per_mm > 6.0 * 1.02  # alone: the lone line's speed
-    single = delays.TuningProfile("SE", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, 0)})  # a single-ended entry
-    model_se = delays.StackupDelays(boards.STACKUP.layers, heights, {"SE": single}, {"D_P": "SE"})
-    assert model_se.track("D_P", "F.Cu", boards.WIDTH, 100_000).ps_per_mm == model_se.track("D_P", "F.Cu", boards.WIDTH).ps_per_mm == 6.0
-    inner = delays.TuningProfile("In", {"In1.Cu": 7.0}, geometry={"In1.Cu": (boards.WIDTH, 100_000)})
-    model_in = delays.StackupDelays(boards.STACKUP.layers, heights, {"In": inner}, {"D_P": "In"})
-    assert model_in.track("D_P", "In1.Cu", boards.WIDTH).ps_per_mm == 7.0  # stripline: coupled or not, the same
+    assert model_.track("D_P", "In1.Cu", boards.WIDTH).ps_per_mm == 7.0
 
-    # On a board: a tight pair at the profile's gap reads the profile's number; a 2 mm bump
-    # away from the partner on P runs slower, so P reads more than its length times 6 ps/mm.
     def pair(*p_points):
         board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.5)))
         board.part("J1", (1, "D_P", (50, 0)), (2, "D_N", (50, 0.5)))
         return board.path("D_P", *p_points).path("D_N", (0, 0.5), (50, 0.5)).snapshot()
-    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, 500_000 - boards.WIDTH)})
-    model_ = delays.StackupDelays(boards.STACKUP.layers, heights, {"Fast": profile}, {"D_P": "Fast", "D_N": "Fast"})
     straight = phase.analyze_board(pair((0, 0), (50, 0)), model_)[0][0]
-    assert straight.delay_p_ps / (straight.p.length_nm / 1e6) == pytest.approx(6.0, rel=0.005)
+    assert straight.delay_p_ps == pytest.approx(6.0 * straight.p.length_nm / 1e6)
     bumped = phase.analyze_board(pair((0, 0), *boards.bump(2, 0, -2.0), (50, 0)), model_)[0][0]
-    assert bumped.delay_p_ps - straight.delay_p_ps > 6.0 * 4.0 * 1.02  # the 4 mm of lone copper: slower than 6 ps/mm
+    assert bumped.delay_p_ps - straight.delay_p_ps == pytest.approx(6.0 * 4.0)  # 4 mm more copper
     assert bumped.sources == ("tuning profile 'Fast'",)
 
 
@@ -412,132 +398,12 @@ def test_without_dielectric_constants_fr4_is_named_as_the_source():
     assert inner.track("D_P", "In1.Cu", 0).ps_per_mm == pytest.approx(delays.PS_PER_MM_VACUUM * math.sqrt(4.2))
 
 
-def test_a_coupled_pair_runs_faster_on_the_outside_and_the_same_inside():
-    heights = protocol.layer_heights_nm(boards.matched())[0]
-    model_ = delays.StackupDelays(boards.STACKUP.layers, heights)
-    alone = model_.track("D_P", "F.Cu", boards.WIDTH).ps_per_mm
-    close, apart = (model_.track("D_P", "F.Cu", boards.WIDTH, gap).ps_per_mm for gap in (100_000, 5 * MM))
-    assert close < apart < alone and apart == pytest.approx(alone, rel=1e-3)  # the odd mode tends to the lone line
-    inner = [model_.track("D_P", "In1.Cu", boards.WIDTH, gap).ps_per_mm for gap in (100_000, None)]
-    assert inner[0] == inner[1]  # stripline: all its field in the dielectric, coupled or not
-
-
-def test_the_even_mode_is_slower_than_the_odd_mode_outside_and_as_fast_inside():
-    """The common mode runs in the pair's even mode, with more of its field in the
-    dielectric than the differential signal's odd mode (Kirschning and Jansen): slower on
-    microstrip, the lone line once the pair is far apart, and on stripline the same εr."""
-    heights = protocol.layer_heights_nm(boards.matched())[0]
-    model_ = delays.StackupDelays(boards.STACKUP.layers, heights)
-    gap, h = MM - boards.WIDTH, 200_000
-    even = delays.microstrip_epsilon_even(4.0, boards.WIDTH, h, gap)
-    odd, alone = delays.microstrip_epsilon(4.0, boards.WIDTH, h, gap), delays.microstrip_epsilon(4.0, boards.WIDTH, h)
-    assert odd < alone < even
-    assert delays.microstrip_epsilon_even(4.0, boards.WIDTH, h, 50 * MM) == pytest.approx(alone, rel=1e-4)  # far apart
-    assert delays.microstrip_epsilon_even(4.0, boards.WIDTH, h, 1) == pytest.approx(
-        delays._single_microstrip(4.0, 2 * boards.WIDTH / h), rel=1e-6)  # touching: one line twice as wide
-    assert delays.microstrip_epsilon_even(4.0, boards.WIDTH, h) == alone  # alone: the lone line, as the odd mode is
-    lag = model_.mode_lag("D_P", "F.Cu", boards.WIDTH, gap)
-    assert lag == pytest.approx(delays.PS_PER_MM_VACUUM * (math.sqrt(even) - math.sqrt(odd))) and 0.1 < lag < 0.2
-    assert model_.mode_lag("D_P", "F.Cu", boards.WIDTH, 100_000) > lag  # a tighter pair: the modes part more
-    assert model_.mode_lag("D_P", "F.Cu", boards.WIDTH) == 0.0  # alone: both modes are the lone line's
-    assert model_.mode_lag("D_P", "In1.Cu", boards.WIDTH, gap) == 0.0  # stripline: the same εr for both
-    # With a tuning profile the lag is in the profile's scale: its number over the estimate's odd mode at the entry's gap.
-    profile = delays.TuningProfile("Fast", {"F.Cu": 6.0}, geometry={"F.Cu": (boards.WIDTH, gap)})
-    scaled = delays.StackupDelays(boards.STACKUP.layers, heights, {"Fast": profile}, {"D_P": "Fast"})
-    assert scaled.mode_lag("D_P", "F.Cu", boards.WIDTH, gap) == pytest.approx(
-        lag * 6.0 / (delays.PS_PER_MM_VACUUM * math.sqrt(odd)))
-    assert scaled.mode_lag("D_P", "In1.Cu", boards.WIDTH, gap) == 0.0
-
-
-def test_an_excursion_carries_how_far_the_common_mode_falls_behind_over_it():
-    """Skew made at a bend becomes common mode, which runs in the even mode: slower than the
-    differential edge on microstrip. A compensation far away meets a common-mode pulse that
-    has fallen behind by the stretch's mode lag, and cancels it only while that is small
-    against the rise time (seen in the openEMS run of the common-mode demo, 2026-10-16)."""
-    heights = protocol.layer_heights_nm(boards.matched())[0]
-    per_mm = delays.StackupDelays(boards.STACKUP.layers, heights).mode_lag("D_P", "F.Cu", boards.WIDTH, MM - boards.WIDTH)
-    far = only_pair(boards.compensated_far())
-    [excursion] = far.excursions
-    assert excursion.mode_lag_ps == pytest.approx(per_mm * excursion.length_nm / 1e6, rel=0.03)  # proportional to its length
-    assert excursion.mode_lag_ps > 5  # 45 mm at the boards' 1 mm pitch: about 6 ps
-    [near] = only_pair(boards.compensated_locally(), min_length_nm=1 * MM).excursions
-    assert 0 < near.mode_lag_ps < excursion.mode_lag_ps / 10  # ~2 mm: fixed before the common mode has fallen behind
-    assert near.mode_lag_ps == pytest.approx(per_mm * near.length_nm / 1e6, rel=0.25)  # the bumps run less coupled
-    header = protocol.FrameDecoder().feed(phase.pair_frame(far, 1))[0][0]
-    assert header["excursions"][0]["mode_lag_ps"] == pytest.approx(excursion.mode_lag_ps)
-
-
-def test_on_stripline_the_two_modes_run_together_so_an_excursion_has_no_mode_lag():
-    """The far-compensated pair inside the board: the same excursion, but its common mode
-    keeps up with the differential edge (one εr for both modes)."""
-    board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 1)), layer="In1.Cu")
-    board.part("J1", (1, "D_P", (50, 0)), (2, "D_N", (50, 1)), layer="In1.Cu")
-    board.path("D_P", (0, 0), *boards.bump(2, 0, -0.25), (50, 0), layer="In1.Cu")
-    board.path("D_N", (0, 1), *boards.bump(47, 1, 0.25), (50, 1), layer="In1.Cu")
-    [excursion] = only_pair(board.snapshot()).excursions
-    assert excursion.length_nm > 40 * MM and excursion.mode_lag_ps == 0.0
-
-
-def test_kirschning_jansen_odd_mode_is_near_kicads_coupled_microstrip():
-    # This board's MIPI pair: 117 um wide, 102 um apart, 121 um of er 4.5 to the plane.
-    # KiCad 10's tuning profile calculator gives 5.794 ps/mm for it (er_eff 3.02).
-    odd = delays.microstrip_epsilon(4.5, 117_350, 121_120, 102_000)
-    alone = delays.microstrip_epsilon(4.5, 117_350, 121_120)
-    assert odd < alone and delays.PS_PER_MM_VACUUM * math.sqrt(odd) == pytest.approx(5.794, rel=0.03)
-
-
-# The field solver's eps_eff (tests/field_solver.py, 24 cells per dielectric height) for one
-# trace of a pair in its odd mode with a coplanar ground, er 4.5; lengths in dielectric
-# heights: (width, gap to the partner, gap to the pour, eps_eff).
-FIELD_SOLVER = ((0.97, 0.84, 0.25, 2.8358), (0.97, 0.84, 1.0, 2.8849), (0.97, 0.84, 4.0, 2.9159),
-                (1.0, 0.5, 0.5, 2.8280), (0.5, 1.0, 0.25, 2.7896), (0.5, 1.0, 2.0, 2.8498))
-
-
-@pytest.mark.parametrize("width, gap, ground, solved", FIELD_SOLVER)
-def test_a_grounded_coplanar_pair_is_within_1_5_percent_of_the_field_solver(width, gap, ground, solved):
-    h = 121_120
-    closed = delays.microstrip_epsilon(4.5, width * h, h, gap * h, ground * h)
-    assert closed == pytest.approx(solved, rel=0.015)
-    assert closed < delays.microstrip_epsilon(4.5, width * h, h, gap * h)  # a pour speeds it up
-
-
-def test_the_field_solver_still_gives_its_numbers():
-    pytest.importorskip("scipy")  # a development tool, not shipped
-    import field_solver
-    width, gap, ground, solved = FIELD_SOLVER[0]
-    assert field_solver.eps_eff(width, 1.0, gap, ground, 4.5) == pytest.approx(solved, rel=1e-3)
-    er, width, gap, (even, odd, ratio) = PAIR_MODES[0]
-    assert field_solver.pair_modes(width, 1.0, gap, er) == pytest.approx((even, odd, ratio), rel=1e-3)
-
-
-# The field solver's two modes of a pair without a pour (24 cells per dielectric height):
-# (er, width, gap in dielectric heights, (eps_eff even, eps_eff odd, Z_even / Z_odd)). The
-# common-mode demo pair, this board's MIPI pair and the test boards' tight pair.
-PAIR_MODES = ((4.1, 0.2 / 0.12, 0.25 / 0.12, (3.2384, 2.9147, 1.1181)),
-              (4.5, 0.117 / 0.121, 0.102 / 0.121, (3.4326, 2.9168, 1.3681)),
-              (4.0, 0.75, 0.5, (3.0448, 2.5790, 1.6934)))
-
-
-@pytest.mark.parametrize("er, width, gap, solved", PAIR_MODES)
-def test_the_bend_excess_inputs_are_near_the_field_solver(er, width, gap, solved):
-    """Kirschning and Jansen's even mode and impedance ratio within 1 % and 3 % of the 2D
-    solver, so the bend excess they give is within 2 points of the solver's."""
-    h = 120_000
-    even, odd = delays.microstrip_epsilon_even(er, width * h, h, gap * h), delays.microstrip_epsilon(er, width * h, h, gap * h)
-    ratio = delays.microstrip_impedance_ratio(er, width * h, h, gap * h)
-    assert even == pytest.approx(solved[0], rel=0.01) and ratio == pytest.approx(solved[2], rel=0.03)
-    assert delays.coupled_bend_excess(even, odd, ratio) == pytest.approx(delays.coupled_bend_excess(*solved), abs=0.02)
-
-
-def test_a_pour_beside_the_pair_makes_it_faster():
-    open_board, grounded = only_pair(boards.matched()), only_pair(boards.grounded(0.1))
-    assert grounded.delay_p_ps < open_board.delay_p_ps * 0.995  # 40 of its 50 mm run beside the pour
-    assert abs(grounded.skew_ps) < 1e-3  # both sides alike
-    # A pour distance holds only where samples have one: one sample near a pour lends it to no other.
-    at, ground = np.array([0.0, 1.0, 2.0, 3.0]), np.array([np.inf, 100.0, np.inf, np.inf])
-    assert list(phase._between_samples(np.array([0.9, 1.6, 2.5]), at, ground)) == [100.0, np.inf, np.inf]
-    far = only_pair(boards.grounded(5.0))  # 5 mm away: 25 dielectric heights, no effect
-    assert far.delay_p_ps == pytest.approx(open_board.delay_p_ps, rel=1e-6)
+def test_the_lone_microstrip_estimate_is_near_the_full_wave():
+    """Without a profile an outer layer is a lone microstrip (Hammerstad and Jensen). A 0.2 mm
+    trace over 0.12 mm of εr 4.1 alone, in a 3D FDTD run (openEMS, 2026-10-16, 8 cells per
+    dielectric height, not in the repository): 5.876 ps/mm."""
+    epsilon = delays.microstrip_epsilon(4.1, 200_000, 120_000)
+    assert delays.PS_PER_MM_VACUUM * math.sqrt(epsilon) == pytest.approx(5.876, rel=0.005)
 
 
 def test_microstrip_is_faster_than_stripline():
@@ -633,8 +499,7 @@ def test_the_tracker_recomputes_only_pairs_whose_copper_changed():
     assert [header["type"] for header, _ in first] == ["phase_list", "phase_pair", "phase_pair"]
     listing = first[0][0]
     assert listing["keys"] == ["D_P", "E_P"] and listing["pending"] == 0
-    assert listing["settings"] == {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True, "flipped": [],
-                                   "rise_ps": 25.0}
+    assert listing["settings"] == {"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True, "flipped": []}
     header, arrays = first[1]
     assert header["name"] == "D_P/N" and header["start"]["label"] == "J1.1/2" and header["end"]["label"] == "U1.1/2"
     assert header["start"]["ids"] == ["J1.1", "J1.2"] and header["start"]["layer"] == "F.Cu"
@@ -760,23 +625,3 @@ def test_kicad_names_each_pair_nets_netclass_and_its_tuning_profile():
 
     assert net_classes(Board(), {"D_P", "D_N"}) == {"D_P": ("HS", "Fast"), "D_N": ("Default", "")}
     assert sorted(asked) == ["D_N", "D_P"]  # only the pair nets are asked about
-
-
-def test_the_read_skew_fades_along_a_tight_coupled_pair_but_not_on_stripline():
-    """Δt as a probe would read it (modes.apparent_dt): the geometric Δt where the skew is
-    made, less and less of it as its common mode falls behind the edge."""
-    def tight(layer="F.Cu"):
-        board = boards.Board().part("U1", (1, "D_P", (0, 0)), (2, "D_N", (0, 0.5)), layer=layer)
-        board.part("J1", (1, "D_P", (80, 0)), (2, "D_N", (80, 0.5)), layer=layer)
-        board.path("D_P", (0, 0), *boards.bump(78, 0, -1.5), (80, 0), layer=layer)  # the bump near J1, the start end
-        return board.path("D_N", (0, 0.5), (80, 0.5), layer=layer).snapshot()
-    result = phase.analyze_board(tight(), settings=phase.Settings(rise_ps=25.0))[0][0]
-    assert result.p.start.label.startswith("J1")
-    along = result.along_nm / 1e6
-    geometric, read = result.dt_ps, result.read_dt_ps
-    near, far = int(np.argmin(np.abs(along - 7))), int(np.argmin(np.abs(along - 75)))
-    assert geometric[near] == pytest.approx(geometric[far], abs=0.05)  # the skew is made once, by the bump
-    assert read[near] == pytest.approx(geometric[near], abs=0.3)  # read in full just after it
-    assert read[far] < 0.5 * geometric[far] and result.lag_ps[far] > 10  # faded far down the coupled pair
-    inner = phase.analyze_board(tight("In1.Cu"), settings=phase.Settings(rise_ps=25.0))[0][0]
-    assert np.allclose(inner.read_dt_ps[5:], inner.dt_ps[5:], atol=0.1) and inner.lag_ps[-1] == 0.0

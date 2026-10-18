@@ -1,11 +1,12 @@
 """Dynamic phase as findings (`kls-findings 1`): what the DRC column's Dynamic phase button lists.
 
-Every pair is measured whole (phase.analyze_board, no per-poll budget) and what the High
-speed column marks becomes a finding, so it gets the DRC column's list, its markers on the
+Every pair is measured whole (phase.analyze_board, no per-poll budget) and what the Diff
+pairs column marks becomes a finding, so it gets the DRC column's list, its markers on the
 board, confirm and dismiss, and select-in-KiCad: an excursion (|Δt| above the marker
 tolerance for longer than the marker length) is a warning with the stretch's copper lit and
 a label at its start; a short an error; a loop a warning; an unfinished side, ends on
-different parts and a branch are info. Pure: no files, no KiCad. The loop writes the file
+different parts, a branch and a note (where KiCad's one delay per layer is known to be
+off) are info. Pure: no files, no KiCad. The loop writes the file
 (kls_folder) and the findings watch reads it back like KiCad's DRC's, so every target is
 resolved on the live board and the text shown as text.
 """
@@ -33,6 +34,7 @@ def convert(results, warnings, settings: phase.Settings, heights: dict[str, int]
         pairs += 1
         found += [_excursion(result, excursion, settings, layer_at) for excursion in result.excursions]
         found += _route_findings(result, layer_at)
+        found += [_note(result, note) for note in result.notes]
     found += [_unmeasured(text) for text in warnings]
     found.sort(key=lambda finding: SEVERITY_ORDER[finding["severity"]])
     tool = (f"{TOOL}; {pairs} pair{'' if pairs == 1 else 's'} measured; markers above {settings.tolerance_ps:g} ps "
@@ -52,11 +54,17 @@ def _excursion(result: phase.PairPhase, excursion: phase.Excursion, settings: ph
                     f"{name}: P and N {abs(excursion.peak_ps):.1f} ps apart over {length:.1f} mm",
                     f"|Δt| stays above {settings.tolerance_ps:g} ps from {at:.1f} mm to {at + length:.1f} mm along "
                     f"the pair, walked from {start}; peak {excursion.peak_ps:+.1f} ps, {ahead} ahead. Part of the "
-                    f"differential signal runs as common mode there, which falls {excursion.mode_lag_ps:.1f} ps "
-                    f"behind the edge over the stretch (mode lag; compare with the rise time). End-to-end skew "
-                    f"{result.skew_ps:+.1f} ps.",
+                    f"differential signal runs as common mode there. End-to-end skew {result.skew_ps:+.1f} ps.",
                     {"peak_ps": round(excursion.peak_ps, 2), "length_mm": round(length, 2), "at_mm": round(at, 2),
-                     "mode_lag_ps": round(excursion.mode_lag_ps, 2), "skew_ps": round(result.skew_ps, 2)}, draws)
+                     "skew_ps": round(result.skew_ps, 2)}, draws)
+
+
+def _note(result: phase.PairPhase, note: phase.Note) -> dict:
+    at = note.at_nm / 1e6
+    return _finding("phase.note", "info", f"{result.channel.name}: {note.kind} at {at:.1f} mm, add {note.add_ps:+.1f} ps",
+                    f"{note.text}. KiCad's delay is one number per layer; Δt after it and the skew are not corrected "
+                    f"for this.", {"at_mm": round(at, 2), "made_ps": round(note.made_ps, 2),
+                                   "add_ps": round(note.add_ps, 2)}, _highlight(note.item_ids))
 
 
 def _short(result: phase.Shorted) -> dict:
@@ -68,7 +76,7 @@ def _short(result: phase.Shorted) -> dict:
     places = f"{len(contacts)} place{'' if len(contacts) == 1 else 's'}"
     return _finding("phase.short", "error", f"{name}: P and N are shorted",
                     f"P's copper touches N's in {places}: no differential signal, so the pair has no phase and no "
-                    f"numbers. In the High speed column its pulses run from the start up to the short.",
+                    f"numbers. In the Diff pairs column its pulses run from the start up to the short.",
                     {"places": len(contacts)}, draws)
 
 
@@ -109,7 +117,7 @@ def _route_findings(result: phase.PairPhase, layer_at) -> list[dict]:
 
 def _unmeasured(text: str) -> dict:
     return _finding("phase.unmeasured", "info", text,
-                    "Dynamic phase could not measure this pair; the High speed column's pair list says why.", {}, [])
+                    "Dynamic phase could not measure this pair; the Diff pairs column's pair list says why.", {}, [])
 
 
 def _finding(check: str, severity: str, title: str, message: str, values: dict, draws: list) -> dict:

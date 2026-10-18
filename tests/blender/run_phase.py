@@ -36,7 +36,7 @@ class Layout:
 
 def draws(data):
     """The pair box draws without raising."""
-    high_speed_panel._draw_pair(bpy.context, Layout(), data, lambda _context, text: [text])
+    high_speed_panel._draw_pair(bpy.context, Layout(), data, lambda _context, text, *_margin: [text])
     return True
 
 
@@ -52,6 +52,7 @@ def main():
         apply.load_frames(b"".join(tracker.update(snapshot, revision=1)))
         slots = {key: phase._slot(key) for key in ("D_P", "E_P")}
         assert set(state.board.phase) == {"D_P", "E_P"}
+        assert state.board.phase["D_P"]["notes"] and draws(state.board.phase["D_P"])  # a note on each tight meander
 
         # Both traces get a see-through copy over their copper: the lead over the partner and
         # the delay from the start at each point. N's detour at x = 47 comes first from J1,

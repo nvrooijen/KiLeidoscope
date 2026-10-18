@@ -179,19 +179,6 @@ def grounded(gap_mm=0.1):
     return board.snapshot()
 
 
-def grounded_dive(gap_mm=0.1):
-    """GND pours beside the pair on F.Cu up to x = 20 and from x = 30; in between the
-    pair dives to B.Cu, where there is no pour."""
-    board = ends(Board())
-    for net, y in (("D_P", 0), ("D_N", 1)):
-        board.path(net, (0, y), (20, y)).via(net, (20, y)).path(net, (20, y), (30, y), layer="B.Cu")
-        board.via(net, (30, y)).path(net, (30, y), (50, y))
-    edge = WIDTH / 2 / MM + gap_mm
-    for x0, x1 in ((2, 20), (30, 48)):
-        board.pour("GND", x0, -3, x1, -edge).pour("GND", x0, 1 + edge, x1, 4)
-    return board.snapshot()
-
-
 def shorted():
     """The matched pair with a P track across to N at x = 20."""
     board = ends(Board())
