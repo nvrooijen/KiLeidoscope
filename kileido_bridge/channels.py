@@ -23,6 +23,8 @@ none, as KiCad charges vias only. A series part in the middle counts as the stra
 line between where the tracks meet it.
 """
 
+from __future__ import annotations
+
 import heapq
 import itertools
 import math

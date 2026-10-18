@@ -30,6 +30,8 @@ Each via or plated hole a route passes through is kept (`Crossing`: position,
 layers, barrel length, delay) for return-path and via-stub analyses to reuse.
 """
 
+from __future__ import annotations
+
 import math
 import os
 import time
