@@ -188,6 +188,23 @@ def selected_ids(board) -> frozenset[str]:
     return frozenset(ids)
 
 
+def net_classes(board, names) -> dict[str, tuple[str, str]]:
+    """Net name -> (its effective netclass, that netclass's tuning profile or ""), read
+    only. KiCad resolves the netclass (patterns, schematic directives, composites);
+    kipy 0.7 has no accessor for the tuning profile, so it is read from the proto."""
+    wanted = set(names)
+    with _busy_aware():
+        nets = [net for net in board.get_nets() if net.name in wanted]
+        classes = board.get_netclass_for_nets(nets) if nets else {}
+    found = {}
+    for name, netclass in classes.items():
+        proto = getattr(netclass, "proto", None)
+        settings = proto.board if proto is not None and proto.HasField("board") else None
+        profile = settings.tuning_profile if settings is not None and settings.HasField("tuning_profile") else ""
+        found[name] = (netclass.name, profile)
+    return found
+
+
 CENTER_ACTION = "common.Control.centerSelection"  # View > Pan to Center Selected Objects
 
 
@@ -613,7 +630,7 @@ def _convert_pad(item, shapes: dict[str, dict[str, tuple[model.Polygon, ...]]]) 
     return model.Pad(item.id.value, "", item.number, item.net.name, _point(item.position),
                      diameter if diameter != (0, 0) else None, dict(shapes.get(item.id.value, {})),
                      _DRILL_SHAPES.get(item.padstack.drill.shape), float(item.padstack.angle.to_radians()),
-                     *_symbol_pin(item))
+                     *_symbol_pin(item), _die_delay(item))
 
 
 def _symbol_pin(item) -> tuple[str, str]:
@@ -630,6 +647,16 @@ def _symbol_pin(item) -> tuple[str, str]:
     if pin.no_connect:
         kind = f"{kind}+no_connect" if kind else "no_connect"
     return pin.name, kind
+
+
+def _die_delay(item) -> float:
+    """KiCad's pad-to-die delay in ps (a pad property since KiCad 10, sent as attoseconds);
+    0 without one. kipy 0.7 has no accessor for it: read from the pad's private `_proto`,
+    0 when a release lacks it (the pair's delays then miss what KiCad adds for the die)."""
+    proto = getattr(item, "_proto", None)
+    if proto is None or not hasattr(proto, "pad_to_die_delay") or not proto.HasField("pad_to_die_delay"):
+        return 0.0
+    return proto.pad_to_die_delay.value_as / 1e6  # attoseconds -> ps
 
 
 def _convert_zone(item) -> tuple[model.ZoneFill, ...]:

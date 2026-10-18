@@ -78,7 +78,7 @@ def main():
                for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")
     studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
     assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
-    assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v4", "KLS_Fill_v4", "KLS_FillSingle_v4",
+    assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v5", "KLS_Fill_v4", "KLS_FillSingle_v4",
                                                       "KLS_Drills_v2", "KLS_Vias_v14", "KLS_ViaRings_v1", "KLS_Board_v3",
                                                       "KLS_Solder"))
 

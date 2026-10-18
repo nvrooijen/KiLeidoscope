@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 5, 1),
+    "version": (0, 5, 2),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -24,8 +24,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
-               findings_markers, focus, fold, footprints, hole_cut, holes, ims, layers, lighting, live, models,
-               packages, pick, protection, render_depth, studio, watcher)
+               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, layers, lighting,
+               live, models, packages, phase, pick, protection, render_depth, studio, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -165,7 +165,8 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
         if item is not None:
-            live.request_select([item], self.extend, context.scene.kileido_center_in_kicad)
+            live.request_select(item if isinstance(item, list) else [item], self.extend,
+                                context.scene.kileido_center_in_kicad)
             self.report({"INFO"}, f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
         elif not self.extend:
             live.request_select([], False)  # clicking bare board clears KiCad's selection
@@ -397,14 +398,20 @@ WRAP_CACHE = 2_000  # wrapped texts kept: the sidebar redraws often, its texts r
 _wrapped = {}
 
 
+def _width(context, margin=WRAP_MARGIN_PX):
+    """The px a line has in the column being drawn: its share of the sidebar's current
+    width less `margin` (unscaled px)."""
+    scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
+    return max(80 * scale, (context.region.width if context.region else 300 * scale) * _share - margin * scale)
+
+
 def _wrap(context, text, margin=WRAP_MARGIN_PX):
     """Lines that fit the sidebar at its current width less `margin` (unscaled px; Blender
     cuts a longer label in its middle): each line measured in the UI font (blf) at the UI
     scale, words kept whole unless one alone is too wide. Without a font to measure with,
     ~8 px per character."""
     scale = context.preferences.system.ui_scale or 1.0  # 0 without a window
-    width = max(80 * scale, (context.region.width if context.region else 300 * scale) * _share
-                - margin * scale)
+    width = _width(context, margin)
     points = context.preferences.ui_styles[0].widget.points if context.preferences.ui_styles else 11
     key = (text, int(width), points, scale)
     if key not in _wrapped:
@@ -590,10 +597,27 @@ def _draw_findings(tab):
                                                       lambda text: _wrap(bpy.context, text, FINDINGS_MARGIN_PX), tab)
 
 
+def _column_switched():
+    """Another column opened or closed: its note was for the column then open, and dynamic
+    phase shows only while the High speed column is open."""
+    _switched_off.clear()
+    phase.refresh_visibility()
+
+
+def _draw_high_speed(layout, scene):
+    """The High speed column (high_speed_panel.py): dynamic phase and the pair list."""
+    high_speed_panel.draw(layout, bpy.context, _wrap, _swatch, _width)
+
+
+def _high_speed_state():
+    return "on" if bpy.context.scene.kileido_phase_enabled else "off"
+
+
 COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,
-           "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM")}  # columns.TABS keys -> what the column draws
+           "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM"),
+           "HIGH_SPEED": _draw_high_speed}  # columns.TABS keys -> what the column draws
 columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=lambda: findings.tab_state("DRC"),
-                      LLM=lambda: findings.tab_state("LLM"))
+                      LLM=lambda: findings.tab_state("LLM"), HIGH_SPEED=_high_speed_state)
 
 
 def _draw_flex(layout, scene):
@@ -1244,7 +1268,8 @@ SWATCH_BAND = {"silk": 8, "mask": 10, "copper": 12, "dielectric": 26}
 
 def _swatch(kind, color):
     """A preview icon in `color`: a band for stackup layers (thickness by kind), a ring
-    for vias, a tile for anything else. Cached by kind and colour."""
+    for vias, the whole icon for "fill" (side by side they make a colour bar), a tile
+    for anything else. Cached by kind and colour."""
     if _icons is None:
         return 0
     rgb = tuple(round(float(channel), 3) for channel in color[:3])
@@ -1263,6 +1288,9 @@ def _swatch(kind, color):
         radius = np.hypot(x - centre, y - centre)
         inside = radius <= 9
         edge = inside & (radius > 8)
+    elif kind == "fill":
+        inside = np.ones((size, size), bool)
+        edge = np.zeros((size, size), bool)
     elif kind == "vias":
         radius = np.hypot(x - centre, y - centre)
         inside = (radius <= 12) & (radius >= 5)
@@ -1286,7 +1314,7 @@ CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_UL_boards, KILEIDO_OT_resync,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
-           KILEIDO_OT_flex_group, *findings.CLASSES, *columns.CLASSES, KILEIDO_PT_panel)
+           KILEIDO_OT_flex_group, *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -1510,7 +1538,7 @@ def _scene_properties():
         "kileido_column": EnumProperty(
             name="Column", items=columns.column_items(), default=columns.NONE, options={"HIDDEN"},
             description="The column open left of the KiLeidoscope panel (its bookmark tab)",
-            update=lambda self, context: _switched_off.clear()),  # its note was for the column then open
+            update=lambda self, context: _column_switched()),
         "kileido_ims_metal": EnumProperty(
             name="Base metal", items=tuple((key, name, f"{name} base") for key, name in ims.METALS.items()),
             default="AL", description="The metal of the IMS base (KiCad stores none)",
@@ -1606,6 +1634,75 @@ def _scene_properties():
             description="How much the silkscreen ink hides what lies under it. Printed on the mask, the "
                         "ink follows the copper, so traces under it show by their relief at any opacity",
             update=lambda self, context: cosmetics.apply_silk_settings()),
+        "kileido_phase_enabled": BoolProperty(
+            name="Diff pairs", default=True,
+            description="Show dynamic phase (colours, pulses, markers) while the Diff pairs column is open",
+            update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_show": BoolProperty(
+            name="Dynamic phase", default=True,
+            description="Colour both traces of each differential pair where one runs ahead of the other, "
+                        "with markers at their terminals and where they stay out of phase",
+            update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_labels": BoolProperty(
+            name="Terminal labels", default=True, description="Name the pads at both ends of each pair",
+            update=lambda self, context: phase.refresh_visibility()),
+        "kileido_phase_pulses": BoolProperty(
+            name="Pulses", default=True,
+            description="A glow launched on both traces together at the start terminal, travelling at each "
+                        "trace's own delay (slowed down), so the lagging trace falls behind",
+            update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_clock": EnumProperty(
+            name="Pulse clock",
+            items=(("LIVE", "Live", "The pulses run by themselves in the 3D view (they hold still while a "
+                                    "view renders with Cycles, so it can finish)"),
+                   ("TIMELINE", "Timeline (renders)", "The frame sets where the pulses are: Play animates "
+                                                      "them, and a render has them in place on every frame "
+                                                      "(stills and animations)")),
+            default="LIVE", update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_count": IntProperty(
+            name="Number of pulses", default=1, min=1, max=phase.PULSES,
+            description="Pulses on each trace at once, evenly spaced over the loop. One suits short pairs",
+            update=lambda self, context: phase.set_pulses()),
+        "kileido_phase_pulse_rate": FloatProperty(
+            name="Pulse speed", default=30.0, min=0.1, soft_min=5.0, soft_max=500.0, precision=0,
+            description="Picoseconds of signal travel shown per second"),
+        "kileido_phase_pulse_width_ps": FloatProperty(
+            name="Pulse width", default=1.5, min=0.1, soft_max=30.0, precision=1,
+            description="Length of the glow in ps of travel",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_pulse_tail_ps": FloatProperty(
+            name="Pulse tail", default=5.0, min=0.0, soft_max=60.0, precision=1,
+            description="Length of the fading trail behind each pulse, in ps of travel (0: none)",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_pulse_glow": FloatProperty(
+            name="Pulse brightness", default=5.0, min=0.0, soft_max=20.0, precision=1,
+            description="Emission of the pulses and their glow. Brighter bleaches the core of red and blue "
+                        "towards pink and white",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_scale_ps": FloatProperty(
+            name="Colour scale", default=3.0, min=0.01, soft_max=50.0, precision=2,
+            description="How many ps out of phase shows a trace in its full colour (display only)",
+            update=lambda self, context: phase.set_scale()),
+        "kileido_phase_tolerance_ps": FloatProperty(
+            name="Tolerance", default=phase.DEFAULTS["tolerance_ps"], min=0.0, soft_max=20.0, precision=2,
+            description="Mark where |Δt| stays above this many ps (it only places markers)",
+            update=phase.send_settings),
+        "kileido_phase_min_mm": FloatProperty(
+            name="Distance", default=phase.DEFAULTS["min_length_mm"], min=0.0, soft_max=100.0, precision=1,
+            description="Mark where |Δt| stays above the tolerance for at least this many mm; the marker sits "
+                        "where that stretch starts",
+            update=phase.send_settings),
+        "kileido_phase_follow_series": BoolProperty(
+            name="Follow series parts", default=phase.DEFAULTS["follow_series"],
+            description="Measure through 2-pad parts in series on both sides (AC-coupling caps) as one "
+                        "channel, terminal to terminal",
+            update=phase.send_settings),
+        "kileido_phase_flipped": StringProperty(
+            name="Flipped pairs", default="[]", options={"HIDDEN"},
+            description="Pairs walked from their other end (a JSON list of pair keys)"),
+        "kileido_phase_pairs": CollectionProperty(type=high_speed_panel.KILEIDO_PG_phase_pair),
+        "kileido_phase_index": IntProperty(
+            name="Pair", default=-1, update=lambda self, context: phase.select_row(self)),
         "kileido_clip_silkscreen": BoolProperty(
             name="Clip silkscreen to board outline", default=True,
             description="Hide silkscreen outside Edge.Cuts and inside board cutouts",
@@ -1670,12 +1767,15 @@ def register():
     findings_draw.install()
     findings_markers.install()
     bpy.app.handlers.load_post.append(_file_loaded)
+    bpy.app.handlers.frame_change_pre.append(phase.on_frame)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
 
 def unregister():
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
+    if phase.on_frame in bpy.app.handlers.frame_change_pre:
+        bpy.app.handlers.frame_change_pre.remove(phase.on_frame)
     if holes.pack_for_save in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.remove(holes.pack_for_save)
     for timer in (dump.drain, _ims_rebuild):
@@ -1689,6 +1789,7 @@ def unregister():
     live.disconnect()
     studio.uninstall()
     models.stop_following()
+    phase.stop_pulses()
     cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import threading
 
 import pytest
 
@@ -37,6 +38,27 @@ def test_ensure_writes_a_gitignore_for_everything(folder, tmp_path):
     assert (tmp_path / ".kileidoscope" / ".gitignore").read_bytes() == b"*\n"
     folder.ensure()
     assert sorted(p.name for p in (tmp_path / ".kileidoscope").iterdir()) == [".gitignore"]
+
+
+def test_threads_writing_one_file_at_once_all_land(folder, tmp_path):
+    """A prompt and a DRC run ensure the folder together: no shared temp name, no lost write."""
+    errors = []
+
+    def hammer(payload):
+        try:
+            for _ in range(300):
+                folder._write(".gitignore", payload)
+        except Exception as exc:  # noqa: BLE001 - the test reports any error
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(b"*\n",)) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert (tmp_path / ".kileidoscope" / ".gitignore").read_bytes() == b"*\n"
+    assert not list((tmp_path / ".kileidoscope").glob("*.partial"))
 
 
 def test_run_freezes_the_text_with_its_stamp(folder, tmp_path):

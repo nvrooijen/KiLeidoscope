@@ -17,7 +17,7 @@ MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}
 # Every frame type the bridge sends (the bridge's protocol.MESSAGE_TYPES; a test keeps them equal).
 MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
-                 "appearance", "selection", "status", "export", "findings")
+                 "appearance", "selection", "status", "export", "findings", "phase_list", "phase_pair")
 _LENGTH = struct.Struct(">I")
 _CONNECT_PENDING = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
                     *(getattr(errno, name) for name in ("WSAEWOULDBLOCK", "WSAEINPROGRESS", "WSAEALREADY")
@@ -137,6 +137,11 @@ class SocketClient:
             if notes is not None and action == "prompt":
                 header["notes"] = str(notes)
             self.outgoing.extend(encode_frame(header))
+
+    def request_phase_settings(self, settings: dict):
+        """The dynamic-phase settings (kileido_bridge/phase.py Settings.from_request)."""
+        if self.state == "connected":
+            self.outgoing.extend(encode_frame({"type": "phase_settings", **settings}))
 
     def poll_io(self) -> list[tuple[dict, dict[str, np.ndarray]]]:
         sock = self.socket

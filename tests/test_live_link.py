@@ -954,3 +954,47 @@ def test_a_finding_selection_highlights_its_items_not_their_nets():
     finally:
         client.close()
         runtime.close()
+
+
+def test_dynamic_phase_follows_edits_and_the_panel_settings(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "tests"))
+    import kileido_bridge.loop as loop_module
+    import phase_boards
+    phase_boards.project_file(tmp_path)  # the tuning profile, in board.kicad_pro beside the saved board
+    monkeypatch.setattr(loop_module, "saved_board_path", lambda _board: str(tmp_path / "board.kicad_pcb"))
+    snapshot = phase_boards.two_channels()
+    reader = FakeReader(snapshot)
+    server = BridgeServer(port=0, token="test-secret")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0)
+    client = addon_client().SocketClient("127.0.0.1", server.port, "test-secret")
+
+    def pairs(frames):
+        return [h["key"] for h, _ in frames if h["type"] == "phase_pair"]
+
+    try:
+        runtime.step()
+        client.connect()
+        initial = exchange(runtime, client, lambda frames: len(pairs(frames)) == 2)
+        listing = next(h for h, _ in initial if h["type"] == "phase_list")
+        assert listing["keys"] == ["D_P", "E_P"]
+        assert [h["type"] for h, _ in initial].index("snapshot_end") < [h["type"] for h, _ in initial].index(
+            "phase_list")  # after the board they draw on
+
+        client.request_phase_settings({"tolerance_ps": 1.0, "min_length_mm": 5.0, "follow_series": True,
+                                       "flipped": ["E_P"]})
+        flipped = exchange(runtime, client, lambda frames: pairs(frames) == ["E_P"])
+        assert next(h for h, _ in flipped if h["type"] == "phase_pair")["start"]["label"] == "U2.1/2"
+
+        straight = replace(snapshot, tracks=tuple(
+            replace(track, start=(track.start[0], 0), end=(track.end[0], 0)) if track.net == "D_P" else track
+            for track in snapshot.tracks))
+        reader.events.append((straight, {("F.Cu", "tracks")}))
+        edited = exchange(runtime, client, lambda frames: bool(pairs(frames)))
+        assert pairs(edited) == ["D_P"]  # only the edited pair is measured again
+
+        client.request_resync()
+        again = exchange(runtime, client, lambda frames: len(pairs(frames)) == 2)
+        assert next(h for h, _ in again if h.get("key") == "E_P")["flipped"]
+    finally:
+        client.close()
+        runtime.close()

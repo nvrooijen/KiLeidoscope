@@ -34,7 +34,8 @@ COVERLAYS = {"AMBER": ("Amber", POLYIMIDE, POLYIMIDE_ALPHA, FILM_TINT),
              "BLACK": ("Black", (0.06, 0.06, 0.06), 0.93, 1.0),
              "WHITE": ("White", (0.93, 0.93, 0.90), 0.9, 0.3)}
 
-HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0)}  # red-orange / blue (sRGB)
+# red-orange / blue (sRGB); white: what dynamic phase leaves to the highlight of a selected pair
+HIGHLIGHT_COLORS = {"selected": (1.0, 0.27, 0.0), "pair": (0.0, 0.2, 1.0), "phase": (1.0, 1.0, 1.0)}
 # A finding's colour by its severity (sRGB): magenta-red, amber, cyan; its distance past a limit: red.
 FINDING_COLORS = {"error": (1.0, 0.05, 0.35), "warning": (1.0, 0.70, 0.0), "info": (0.0, 0.75, 1.0)}
 FINDING_OVER_COLOR = (1.0, 0.0, 0.0)
@@ -115,10 +116,12 @@ def create_all():
         "via_resin": make("KLS Via resin", section.RESIN, cut.RESIN_OPACITY),
         "highlight_selected": make("KLS Highlight selected", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair": make("KLS Highlight pair", HIGHLIGHT_COLORS["pair"]),
+        "highlight_phase": make("KLS Highlight phase", HIGHLIGHT_COLORS["phase"]),
         # Via barrels sit inside the drill, where the hole mask makes the land
         # materials see-through; they need their own solid copy.
         "highlight_selected_barrel": make("KLS Highlight selected barrel", HIGHLIGHT_COLORS["selected"]),
         "highlight_pair_barrel": make("KLS Highlight pair barrel", HIGHLIGHT_COLORS["pair"]),
+        "highlight_phase_barrel": make("KLS Highlight phase barrel", HIGHLIGHT_COLORS["phase"]),
         # A glow shell, not a surface: flat translucent red-orange in every mode.
         "highlight_box": make("KLS Highlight component", HIGHLIGHT_COLORS["selected"], HIGHLIGHT_BOX_ALPHA),
         # The finding shown from the DRC or LLM column (findings_draw): recoloured by its severity.

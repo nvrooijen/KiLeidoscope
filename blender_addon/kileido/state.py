@@ -65,6 +65,9 @@ class BoardState:
         # KiCad's selection (protocol.selection_message).
         self.highlight = {"selected": set(), "pair": set(), "finding": set()}  # finding: findings_draw
         self.highlight_components = {"footprints": set(), "pads": set()}
+        # Dynamic phase of differential pairs (phase.py): each pair's last frame, by key.
+        self.phase = {}
+        self.phase_list = {"keys": [], "settings": {}, "warnings": [], "pending": 0}
         self.outline_problem = False  # a malformed outline is drawn red (apply._apply_outline_problem)
         self.xray_for_outline = False  # X-ray mode was ticked for it (and is unticked once fixed)
 

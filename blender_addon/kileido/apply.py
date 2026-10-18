@@ -13,7 +13,7 @@ import bpy
 import numpy as np
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, protection, render_depth, studio, transform)
+               laminate, layers, lighting, materials, models, nodes, phase, protection, render_depth, studio, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, owned_object, read_attribute, read_coordinates,
                       read_edges, set_modifier, set_node_input, set_visible, single_point, view3d_spaces,
@@ -72,6 +72,10 @@ def apply_frame(header, arrays):
         models.follow_board(board.board_path, board.export)
     elif message_type == "findings":
         findings.apply_findings(header)  # the DRC and LLM columns' lists, and the finding drawn
+    elif message_type == "phase_list":
+        phase.apply(header, arrays)  # the High speed column's pair list
+    elif message_type == "phase_pair":
+        phase.apply(header, arrays)  # one pair's dynamic phase: its ribbons, pulses and markers
     elif message_type == "status":
         pass  # KiCad's link state: live.LiveLink reads it
     else:
@@ -133,6 +137,8 @@ def _end_snapshot():
             continue
         if obj.get("kls_model_fp_id") is not None:
             set_visible(obj, False)
+        elif obj.get("kls_phase_key") is not None:
+            continue  # the pair list says which pairs remain (phase_list, after the snapshot)
         elif obj.get("kls_cosmetic_layer") is not None:
             if obj.get("kls_board_path") != board.board_path:
                 set_visible(obj, False)
@@ -308,9 +314,45 @@ def _place_copper(obj, header, layer, kind, group):
     board.touched.add(obj.name)
 
 
+STRAIGHT_JOINT_COS = 0.866  # a joint bending less than 30 degrees runs on as one ribbon, capless
+
+
+def _joints(seg):
+    """Per vertex (two per segment): (merge, no cap), for the KLS_Tracks group.
+
+    Where exactly two ends of one width meet, one round cap covers the joint: two
+    overlap, and in X-ray mode each overlap shows as a darker dot (rows of them along
+    arcs, which arrive as short chords). Bending less than 30 degrees (along an arc, a
+    track running on in line), the two ends merge and the ribbon runs through without
+    a cap; at a real corner the ribbons stay apart, with one cap."""
+    count = len(seg)
+    merge, no_cap = np.zeros(2 * count, bool), np.zeros(2 * count, bool)
+    if count < 2:
+        return merge, no_cap
+    ends = seg[:, :4].reshape(-1, 2).astype(np.int64)
+    far = seg[:, [2, 3, 0, 1]].reshape(-1, 2).astype(np.float64)  # each end's other end
+    width = np.repeat(seg[:, 4], 2)
+    order = np.lexsort((ends[:, 1], ends[:, 0]))
+    same = (ends[order][1:] == ends[order][:-1]).all(axis=1)
+    alone = same & ~np.concatenate(([False], same[:-1])) & ~np.concatenate((same[1:], [False]))  # two, not three
+    a, b = order[:-1][alone], order[1:][alone]
+    keep = (a // 2 != b // 2) & (width[a] == width[b])
+    a, b = a[keep], b[keep]
+    out_a, out_b = far[a] - ends[a], far[b] - ends[b]
+    length = np.hypot(*out_a.T) * np.hypot(*out_b.T)
+    keep = length > 0
+    a, b = a[keep], b[keep]
+    straight = (out_a[keep] * out_b[keep]).sum(axis=1) / length[keep] <= -STRAIGHT_JOINT_COS
+    merge[a[straight]] = merge[b[straight]] = True
+    no_cap[a[straight]] = True
+    no_cap[b] = True
+    return merge, no_cap
+
+
 def _segment_edges(mesh, seg, item):
-    """Segments (x1, y1, x2, y2, width in nm) as edges with width and item attributes,
-    for the KLS_Tracks group."""
+    """Segments (x1, y1, x2, y2, width in nm) as edges with width and item attributes
+    (a segment's two vertices, in order: pick.py and highlight.py read them so), and
+    where its joints merge or go without a cap, for the KLS_Tracks group."""
     count = len(seg)
     mesh.clear_geometry()
     mesh.vertices.add(count * 2)
@@ -325,6 +367,9 @@ def _segment_edges(mesh, seg, item):
         mesh.edges.foreach_set("vertices", np.arange(count * 2, dtype=np.int32))
     write_attribute(mesh, "width", "FLOAT", np.repeat(seg[:, 4].astype(np.float64) * 1e-9, 2).astype(np.float32))
     write_attribute(mesh, "item", "INT", np.repeat(item, 2))
+    merge, no_cap = _joints(np.asarray(seg).reshape(-1, 5))
+    write_attribute(mesh, "kls_merge", "BOOLEAN", merge)
+    write_attribute(mesh, "kls_no_cap", "BOOLEAN", no_cap)
     mesh.update()
 
 

@@ -71,6 +71,7 @@ class Pad:
     drill_angle_rad: float = 0.0
     pin_name: str = ""  # the schematic pin's name ("PA7_13"), "" for none
     pin_type: str = ""  # its electrical type as the board file spells it ("power_in"), "+no_connect" added
+    die_delay_ps: float = 0.0  # KiCad's pad-to-die delay (a pad property, since KiCad 10); 0 for none
 
     @property
     def layers(self) -> tuple[str, ...]:
@@ -214,7 +215,8 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
         tuple(Pad(p["id"], p["footprint_id"], p["number"], p["net"], point(p["pos"]),
                   point(p["drill"]) if p["drill"] is not None else None,
                   {layer: tuple(polygon(poly) for poly in polys) for layer, polys in p["polygons"].items()},
-                  p["drill_shape"], float(p["drill_angle_rad"]), p.get("pin_name", ""), p.get("pin_type", ""))
+                  p["drill_shape"], float(p["drill_angle_rad"]), p.get("pin_name", ""), p.get("pin_type", ""),
+                  float(p.get("die_delay_ps", 0.0)))  # older dumps: no die delay
               for p in data["pads"]),
         tuple(Footprint(f["id"], f["reference"], point(f["pos"]), f["rotation_rad"], f["side"],
                         tuple(f["model_paths"]),

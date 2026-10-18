@@ -6,13 +6,16 @@ import threading
 import time
 from collections import deque
 from dataclasses import replace
+from pathlib import Path
 
-from . import findings_watch, flex_checks, hatch, kls_folder, protocol
+from . import findings, findings_watch, flex_checks, hatch, kls_folder, phase_findings, protocol
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items, variant_dnp, with_variant_dnp
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
-                           follow_new_kicad, kicad_tools, saved_board_path, select_in_kicad, selected_ids)
+                           follow_new_kicad, kicad_tools, net_classes, saved_board_path, select_in_kicad,
+                           selected_ids)
 from .live_copy import LiveBoardCopy
+from .phase import PhaseTracker
 from .selection import components, highlight_nets, selected_copper, selected_nets, unconnected
 
 
@@ -70,6 +73,7 @@ class BridgeRuntime:
         self.flex_error = ""  # why the flex model last failed, so it is said once
         self.copy = live_copy or LiveBoardCopy()
         self.copy_enabled = True
+        self.phase = PhaseTracker()  # differential pairs' dynamic phase
         self.copy_text = ""  # the board text last written to the copy (before its hatches are baked in)
         self.variant_dnp = {}  # each assembly variant's DNP overrides by footprint id, from the board text
         self.hatcher = hatch.Hatcher()  # KiCad's own hatches of hatched shapes, worked out in the background
@@ -127,6 +131,7 @@ class BridgeRuntime:
             self.flex = None
             self.tools = {}
             self.copy_enabled = True
+            self.phase.reset()
             self.timeout_count = 0
             self.next_connect_at = self.clock() + self.reconnect_interval_s
             self.sent_from_text = False
@@ -197,6 +202,7 @@ class BridgeRuntime:
             self._refresh_copy()
             appearance = self._appearance_frames()
             frames += appearance + self._flex_frames(snapshot, bool(result.dirty or appearance))
+        frames += self._phase_frames(everything=full_snapshot)
         frames += self._selection_frames(snapshot, force=full_snapshot)
         if result.outdated_pads != self.outdated_pads or self.hatcher.error != self.hatch_error:
             self.outdated_pads = result.outdated_pads
@@ -216,6 +222,7 @@ class BridgeRuntime:
         self.hatcher.kicad_cli = self.tools.get("kicad_cli", "")
         self.copy.target(snapshot.board_name, self.board_path)
         self.copy_enabled = True
+        self.phase.reset()
         self.variant_dnp = {}  # the new board's come with its text
         self.copy_text = self.copy_stamp = ""  # the last board's, until this one's copy is written
         self.findings.target(self.board_path)
@@ -311,6 +318,7 @@ class BridgeRuntime:
             self.sent_from_text = True
             self.revision += 1
             frames = protocol.messages_for(snapshot, frozenset(dirty), self.revision)
+            frames += self._phase_frames()
             frames += self._flex_frames(snapshot, True)
         frames += self._selection_frames(self.snapshot)  # the selection read works while busy
         self._send(frames)
@@ -374,6 +382,51 @@ class BridgeRuntime:
             self.requested = None
             return False
         return True
+
+    # --- Dynamic phase ------------------------------------------------------------------
+
+    def _phase_frames(self, everything: bool = False) -> list[bytes]:
+        """The differential pairs whose copper, delay inputs or settings changed; after a
+        full snapshot every pair (Blender drops frames it queued before the snapshot).
+
+        Delays come from the project file's tuning profiles; KiCad says which netclass
+        each pair net has."""
+        with self.lock:  # the server takes Blender's requests on the main thread
+            request = self.server.take_phase_settings()
+        if request is not None:
+            self.phase.configure(request)
+        project = str(Path(self.board_path).with_suffix(".kicad_pro")) if self.board_path else ""
+        self.phase.set_project(project)
+        board = getattr(self.reader, "board", None)
+
+        def read_netclasses(nets):
+            try:
+                return net_classes(board, nets)
+            except KiCadBusy:  # e.g. the router is active: the tracker asks again on a later poll
+                return None
+
+        try:
+            frames = self.phase.update(self.snapshot, self.revision, read_netclasses if board is not None else None)
+            return self.phase.snapshot_frames() if everything else frames
+        except Exception as exc:  # the viewer keeps its board; the panel says why the pairs stopped
+            return self.phase.failed(exc, self.revision)
+
+    def _phase_findings(self):
+        """The DRC column's Dynamic phase button: every pair measured now, whole, and
+        written as a findings file beside KiCad's DRC's (phase_findings); the findings
+        watch reads it back like any other, so its findings get the list and the markers."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            self.findings.publish_file("phase", None, findings.NOT_CONNECTED)
+            return
+        try:
+            results, warnings = self.phase.measure_all(snapshot)
+            heights = protocol.layer_heights_nm(snapshot)[0]
+            data = phase_findings.convert(results, warnings, self.phase.settings, heights, self.copy_stamp)
+        except Exception as exc:  # a bug in the analysis costs this press, never the bridge
+            self.findings.publish_file("phase", None, f"could not measure the pairs ({type(exc).__name__}: {exc})")
+            return
+        self.findings.publish_file("phase", data)
 
     # --- Live board copy (kicad-cli exports) --------------------------------------------
 
@@ -514,6 +567,7 @@ class BridgeRuntime:
         if self.snapshot is not None:
             self.server.send_frames(self._snapshot_frames(), snapshot=True)
             self.server.send_frames([protocol.selection_message(*self.highlight, self.revision)])
+            self.server.send_frames(self.phase.snapshot_frames())
         self.server.send_frames([self._status_frame()])
         self.server.send_frames(self._findings_resend())  # kept while KiCad is disconnected too
 
@@ -524,7 +578,10 @@ class BridgeRuntime:
             self._take_select_requests()
             requests = self.server.take_findings_requests()
             for action, key, source, checks, notes in requests:
-                self.findings.request(action, key, source, checks, notes)
+                if action == "run_phase":
+                    self._phase_findings()
+                else:
+                    self.findings.request(action, key, source, checks, notes)
             if requests:
                 self.next_findings_at = 0.0  # Run DRC and a prompt start on the next tick
                 self.wake.set()
