@@ -42,8 +42,8 @@ def test_a_pad_in_a_plane_is_a_warning_with_the_pads_lit_and_the_part_lifted():
     highlight, label, lift = finding["draw"]
     assert highlight == {"tool": "highlight", "targets": ["uuid:a", "uuid:b"]}  # the part stands clear
     assert label == {"tool": "label", "at": "pt:0,0@F.Cu", "text": "tombstone HIGH: pad 2 lifts"}
-    # Turned about pad 1's outer edge (0.25 mm out from its centre at -0.5 mm), pad 2's end rising
-    assert lift == {"tool": "lift", "targets": ["uuid:R1"], "about": "pt:-0.75,0@F.Cu", "toward": "pt:0.5,0@F.Cu",
+    # Turned about the part's end on pad 1 (half an 0402's 1 mm body from the middle), pad 2's end rising
+    assert lift == {"tool": "lift", "targets": ["uuid:R1"], "about": "pt:-0.5,0@F.Cu", "toward": "pt:0.5,0@F.Cu",
                     "angle_deg": 45}
     payload = resolved(snapshot, data)
     assert payload["status"] == "ok" and payload["tool"] == data["tool"] and not payload["problems"]
@@ -52,7 +52,7 @@ def test_a_pad_in_a_plane_is_a_warning_with_the_pads_lit_and_the_part_lifted():
     assert set(row["draws"][0]["ids"]) == {"a", "b"} and row["draws"][1]["tool"] == "label"
     lifted = row["draws"][2]
     assert lifted["tool"] == "lift" and lifted["ok"] and lifted["ids"] == ["R1"]
-    assert lifted["points"] == [[-750_000, 0, "F.Cu"], [500_000, 0, "F.Cu"]] and lifted["rotation_deg"] == 45
+    assert lifted["points"] == [[-500_000, 0, "F.Cu"], [500_000, 0, "F.Cu"]] and lifted["rotation_deg"] == 45
 
 
 def test_two_factors_are_both_told_and_the_worst_names_the_end_that_lifts():
@@ -63,7 +63,7 @@ def test_two_factors_are_both_told_and_the_worst_names_the_end_that_lifts():
     assert finding["message"].startswith("0402 at HIGH tombstone risk, 2 factors raised: HIGH: pad 2 (GND) draws heat")
     assert "; HIGH: pad 1 has 2.04x the paste of the other." in finding["message"]
     assert finding["message"].endswith("The end on pad 2 would lift.")
-    # An open via alone: that end's solder drains, so that end lifts, about the other pad's outer edge
+    # An open via alone: that end's solder drains, so that end lifts, about the part's end on the other pad
     via = model.Via("v", "SIG", (-boards.PITCH // 2, 0), 400_000, 200_000, "F.Cu", "B.Cu", model.FROM_RULES)
     data = convert(boards.board(tracks=[boards.SIG_TRACE, GND_TRACE], vias=[via]))
     (finding,) = data["findings"]
@@ -71,7 +71,7 @@ def test_two_factors_are_both_told_and_the_worst_names_the_end_that_lifts():
     assert finding["message"] == ("0402 at HIGH tombstone risk: open via in pad 1 only: solder drains into it. "
                                   "The end on pad 1 would lift.")
     assert finding["fix"] == "Fill or cap the via, or move it out of the pad."
-    assert finding["draw"][2]["about"] == "pt:0.75,0@F.Cu" and finding["draw"][2]["toward"] == "pt:-0.5,0@F.Cu"
+    assert finding["draw"][2]["about"] == "pt:0.5,0@F.Cu" and finding["draw"][2]["toward"] == "pt:-0.5,0@F.Cu"
 
 
 def test_medium_risk_is_info_lifted_less_and_a_dry_pad_lifts():

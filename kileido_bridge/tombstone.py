@@ -505,7 +505,7 @@ class Finding:
     pad_names: tuple[str, str]  # "pad 1", "pad 2": their numbers, as the texts name them
     lifts: int  # the pad (0 or 1) whose end lifts, by the worst factor that says; -1 when none does
     keys: tuple[str, ...]  # the raised factors' keys, worst first
-    pivot: model.Point | None  # where the part would turn: the holding pad's outer edge (nm), when an end lifts
+    pivot: model.Point | None  # where the part would turn: its end on the holding pad (nm), when an end lifts
     rises: model.Point | None  # the lifting pad's centre
 
 
@@ -615,12 +615,13 @@ def check(snapshot: model.BoardSnapshot, stencil_nm: int = DEFAULT_STENCIL_NM) -
         names = tuple(f"pad {pad.number or k + 1}" for k, pad in enumerate(candidate.pads))
         lifts = next((f.lifts for f in raised if f.lifts >= 0), -1)
         pivot = rises = None
-        if lifts >= 0:  # the part stands up on the holding pad, turning about that pad's outer edge
-            lifting, holding = candidate.pads[lifts], candidate.pads[1 - lifts]
+        if lifts >= 0:  # the part stands up on the holding pad, turning about its own end there (the
+            lifting, holding = candidate.pads[lifts], candidate.pads[1 - lifts]  # nominal body length)
             dx, dy = holding.pos[0] - lifting.pos[0], holding.pos[1] - lifting.pos[1]
             span = math.hypot(dx, dy) or 1.0
-            half = measures[holding.id].length_nm / 2
-            pivot = (round(holding.pos[0] + dx / span * half), round(holding.pos[1] + dy / span * half))
+            mid = ((holding.pos[0] + lifting.pos[0]) / 2, (holding.pos[1] + lifting.pos[1]) / 2)
+            half = package.length_nm / 2
+            pivot = (round(mid[0] + dx / span * half), round(mid[1] + dy / span * half))
             rises = (round(lifting.pos[0]), round(lifting.pos[1]))
         findings.append(Finding(
             reference, LEVELS[level], package.name,
