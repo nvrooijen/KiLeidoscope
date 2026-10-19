@@ -1647,3 +1647,23 @@ def test_clean_checks_are_kept_apart_from_findings(index):
     result = resolve_file(found, index, context())
     assert result["clean"] == [{"check": "hs.stub", "note": ""}, {"check": "dp.skew", "note": "both pairs within 0.1 mm"}]
     assert findings.status_payload("none")["clean"] == []
+
+
+def test_a_lift_needs_its_part_pivot_and_rising_end_and_a_sane_angle():
+    """lift: the part(s) to tilt, the point it turns about, the end that rises; angle_deg
+    1 to 90, 40 by default."""
+    def parsed(draw):
+        data = {"format": "kls-findings 1", "run": "", "tool": "t", "findings": [
+            {"check": "tombstone.heat", "severity": "warning", "title": "Lifted", "draw": [draw]}]}
+        return parse(json.dumps(data).encode("utf-8")).findings[0]
+
+    plain = parsed({"tool": "lift", "targets": ["R1"], "about": "pt:1,2@F.Cu", "toward": "R1.2"})
+    (draw,) = plain.draws
+    assert draw.tool == "lift" and tuple(draw.fields["targets"]) == ("R1",) and not plain.problems
+    assert draw.fields["about"] == "pt:1,2@F.Cu" and draw.fields["toward"] == "R1.2" and draw.fields["angle"] == 40.0
+    steep = parsed({"tool": "lift", "targets": ["R1"], "about": "R1.1", "toward": "R1.2", "angle_deg": 60})
+    assert steep.draws[0].fields["angle"] == 60.0 and not steep.problems
+    missing = parsed({"tool": "lift", "targets": ["R1"], "about": "R1.1"})
+    assert not missing.draws and missing.problems == ("draw 1 (lift) skipped: toward missing",)
+    flat = parsed({"tool": "lift", "targets": ["R1"], "about": "R1.1", "toward": "R1.2", "angle_deg": 0})
+    assert not flat.draws and "angle_deg is not a number of degrees, 1 to 90" in flat.problems[0]

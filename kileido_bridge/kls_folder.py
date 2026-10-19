@@ -16,6 +16,7 @@ file. A `.gitignore` holding `*` keeps the folder out of the user's repository.
 - `<stem>.kls-findings.json`: an LLM's (or any tool's) answer; only read here.
 - `<stem>.drc.kls-findings.json`: the bridge's DRC findings.
 - `<stem>.phase.kls-findings.json`: the bridge's dynamic-phase findings (phase_findings).
+- `<stem>.tombstone.kls-findings.json`: the bridge's tombstone check (tombstone_findings).
 - `<stem>.kls-progress.json`: how far an LLM is with a prompt run (optional, `PROGRESS_FORMAT`,
   rewritten whole after each check); only read here.
 - `dismissed.json`: confirmed and dismissed findings.
@@ -41,8 +42,9 @@ SIDE_RUNS = {"ghost_drc": 2}  # kind -> runs of it kept; they count only against
 STATE_FILE = "dismissed.json"
 STATE_VERSION = 1
 MAX_STATE_ENTRIES = 10_000
-SOURCES = ("drc", "phase", "file")  # the bridge's DRC run, its dynamic phase, an LLM's or a tool's file
-OWN = ("drc", "phase")  # the sources the bridge writes itself
+SOURCES = ("drc", "phase", "tombstone", "file")  # the bridge's DRC run, its dynamic phase and tombstone check,
+                                                  # an LLM's or a tool's file
+OWN = ("drc", "phase", "tombstone")  # the sources the bridge writes itself
 STATES = ("confirmed", "dismissed")
 PROGRESS_FORMAT = "kls-progress 1"
 MAX_PROGRESS_BYTES = 4096
@@ -149,15 +151,18 @@ class KlsFolder:
         self.findings_path = self.root / f"{self.stem}.kls-findings.json"
         self.drc_findings_path = self.root / f"{self.stem}.drc.kls-findings.json"
         self.phase_findings_path = self.root / f"{self.stem}.phase.kls-findings.json"
+        self.tombstone_findings_path = self.root / f"{self.stem}.tombstone.kls-findings.json"
         self.progress_path = self.root / f"{self.stem}.kls-progress.json"  # an LLM's, beside its answer
         self.state_path = self.root / STATE_FILE
         self.runs_dir = self.root / "runs"
 
     def path_for(self, source: str) -> Path:
-        """The findings file of a source: "drc" and "phase" (ours) or "file" (an LLM's or a tool's)."""
+        """The findings file of a source: "drc", "phase" and "tombstone" (ours) or "file" (an
+        LLM's or a tool's)."""
         if source not in SOURCES:
             raise ValueError(f"unknown findings source {source!r}")
-        return {"drc": self.drc_findings_path, "phase": self.phase_findings_path}.get(source, self.findings_path)
+        return {"drc": self.drc_findings_path, "phase": self.phase_findings_path,
+                "tombstone": self.tombstone_findings_path}.get(source, self.findings_path)
 
     def _check(self) -> None:
         if not self.available:
@@ -316,7 +321,8 @@ class KlsFolder:
         return self._within(path.name).open("rb")
 
     def write_findings(self, data: dict, source: str = "drc") -> Path:
-        """A findings file the bridge made (DRC, dynamic phase), written whole or not at all."""
+        """A findings file the bridge made (DRC, dynamic phase, the tombstone check), written
+        whole or not at all."""
         path = self.path_for(source)
         self.ensure()
         text = json.dumps(data, indent=1, ensure_ascii=False, allow_nan=False)

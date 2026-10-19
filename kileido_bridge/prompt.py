@@ -48,6 +48,11 @@ _TOOLS = {
               '{"tool": "label", "at": "U3.4", "text": "2.8 mm to C12"}'),
     "arrow": ("from: target, to: target", "arrow between two targets",
               '{"tool": "arrow", "from": "R5.1", "to": "U2.7"}'),
+    "lift": ("targets: list of targets (the part), about: target or pt:x,y@layer (the edge it turns about), "
+             "toward: target (the end that rises), angle_deg: 1 to 90 (optional, default 40)",
+             "the part lifted off its pads as it would stand if it tombstoned (its copy tilted, the part hidden "
+             "while shown)",
+             '{"tool": "lift", "targets": ["C7"], "about": "pt:42.10,18.75@F.Cu", "toward": "C7.2", "angle_deg": 45}'),
     "distance": ("from: target, to: target, mode: edge|centre (default edge), limit: mm (optional), "
                  "limit_is: min|max (default max)",
                  "dimension line, measured by KiLeidoscope; red past limit. limit_is min: a clearance "

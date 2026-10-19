@@ -1,10 +1,12 @@
 """The DRC and LLM columns (their bookmark tabs, columns.py): the bridge's findings, listed.
 
-The bridge sends one `findings` frame with three sources (kileido_bridge/findings.py builds
-each): "drc", KiCad's own DRC run on a copy of the board (the KiCad DRC button), and
-"phase", every differential pair's dynamic phase measured at once (the Dynamic phase
-button, kileido_bridge/phase_findings.py), both listed in the DRC tab; and "file", what the
-user's LLM (or a script) wrote into the project's .kileidoscope folder, listed in the LLM tab. Each is grouped by check, errors first. A finding's title shows it
+The bridge sends one `findings` frame with four sources (kileido_bridge/findings.py builds
+each): "drc", KiCad's own DRC run on a copy of the board (the KiCad DRC button); "phase",
+every differential pair's dynamic phase measured at once (the Dynamic phase button,
+kileido_bridge/phase_findings.py); "tombstone", every 01005, 0201 and 0402 checked for
+tombstone risk (the Tombstone button, kileido_bridge/tombstone_findings.py), these three
+listed in the DRC tab; and "file", what the user's LLM (or a script) wrote into the
+project's .kileidoscope folder, listed in the LLM tab. Each is grouped by check, errors first. A finding's title shows it
 (findings_draw: its highlight, label, distance, ...) and frames the 3D views on it; its
 buttons select its items in KiCad, confirm it or dismiss it; a hole finding also cuts the
 board open through both holes (hole_cut.py). Everything in a finding is plain text from the
@@ -29,9 +31,9 @@ from .findings_draw import figure
 from .objects import shown_view_areas
 from .state import board
 
-SOURCES = (("drc", "KiCad DRC"), ("phase", "Dynamic phase"), ("file", "LLM"))
-TABS = {"drc": "DRC", "phase": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS) that lists it
-OWN = ("drc", "phase")  # the bridge's own sources: KiCad's DRC and dynamic phase need no verdict
+SOURCES = (("drc", "KiCad DRC"), ("phase", "Dynamic phase"), ("tombstone", "Tombstone"), ("file", "LLM"))
+TABS = {"drc": "DRC", "phase": "DRC", "tombstone": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS)
+OWN = ("drc", "phase", "tombstone")  # the bridge's own sources: measured by KiCad or the bridge, they need no verdict
 MENTION_ICONS = {"part": "MESH_CUBE", "pad": "MESH_PLANE", "net": "LINKED", "via": "RADIOBUT_OFF"}  # by kind
 SEVERITY_ICONS = {"error": "ERROR", "warning": "ERROR", "info": "INFO", "unknown": "QUESTION"}  # without previews
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
@@ -405,11 +407,15 @@ def draw_column(layout, scene, wrap, tab):
         row = buttons.row(align=True)
         row.enabled = linked and status != "unsaved"
         row.operator(KILEIDO_OT_findings_run_phase.bl_idname, text="Dynamic phase", icon="PLAY")
+        row = buttons.row(align=True)
+        row.enabled = linked and status != "unsaved"
+        row.operator(KILEIDO_OT_findings_run_tombstone.bl_idname, text="Tombstone", icon="PLAY")
         if drc.get("state") == "failed":
             _lines(box, wrap, f"DRC failed: {drc.get('error') or 'no report'}", "ERROR")
-        measured = found.get("phase") or {}
-        if measured.get("state") == "failed":
-            _lines(box, wrap, f"Dynamic phase failed: {measured.get('error') or 'no result'}", "ERROR")
+        for name, title in (("phase", "Dynamic phase"), ("tombstone", "Tombstone check")):
+            measured = found.get(name) or {}
+            if measured.get("state") == "failed":
+                _lines(box, wrap, f"{title} failed: {measured.get('error') or 'no result'}", "ERROR")
     _draw_filter(box, scene, tab)
     row = box.row()
     row.prop(scene, "kileido_findings_dismissed", text="Show dismissed")
@@ -427,7 +433,7 @@ def draw_column(layout, scene, wrap, tab):
         _draw_source(layout, scene, wrap, name, title, data)
     if not listed and status != "unsaved":
         folder = found.get("folder") or "the board's .kileidoscope folder"
-        _lines(layout, wrap, "No findings yet. Press KiCad DRC or Dynamic phase" if tab == "DRC" else
+        _lines(layout, wrap, "No findings yet. Press KiCad DRC, Dynamic phase or Tombstone" if tab == "DRC" else
                f"No findings yet. Copy the prompt into your LLM tool; its answer lands in {folder}")
 
 
@@ -833,6 +839,9 @@ def _draw_facts(box, wrap, draw):
     if tool == "layers" and draw.get("layers"):
         _lines(box, wrap, f"Layers shown: {', '.join(draw['layers'])} (other copper hidden while shown)",
                "RENDERLAYERS")
+    if tool == "lift":
+        _lines(box, wrap, f"Drawn lifted {draw.get('rotation_deg') or 0:g}° off its pads, as it would stand if it "
+                          "tombstoned; back in place when hidden", "ORIENTATION_GIMBAL")
     for upper, lower, gap in (entry for entry in draw.get("stack") or () if len(entry) >= 3):
         _lines(box, wrap, f"Stackup: {upper} to {lower}, {gap / 1e6:.3f} mm", "DRIVER_DISTANCE")
     no_stub = tool == "stub" and not findings_draw.stubbed(draw)
@@ -1076,6 +1085,30 @@ class KILEIDO_OT_findings_run_phase(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_findings_run_tombstone(bpy.types.Operator):
+    bl_idname = "kileido.findings_run_tombstone"
+    bl_label = "Tombstone"
+    bl_description = ("Check every 01005, 0201 and 0402 for tombstone risk, from its pads, paste apertures and the "
+                      "copper each pad is tied into, at the panel's stencil thickness; the parts at risk are listed "
+                      "here with the end that would lift")
+
+    @classmethod
+    def poll(cls, context):
+        found = board.findings or {}
+        if not _linked(cls):
+            return False
+        if found.get("status") == "unsaved":
+            cls.poll_message_set("Save the board first")
+            return False
+        return True
+
+    def execute(self, context):
+        from . import live
+        stencil_nm = round(getattr(context.scene, "kileido_stencil_mm", 0.12) * 1e6)
+        live.request_findings("run_tombstone", str(stencil_nm), "tombstone")
+        return {"FINISHED"}
+
+
 class KILEIDO_OT_findings_prompt(bpy.types.Operator):
     bl_idname = "kileido.findings_prompt"
     bl_label = "Copy prompt"
@@ -1192,6 +1225,7 @@ class KILEIDO_OT_findings_group(bpy.types.Operator):
 
 
 CLASSES = (KILEIDO_OT_finding_show, KILEIDO_OT_finding_kicad, KILEIDO_OT_finding_mention, KILEIDO_OT_finding_state,
-           KILEIDO_OT_findings_run_drc, KILEIDO_OT_findings_run_phase, KILEIDO_OT_findings_prompt,
+           KILEIDO_OT_findings_run_drc, KILEIDO_OT_findings_run_phase, KILEIDO_OT_findings_run_tombstone,
+           KILEIDO_OT_findings_prompt,
            KILEIDO_OT_prompt_check, KILEIDO_OT_prompt_preset,
            KILEIDO_OT_findings_group)

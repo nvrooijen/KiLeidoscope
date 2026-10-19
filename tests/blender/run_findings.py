@@ -138,6 +138,14 @@ SUGGESTED = [  # what an LLM's answer adds: a ghost, a polygon area, layers, a f
 ]
 
 
+LIFTED = [  # a part lifted off its pads as it would stand if it tombstoned: its model copied and turned
+    {"check": "tombstone.heat", "severity": "warning", "title": "Lifted part",
+     "draw": [{"tool": "highlight", "targets": ["J1"]},
+              {"tool": "lift", "targets": ["J1"], "about": "pt:11,23@F.Cu", "toward": "pt:13,23@F.Cu",
+               "angle_deg": 30}]},
+]
+
+
 def with_second_pad(index):
     """The fixture with a second pad on J3, 2 mm along from its first: J3 then has a body
     (the box of its pads) to move. Blender draws what the bridge sends; the board stays."""
@@ -581,6 +589,51 @@ def check_plate(text, drawn, severity):
     for material in (light, dark, icon.data.materials[0], glyph.data.materials[0]):
         assert material.node_tree.nodes.get(cut.NODE) is None, material.name
     return plate
+
+
+def check_lift(scene, index):
+    """A lift draw: the part's model parts copied and turned about the pivot so the toward
+    end rises, the parts themselves hidden while the finding is shown and back after it."""
+    from mathutils import Matrix, Vector
+    from kileido import components
+    from kileido.objects import link_owned
+    frame_obj = components.find(components.FRAME, J1)
+    assert frame_obj is not None
+    corners = [(x, y, z) for z in (0.0, 0.5e-3) for x, y in ((-1e-3, -0.5e-3), (1e-3, -0.5e-3), (1e-3, 0.5e-3),
+                                                             (-1e-3, 0.5e-3))]
+    mesh = bpy.data.meshes.new("J1 stand-in body")  # 2 x 1 x 0.5 mm on the frame's origin: x from 11 to 13 mm
+    mesh.from_pydata(corners, [], [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)])
+    body = bpy.data.objects.new("J1 body", mesh)
+    link_owned(body, "components")
+    body["kls_model_fp_id"] = J1
+    components.attach(body, frame_obj, Matrix.Identity(4))
+    state.board.model_objects_by_fp[J1] = [body.name]
+    state.board.model_bound.add(J1)
+    bpy.context.view_layer.update()
+    before = body.matrix_world.copy()
+    apply.apply_frame(frame(index, extra=LIFTED), {})
+    show("Lifted part")
+    bpy.context.view_layer.update()
+    copies = [obj for name, obj in objects().items() if name.startswith("KLS finding 2 lift")]
+    assert len(copies) == 1 and body.hide_get() and body.hide_render
+    (copy,) = copies
+    assert copy.data == mesh and copy.parent is None and copy.get("kls_model_fp_id") is None
+    assert copy.get(findings_draw.TAG) and not copy.hide_get()
+    # Turned 30° about the line through (11, 23) mm across the part: its left end (x = 11 mm)
+    # stays put, its right end (x = 13 mm) rises by 2 mm sin 30°
+    left, right = (copy.matrix_world @ Vector((x, 0.0, 0.0)) for x in (-1e-3, 1e-3))
+    left_before, right_before = (before @ Vector((x, 0.0, 0.0)) for x in (-1e-3, 1e-3))
+    assert abs(left.z - left_before.z) < 0.1e-3 and abs(left.x - left_before.x) < 0.1e-3, (left, left_before)
+    assert np.isclose(right.z - right_before.z, 1e-3, atol=0.1e-3), (right.z, right_before.z)
+    assert any(text.startswith("Drawn lifted 30°") for _, text, _ in column(scene)), column(scene)
+    findings_draw.clear()
+    assert not body.hide_get() and not body.hide_render and not objects()
+    # The stand-in goes, and the findings frame without the lifted part
+    state.board.model_objects_by_fp.pop(J1)
+    state.board.model_bound.discard(J1)
+    bpy.data.objects.remove(body)
+    bpy.data.meshes.remove(mesh)
+    apply.apply_frame(frame(index), {})
 
 
 def check_labels(found, count, below=False):
@@ -2023,6 +2076,7 @@ def main():
         check_origin(scene, index)
         check_markers(scene)
         check_drawing(scene)
+        check_lift(scene, index)
         check_pull()
         check_hole_cut(scene, index)
         check_fold(scene, index)

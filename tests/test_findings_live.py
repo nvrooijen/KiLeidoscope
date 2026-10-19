@@ -134,7 +134,7 @@ def test_a_written_findings_file_reaches_blender_after_the_snapshot(tmp_path, mo
                           and any(p["status"] == "none" for p in payloads(f)))
         none = payloads(frames)[-1]
         assert none["folder"] == str(project / ".kileidoscope") and none["drc"]["state"] == "idle"
-        assert set(none["sources"]) == {"drc", "phase", "file"}
+        assert set(none["sources"]) == {"drc", "phase", "tombstone", "file"}
         write(project, tool_file(track))
         payload = until_payload(runtime, client, lambda p: p["status"] == "ok")
         (row,) = file_rows(payload)
@@ -345,6 +345,30 @@ def test_dynamic_phase_needs_a_saved_board(tmp_path, monkeypatch):
         request(client, "run_phase", source="phase")
         payload = until_payload(runtime, client, lambda p: p["phase"]["state"] == "failed")
         assert payload["phase"]["error"] == findings_watch.SAVE_FIRST
+
+
+def test_the_tombstone_check_from_the_drc_column_lists_the_parts_at_risk(tmp_path, monkeypatch):
+    """The DRC column's Tombstone button: every small chip checked now at the panel's
+    stencil thickness (the request's key, nm), its findings file written beside KiCad's
+    DRC's and read back, so the part shows in the list."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import test_tombstone as chips
+    snapshot = chips.board(tracks=[chips.SIG_TRACE], zones=[chips.SOLID])  # one 0402, a pad in a plane
+    runtime, reader, client, project = live(tmp_path, monkeypatch, snapshot=snapshot)
+    with connected(runtime, client):
+        until_payload(runtime, client, lambda p: p["status"] == "none")
+        request(client, "run_tombstone", key="100000", source="tombstone")
+        payload = until_payload(runtime, client, lambda p: p["sources"]["tombstone"]["status"] == "ok")
+        assert payload["tombstone"] == {"state": "idle", "error": ""}
+        source = payload["sources"]["tombstone"]
+        assert source["tool"] == "Tombstone check; 1 part checked (01005, 0201, 0402); stencil 0.1 mm"
+        (row,) = source["findings"]
+        assert row["check"] == "tombstone.heat" and set(row["draws"][0]["ids"]) == {"a", "b"}  # the pads lit
+        assert row["draws"][1]["tool"] == "label" and row["draws"][1]["text"] == "tombstone HIGH: pad 2 lifts"
+        assert row["draws"][2]["tool"] == "lift" and row["draws"][2]["ids"] == ["R1"]  # the part drawn lifted
+        written = json.loads((project / ".kileidoscope" / "board.tombstone.kls-findings.json").read_text(encoding="utf-8"))
+        assert written["findings"][0]["check"] == "tombstone.heat"
+        assert payload["sources"]["drc"]["status"] == "none"  # KiCad's DRC was not run
 
 
 Check = namedtuple("Check", "id group title instruction evidence draws v1 values", defaults=((),))

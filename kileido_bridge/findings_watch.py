@@ -49,7 +49,8 @@ from . import drc_findings, findings, ghost_drc, kls_folder
 from .board_index import BoardIndex
 from .kls_folder import SOURCES
 
-ACTIONS = frozenset({"confirm", "dismiss", "reset", "run_drc", "run_phase", "prompt"})  # run_phase: the loop's
+ACTIONS = frozenset({"confirm", "dismiss", "reset", "run_drc", "run_phase", "run_tombstone", "prompt"})  # run_phase,
+                                                                                                        # run_tombstone: the loop's
 MARKS = {"confirm": "confirmed", "dismiss": "dismissed", "reset": ""}
 SAVED_ONLY = "saved file, unsaved edits not checked"
 SAVE_FIRST = "Save the board first"
@@ -64,7 +65,7 @@ _UNREAD = object()  # a file not read yet (None: read, and missing)
 
 
 def phase_state(state: str = "idle", error: str = "") -> dict:
-    """The DRC column's Dynamic phase button: "idle", or "failed" with why."""
+    """The DRC column's Dynamic phase and Tombstone buttons: "idle", or "failed" with why."""
     return {"state": state, "error": error}
 
 
@@ -212,8 +213,8 @@ class FindingsWatch:
 
     Payload (the `findings` frame's "findings"): {"status": "ok" | "none" | "unsaved",
     "folder": "<project>/.kileidoscope" or "", "drc": {"state": "idle" | "running" |
-    "failed", "error", "run"}, "phase": {"state": "idle" | "failed", "error"} (the Dynamic
-    phase button, `publish_file`), "prompt": {"state": "idle" | "making" | "ready" |
+    "failed", "error", "run"}, "phase" and "tombstone": {"state": "idle" | "failed", "error"}
+    (the Dynamic phase and Tombstone buttons, `publish_file`), "prompt": {"state": "idle" | "making" | "ready" |
     "failed", "run", "text", "error"}, "progress": `progress_state`, "catalogue": [{"id",
     "group", "title", "v1", "measurable"}], "groups": [{"id", "title"}], "sources": {"drc": <source
     payload>, "file": <source payload>}}. A source payload is what `findings.resolve_file`
@@ -257,7 +258,7 @@ class FindingsWatch:
         self._drc = drc_state()
         self._drc_wanted = False
         self._drc_running = False
-        self._phase = phase_state()
+        self._own = {source: phase_state() for source in kls_folder.OWN if source != "drc"}  # per button
         self._prompt = prompt_state()
         self._prompt_wanted = None  # (check ids, notes) of a prompt the next tick starts
         self._prompt_running = False
@@ -350,7 +351,7 @@ class FindingsWatch:
     def request(self, action: str, key: str = "", source: str = "drc", checks=(), notes: str = "") -> None:
         """confirm | dismiss | reset a finding of `source` by its key, run_drc, or make a
         prompt for the check ids `checks` with the user's `notes`."""
-        if action not in ACTIONS or action == "run_phase":  # run_phase: the loop measures and calls publish_file
+        if action not in ACTIONS or action in ("run_phase", "run_tombstone"):  # the loop measures, then publish_file
             return
         source = source if source in SOURCES else "drc"
         with self._lock:
@@ -365,10 +366,10 @@ class FindingsWatch:
                 self._mark(folder, action, key, source)
 
     def publish_file(self, source: str, data: dict | None, error: str = "") -> None:
-        """A findings file the bridge made outside a run (dynamic phase, from the loop):
-        written whole and read back at once, like a DRC run's. With `data` None, `error`
-        says why there is none; the DRC column shows it under the button."""
-        if source not in kls_folder.OWN:
+        """A findings file the bridge made outside a run (dynamic phase, the tombstone check:
+        from the loop): written whole and read back at once, like a DRC run's. With `data`
+        None, `error` says why there is none; the DRC column shows it under the button."""
+        if source not in self._own:
             return
         with self._lock:
             folder = self.folder
@@ -376,15 +377,15 @@ class FindingsWatch:
                 return
             path = None
             if not folder.available:
-                self._phase = phase_state("failed", SAVE_FIRST)
+                self._own[source] = phase_state("failed", SAVE_FIRST)
             elif data is None:
-                self._phase = phase_state("failed", error or "no result")
+                self._own[source] = phase_state("failed", error or "no result")
             else:
                 try:
                     path = folder.write_findings(data, source)
-                    self._phase = phase_state()
+                    self._own[source] = phase_state()
                 except (OSError, ValueError, kls_folder.NotAvailable) as exc:
-                    self._phase = phase_state("failed", _failure(exc))
+                    self._own[source] = phase_state("failed", _failure(exc))
             if path is not None:  # read it now, not after the next settle
                 self._read[source] = _signature(path)
                 self._job.reload.add(source)
@@ -474,7 +475,8 @@ class FindingsWatch:
             self._catalogue = self._catalogue_of()
         rows, groups = self._catalogue or ([], [])
         payload = {"status": status, "folder": str(folder.root) if folder.available else "",
-                   "drc": dict(self._drc), "phase": dict(self._phase), "prompt": dict(self._prompt),
+                   "drc": dict(self._drc), **{source: dict(state) for source, state in self._own.items()},
+                   "prompt": dict(self._prompt),
                    "progress": self._progress_payload(),
                    "catalogue": rows, "groups": groups, "sources": sources}
         if payload != self._payload:
