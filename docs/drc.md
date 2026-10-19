@@ -4,7 +4,7 @@
 
 The Kileidoscope bridge is now updated with KiCad's DRC, which can be run directly from the UI. KiCad's design rule checker tells you what is wrong and where. It is, however, limited to 2D, whereas PCBs are inherently 3D objects. Some problems read much better in 3D: a via whose drill comes too close to a pad on an inner layer, a track squeezed past a board edge on the bottom side, two holes that nearly touch through every layer. KiLeidoscope's DRC column runs KiCad's own DRC on the board as it is open in KiCad, lists what it finds, and draws the finding you pick on the 3D board: the items involved lit, the gap measured, the label beside it, and a hole problem cut open so you see the barrels in section.
 
-KiLeidoscope does not check the rules itself. Every finding in the KiCad DRC list is KiCad's; KiLeidoscope only shows it, and measures the gap again on the board so the drawing sits where the problem is. The one list of its own in this column is **Dynamic phase**, the differential pairs' timing (see [its guide](dynamic-phase.md#from-the-drc-column)).
+KiLeidoscope does not check the rules itself. Every finding in the KiCad DRC list is KiCad's; KiLeidoscope only shows it, and measures the gap again on the board so the drawing sits where the problem is. Two lists of its own sit in this column: **Dynamic phase**, the differential pairs' timing (see [its guide](dynamic-phase.md#from-the-drc-column)), and **Tombstone**, the small chip parts at risk of standing up in reflow (see [below](#tombstone)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/InfographDRC_Dark_gh3.webp">
@@ -15,6 +15,7 @@ KiLeidoscope does not check the rules itself. Every finding in the KiCad DRC lis
 
 - [Before you start](#before-you-start)
 - [Running DRC](#running-drc)
+- [Tombstone](#tombstone)
 - [The list](#the-list)
 - [Showing a finding](#showing-a-finding)
 - [What is drawn](#what-is-drawn)
@@ -51,6 +52,33 @@ What is checked:
 If DRC fails, the column says why (*DRC failed: …*), and the last run's list stays.
 
 > **Before you order a board,** run the final DRC in KiCad's own **Design Rules Checker** dialog, not here: see the [disclaimer](#disclaimer).
+
+## Tombstone
+
+A small chip tombstones when one end wets before the other: the first fillet pulls, and the dry end stands up. **Tombstone** checks every 01005, 0201 and 0402 on the board (bigger chips rarely tombstone [4]) for what makes its two ends differ, from what KiCad has: the pads, the paste apertures, the copper each pad is tied into, vias in the pads, and the **Solder paste** stencil thickness from the Thickness settings. The parts at risk are listed under the DRC list, with the same markers, confirm and dismiss, and select-in-KiCad.
+
+While **Lifted parts** is ticked (under the filter row), every listed part stands lifted off its pads as it would after reflow: it turns about the end that melts first, steeper at HIGH. Untick it to see the parts as placed. Showing a finding lights its two pads and names the end that lifts.
+
+What raises a part:
+
+- **An open via in a pad**: solder drains into it [1]. A filled or capped via does not count [2].
+- **One pad drawing heat away much faster than the other**: a pad in a plane against a pad on a trace, or a thermal relief against a trace. The slower end melts last and lifts.
+- **Paste on one pad only**, or much more on one than the other.
+- **A stencil area ratio under 0.66** (IPC-7525, as cited in [1]) on either aperture: the paste releases unevenly.
+- **Pads larger than the library's nominal pads** [1].
+- **Pads so far apart** that the metal ends barely reach them [3].
+
+HIGH is a warning, MEDIUM info; two raised factors make a part HIGH. The check does not see the oven, the paste or the part's real dimensions: a listed part is worth a look, not a certain defect, and an unlisted one is no promise. The via, area-ratio, pad-size and pad-gap thresholds come from the measurements in [1]–[3]; the heat and paste thresholds are estimates, and each finding's confidence says which.
+
+References:
+
+[1] Y. Liu, S. Rodgers, and R. W. Johnson, "PCB design and assembly process development of 01005 components with lead free solder," in *Proc. IPC APEX*, 2006, paper S01-02.
+
+[2] Y.-W. Lee, K.-S. Kim, and K. Suganuma, "The effect of micro via-in pad designs on surface-mount assembly defects: Part I – tombstoning," *Soldering & Surface Mount Technology*, vol. 24, no. 3, pp. 197–205, 2012, doi: 10.1108/09540911211240065.
+
+[3] M. Wang, D. Shangguan, D. Geiger, K. Nakajima, C. C. Ho, and S. Yi, "Board design and assembly process evaluation for 0201 components on PCBs," in *Proc. IPC APEX*, 2002, paper S30-1.
+
+[4] T. Lentz and G. Smith, "What do you want on your tombstone?," in *Proc. SMTA International*, 2021. Accessed: Oct. 19, 2026. [Online]. Available: https://fctsolder.com/wp-content/uploads/2022/02/2021-SMTAI-What-Do-You-Want-On-Your-Tombstone.pdf
 
 ## The list
 
@@ -188,7 +216,7 @@ A minimal file:
 ```
 
 - **Fields of a finding**: `check` (an id, grouped by its part before the first dot), `severity` (`error`, `warning` or `info`), `title`, `message`, `values` (numbers whose name ends in a unit: `_mm`, `_mm2`, `_ps`, `_pct`, …) and `draw`, a list of drawings.
-- **Drawings**: `highlight` (`targets`), `label` (`at`, `text`), `arrow` (`from`, `to`), `distance` (`from`, `to`, `mode` `edge` or `centre`, optional `limit` with `limit_is` `min` or `max`), `clearance` (`a`, `b`, optional `required`), `edge_gap` (`target`, optional `min_mm`), `width` (`target`, optional `required`) and `area` (`layer`, `targets`). Every drawing takes an optional `label` and `emphasis` (`normal` or `strong`). Lengths are in mm.
+- **Drawings**: `highlight` (`targets`), `label` (`at`, `text`), `arrow` (`from`, `to`), `distance` (`from`, `to`, `mode` `edge` or `centre`, optional `limit` with `limit_is` `min` or `max`), `clearance` (`a`, `b`, optional `required`), `edge_gap` (`target`, optional `min_mm`), `width` (`target`, optional `required`), `area` (`layer`, `targets`) and `lift` (`targets`, `about`, `toward`, optional `angle_deg`: the part copied and tilted about the line through `about`, its `toward` end rising, as a tombstone). Every drawing takes an optional `label` and `emphasis` (`normal` or `strong`). Lengths are in mm.
 - **Targets**: a part `U3`, a pad `U3.4`, a net `net:GND`, a net on one layer `net:GND@In1.Cu`, the item of a net nearest a point `net:GND@In1.Cu~42.1,18.75`, a layer `layer:In1.Cu`, an item by id `uuid:5a222dbd` (the last 8 hex of KiCad's uuid, or all of it), a point `pt:42.1,18.75@F.Cu` and the board `edge`. Coordinates are mm in KiCad's frame, y pointing down, as in the board file.
 
 The file is treated as data only: text is shown as text, cut to a few hundred characters, and nothing in it is ever run or opened. Measured drawings are measured again on the live board; the file's own numbers are shown as given.

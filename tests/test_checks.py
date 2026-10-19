@@ -8,7 +8,7 @@ from kileido_bridge.checks import CATALOGUE, GROUPS, by_id
 
 def test_ids_are_unique_and_pass_the_findings_check_rule():
     ids = [check.id for check in CATALOGUE]
-    assert len(ids) == len(set(ids)) == 65
+    assert len(ids) == len(set(ids)) == 66
     for check in CATALOGUE:
         assert findings._CHECK.fullmatch(check.id), check.id
         group, dot, name = check.id.partition(".")

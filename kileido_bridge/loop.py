@@ -8,7 +8,8 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
-from . import findings, findings_watch, flex_checks, hatch, kls_folder, phase_findings, protocol
+from . import (findings, findings_watch, flex_checks, hatch, kls_folder, phase_findings, protocol, tombstone,
+               tombstone_findings)
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items, variant_dnp, with_variant_dnp
 from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
@@ -428,6 +429,25 @@ class BridgeRuntime:
             return
         self.findings.publish_file("phase", data)
 
+    def _tombstone_findings(self, stencil: str):
+        """The DRC column's Tombstone button: every 01005, 0201 and 0402 checked now
+        (tombstone) and written as a findings file beside KiCad's DRC's
+        (tombstone_findings); the findings watch reads it back like any other. `stencil`:
+        the panel's stencil thickness in nm, as text (the request's key)."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            self.findings.publish_file("tombstone", None, findings.NOT_CONNECTED)
+            return
+        stencil_nm = int(stencil) if stencil.isdigit() else tombstone.DEFAULT_STENCIL_NM
+        stencil_nm = min(max(stencil_nm, 30_000), 300_000)  # the panel's range
+        try:
+            checked, found = tombstone.check(snapshot, stencil_nm)
+            data = tombstone_findings.convert(checked, found, stencil_nm, self.copy_stamp)
+        except Exception as exc:  # a bug in the check costs this press, never the bridge
+            self.findings.publish_file("tombstone", None, f"could not check the parts ({type(exc).__name__}: {exc})")
+            return
+        self.findings.publish_file("tombstone", data)
+
     # --- Live board copy (kicad-cli exports) --------------------------------------------
 
     def _refresh_copy(self, force: bool = False):
@@ -580,6 +600,8 @@ class BridgeRuntime:
             for action, key, source, checks, notes in requests:
                 if action == "run_phase":
                     self._phase_findings()
+                elif action == "run_tombstone":
+                    self._tombstone_findings(key)
                 else:
                     self.findings.request(action, key, source, checks, notes)
             if requests:

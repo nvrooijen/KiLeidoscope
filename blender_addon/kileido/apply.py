@@ -56,6 +56,7 @@ def apply_frame(header, arrays):
     elif message_type == "footprints":
         footprints.apply(header)
         highlight.refresh_components()
+        findings_draw.rehide_lifted()  # a part drawn lifted stays hidden under its copy
         solder.invalidate()  # parts moved: the solder flows to where their leads are
     elif message_type == "stackup":
         board.warnings = list(dict.fromkeys([*board.warnings, *header.get("warnings", [])]))

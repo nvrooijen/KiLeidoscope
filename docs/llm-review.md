@@ -151,6 +151,7 @@ The LLM does not draw. It names things (`U3.4`, `net:CLK@In1.Cu~42.1,18.75`, `uu
 | --- | --- | --- |
 | `highlight`, `isolate` | The items lit; isolate in X-ray mode. | – |
 | `label`, `arrow` | A callout at a target; an arrow between two. | – |
+| `lift` | A part copied and tilted up about a point (`about`), its `toward` end rising, as a tombstone; the part itself hidden meanwhile. | – |
 | `area` | A translucent region on a layer: a loop, a keep-out. | – |
 | `layers` | Only the named copper layers shown while the finding is. Two neighbouring layers: their dielectric from the stackup. | A claimed `distance_mm` |
 | `distance` | A dimension between two targets, against a limit (a reach, `max`, or a clearance, `min`). | Yes |

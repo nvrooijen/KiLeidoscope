@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 5, 2),
+    "version": (0, 5, 3),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -1578,6 +1578,11 @@ def _scene_properties():
             name="Markers", default=True,
             description="Show each finding as an icon on the board (nearby ones share one); click one to show it",
             update=lambda self, context: findings_markers.invalidate()),
+        "kileido_lift_parts": BoolProperty(
+            name="Lifted parts", default=True,
+            description="Draw every part the Tombstone check lists (and any lift drawing an LLM gives) lifted off "
+                        "its pads, as it would stand if it tombstoned, without showing each finding",
+            update=lambda self, context: findings_draw.refresh()),
         "kileido_findings_errors": BoolProperty(
             name="Errors", default=True, description="List and mark the errors",
             update=lambda self, context: findings.filter_toggled(context.scene)),

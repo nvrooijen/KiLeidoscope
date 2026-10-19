@@ -101,6 +101,8 @@ SPOT_REACH_NM = 1_000_000  # discontinuity: the net's copper, and a change, this
 MEETING_REACH_NM = 2 * SPOT_REACH_NM  # discontinuity: tracks this close to a point may meet at it
 RETURN_LIMIT_MM = 1.0  # layer_change: a return via this close, unless the draw gives its own limit
 EDGE_REACH_NM = 1_000_000  # plane_gap: the plane's edges this far around each gap
+LIFT_DEG = 40.0  # lift: how far a part is tilted when the draw gives no angle_deg
+MAX_LIFT_DEG = 90.0
 MAX_BARS = 12
 MAX_BAR_LABEL = 40
 MAX_BAR_VALUE = 1e12
@@ -113,7 +115,8 @@ UNITS = ("_mm2", "_cm2", "_mm", "_ps", "_mv", "_a", "_pct")  # longest first
 TOOLS = frozenset({"highlight", "isolate", "label", "arrow", "distance", "ghost", "area", "layers",  # marks
                    "clearance", "width", "routed_length", "edge_gap", "bars",  # measured geometry, charts
                    "return_path", "plane_gap", "layer_change", "plane_islands", "stitching", "stub",  # planes
-                   "discontinuity"})
+                   "discontinuity",
+                   "lift"})  # a part lifted off its pads, as a tombstone
 DRAWN = TOOLS  # what Blender draws in this version
 WHAT = {"clearance": "Clearance", "edge_gap": "Edge gap", "width": "Width", "routed_length": "Routed length",
         "layer_change": "Return via", "plane_gap": "Gap", "return_path": "Without plane", "plane_islands": "Islands",
@@ -142,7 +145,7 @@ CLAIMS = (("distance_mm", ("distance", "clearance", "edge_gap", "layer_change", 
           ("coverage_pct", ("return_path",)))
 ROUTE_LIMIT = "tracks, arcs and vias are followed, zones are not"
 ROLES = ("at", "from", "to", "a", "b", "target", "via", "pad", "crossing", "signal", "part",
-         "path")  # draw fields with targets
+         "path", "about", "toward")  # draw fields with targets
 SEVERITIES = ("error", "warning", "info")
 CONFIDENCES = ("high", "medium", "low")
 GHOSTS = ("via", "cap", "track", "pad", "part", "via_row")
@@ -427,6 +430,12 @@ def _fields(tool: str, raw: dict, problems: list) -> dict:
         return {"at": _target(_need(raw, "at"), "at"), "text": text}
     if tool == "arrow":
         return {"from": _target(_need(raw, "from"), "from"), "to": _target(_need(raw, "to"), "to")}
+    if tool == "lift":  # the part(s) tilted about the line through `about` across the way to `toward`, which rises
+        angle = _number(raw["angle_deg"]) if raw.get("angle_deg") is not None else LIFT_DEG
+        if angle is None or not 1 <= angle <= MAX_LIFT_DEG:
+            raise _Bad(f"angle_deg is not a number of degrees, 1 to {MAX_LIFT_DEG:g}")
+        return {"targets": _targets(_need(raw, "targets")), "about": _target(_need(raw, "about"), "about"),
+                "toward": _target(_need(raw, "toward"), "toward"), "angle": float(angle)}
     if tool == "distance":
         mode = raw.get("mode", "edge")
         mode = "centre" if mode == "center" else mode
@@ -912,10 +921,9 @@ def _roles(draw: Draw) -> list[tuple[str, str]]:
     """(role, target text) of every target a draw names, in order (a role holding a list,
     as discontinuity's `at`, once per target)."""
     fields = draw.fields
-    if "targets" in fields:
-        return [("targets", text) for text in fields["targets"]]
-    return [(role, text) for role in ROLES if fields.get(role)
-            for text in (fields[role] if isinstance(fields[role], tuple) else (fields[role],))]
+    roles = [("targets", text) for text in fields.get("targets", ())]
+    return roles + [(role, text) for role in ROLES if fields.get(role)
+                    for text in (fields[role] if isinstance(fields[role], tuple) else (fields[role],))]
 
 
 def _ids(board: _Resolver, resolved: list[Resolved]) -> tuple[list[str], bool]:
@@ -1518,6 +1526,12 @@ def _resolve_draw(board: _Resolver, draw: Draw) -> tuple[dict, list[Resolved]]:
                 out["problem"] = "; ".join(filter(None, (out["problem"], *kept)))
         elif tool == "arrow":
             out["points"] = _anchor_pair(board.index, by_role["from"], by_role["to"])
+        elif tool == "lift":  # lifted: the targets alone, not what sits under the pivot and the rising end
+            out["ids"], _ = _ids(board, [found for (role, _), found in zip(roles, resolved) if role == "targets"])
+            if not out["ids"]:
+                raise _Bad("no part found on board")
+            out["points"] = [_anchor(by_role["about"], "about"), _anchor(by_role["toward"], "toward")]
+            out["rotation_deg"] = fields["angle"]
         elif tool == "distance":
             if fields["mode"] == "centre":
                 out["points"] = _anchor_pair(board.index, by_role["from"], by_role["to"])

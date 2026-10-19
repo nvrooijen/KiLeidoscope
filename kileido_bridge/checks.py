@@ -414,6 +414,14 @@ CATALOGUE: tuple[Check, ...] = (
           "Find vias in pads that are not plugged or filled.",
           "pad, via uuid",
           ("highlight",)),
+    Check("fab.tombstone", "fab", "Tombstone risk",
+          "Find small two-pad chips (01005 to 0402) likely to tombstone: one pad tied into a plane without a "
+          "thermal relief while the other sits on a trace, an open via in one pad, paste on one pad only, pads "
+          "far larger than the footprint's nominal, or pads so far apart the metal ends barely reach them. "
+          "Draw the part lifted (lift) about the pad that melts first: about that pad's outer edge, toward the "
+          "other pad.",
+          "reference, both pads, which end lifts",
+          ("lift", "highlight", "label")),
     Check("fab.acid_trap", "fab", "Acid trap",
           "Find acute angles between a track and a pad.",
           "track as net@layer~x,y, pad",

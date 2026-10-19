@@ -39,6 +39,10 @@ the copper thickness toggle), so it always sits on the copper as drawn now.
 - bars: a small bar chart on a label's plate, under its title, facing the view as the
   labels do (label_place puts it): heights to the largest value or limit, the limit as a
   light line across, bars past it in the "over" red, values over the bars, names under.
+- lift: the part lifted off its pads as it would stand if it tombstoned: copies of its
+  visible model parts (else its placeholder) turned about the line through `about`, across
+  the direction to `toward`, so that end rises; the part itself is hidden meanwhile and
+  shown again as KiCad shows it when the finding goes (`_restore_lifted`).
 
 Planes and return paths, measured by the bridge, in thin lines (hairlines, a little
 thicker for `emphasis: strong`); never colour alone, each colour also has a shape or words:
@@ -81,8 +85,8 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 from . import components, focus, fold, highlight, hole_cut, label_place, layers, materials, transform
-from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, outline_bounds, shown_views,
-                      view3d_spaces)
+from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, outline_bounds, set_visible,
+                      shown_views, view3d_spaces)
 from .placement import outward
 from .state import board
 
@@ -157,13 +161,15 @@ BARREL = 1.2  # of a stub's via radius: its barrel drawn just around the real on
 MARK = 0.5  # of a label's size: a discontinuity marker's width
 MARK_LABELS = 8  # marks labelled in 3D, in order; the column lists all
 MARK_TITLES = {"width": "Width step", "layer": "Layer change", "reference": "Reference change"}  # by kind
+LIFT_DEG = 40.0  # a lift draw without an angle
 FOLLOW_S = 0.1
 VIEW_NEAR_M = 2e-3  # a label pulled towards a 3D view's eye stays this far from it (its clip is 1 mm)
 _UP = Matrix.Rotation(-math.pi / 2, 4, "X")  # the eye's z along the view's up: the labels' up (Track To)
 _state = {"folded": False, "views": {}, "follow": None, "eye": None,  # views: area pointer -> last view matrix
           "labels": [], "layout": None,  # labels facing the eye: laid out again as it moves
           "reach": None,  # (x0, y0, x1, y1) the labels' plates cover, for framing
-          "parts": None}  # part_boxes() of the drawing as last made (the parts move only with a redraw)
+          "parts": None,  # part_boxes() of the drawing as last made (the parts move only with a redraw)
+          "lifted": []}  # names of the parts hidden under lifted copies (_draw_lift)
 
 
 # --- What is shown --------------------------------------------------------------------------
@@ -367,6 +373,7 @@ def refresh():
     from . import findings_markers  # it imports this module
     findings_markers.invalidate()  # the board's markers placed again on the board as drawn now
     _clear_objects()
+    _restore_lifted()
     finding = shown_finding()
     if finding is None:
         board.findings_shown = ("", "")
@@ -386,7 +393,9 @@ def refresh():
     keep = {layer for draw in draws if draw["tool"] == "layers" for layer in draw.get("layers") or ()}
     layers.set_filter(keep if finding is not None and not _state["folded"] else None)
     _state["labels"], _state["layout"], _state["reach"], _state["parts"] = [], None, None, None
-    if finding is not None and not bpy.app.timers.is_registered(_follow):
+    if not _state["folded"]:
+        _lift_listed(finding)  # every listed finding's parts lifted (the Lifted parts toggle)
+    if (finding is not None or _lifts_wanted()) and not bpy.app.timers.is_registered(_follow):
         bpy.app.timers.register(_follow, first_interval=FOLLOW_S)  # on a folded board too: it draws on unfolding
     if finding is None or _state["folded"]:
         return
@@ -444,14 +453,15 @@ def purge():
 def _follow():
     """Timer while a finding is shown: the eye follows the view; folding hides the drawing,
     unfolding draws it (and cuts the board open for a hole finding shown while folded)."""
-    if board.findings_shown == ("", "") or board.collection is None:
+    if board.collection is None or (board.findings_shown == ("", "") and not _lifts_wanted()):
         return None
     try:
         if fold.folded() != _state["folded"]:
-            if _state["folded"]:  # unfolded: the cut first, the labels are written on its face
-                hole_cut.show(shown_finding())
+            if _state["folded"] and board.findings_shown != ("", ""):  # unfolded: the cut first, the labels
+                hole_cut.show(shown_finding())  # are written on its face
             refresh()
-        _place_eye()
+        if board.findings_shown != ("", ""):
+            _place_eye()
     except ReferenceError:  # the board freed under us (undo, file load)
         return None
     return FOLLOW_S
@@ -1934,11 +1944,117 @@ def _draw_discontinuity(draw, unit, name, finding):
 
 # highlight, isolate and an area on targets are the finding's highlight (`highlighted`):
 # nothing of their own; layers is a layer filter (`refresh`, layers.set_filter)
+# --- A part lifted -----------------------------------------------------------------------------
+
+def _draw_lift(draw, unit, name, finding):
+    """A part lifted off its pads: copies of its visible model parts (else its placeholder),
+    turned `rotation_deg` about the line through `about` across the direction to `toward`,
+    so the `toward` end rises out from the board; the part itself hidden meanwhile
+    (`_restore_lifted` shows it again on the next refresh)."""
+    points = draw.get("points") or []
+    if len(points) < 2 or not draw.get("ids"):
+        return
+    pivot, up = _point(points[0])
+    toward, _ = _point(points[1])
+    along = Vector((toward.x - pivot.x, toward.y - pivot.y, 0.0))
+    if along.length < 1e-9:
+        return
+    axis = along.normalized().cross(Vector((0.0, 0.0, up)))  # turning about it lifts the toward end
+    angle = math.radians(float(draw.get("rotation_deg") or LIFT_DEG))
+    turn = Matrix.Translation(pivot) @ Matrix.Rotation(angle, 4, axis) @ Matrix.Translation(-pivot)
+    bpy.context.view_layer.update()  # the parts' world matrices as placed now
+    count = 0
+    for item_id in draw["ids"]:
+        for original in _part_objects(item_id):
+            copy = original.copy()
+            copy.name = f"{name} {count}"
+            count += 1
+            copy.parent = None
+            copy.animation_data_clear()
+            for key in ("kls_model_fp_id", "kls_footprint_placeholder", "kls_footprint_id", "kls_side",
+                        "kls_model_part", "kls_model_local_matrix", "kls_flat_matrix", "kls_folded_matrix",
+                        "kls_layer_hidden"):  # a drawing, not a part: nothing else places or folds it
+                copy.pop(key, None)
+            copy[TAG] = finding.get("key", "")
+            copy.matrix_world = turn @ original.matrix_world
+            link_owned(copy, "findings")
+            hide(original, True)
+            original.hide_render = True
+            original["kls_lift_hidden"] = 1
+            _state["lifted"].append(original.name)
+
+
+def _lift_listed(shown):
+    """Every listed finding's lift draws, any source: the parts standing as they would
+    without each finding being shown (the Lifted parts toggle). `shown`: the finding the
+    builders draw (its own lift is theirs), or None. A part two findings lift stands once."""
+    from . import findings  # it imports this module
+    if not getattr(bpy.context.scene, "kileido_lift_parts", True):
+        return
+    number = 0
+    for name, _ in findings.SOURCES:
+        for finding in findings.listed(name):
+            if shown is not None and (name, finding.get("key")) == tuple(board.findings_shown):
+                continue
+            for draw in finding.get("draws", ()):
+                if draw.get("ok") and draw.get("tool") == "lift":
+                    number += 1
+                    _draw_lift(draw, 0.0, f"KLS lifted {number}", finding)
+
+
+def _lifts_wanted():
+    """Whether the Lifted parts toggle has parts to lift: a listed finding with a lift draw."""
+    from . import findings
+    if board.collection is None or not getattr(bpy.context.scene, "kileido_lift_parts", True):
+        return False
+    return any(draw.get("ok") and draw.get("tool") == "lift"
+               for name, _ in findings.SOURCES for finding in findings.listed(name)
+               for draw in finding.get("draws", ()))
+
+
+def _part_objects(footprint_id):
+    """A part's objects as shown: its bound model parts, else its placeholder box."""
+    parts = [board.collection.all_objects.get(name) for name in board.model_objects_by_fp.get(footprint_id, ())]
+    parts = [obj for obj in parts if obj is not None and not obj.hide_get()]
+    if parts:
+        return parts
+    box = components.find(components.PLACEHOLDER, footprint_id)
+    return [box] if box is not None and not box.hide_get() else []
+
+
+def _restore_lifted():
+    """The parts hidden under lifted copies (`_draw_lift`) shown again, as KiCad shows them."""
+    from . import models  # (it imports this module's neighbours)
+    _state["lifted"] = []
+    for obj in tuple(board.collection.all_objects):
+        if obj.get("kls_lift_hidden") is None:
+            continue
+        del obj["kls_lift_hidden"]
+        footprint_id = obj.get("kls_footprint_id") or obj.get("kls_model_fp_id") or ""
+        frame = obj.parent if obj.parent is not None and obj.parent.get("kls_footprint") == 1 else \
+            components.find(components.FRAME, footprint_id)
+        if obj.get("kls_footprint_placeholder") == 1:
+            set_visible(obj, models.placeholder_visible(frame, footprint_id))
+        else:
+            set_visible(obj, models.model_is_visible(frame, obj))
+
+
+def rehide_lifted():
+    """After a footprints update (apply): a part a lifted copy stands in for stays hidden
+    (placing a moved part shows its objects again; the next findings frame redraws)."""
+    for name in _state["lifted"]:
+        obj = board.collection.all_objects.get(name)
+        if obj is not None and obj.get("kls_lift_hidden") is not None:
+            hide(obj, True)
+            obj.hide_render = True
+
+
 _BUILDERS = {"label": _draw_label, "distance": _draw_distance, "arrow": _draw_arrow, "ghost": _draw_ghost,
              "area": _draw_area, "clearance": _draw_distance, "edge_gap": _draw_distance, "width": _draw_width,
              "routed_length": _draw_routed_length, "bars": _draw_bars, "layer_change": _draw_layer_change,
              "plane_gap": _draw_plane_gap, "return_path": _draw_return_path, "plane_islands": _draw_plane_islands,
-             "stitching": _draw_stitching, "stub": _draw_stub, "discontinuity": _draw_discontinuity}
+             "stitching": _draw_stitching, "stub": _draw_stub, "discontinuity": _draw_discontinuity,
+             "lift": _draw_lift}
 
 
 # --- Framing the views ----------------------------------------------------------------------
