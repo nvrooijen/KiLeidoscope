@@ -55,18 +55,30 @@ If DRC fails, the column says why (*DRC failed: …*), and the last run's list s
 
 ## Tombstone
 
-**Tombstone** checks every 01005, 0201 and 0402 on the board (chip resistors, capacitors, inductors, small diodes; bigger chips rarely tombstone) for what makes one end melt or pull before the other, and lists the parts at risk under the DRC list, with the same markers, confirm and dismiss, and select-in-KiCad. Every part listed is drawn lifted off its pads about the end that melts first, as it would stand if it tombstoned (steeper at HIGH), while **Lifted parts** is ticked under the list's filter row; untick it to see the parts as placed. Showing a finding lights its two pads and names the end that lifts. It reads only what KiCad has: the pads, the paste apertures, the copper each pad is tied into, vias in the pads, and the **Solder paste** stencil thickness from the KiLeidoscope panel's Thickness settings.
+A small chip tombstones when one end wets before the other: the first fillet pulls, and the dry end stands up. **Tombstone** checks every 01005, 0201 and 0402 on the board (bigger chips rarely tombstone [4]) for what makes its two ends differ, from what KiCad has: the pads, the paste apertures, the copper each pad is tied into, vias in the pads, and the **Solder paste** stencil thickness from the Thickness settings. The parts at risk are listed under the DRC list, with the same markers, confirm and dismiss, and select-in-KiCad.
+
+While **Lifted parts** is ticked (under the filter row), every listed part stands lifted off its pads as it would after reflow: it turns about the end that melts first, steeper at HIGH. Untick it to see the parts as placed. Showing a finding lights its two pads and names the end that lifts.
 
 What raises a part:
 
-- **An open via in a pad.** Solder drains into it. Filled or capped vias do not count.
-- **One pad draws heat away much faster than the other**: a pad in a plane against a pad on a trace, or a thermal relief against a trace. The slow end melts last and lifts.
+- **An open via in a pad**: solder drains into it [1]. A filled or capped via does not count [2].
+- **One pad drawing heat away much faster than the other**: a pad in a plane against a pad on a trace, or a thermal relief against a trace. The slower end melts last and lifts.
 - **Paste on one pad only**, or much more on one than the other.
-- **A stencil area ratio under 0.66** on either aperture: the paste releases unevenly.
-- **Pads larger than the library's nominal pads.**
-- **Pads so far apart** that the metal ends do not sit over them.
+- **A stencil area ratio under 0.66** (IPC-7525, as cited in [1]) on either aperture: the paste releases unevenly.
+- **Pads larger than the library's nominal pads** [1].
+- **Pads so far apart** that the metal ends barely reach them [3].
 
-Each is a warning (HIGH) or info (MEDIUM); two raised factors make a part HIGH. The via, area-ratio, pad-size and pad-gap thresholds come from published measurements; the heat and paste thresholds are estimates, and each finding's confidence says which. The check does not see the oven, the paste or the parts' real dimensions: a listed part is worth a look, not a certain defect, and an unlisted one is no promise.
+HIGH is a warning, MEDIUM info; two raised factors make a part HIGH. The check does not see the oven, the paste or the part's real dimensions: a listed part is worth a look, not a certain defect, and an unlisted one is no promise. The via, area-ratio, pad-size and pad-gap thresholds come from the measurements in [1]–[3]; the heat and paste thresholds are estimates, and each finding's confidence says which.
+
+References:
+
+[1] Y. Liu, S. Rodgers, and R. W. Johnson, "PCB design and assembly process development of 01005 components with lead free solder," in *Proc. IPC APEX*, 2006, paper S01-02.
+
+[2] Y.-W. Lee, K.-S. Kim, and K. Suganuma, "The effect of micro via-in pad designs on surface-mount assembly defects: Part I – tombstoning," *Soldering & Surface Mount Technology*, vol. 24, no. 3, pp. 197–205, 2012, doi: 10.1108/09540911211240065.
+
+[3] M. Wang, D. Shangguan, D. Geiger, K. Nakajima, C. C. Ho, and S. Yi, "Board design and assembly process evaluation for 0201 components on PCBs," in *Proc. IPC APEX*, 2002, paper S30-1.
+
+[4] T. Lentz and G. Smith, "What do you want on your tombstone?," in *Proc. SMTA International*, 2021. Accessed: Oct. 19, 2026. [Online]. Available: https://fctsolder.com/wp-content/uploads/2022/02/2021-SMTAI-What-Do-You-Want-On-Your-Tombstone.pdf
 
 ## The list
 
