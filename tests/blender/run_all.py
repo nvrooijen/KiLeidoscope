@@ -79,8 +79,7 @@ def main():
     studio = next(child for child in bpy.context.scene.collection.children if child.get("kls_studio_lights"))
     assert studio.hide_select and all(obj.type == "LIGHT" and obj.visible_get() for obj in studio.objects)
     assert all(name in bpy.data.node_groups for name in ("KLS_Tracks_v5", "KLS_Fill_v4", "KLS_FillSingle_v4",
-                                                      "KLS_Drills_v2", "KLS_Vias_v14", "KLS_ViaRings_v1", "KLS_Board_v3",
-                                                      "KLS_Solder"))
+                                                      "KLS_Drills_v2", "KLS_Vias_v14", "KLS_ViaRings_v1", "KLS_Board_v3"))
 
     top = collection.all_objects["KLS F.Cu tracks"]
     bottom = collection.all_objects["KLS B.Cu tracks"]
@@ -386,6 +385,7 @@ def main():
         apply.load_frames(frames_of(pasted))
         solder_top, solder_bottom = (collection.all_objects[f"KLS {side}.Paste solder"] for side in "FB")
         assert solder_top.hide_get() and solder_bottom.hide_get()
+        bpy.context.scene.kileido_solder_reflowed = False  # as printed (run_solder.py: reflowed)
         bpy.context.scene.kileido_show_solder = True
         assert not solder_top.hide_get() and not solder_bottom.hide_get()
         low, high = world_z_range(solder_top)
@@ -393,6 +393,17 @@ def main():
         assert math.isclose(high - low, 0.12e-3, rel_tol=1e-3), high - low
         low, high = world_z_range(solder_bottom)
         assert math.isclose(high, -3e-6, abs_tol=1e-8) and math.isclose(high - low, 0.12e-3, rel_tol=1e-3)
+        # As KiCad draws paste: the pad's shape, straight walls, a flat top, flat shading
+        for deposit in (solder_top, solder_bottom):
+            evaluated, mesh = evaluated_mesh(deposit)
+            try:
+                co = np.array([vertex.co[:] for vertex in mesh.vertices])
+                assert not any(polygon.use_smooth for polygon in mesh.polygons)
+            finally:
+                bpy.data.meshes.remove(mesh)
+            faces = [np.unique(np.round(co[np.isclose(co[:, 2], z, atol=1e-9), :2] * 1e9), axis=0)
+                     for z in (co[:, 2].min(), co[:, 2].max())]  # the base is there twice (its inner side)
+            assert faces[0].shape == faces[1].shape and np.allclose(faces[0], faces[1], atol=1)
         bpy.context.scene.kileido_stencil_mm = 0.1
         low, high = world_z_range(solder_top)
         assert math.isclose(high - low, 0.1e-3, rel_tol=1e-3)

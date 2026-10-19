@@ -28,6 +28,7 @@ POLYIMIDE = (205 / 255, 130 / 255, 0.0)
 POLYIMIDE_ALPHA = 0.35  # its own colour; the rest is what shows through, tinted
 FILM_TINT = 0.85  # how much of its amber the film gives what shows through
 STIFFENER_METAL = (0.78, 0.79, 0.80)  # a stainless steel or aluminium stiffener (sRGB)
+REFLOWED_SOLDER = (0.86, 0.86, 0.84)  # tin-silver-copper after reflow: bright and smooth (sRGB)
 # The coverlay film's colours (sRGB, its own share, its tint on what shows through): amber
 # polyimide; black and white coverlay hide most of the copper under them.
 COVERLAYS = {"AMBER": ("Amber", POLYIMIDE, POLYIMIDE_ALPHA, FILM_TINT),
@@ -98,6 +99,7 @@ def create_all():
         "ims_wall": make("KLS IMS hole wall", ims.COLORS["AL"]),
         "footprint_placeholder": make("KLS Component placeholders", PLACEHOLDER_COLOR, 0.55),
         "solder": make("KLS Solder", (0.5, 0.5, 0.5)),
+        "solder_reflowed": make("KLS Solder reflowed", REFLOWED_SOLDER),
         "plating": make("KLS Hole plating", (0.75, 0.61, 0.23)),
         # The plated board edge: the hole plating's look, but it stands just outside the
         # outline, so it is not clipped to the board as hole plating is (holes.CLIPPED).
@@ -791,9 +793,14 @@ def set_color_mode(mode):
     set_surface(board.materials["via_resin"], realistic, 0.0, 0.5)
     _paint_highlights()
     paint(board.materials["solder"], viewer.get("solderpaste") or (0.5, 0.5, 0.5))  # KiCad's 3D paste colour
+    paint(board.materials["solder_reflowed"],
+          REFLOWED_SOLDER if realistic else viewer.get("solderpaste") or (0.5, 0.5, 0.5))
     for key, material in board.materials.items():
         if key == "solder":
-            set_surface(material, realistic, 0.9, 0.3)  # tin-silver-copper alloy
+            set_surface(material, realistic, 0.2, 0.85)  # paste: metal powder in flux, matte
+        if key == "solder_reflowed":
+            set_surface(material, realistic, 1.0, 0.3)  # melted and set; lead-free solder is satin
+            cut.inside_as_section(material, tuple(0.75 * c for c in REFLOWED_SOLDER))
         if key in {"board", "board_bottom", "board_core", "board_edge", "vias", "via_rings"} or key.startswith("copper:"):
             metal = key in ("vias", "via_rings") or key.startswith("copper:")
             set_surface(material, realistic, COPPER_METALLIC if metal else 0.0,

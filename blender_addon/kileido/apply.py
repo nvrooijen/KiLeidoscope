@@ -13,12 +13,13 @@ import bpy
 import numpy as np
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, phase, protection, render_depth, studio, transform)
+               laminate, layers, lighting, materials, models, nodes, phase, protection, render_depth, solder, studio,
+               transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, owned_object, read_attribute, read_coordinates,
                       read_edges, set_modifier, set_node_input, set_visible, single_point, view3d_spaces,
                       write_attribute, outline_bounds)
-from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, SOLDER_TOP_SCALE, copper_placement, copper_thickness,
+from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
 from . import state
 from .state import board
@@ -55,6 +56,7 @@ def apply_frame(header, arrays):
     elif message_type == "footprints":
         footprints.apply(header)
         highlight.refresh_components()
+        solder.invalidate()  # parts moved: the solder flows to where their leads are
     elif message_type == "stackup":
         board.warnings = list(dict.fromkeys([*board.warnings, *header.get("warnings", [])]))
         board.layer_names = dict(header.get("display_names", {}))  # the Layers list uses KiCad's names
@@ -164,6 +166,8 @@ def _end_snapshot():
     frame_board()
     models.follow_board(board.board_path, board.export)
     cosmetics.follow_board(board.board_path, board.export)
+    if bpy.app.background:
+        solder.flush()  # no timers run there: the snapshot's reflowed solder now
 
 
 def _collection(board_name):
@@ -389,6 +393,8 @@ def _apply_pads(header, arrays):
     _place_copper(obj, header, layer, "pads", "fill")
     _apply_drills(header, arrays)
     highlight.refresh(layer, "pads")  # pads on a highlighted net follow edits
+    if layer in ("F.Cu", "B.Cu"):
+        solder.invalidate()  # through-hole joints sit on these pads and in their drills
 
 
 def _apply_graphics(header, arrays):
@@ -428,6 +434,8 @@ def _apply_drills(header, arrays):
                      {"Width": width - inset, "Height": height - inset, "Depth": board.thickness_m})
         _smooth_walls(obj, not plated and board.ims is not None)
         obj["kls_plated"] = bool(plated)
+        obj["kls_drill_size"] = (width, height)  # the reflowed solder fills it (solder.py)
+        obj["kls_drill_oval"] = bool(oval)
         hole_rows.append((x, y, width, height, float(angle), bool(oval)))
         obj["kls_id"] = pad_id
         set_visible(obj, True)
@@ -450,15 +458,31 @@ def _apply_solder(header, arrays):
     obj["kls_paste_side"] = layer[0]
     _place_solder(obj)
     board.touched.add(obj.name)
+    solder.invalidate()  # the reflowed solder follows once edits settle
+
+
+def retire_old_paste(obj):
+    """Boards saved before drew paste with the shrunk-top group "KLS_Solder": its modifier
+    goes (the fill group takes its place). Returns the material it drew with, or None."""
+    stale = obj.modifiers.get("KLS_Solder")
+    if stale is None:
+        return None
+    socket = next((item for item in (stale.node_group.interface.items_tree if stale.node_group else ())
+                   if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name == "Material"), None)
+    material = nodes.modifier_value(stale, socket.identifier) if socket is not None else None
+    obj.modifiers.remove(stale)
+    return material
 
 
 def _place_solder(obj):
-    """Deposits start on the outer copper surface of their side's pads."""
+    """Deposits start on the outer copper surface of their side's pads; shown as printed
+    unless the reflowed solder (solder.py) takes their place."""
     top = obj["kls_paste_side"] == "F"
     obj.location.z = transform.copper_z("F.Cu" if top else "B.Cu", "drills", board.heights)  # above pads
-    set_modifier(obj, board.groups["solder"], "solder",
-                 {"Thickness": stencil_thickness() * (1 if top else -1), "Top Scale": SOLDER_TOP_SCALE})
-    set_visible(obj, getattr(bpy.context.scene, "kileido_show_solder", False))
+    retire_old_paste(obj)
+    up = 1.0 if top else -1.0
+    set_modifier(obj, board.groups["solder"], "solder", {"Thickness": stencil_thickness() * up, "Up": up})
+    set_visible(obj, getattr(bpy.context.scene, "kileido_show_solder", False) and not solder.reflowed())
 
 
 def _zone_arrays(arrays, index):
@@ -820,6 +844,7 @@ def refresh_solder():
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_paste_side"):
             _place_solder(obj)
+    solder.show()
 
 
 def refresh_thickness():

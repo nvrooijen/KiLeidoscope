@@ -226,16 +226,12 @@ def tracks():
     return group
 
 
-def fill(name="KLS_Fill_v4", solder=False):
-    """Pads (one ring group per item) as filled faces, thickened along Z.
-
-    `solder`: the same shapes as stencil deposits: extruded, top faces shrunk
-    toward each deposit's centre and shaded smooth, like reflowed solder.
-    """
+def fill(name="KLS_Fill_v4"):
+    """Pads (one ring group per item) as filled faces, thickened along Z. Stencil
+    deposits too: a pad's shape at the stencil's thickness, straight walls and a flat
+    top, as KiCad's 3D viewer draws paste (solder.py draws it reflowed)."""
     extra = (("Material", "NodeSocketMaterial"), ("Thickness", "NodeSocketFloat"),
              ("Up", "NodeSocketFloat", 1.0))
-    if solder:
-        extra += (("Top Scale", "NodeSocketFloat"),)
     group, source, sink = _group(name, extra)
     if source is None:
         return group
@@ -267,25 +263,7 @@ def fill(name="KLS_Fill_v4", solder=False):
     links.new(realize.outputs["Geometry"], filled.inputs["Curve"])
     links.new(filled.outputs["Mesh"], each_output.inputs["Generation_0"])
     shape = each_output.outputs["Generation_0"]
-    if solder:
-        up = nodes.new("ShaderNodeCombineXYZ")
-        up.inputs["Z"].default_value = 1.0
-        extrude = nodes.new("GeometryNodeExtrudeMesh")
-        extrude.mode = "FACES"
-        extrude.inputs["Individual"].default_value = False
-        links.new(_face_along(nodes, links, shape, source.outputs["Thickness"]), extrude.inputs["Mesh"])
-        links.new(up.outputs["Vector"], extrude.inputs["Offset"])
-        links.new(source.outputs["Thickness"], extrude.inputs["Offset Scale"])
-        shrink = nodes.new("GeometryNodeScaleElements")
-        shrink.domain = "FACE"
-        links.new(extrude.outputs["Mesh"], shrink.inputs["Geometry"])
-        links.new(extrude.outputs["Top"], shrink.inputs["Selection"])
-        links.new(source.outputs["Top Scale"], shrink.inputs["Scale"])
-        smooth = nodes.new("GeometryNodeSetShadeSmooth")
-        links.new(shrink.outputs["Geometry"], smooth.inputs["Mesh"])
-        shape = smooth.outputs["Mesh"]
-    else:
-        shape = _thicken(nodes, links, shape, source.outputs["Thickness"], source.outputs["Up"])
+    shape = _thicken(nodes, links, shape, source.outputs["Thickness"], source.outputs["Up"])
     painted = nodes.new("GeometryNodeSetMaterial")
     links.new(shape, painted.inputs["Geometry"])
     links.new(source.outputs["Material"], painted.inputs["Material"])
@@ -872,7 +850,7 @@ def via_rings():
 
 
 def ensure_all():
-    return {"tracks": tracks(), "fill": fill(), "solder": fill("KLS_Solder", solder=True),
+    return {"tracks": tracks(), "fill": fill(), "solder": fill(),
             "fill_single": fill_single(),
             "drills": drills(), "vias": vias(), "via_rings": via_rings(), "board": board(),
             "smooth_walls": smooth_walls(),

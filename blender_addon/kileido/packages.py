@@ -17,7 +17,7 @@ from mathutils import Vector
 
 from . import (apply, components, cosmetics, cut, findings_draw, highlight, ims, layers, lighting, materials, nodes,
                render_depth, transform)
-from .objects import OUTLINE, find, hide, set_node_input, view3d_spaces
+from .objects import OUTLINE, find, hide, set_modifier, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from .state import board
 
@@ -452,6 +452,7 @@ def refresh_thickness(index=None):
     """Copper, silkscreen and solder paste heights of view-only boards (all, or one)
     from the panel's Thickness settings, as the live board has them."""
     solder = getattr(bpy.context.scene, "kileido_show_solder", False)
+    flowed = solder and getattr(bpy.context.scene, "kileido_solder_reflowed", True)
     for root in roots():
         collection = collection_of(root[ROOT_TAG])
         if collection is None or (index is not None and root[ROOT_TAG] != index):
@@ -465,9 +466,20 @@ def refresh_thickness(index=None):
                 elif obj.get("kls_paste_side"):
                     top = obj["kls_paste_side"] == "F"
                     obj.location.z = transform.copper_z("F.Cu" if top else "B.Cu", "drills", board.heights)
+                    material = apply.retire_old_paste(obj)  # a package from before: KiCad's brick now
+                    if material is not None:
+                        set_modifier(obj, nodes.fill(), material, {"Up": 1.0 if top else -1.0})
                     set_node_input(obj, "Thickness", stencil_thickness() * (1 if top else -1))
-                    hide(obj, not solder)
-                    obj.hide_render = not solder
+                    hide(obj, not solder or flowed)
+                    obj.hide_render = not solder or flowed
+                elif obj.get("kls_reflowed_side"):  # as exported: built on the live board
+                    built_for = obj.get("kls_stencil_m")
+                    if built_for and obj["kls_reflowed_side"] != "THT":  # through-hole joints hold no paste
+                        # not built again here (its parts may not have come along): its heights
+                        # scaled with the stencil, roughly as the solder they hold
+                        obj.scale.z = stencil_thickness() / built_for
+                    hide(obj, not flowed)
+                    obj.hide_render = not flowed
                 elif obj.get("kls_cosmetic_layer"):
                     cosmetics._place(obj)
             vias = find("KLS vias")
