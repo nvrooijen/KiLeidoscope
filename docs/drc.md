@@ -55,7 +55,7 @@ If DRC fails, the column says why (*DRC failed: …*), and the last run's list s
 
 ## Tombstone
 
-**Tombstone** checks every 01005, 0201 and 0402 on the board (chip resistors, capacitors, inductors, small diodes; bigger chips rarely tombstone) for what makes one end melt or pull before the other, and lists the parts at risk under the DRC list, with the same markers, confirm and dismiss, and select-in-KiCad. A finding lights the two pads, names the end that would lift, and draws the part lifted off its pads about the other end, as it would stand if it tombstoned (steeper at HIGH); the part is back in place the moment the finding is hidden. It reads only what KiCad has: the pads, the paste apertures, the copper each pad is tied into, vias in the pads, and the **Solder paste** stencil thickness from the KiLeidoscope panel's Thickness settings.
+**Tombstone** checks every 01005, 0201 and 0402 on the board (chip resistors, capacitors, inductors, small diodes; bigger chips rarely tombstone) for what makes one end melt or pull before the other, and lists the parts at risk under the DRC list, with the same markers, confirm and dismiss, and select-in-KiCad. Every part listed is drawn lifted off its pads about the end that melts first, as it would stand if it tombstoned (steeper at HIGH), while **Lifted parts** is ticked under the list's filter row; untick it to see the parts as placed. Showing a finding lights its two pads and names the end that lifts. It reads only what KiCad has: the pads, the paste apertures, the copper each pad is tied into, vias in the pads, and the **Solder paste** stencil thickness from the KiLeidoscope panel's Thickness settings.
 
 What raises a part:
 

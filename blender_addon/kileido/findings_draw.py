@@ -393,7 +393,9 @@ def refresh():
     keep = {layer for draw in draws if draw["tool"] == "layers" for layer in draw.get("layers") or ()}
     layers.set_filter(keep if finding is not None and not _state["folded"] else None)
     _state["labels"], _state["layout"], _state["reach"], _state["parts"] = [], None, None, None
-    if finding is not None and not bpy.app.timers.is_registered(_follow):
+    if not _state["folded"]:
+        _lift_listed(finding)  # every listed finding's parts lifted (the Lifted parts toggle)
+    if (finding is not None or _lifts_wanted()) and not bpy.app.timers.is_registered(_follow):
         bpy.app.timers.register(_follow, first_interval=FOLLOW_S)  # on a folded board too: it draws on unfolding
     if finding is None or _state["folded"]:
         return
@@ -451,14 +453,15 @@ def purge():
 def _follow():
     """Timer while a finding is shown: the eye follows the view; folding hides the drawing,
     unfolding draws it (and cuts the board open for a hole finding shown while folded)."""
-    if board.findings_shown == ("", "") or board.collection is None:
+    if board.collection is None or (board.findings_shown == ("", "") and not _lifts_wanted()):
         return None
     try:
         if fold.folded() != _state["folded"]:
-            if _state["folded"]:  # unfolded: the cut first, the labels are written on its face
-                hole_cut.show(shown_finding())
+            if _state["folded"] and board.findings_shown != ("", ""):  # unfolded: the cut first, the labels
+                hole_cut.show(shown_finding())  # are written on its face
             refresh()
-        _place_eye()
+        if board.findings_shown != ("", ""):
+            _place_eye()
     except ReferenceError:  # the board freed under us (undo, file load)
         return None
     return FOLLOW_S
@@ -1979,6 +1982,34 @@ def _draw_lift(draw, unit, name, finding):
             original.hide_render = True
             original["kls_lift_hidden"] = 1
             _state["lifted"].append(original.name)
+
+
+def _lift_listed(shown):
+    """Every listed finding's lift draws, any source: the parts standing as they would
+    without each finding being shown (the Lifted parts toggle). `shown`: the finding the
+    builders draw (its own lift is theirs), or None. A part two findings lift stands once."""
+    from . import findings  # it imports this module
+    if not getattr(bpy.context.scene, "kileido_lift_parts", True):
+        return
+    number = 0
+    for name, _ in findings.SOURCES:
+        for finding in findings.listed(name):
+            if shown is not None and (name, finding.get("key")) == tuple(board.findings_shown):
+                continue
+            for draw in finding.get("draws", ()):
+                if draw.get("ok") and draw.get("tool") == "lift":
+                    number += 1
+                    _draw_lift(draw, 0.0, f"KLS lifted {number}", finding)
+
+
+def _lifts_wanted():
+    """Whether the Lifted parts toggle has parts to lift: a listed finding with a lift draw."""
+    from . import findings
+    if board.collection is None or not getattr(bpy.context.scene, "kileido_lift_parts", True):
+        return False
+    return any(draw.get("ok") and draw.get("tool") == "lift"
+               for name, _ in findings.SOURCES for finding in findings.listed(name)
+               for draw in finding.get("draws", ()))
 
 
 def _part_objects(footprint_id):

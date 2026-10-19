@@ -1575,6 +1575,11 @@ def _scene_properties():
             name="Markers", default=True,
             description="Show each finding as an icon on the board (nearby ones share one); click one to show it",
             update=lambda self, context: findings_markers.invalidate()),
+        "kileido_lift_parts": BoolProperty(
+            name="Lifted parts", default=True,
+            description="Draw every part the Tombstone check lists (and any lift drawing an LLM gives) lifted off "
+                        "its pads, as it would stand if it tombstoned, without showing each finding",
+            update=lambda self, context: findings_draw.refresh()),
         "kileido_findings_errors": BoolProperty(
             name="Errors", default=True, description="List and mark the errors",
             update=lambda self, context: findings.filter_toggled(context.scene)),

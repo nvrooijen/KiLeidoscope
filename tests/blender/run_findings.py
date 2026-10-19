@@ -626,14 +626,23 @@ def check_lift(scene, index):
     assert abs(left.z - left_before.z) < 0.1e-3 and abs(left.x - left_before.x) < 0.1e-3, (left, left_before)
     assert np.isclose(right.z - right_before.z, 1e-3, atol=0.1e-3), (right.z, right_before.z)
     assert any(text.startswith("Drawn lifted 30°") for _, text, _ in column(scene)), column(scene)
+    # Hidden again: with Lifted parts ticked (the default) the listed part still stands, under
+    # its own name; unticked, it is back in place
     findings_draw.clear()
+    assert body.hide_get() and body.hide_render and list(objects()) == ["KLS lifted 1 0"]
+    assert np.isclose((objects()["KLS lifted 1 0"].matrix_world @ Vector((1e-3, 0.0, 0.0))).z - right_before.z, 1e-3,
+                      atol=0.1e-3)
+    scene.kileido_lift_parts = False
     assert not body.hide_get() and not body.hide_render and not objects()
-    # The stand-in goes, and the findings frame without the lifted part
+    scene.kileido_lift_parts = True
+    assert list(objects()) == ["KLS lifted 1 0"] and body.hide_get()
+    # The stand-in goes, and the findings frame without the lifted part: nothing stands
+    apply.apply_frame(frame(index), {})
+    assert not objects() and not body.hide_get()
     state.board.model_objects_by_fp.pop(J1)
     state.board.model_bound.discard(J1)
     bpy.data.objects.remove(body)
     bpy.data.meshes.remove(mesh)
-    apply.apply_frame(frame(index), {})
 
 
 def check_labels(found, count, below=False):

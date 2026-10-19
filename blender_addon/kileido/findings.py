@@ -119,10 +119,12 @@ def apply_findings(header):
     if found.get("folder") != (board.findings or {}).get("folder"):  # another board: its runs are numbered apart
         board.prompt_wait, board.prompt_copied = None, ""
     before = findings_draw.shown_finding()
+    lifted_before = source("tombstone").get("findings")
     board.findings = found
     shown = findings_draw.shown_finding()
-    if shown is None or shown != before:
-        findings_draw.refresh()  # the board's markers placed again too
+    if shown is None or shown != before or (source("tombstone").get("findings") != lifted_before
+                                            and getattr(bpy.context.scene, "kileido_lift_parts", True)):
+        findings_draw.refresh()  # the board's markers placed again too; the lifted parts as listed now
     else:
         findings_markers.invalidate()
     hole_cut.follow(shown)  # a hole finding gone: the user's cut back
@@ -271,6 +273,11 @@ def find(source_name, key):
     return next((finding for finding in source(source_name).get("findings", ()) if finding.get("key") == key), None)
 
 
+def listed(source_name):
+    """The findings of a source the column lists now (the filter row, Show dismissed)."""
+    return _visible(bpy.context.scene, source(source_name).get("findings") or (), source_name)
+
+
 def catalogue():
     """The bridge's checks: {"id", "group", "title", "v1"} each, [] before it sends them."""
     return (board.findings or {}).get("catalogue") or []
@@ -318,6 +325,8 @@ def filter_toggled(scene):
     list now hides is hidden with it, and the markers follow. The list redraws on its own."""
     from . import findings_markers  # it imports this module
     findings_markers.invalidate()
+    if getattr(scene, "kileido_lift_parts", True):
+        findings_draw.refresh()  # the lifted parts follow the list
     finding = findings_draw.shown_finding()
     name = board.findings_shown[0]
     if finding is not None and not any(shown is finding for shown in
@@ -399,7 +408,7 @@ def draw_column(layout, scene, wrap, tab):
     if tab == "DRC":
         drc = found.get("drc") or {}
         running = drc.get("state") == "running"
-        buttons = box.row(align=True)
+        buttons = box.column(align=True)  # one button per row: three in a row cut their names short
         row = buttons.row(align=True)
         row.enabled = linked and status != "unsaved" and not running
         row.operator(KILEIDO_OT_findings_run_drc.bl_idname, text="Running KiCad DRC…" if running else "KiCad DRC",
@@ -420,6 +429,8 @@ def draw_column(layout, scene, wrap, tab):
     row = box.row()
     row.prop(scene, "kileido_findings_dismissed", text="Show dismissed")
     row.prop(scene, "kileido_markers", text="Markers")
+    if tab == "DRC":  # the Tombstone check's parts (and an LLM's lift draws) standing without a click
+        box.prop(scene, "kileido_lift_parts", text="Lifted parts")
     if tab_state(tab) == "on" and fold.folded():
         _lines(box, wrap, "The drawing is hidden while the board is folded: set Fold to 0", "INFO")
     if tab == "LLM":
