@@ -127,8 +127,10 @@ def seconds_since_update():
 
 def is_settled(quiet_s=SETTLE_S):
     """Nothing is queued to apply and no board update came in the last `quiet_s`."""
-    from . import dump, live
+    from . import dump, live, solder
     if live.connected() and (live.link.pending or live.link.receiving_snapshot):
+        return False
+    if solder.pending():  # the reflowed solder follows an update a moment later (pump builds it)
         return False
     if (dump._worker is not None and dump._worker.is_alive()) or not dump._queue.empty():
         return False
@@ -141,13 +143,14 @@ def pump(seconds=0.05):
     timers wait while a script runs, so a script that renders frame by frame calls this
     between frames to keep KiLeidoscope current. Within `held_updates`, frames are
     received but not applied."""
-    from . import dump, live
+    from . import dump, live, solder
     until = time.monotonic() + seconds
     while True:
         if live.connected():
             live.link.tick()
         if dump._worker is not None:
             dump.drain()
+        solder.flush(now=False)  # its timer waits too
         if time.monotonic() >= until:
             return
         time.sleep(PUMP_STEP_S)

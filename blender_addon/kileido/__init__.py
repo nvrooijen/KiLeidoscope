@@ -25,7 +25,7 @@ from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
                findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, layers, lighting,
-               live, models, packages, phase, pick, protection, render_depth, studio, watcher)
+               live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -469,6 +469,9 @@ def _draw_thickness(layout, scene, copper_m):
             right.label(text=value_label or "stackup")
         else:
             right.prop(scene, value, text=value_label)
+    reflow = column.row(align=True)  # under Solder paste: printed or reflowed
+    reflow.active = scene.kileido_show_solder
+    reflow.prop(scene, "kileido_solder_reflowed")
 
 
 def _draw_wrapped(layout, text, icon="INFO"):
@@ -1611,6 +1614,11 @@ def _scene_properties():
             name="Solder paste", default=False,
             description="Stencil deposits on pads with a paste aperture (KiCad's F.Paste/B.Paste pad shapes)",
             update=_thickness_update(apply.refresh_solder)),
+        "kileido_solder_reflowed": BoolProperty(
+            name="Reflowed", default=True,
+            description="Solder paste as reflowed solder: fillets up each part's leads (KiCad library and "
+                        "parts-pack models), a dome on pads without known metal over them",
+            update=_thickness_update(apply.refresh_solder)),
         "kileido_stencil_mm": FloatProperty(
             name="Stencil thickness", default=0.12, min=0.03, max=0.3, step=1, precision=3, unit="NONE",
             description="Paste deposit height in mm (the board file does not store the stencil thickness)",
@@ -1766,6 +1774,7 @@ def register():
     studio.install()
     findings_draw.install()
     findings_markers.install()
+    solder.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.frame_change_pre.append(phase.on_frame)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
@@ -1798,6 +1807,7 @@ def unregister():
     fold.uninstall()
     findings_draw.uninstall()
     findings_markers.uninstall()
+    solder.uninstall()
     edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
