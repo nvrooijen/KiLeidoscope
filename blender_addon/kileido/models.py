@@ -20,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import components, cut, focus, fold, highlight, kicad_cli
+from . import components, cut, focus, fold, highlight, kicad_cli, solder
 from .objects import link_owned, set_visible
 from . import state
 from .state import board
@@ -444,6 +444,7 @@ def bind_root(root, asset_hash, saved_positions=None):
             set_visible(obj, placeholder_visible(footprint, footprint_id))
     unbound = [footprint_id for footprint_id in list(board.model_bound) if not board.model_objects_by_fp.get(footprint_id)]
     fold.refold_parts()  # a folded board folds its new models with it
+    solder.invalidate()  # reflowed solder flows up the new models' leads
     state.log(f"models bound: {len(board.model_bound)} footprints, {len(active)} parts, "
               f"{len(matches)} GLB roots matched, {len(unbound)} without parts")
     return {"matched": len(board.model_bound),
@@ -497,6 +498,7 @@ def load_glb(filepath, saved_positions=None, asset=None):
         imported = set(bpy.data.objects) - existing
         if not imported:
             raise ValueError("GLB import contained no objects")
+        solder.forget()
         collection = bpy.data.collections.new(name)
         collection["kileido_owned"] = 1
         collection[GLB_ASSET] = asset_hash

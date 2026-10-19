@@ -34,7 +34,8 @@ EDGE_PIXELS = 2  # the mask reaches this far past the outline's box (`set_bounds
 IMAGE = "KLS holes"
 HOLED = ("board", "board_bottom", "board_edge", "ims_base", "flex", "vias", "via_rings", "highlight_selected",
          "highlight_pair", "highlight_finding")  # + copper:<layer>
-CLIPPED = ("vias", "via_rings", "plating", "plating_bare", "solder", "highlight_selected", "highlight_pair",
+CLIPPED = ("vias", "via_rings", "plating", "plating_bare", "solder", "solder_reflowed", "highlight_selected",
+           "highlight_pair",
            "highlight_selected_barrel", "highlight_pair_barrel", "highlight_finding")  # + copper:<layer>
 
 THROUGH, TOP, BOTTOM = 0, 1, 2  # a via hole's side

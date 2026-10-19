@@ -119,6 +119,58 @@ def _group():
     return group
 
 
+SECTION_INSIDE = "KLS section inside"
+SECTION_INSIDE_GROUP = "KLS_SectionInside_v2"
+
+
+def _inside_group():
+    """Back faces in a flat colour while the cut is on (`push` sets its "Enabled")."""
+    group = bpy.data.node_groups.get(SECTION_INSIDE_GROUP)
+    if group is not None:
+        return group
+    group = bpy.data.node_groups.new(SECTION_INSIDE_GROUP, "ShaderNodeTree")
+    group.interface.new_socket(name="Shader", in_out="INPUT", socket_type="NodeSocketShader")
+    group.interface.new_socket(name="Color", in_out="INPUT", socket_type="NodeSocketColor")
+    group.interface.new_socket(name="Shader", in_out="OUTPUT", socket_type="NodeSocketShader")
+    tree_nodes, links = group.nodes, group.links
+    source, sink = tree_nodes.new("NodeGroupInput"), tree_nodes.new("NodeGroupOutput")
+    switch = tree_nodes.new("ShaderNodeValue")
+    switch.name = "Enabled"
+    switch.outputs[0].default_value = 1.0 if enabled() else 0.0
+    inside = tree_nodes.new("ShaderNodeMath")
+    inside.operation = "MULTIPLY"
+    links.new(tree_nodes.new("ShaderNodeNewGeometry").outputs["Backfacing"], inside.inputs[0])
+    links.new(switch.outputs[0], inside.inputs[1])
+    flat = tree_nodes.new("ShaderNodeEmission")
+    links.new(source.outputs["Color"], flat.inputs["Color"])
+    mix = tree_nodes.new("ShaderNodeMixShader")
+    links.new(inside.outputs[0], mix.inputs[0])
+    links.new(source.outputs["Shader"], mix.inputs[1])
+    links.new(flat.outputs[0], mix.inputs[2])
+    links.new(mix.outputs[0], sink.inputs["Shader"])
+    return group
+
+
+def inside_as_section(material, srgb):
+    """A closed solid's inside drawn flat in `srgb` while the cut is on: the plane opens a
+    reflowed solder joint (a through-hole barrel), and its back faces then read as the cut
+    face; off, they shade as usual (seen through a hidden board, say). In a group, as
+    `materials.set_surface` routes into the first mix shader it finds; after it, as it links
+    the surface straight to the first stage again."""
+    tree = material.node_tree
+    node = tree.nodes.get(SECTION_INSIDE)
+    if node is None:
+        node = tree.nodes.new("ShaderNodeGroup")
+        node.name = SECTION_INSIDE
+    node.node_tree = _inside_group()
+    node.inputs["Color"].default_value = (*shading.srgb_to_linear(srgb), 1.0)
+    into = focus.surface_input(material)
+    source = into.links[0].from_socket if into.is_linked else None
+    if source is not None and source.node != node:
+        tree.links.new(source, node.inputs["Shader"])
+    tree.links.new(node.outputs[0], into)
+
+
 def materials():
     """Every material the cut applies to: all the board's (highlights too) and model parts,
     not the section itself (it sits just on the removed side)."""
@@ -317,6 +369,9 @@ def push(scene=None):
     if group is not None:
         on, origin, normal = state
         group.nodes["Enabled"].outputs[0].default_value = 1.0 if on else 0.0
+        inside = bpy.data.node_groups.get(SECTION_INSIDE_GROUP)
+        if inside is not None:
+            inside.nodes["Enabled"].outputs[0].default_value = 1.0 if on else 0.0
         for name, vector in (("Origin", origin), ("Normal", normal)):
             for axis, value in zip("XYZ", vector):
                 group.nodes[name].inputs[axis].default_value = value

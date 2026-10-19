@@ -256,7 +256,9 @@ def main():
         first.location.y -= 0.01
         view_layer.update()
 
-        # Live edits still reach the live board only.
+        # Live edits still reach the live board only. (Its objects as they are now: the
+        # settings above made its reflowed solder, Solder paste ticked.)
+        live_before = live_objects()
         apply.load_frames(frames("beta", two_layer=True))
         assert live_objects() == live_before
 
