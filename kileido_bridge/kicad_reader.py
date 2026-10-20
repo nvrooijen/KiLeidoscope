@@ -18,6 +18,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kipy import KiCad
+from kipy import board as kipy_board
+from kipy import board_types as kipy_board_types
+from kipy.board_types import BoardItem
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
 from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape, PadStackShape, PadStackType
 from kipy.proto.common import ApiStatusCode, commands
@@ -66,6 +69,38 @@ def _busy_aware() -> Iterator[None]:
         if _is_busy(exc):
             raise KiCadBusy(str(exc)) from exc
         raise
+
+
+class _UnknownItem(BoardItem):
+    """A board item of a type kipy cannot unpack; it keeps the packed message and nothing draws it."""
+
+    def __init__(self, proto):
+        self._proto = proto
+
+    @property
+    def id(self) -> KIID:
+        return KIID()
+
+
+def _tolerate_unknown_items() -> None:
+    """KiCad 10.0.7 sends a `ReferencePoint` item (a footprint's or the board's snap point)
+    that kipy 0.8.0 has no type for, and kipy then raises for the whole read: every
+    footprint read fails while one footprint holds a point (user report, 2026-10-20). An
+    item of a type kipy does not know becomes an inert `_UnknownItem` instead. Only ids
+    are ever sent back to KiCad, so the placeholder never reaches it."""
+    known = kipy_board_types.unwrap
+
+    def unwrap(message):
+        try:
+            return known(message)
+        except NotImplementedError:  # kipy's "Missing type mapping for ..."
+            return _UnknownItem(message)
+
+    kipy_board_types.unwrap = unwrap  # footprint definitions unpack their items with this one
+    kipy_board.unwrap = unwrap  # the board's item reads (get_footprints, get_selection, ...)
+
+
+_tolerate_unknown_items()
 
 
 def canonical_layer(layer) -> str:
