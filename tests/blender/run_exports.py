@@ -1,6 +1,7 @@
 """Headless checks of the kicad-cli export workers and what they leave behind: a failed
 model export is retried, one with a model file missing or unreadable is shown but not
-cached, exports read the bytes their cache key was made from, a new GLB import drops
+cached, a model file saved again re-exports, exports read the bytes their cache key
+was made from, a new GLB import drops
 the one it replaces, re-applied overlays free the plots they replace, a reflection
 HDRI saved by another Blender install is found again, and no scratch folder outlives
 Blender. Needs kicad-cli.
@@ -166,6 +167,79 @@ def check_variant_export(scratch):
     follow.follow(str(source), {"path": str(source), "variant": "5V Output"})
     assert follow._generation == generation + 1, "a new variant did not restart the watch"
     follow.stop()
+
+
+def check_model_file_saved_again(scratch):
+    """A model file saved again under the same path (a user's STEP re-coloured or turned,
+    the board unchanged) brings a new cache key and export, as does an embedded model
+    replaced under the same name (its checksum); the watcher re-runs on the model file
+    alone, once, and not while nothing changes."""
+    text = BOARD_FILE.read_text(encoding="utf-8")
+    start = re.search(r'\(footprint\s+"', text).start()
+    end = start + len(models._block(text, start)) - 1
+    source = scratch / "resaved" / BOARD_FILE.name
+    source.parent.mkdir()
+    part = source.parent / "part.step"
+    part.write_bytes(b"ISO-10303-21; first")
+    source.write_text(text[:end] + '(model "${KIPRJMOD}/part.step")' + text[end:], encoding="utf-8")
+    exported = []
+    real_run, real_lookup, real_store = kicad_cli.run, kicad_cli.lookup, kicad_cli.store
+    kicad_cli.lookup = lambda kind, key: None
+    kicad_cli.store = lambda kind, key, files: None
+
+    def run(arguments, timeout):
+        exported.append(list(arguments))
+        output = Path(arguments[arguments.index("--output") + 1])
+        output.write_text("ref,x,y\n" if output.suffix == ".csv" else "glb", encoding="utf-8")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    kicad_cli.run = run
+    try:
+        memory = {}
+        keys = []
+        for _ in range(2):
+            exporting = job(source)
+            models._on_board_change(exporting, memory)
+            if not exporting.results.empty():
+                watcher.remove_later(exporting.results.get_nowait().directory)
+            keys.append(memory["key"])
+            if len(keys) == 1:
+                assert part in memory["files"], memory["files"]
+                part.write_bytes(b"ISO-10303-21; second, turned")
+                os.utime(part, ns=(10**18, 10**18))
+        assert keys[0] != keys[1], "a model file saved again kept the old cache key"
+        assert len(exported) == 4, exported  # GLB and positions, twice
+    finally:
+        kicad_cli.run, kicad_cli.lookup, kicad_cli.store = real_run, real_lookup, real_store
+    embedded = '(embedded_files (file (name "x.step") (type model) (checksum "{}")))(model "kicad-embed://x.step")'
+    assert models.model_signature(embedded.format("AA")) != models.model_signature(embedded.format("BB"))
+
+    calls = []
+
+    def on_change(job_, memory_):
+        calls.append(1)
+        memory_["files"] = [part]
+        memory_["stamps"] = kicad_cli.file_stamps([part])
+
+    follow = watcher.BoardWatcher("model file test", on_change, lambda result: "", starting=lambda export: "",
+                                  unavailable="", failed="", import_failed="")
+
+    def wait_for(count):
+        deadline = time.monotonic() + 5
+        while len(calls) < count and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    follow.follow(str(source), {"path": str(source)})
+    try:
+        wait_for(1)
+        time.sleep(4 * watcher.POLL_S)
+        assert len(calls) == 1, f"{len(calls)} runs with nothing changed"
+        part.write_bytes(b"ISO-10303-21; third")
+        os.utime(part, ns=(2 * 10**18, 2 * 10**18))
+        wait_for(2)
+        assert len(calls) == 2, "a model file saved again was not picked up"
+    finally:
+        follow.stop()
 
 
 def check_unsaved_board_follows_live_copy(scratch):
@@ -370,6 +444,7 @@ def main():
     try:
         check_model_retry(scratch)
         check_missing_models_not_cached(scratch)
+        check_model_file_saved_again(scratch)
         check_unsaved_board_follows_live_copy(scratch)
         check_variant_export(scratch)
         snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))

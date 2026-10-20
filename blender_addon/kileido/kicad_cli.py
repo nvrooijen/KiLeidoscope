@@ -12,6 +12,8 @@ from pathlib import Path
 
 CACHE_VERSION = "1"  # bump when an exporter's options or output layout change
 _VARIABLE = re.compile(r"\$\{([^}]+)\}|\$\(([^)]+)\)")  # KiCad's ${NAME} and $(NAME)
+_MODEL_DIR = re.compile(r"KICAD\d+_3DMODEL_DIR")  # where KiCad looks up a relative model path
+_EMBEDDED = "kicad-embed://"  # a model stored in the board file itself
 # kicad-cli's messages for a model it left out: not found, or found but unreadable
 _MODEL_PROBLEM = re.compile(r"File not found: (.+)|No model for filename '(.+)'")
 
@@ -79,6 +81,50 @@ def path_variables(paths, settings=""):
                    - {"KIPRJMOD"})
     saved = _saved_variables(settings) if names else {}
     return "\n".join(f"{name}={os.environ.get(name)!r}|{saved.get(name)!r}" for name in names)
+
+
+def model_files(paths, project, settings=""):
+    """The files kicad-cli may read for the board's model `paths`: a model edited in
+    place keeps its path, so the cache key and the watcher look at these files too
+    (`file_stamps`). As KiCad's 3D resolver tries them: ${NAME}s expanded (KIPRJMOD is
+    `project`; the environment wins over kicad_common.json, as in KiCad), that path
+    when it is absolute or starts with a variable, else under the project folder and
+    under each ${KICADn_3DMODEL_DIR} set (measured, kicad-cli 10: both found; unset, it
+    is KiCad's own library, which changes with an install). Embedded models
+    (kicad-embed://) are in the board text; a path relative to the footprint's
+    library is not followed (that needs the library tables)."""
+    saved = {name: value for name, value in _saved_variables(settings).items() if isinstance(value, str)}
+
+    def value(name):
+        return project if name == "KIPRJMOD" else os.environ.get(name) or saved.get(name)
+
+    model_dirs = [folder for folder in map(value, sorted({name for name in [*os.environ, *saved]
+                                                           if _MODEL_DIR.fullmatch(name)})) if folder]
+    files = {}
+    for path in paths:
+        path = re.sub(r"\\(.)", r"\1", path)  # the board's string escapes
+        if path.startswith(_EMBEDDED):
+            continue
+        expanded = _VARIABLE.sub(lambda match: value(match[1] or match[2]) or match[0], path)
+        if path.startswith(("${", "$(")) or Path(expanded).is_absolute():
+            files[Path(expanded)] = None
+        else:
+            files.update(dict.fromkeys(Path(folder) / expanded for folder in [project, *model_dirs]))
+    return list(files)
+
+
+def file_stamps(files):
+    """Each file's size and modification time, as text for a cache key; "-" for one
+    that is not there (a file turning up makes a new key too)."""
+    lines = []
+    for path in files:
+        try:
+            info = os.stat(path)
+        except OSError:
+            lines.append(f"{path}|-")
+        else:
+            lines.append(f"{path}|{info.st_size}|{info.st_mtime_ns}")
+    return "\n".join(lines)
 
 
 def model_problems(output):
