@@ -140,6 +140,40 @@ def test_store_and_lookup(tmp_path, monkeypatch):
     assert kicad_cli.lookup("overlays", "key") == entry
 
 
+def test_clear_cache_drops_entries_and_changes_keys(tmp_path, monkeypatch):
+    """Reset cache: what was stored is gone (moved aside, then deleted, with what an
+    earlier reset left), the same parts make a new key each time, and storing works
+    again at once."""
+    root = tmp_path / "KiLeidoscope" / "exports"
+    monkeypatch.setattr(kicad_cli, "cache_root", lambda: root)
+    output = tmp_path / "result.txt"
+    output.write_text("plot", encoding="utf-8")
+    before = kicad_cli.cache_key("same parts")
+    kicad_cli.store("models", before, {"result.txt": output})
+    left = root.with_name("exports.cleared-old")
+    left.mkdir()
+    threads = []
+    real_thread = kicad_cli.threading.Thread
+    monkeypatch.setattr(kicad_cli.threading, "Thread",
+                        lambda **kwargs: threads.append(real_thread(**kwargs)) or threads[-1])
+    kicad_cli.clear_cache()
+    for thread in threads:
+        thread.join(10)
+    assert kicad_cli.lookup("models", before) is None
+    assert sorted(path.name for path in root.parent.iterdir()) == ["exports"]
+    after = kicad_cli.cache_key("same parts")
+    assert after != before
+    kicad_cli.clear_cache()
+    assert kicad_cli.cache_key("same parts") not in (before, after)
+    assert kicad_cli.store("models", "key", {"result.txt": output}) is not None
+
+
+def test_clear_cache_without_a_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(kicad_cli, "cache_root", lambda: tmp_path / "never" / "exports")
+    kicad_cli.clear_cache()
+    assert (tmp_path / "never" / "exports" / "generation").is_file()
+
+
 def test_store_failure_falls_back_to_the_outputs(tmp_path, monkeypatch):
     blocker = tmp_path / "not_a_folder"
     blocker.write_text("", encoding="utf-8")  # the cache root cannot be created under a file

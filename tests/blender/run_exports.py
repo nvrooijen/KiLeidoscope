@@ -1,7 +1,7 @@
 """Headless checks of the kicad-cli export workers and what they leave behind: a failed
 model export is retried, one with a model file missing or unreadable is shown but not
-cached, a model file saved again re-exports, exports read the bytes their cache key
-was made from, a new GLB import drops
+cached, a model file saved again re-exports, Reset cache exports again, exports read
+the bytes their cache key was made from, a new GLB import drops
 the one it replaces, re-applied overlays free the plots they replace, a reflection
 HDRI saved by another Blender install is found again, and no scratch folder outlives
 Blender. Needs kicad-cli.
@@ -242,6 +242,41 @@ def check_model_file_saved_again(scratch):
         follow.stop()
 
 
+def check_reset_cache(scratch):
+    """The Reset cache button: the cache's keys change and the model watch starts over
+    (a fresh memory, so its first poll exports again) without a board edit."""
+    source = scratch / "reset" / BOARD_FILE.name
+    source.parent.mkdir()
+    source.write_bytes(BOARD_FILE.read_bytes())
+    follow = models._watcher
+    real_root, real_change = kicad_cli.cache_root, follow.on_change
+    kicad_cli.cache_root = lambda: scratch / "reset" / "cache" / "exports"  # never the user's cache
+    calls = []
+
+    def on_change(job_, memory_):
+        calls.append(dict(memory_))
+        memory_["key"] = "exported"
+
+    def wait_for(count):
+        deadline = time.monotonic() + 5
+        while len(calls) < count and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    follow.on_change = on_change
+    try:
+        models.follow_board(str(source), {"path": str(source)})
+        wait_for(1)
+        before = kicad_cli.cache_key("same parts")
+        assert bpy.ops.kileido.reset_cache() == {"FINISHED"}
+        wait_for(2)
+        assert len(calls) == 2, "Reset cache did not export again"
+        assert calls[1] == {}, f"the watch kept its memory: {calls[1]}"
+        assert kicad_cli.cache_key("same parts") != before, "Reset cache kept the keys"
+    finally:
+        models.stop_following()
+        follow.on_change, kicad_cli.cache_root = real_change, real_root
+
+
 def check_unsaved_board_follows_live_copy(scratch):
     """A board with no saved file (empty board path) still loads models from the bridge's
     live copy; only with neither copy nor saved board is the status the save-it hint."""
@@ -445,6 +480,7 @@ def main():
         check_model_retry(scratch)
         check_missing_models_not_cached(scratch)
         check_model_file_saved_again(scratch)
+        check_reset_cache(scratch)
         check_unsaved_board_follows_live_copy(scratch)
         check_variant_export(scratch)
         snapshot = snapshot_from_jsonable(json.loads(FIXTURE.read_text(encoding="utf-8")))

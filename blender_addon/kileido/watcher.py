@@ -161,6 +161,14 @@ class BoardWatcher:
         if not bpy.app.timers.is_registered(self._timer):
             bpy.app.timers.register(self._timer, first_interval=self.first_interval)
 
+    def restart(self):
+        """Watch the same board again from scratch (a new `memory`): the first poll runs
+        `on_change` as for a newly shown board. No-op when nothing is watched."""
+        board_path, export = self._board_path, self._export
+        if board_path or self._source:
+            self.stop()
+            self.follow(board_path, export)
+
     def stop(self):
         if self._stop is not None:
             self._stop.set()

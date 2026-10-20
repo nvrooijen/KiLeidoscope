@@ -104,6 +104,11 @@ def stop_following():
     _watcher.stop()
 
 
+def export_again():
+    """After `kicad_cli.clear_cache`: plot from scratch (the watch forgets its key)."""
+    _watcher.restart()
+
+
 def drain():
     """Handle one finished export now (headless tools; the GUI timer does this)."""
     return _watcher.drain()

@@ -24,8 +24,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
-               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, layers, lighting,
-               live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
+               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, kicad_cli, layers,
+               lighting, live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
 from .objects import view3d_spaces
 from .state import board
 
@@ -122,6 +122,19 @@ class KILEIDO_OT_resync(bpy.types.Operator):
 
     def execute(self, context):
         live.request_resync(adopt=True)
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_reset_cache(bpy.types.Operator):
+    bl_idname = "kileido.reset_cache"
+    bl_label = "KiLeidoscope: Reset cache"
+    bl_description = ("Delete KiLeidoscope's saved 3D-model and overlay exports and export them again "
+                      "from KiCad. For a 3D model file changed in a way KiLeidoscope did not notice")
+
+    def execute(self, context):
+        kicad_cli.clear_cache()
+        models.export_again()
+        cosmetics.export_again()
         return {"FINISHED"}
 
 
@@ -1260,6 +1273,8 @@ class _Status:
         if live.connected():  # a new KiCad is never followed on its own: it may be an unrelated one
             self.layout.operator("kileido.resync", icon="FILE_REFRESH",
                                  text="Resync with new KiCad" if live.new_kicad() else "Resync")
+        if board.collection is not None:
+            self.layout.operator("kileido.reset_cache", icon="TRASH", text="Reset cache")
 
 
 LED_COLORS = {"ok": (0.2, 0.85, 0.3), "busy": (1.0, 0.68, 0.1), "down": (0.92, 0.2, 0.18),
@@ -1314,7 +1329,7 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
-           KILEIDO_UL_boards, KILEIDO_OT_resync,
+           KILEIDO_UL_boards, KILEIDO_OT_resync, KILEIDO_OT_reset_cache,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
            KILEIDO_OT_flex_group, *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, KILEIDO_PT_panel)
