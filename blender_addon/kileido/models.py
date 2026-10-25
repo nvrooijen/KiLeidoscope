@@ -2,10 +2,11 @@
 
 kicad-cli exports the bridge's live board copy (else the saved board). Footprint
 moves never need an export: IPC moves the bound meshes. A new export runs only
-when a footprint's model definitions change (`model_signature`), and exports are
-cached by that signature and the path variables the models use, so reopening a
-board imports the cached GLB. An export with model files missing is not cached:
-the next open looks for them again (a path set in KiCad, a file added).
+when a footprint's model definitions change (`model_signature`) or a model file
+does (saved again under the same path), and exports are cached by both and the
+path variables the models use, so reopening a board imports the cached GLB. An
+export with model files missing is not cached: the next open looks for them again
+(a path set in KiCad, a file added).
 """
 
 import bisect
@@ -32,6 +33,7 @@ _MODEL = re.compile(r'\(model\s+"')
 _MODEL_PATH = re.compile(r'\(model\s+"((?:[^"\\]|\\.)*)"')
 _FOOTPRINT = re.compile(r'\(footprint\s+"')
 _UUID = re.compile(r'\(uuid\s+"([^"]+)"')
+_CHECKSUM = re.compile(r'\(checksum\s+"([^"]*)"\)')  # an embedded file's, in `(embedded_files ...)`
 MATCH_TOLERANCE_M = 0.0002  # a GLB root this close to a footprint origin belongs to it
 KICAD_MODEL_LIFT_M = 50e-6  # KiCad's 3D export lifts each model this far off the copper (BOARD_OFFSET)
 KICAD_COPPER_M = 35e-6  # the copper thickness KiCad assumes when the stackup gives none
@@ -65,8 +67,9 @@ def _block(text, start):
 def model_signature(board_text):
     """What the GLB depends on beyond footprint placement: each footprint's identity
     (UUID, the first `uuid` after `(footprint`; reference) and its `(model ...)`
-    blocks (file, offset, scale, rotation, hidden, opacity). Bound meshes follow
-    footprint ids, so a footprint deleted and re-added needs a new export."""
+    blocks (file, offset, scale, rotation, hidden, opacity), and the checksums of
+    embedded files (a kicad-embed:// model replaced under the same name). Bound meshes
+    follow footprint ids, so a footprint deleted and re-added needs a new export."""
     references = [(match.start(), match[1]) for match in _REFERENCE.finditer(board_text)]
     reference_starts = [start for start, _ in references]
     footprints = []
@@ -81,6 +84,8 @@ def model_signature(board_text):
         digest.update((footprints[footprint][1] if footprint >= 0 else "").encode("utf-8") + b"\0")
         digest.update((references[owner][1] if owner >= 0 else "").encode("utf-8") + b"\0")
         digest.update(_block(board_text, match.start()).encode("utf-8") + b"\0")
+    for checksum in _CHECKSUM.findall(board_text):
+        digest.update(checksum.encode("utf-8") + b"\0")
     return digest.hexdigest()
 
 
@@ -90,17 +95,23 @@ def _read_positions(path):
 
 
 def _on_board_change(job, memory):
-    """Worker: export only when model definitions (or the path variables they use)
-    changed; moves alone are applied live. The key is kept once an export succeeded,
-    so a failed one is retried on the next file change. One with model files missing
-    is kept too: re-exporting on every edit would not find them either."""
+    """Worker: export only when model definitions, the path variables they use or the
+    model files changed; moves alone are applied live. The model files and their stamps
+    go into `memory` for the watcher, so a model saved again re-exports without a board
+    edit. The key is kept once an export succeeded, so a
+    failed one is retried on the next file change. One with model files missing is
+    kept too: re-exporting on every edit would not find them either."""
     data = job.source.read_bytes()
     text = data.decode("utf-8")
     cli = kicad_cli.executable(job.export)
     project = kicad_cli.project_dir(job.export, job.source)
-    variables = kicad_cli.path_variables(_MODEL_PATH.findall(text), job.export.get("kicad_settings", ""))
+    paths, settings = _MODEL_PATH.findall(text), job.export.get("kicad_settings", "")
+    variables = kicad_cli.path_variables(paths, settings)
+    memory["files"] = kicad_cli.model_files(paths, project, settings)
+    memory["stamps"] = kicad_cli.file_stamps(memory["files"])
     variant = kicad_cli.variant_arguments(job.export)  # a variant's export is cached on its own
-    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables, *variant)
+    key = kicad_cli.cache_key(model_signature(text), kicad_cli.identity(cli), project, variables,
+                              memory["stamps"], *variant)
     if key == memory.get("key"):
         return
     if _export(job, cli, key, data, project):
@@ -189,6 +200,11 @@ def follow_board(board_path, export=None):
 
 def stop_following():
     _watcher.stop()
+
+
+def export_again():
+    """After `kicad_cli.clear_cache`: export from scratch (the watch forgets its key)."""
+    _watcher.restart()
 
 
 def drain():

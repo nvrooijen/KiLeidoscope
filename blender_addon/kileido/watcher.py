@@ -18,9 +18,10 @@ from pathlib import Path
 
 import bpy
 
+from .kicad_cli import file_stamps
 from .state import board
 
-POLL_S = 0.5  # one stat per poll: the bridge rewrites its copy ~0.5 s after edits settle
+POLL_S = 0.5  # the bridge rewrites its copy ~0.5 s after edits settle
 TIMER_S = 0.2
 SCRATCH_PREFIXES = ("kileido_models_", "kileido_overlays_")  # the exports' scratch_directory folders
 STALE_S = 3600  # a scratch folder this old is a crashed Blender's; an export's lives seconds
@@ -108,8 +109,10 @@ def sweep_stale(now=None):
 
 
 class BoardWatcher:
-    """Calls `on_change(job, memory)` on a worker whenever the watched file changes and
-    `on_result(result)` on the main thread for every successful result.
+    """Calls `on_change(job, memory)` on a worker whenever the watched file changes, or
+    one of the files `on_change` listed in `memory["files"]` no longer matches
+    `memory["stamps"]` (their `file_stamps` as it saw them), and `on_result(result)` on
+    the main thread for every successful result.
 
     `memory` is a dict kept for the life of one watch; it is cleared after an
     unexpected error so the next file change retries from scratch. `on_result`
@@ -158,6 +161,14 @@ class BoardWatcher:
         if not bpy.app.timers.is_registered(self._timer):
             bpy.app.timers.register(self._timer, first_interval=self.first_interval)
 
+    def restart(self):
+        """Watch the same board again from scratch (a new `memory`): the first poll runs
+        `on_change` as for a newly shown board. No-op when nothing is watched."""
+        board_path, export = self._board_path, self._export
+        if board_path or self._source:
+            self.stop()
+            self.follow(board_path, export)
+
     def stop(self):
         if self._stop is not None:
             self._stop.set()
@@ -174,14 +185,16 @@ class BoardWatcher:
                 break
 
     def _watch(self, job):
-        """Worker thread: a stat every POLL_S; exports only when the file changed."""
+        """Worker thread: a stat of the file (and of `memory["files"]`) every POLL_S;
+        exports only when one changed."""
         last = None
         memory = {}
         while not job.stop.is_set():
             try:
                 info = job.source.stat()
                 stamp = (info.st_mtime_ns, info.st_size)
-                if stamp != last:
+                files = memory.get("files")
+                if stamp != last or (files and file_stamps(files) != memory.get("stamps")):
                     last = stamp
                     self.on_change(job, memory)
             except OSError as exc:

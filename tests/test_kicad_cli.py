@@ -81,6 +81,42 @@ def test_path_variables_without_settings(tmp_path, monkeypatch):
     assert kicad_cli.path_variables(["${KIPRJMOD}/p.step", "C:/p.step"], str(tmp_path)) == ""
 
 
+def test_model_files_as_kicad_resolves_them(tmp_path, monkeypatch):
+    """Each model path's files as KiCad's resolver tries them: variables expanded (the
+    environment over kicad_common.json), absolute or variable paths as they are,
+    relative ones under the project and each ${KICADn_3DMODEL_DIR}; embedded models
+    and repeats left out, the board's string escapes undone."""
+    project, stock, saved_dir = tmp_path / "project", tmp_path / "stock", tmp_path / "saved"
+    monkeypatch.setenv("KLS_TEST_3D", str(tmp_path / "env"))
+    monkeypatch.setenv("KICAD10_3DMODEL_DIR", str(stock))
+    monkeypatch.delenv("KLS_UNSET_TEST_3D", raising=False)
+    settings = _settings(tmp_path / "10.0", {"KLS_TEST_3D": "/ignored", "KLS_SAVED_3D": str(saved_dir),
+                                             "KLS_BAD_3D": 3})
+    absolute = tmp_path / "abs" / "a.step"
+    written = str(absolute).replace("\\", "\\\\")  # as the board writes it (measured: kicad-cli unescapes)
+    paths = ["${KIPRJMOD}/local.step", "${KLS_TEST_3D}/env.step", "$(KLS_SAVED_3D)/saved.step",
+             "${KLS_UNSET_TEST_3D}/unset.step", written, "parts/rel.step", "kicad-embed://inside.step",
+             "${KIPRJMOD}/local.step", "esc\\\\aped \\\"q\\\".step"]
+    files = kicad_cli.model_files(paths, str(project), settings)
+    assert files[:5] == [project / "local.step", tmp_path / "env" / "env.step", saved_dir / "saved.step",
+                         Path("${KLS_UNSET_TEST_3D}/unset.step"), absolute]
+    assert project / "parts" / "rel.step" in files and stock / "parts" / "rel.step" in files
+    assert not any("inside" in str(path) for path in files)
+    assert files.count(project / "local.step") == 1
+    assert project / 'esc\\aped "q".step' in files
+
+
+def test_file_stamps_follow_a_file_saved_again(tmp_path):
+    model = tmp_path / "part.step"
+    model.write_bytes(b"ISO-10303-21; old")
+    before = kicad_cli.file_stamps([model, tmp_path / "absent.step"])
+    assert before.endswith("absent.step|-")
+    model.write_bytes(b"ISO-10303-21; new")
+    os.utime(model, ns=(1, 1))
+    assert kicad_cli.file_stamps([model, tmp_path / "absent.step"]) != before
+    assert kicad_cli.file_stamps([]) == ""
+
+
 def test_model_problems_from_kicad_cli_messages():
     """kicad-cli 10's GLB export messages (measured) for a model path not found and a
     VRML file its reader rejects; the rest of its output is not a problem."""
@@ -102,6 +138,40 @@ def test_store_and_lookup(tmp_path, monkeypatch):
     entry = kicad_cli.store("overlays", "key", {"result.txt": output})
     assert entry is not None and (entry / "result.txt").read_text(encoding="utf-8") == "plot"
     assert kicad_cli.lookup("overlays", "key") == entry
+
+
+def test_clear_cache_drops_entries_and_changes_keys(tmp_path, monkeypatch):
+    """Reset cache: what was stored is gone (moved aside, then deleted, with what an
+    earlier reset left), the same parts make a new key each time, and storing works
+    again at once."""
+    root = tmp_path / "KiLeidoscope" / "exports"
+    monkeypatch.setattr(kicad_cli, "cache_root", lambda: root)
+    output = tmp_path / "result.txt"
+    output.write_text("plot", encoding="utf-8")
+    before = kicad_cli.cache_key("same parts")
+    kicad_cli.store("models", before, {"result.txt": output})
+    left = root.with_name("exports.cleared-old")
+    left.mkdir()
+    threads = []
+    real_thread = kicad_cli.threading.Thread
+    monkeypatch.setattr(kicad_cli.threading, "Thread",
+                        lambda **kwargs: threads.append(real_thread(**kwargs)) or threads[-1])
+    kicad_cli.clear_cache()
+    for thread in threads:
+        thread.join(10)
+    assert kicad_cli.lookup("models", before) is None
+    assert sorted(path.name for path in root.parent.iterdir()) == ["exports"]
+    after = kicad_cli.cache_key("same parts")
+    assert after != before
+    kicad_cli.clear_cache()
+    assert kicad_cli.cache_key("same parts") not in (before, after)
+    assert kicad_cli.store("models", "key", {"result.txt": output}) is not None
+
+
+def test_clear_cache_without_a_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(kicad_cli, "cache_root", lambda: tmp_path / "never" / "exports")
+    kicad_cli.clear_cache()
+    assert (tmp_path / "never" / "exports" / "generation").is_file()
 
 
 def test_store_failure_falls_back_to_the_outputs(tmp_path, monkeypatch):

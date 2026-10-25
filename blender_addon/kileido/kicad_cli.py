@@ -1,4 +1,5 @@
-"""kicad-cli lookup and the persistent export cache (worker threads only)."""
+"""kicad-cli lookup and the persistent export cache (worker threads only, but for
+`clear_cache`)."""
 
 import hashlib
 import json
@@ -7,11 +8,15 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import uuid
 from pathlib import Path
 
 
 CACHE_VERSION = "1"  # bump when an exporter's options or output layout change
 _VARIABLE = re.compile(r"\$\{([^}]+)\}|\$\(([^)]+)\)")  # KiCad's ${NAME} and $(NAME)
+_MODEL_DIR = re.compile(r"KICAD\d+_3DMODEL_DIR")  # where KiCad looks up a relative model path
+_EMBEDDED = "kicad-embed://"  # a model stored in the board file itself
 # kicad-cli's messages for a model it left out: not found, or found but unreadable
 _MODEL_PROBLEM = re.compile(r"File not found: (.+)|No model for filename '(.+)'")
 
@@ -81,6 +86,50 @@ def path_variables(paths, settings=""):
     return "\n".join(f"{name}={os.environ.get(name)!r}|{saved.get(name)!r}" for name in names)
 
 
+def model_files(paths, project, settings=""):
+    """The files kicad-cli may read for the board's model `paths`: a model edited in
+    place keeps its path, so the cache key and the watcher look at these files too
+    (`file_stamps`). As KiCad's 3D resolver tries them: ${NAME}s expanded (KIPRJMOD is
+    `project`; the environment wins over kicad_common.json, as in KiCad), that path
+    when it is absolute or starts with a variable, else under the project folder and
+    under each ${KICADn_3DMODEL_DIR} set (measured, kicad-cli 10: both found; unset, it
+    is KiCad's own library, which changes with an install). Embedded models
+    (kicad-embed://) are in the board text; a path relative to the footprint's
+    library is not followed (that needs the library tables)."""
+    saved = {name: value for name, value in _saved_variables(settings).items() if isinstance(value, str)}
+
+    def value(name):
+        return project if name == "KIPRJMOD" else os.environ.get(name) or saved.get(name)
+
+    model_dirs = [folder for folder in map(value, sorted({name for name in [*os.environ, *saved]
+                                                           if _MODEL_DIR.fullmatch(name)})) if folder]
+    files = {}
+    for path in paths:
+        path = re.sub(r"\\(.)", r"\1", path)  # the board's string escapes
+        if path.startswith(_EMBEDDED):
+            continue
+        expanded = _VARIABLE.sub(lambda match: value(match[1] or match[2]) or match[0], path)
+        if path.startswith(("${", "$(")) or Path(expanded).is_absolute():
+            files[Path(expanded)] = None
+        else:
+            files.update(dict.fromkeys(Path(folder) / expanded for folder in [project, *model_dirs]))
+    return list(files)
+
+
+def file_stamps(files):
+    """Each file's size and modification time, as text for a cache key; "-" for one
+    that is not there (a file turning up makes a new key too)."""
+    lines = []
+    for path in files:
+        try:
+            info = os.stat(path)
+        except OSError:
+            lines.append(f"{path}|-")
+        else:
+            lines.append(f"{path}|{info.st_size}|{info.st_mtime_ns}")
+    return "\n".join(lines)
+
+
 def model_problems(output):
     """The model files a GLB export left out, one per message, from kicad-cli's output:
     paths it did not find, and files it found but could not read (a VRML file its
@@ -136,7 +185,7 @@ def cache_root():
 
 def cache_key(*parts):
     digest = hashlib.blake2b(CACHE_VERSION.encode(), digest_size=16)
-    for part in parts:
+    for part in (_generation(), *parts):
         digest.update(b"\0")
         digest.update(part if isinstance(part, bytes) else str(part).encode("utf-8"))
     return digest.hexdigest()
@@ -177,6 +226,39 @@ def lookup(kind, key):
             pass  # a read-only cache is still a cache
         return entry
     return None
+
+
+def _generation():
+    """The cache's generation, new with each `clear_cache`, in every key: a key made
+    after a reset misses whatever was made before, a model import kept in the .blend
+    (named by its key) included. "" until the first reset."""
+    try:
+        return (cache_root() / "generation").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def clear_cache():
+    """The Reset cache button (main thread): every cached export goes and a new
+    generation of keys starts. The folder is moved aside in one rename and deleted on
+    a worker thread, so an export finishing meanwhile stores into the new one; folders
+    a quit Blender left half deleted go too. A locked file is skipped."""
+    root = cache_root()
+    gone = list(root.parent.glob(root.name + ".cleared-*"))
+    aside = root.with_name(f"{root.name}.cleared-{uuid.uuid4().hex[:8]}")
+    try:
+        os.replace(root, aside)
+        gone.append(aside)
+    except FileNotFoundError:
+        pass
+    except OSError:  # a file in use (Windows): delete what can be deleted, here
+        shutil.rmtree(root, ignore_errors=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "generation").write_text(uuid.uuid4().hex, encoding="utf-8")
+    except OSError:
+        pass  # a read-only cache: its keys stay, nothing was stored there either
+    threading.Thread(target=lambda: [shutil.rmtree(path, ignore_errors=True) for path in gone], daemon=True).start()
 
 
 def prune(kind, keep=16):
