@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,10 +21,24 @@ jobs:
       - run: python tools/build_native.py  # the Gerber tests then run on both the C and numpy paths
       - run: python -m pytest -q
 
+  macos-python39:
+    # Python 3.9 is supported because KiCad for macOS ships 3.9.13, so it is tested there.
+    # setup-python has no 3.9 for Apple silicon; uv installs a standalone build.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv venv --python 3.9 .venv
+      - run: uv pip install --python .venv -e ".[test]"
+      - run: .venv/bin/python tools/build_native.py
+      - run: .venv/bin/python -m pytest -q
+
   blender:
     # The add-on against real Blender builds, headless. Blender exits 0 when a script
     # raises unless --python-exit-code is set.
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: GitHub's Ubuntu 26.04 image installs amd64v3 packages only, and
+    # the KiCad PPA builds KiCad for plain amd64, so apt finds no KiCad 10 there.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -39,7 +53,9 @@ jobs:
       - name: KiCad 10 (its kicad-cli makes the mask, silkscreen and model exports)
         run: |
           sudo add-apt-repository -y ppa:kicad/kicad-10.0-releases
-          sudo apt-get install -y -q --no-install-recommends kicad
+          # Asked for by version, so apt fails here rather than install the archive's
+          # KiCad 9, whose kicad-cli cannot load the KiCad 10 test boards.
+          sudo apt-get install -y -q --no-install-recommends 'kicad=10.*'
           kicad-cli version
       - uses: actions/cache@v4
         with:
