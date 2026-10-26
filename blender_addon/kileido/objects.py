@@ -104,6 +104,7 @@ def link_owned(obj, key=None):
     group = next((child for child in board.collection.children if child.get("kls_group") == key),
                  board.collection)
     group.objects.link(obj)
+    _index()[obj.name] = obj
     lock_in_place(obj)
 
 
@@ -113,14 +114,44 @@ def lock_in_place(obj):
     obj.lock_location = obj.lock_rotation = obj.lock_scale = (True, True, True)
 
 
+def _index():
+    """`board.object_index` for the board collection shown now (a view-only board lent to
+    `board` gets its own)."""
+    pointer = board.collection.as_pointer()
+    if board.object_index_of != pointer:
+        board.object_index, board.object_index_of = {}, pointer
+    return board.object_index
+
+
+def lookup(name):
+    """The board collection's object `name`, or None. A collection's `all_objects.get`
+    walks every object: 0.2 ms each on a 1,500-object board while an edit is applied
+    (measured, MedusaV5), and one edit makes thousands. So objects found are remembered,
+    and checked by name on the way out (removed, undone or renamed since: looked up again)."""
+    index = _index()
+    obj = index.get(name)
+    if obj is not None:
+        try:
+            if obj.name == name:
+                return obj
+        except ReferenceError:
+            pass
+    obj = board.collection.all_objects.get(name)
+    if obj is None:
+        index.pop(name, None)
+    else:
+        index[name] = obj
+    return obj
+
+
 def find(name):
     """The board's object `name` ("KLS ..."), under its view-only prefix if it has one."""
-    return board.collection.all_objects.get(board.name_prefix + name)
+    return lookup(board.name_prefix + name)
 
 
 def owned_object(name, kind="MESH", group=None):
     """The board collection's object `name`, created (with empty mesh data) if missing."""
-    obj = board.collection.all_objects.get(name)
+    obj = lookup(name)
     if obj is not None:
         return obj
     return new_owned(name, kind, group)
@@ -229,7 +260,7 @@ def outline_bounds():
     """(xmin, ymin, xmax, ymax) of the board outline in Blender metres, or None."""
     if board.collection is None:
         return None
-    outline = board.collection.all_objects.get(OUTLINE)
+    outline = lookup(OUTLINE)
     if outline is None or not len(outline.data.vertices):
         return None
     xy = read_coordinates(outline.data)[:, :2]

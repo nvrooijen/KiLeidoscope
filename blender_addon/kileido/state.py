@@ -61,6 +61,8 @@ class BoardState:
         self.model_objects_by_fp = {}
         self.component_names = {}  # components.key_of -> object name (components.find)
         self.component_names_of = 0  # the collection (pointer) that index is of
+        self.object_index = {}  # object name -> object, as found in the collection (objects.lookup)
+        self.object_index_of = 0  # the collection (pointer) that index is of
 
         # KiCad's selection (protocol.selection_message).
         self.highlight = {"selected": set(), "pair": set(), "finding": set()}  # finding: findings_draw

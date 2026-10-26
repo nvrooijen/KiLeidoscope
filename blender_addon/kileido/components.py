@@ -12,6 +12,7 @@ from pathlib import PureWindowsPath
 import bpy
 from mathutils import Matrix
 
+from .objects import lookup
 from .state import board
 
 NAME_BYTES = 63  # Blender's longest object name
@@ -65,16 +66,15 @@ def key_of(obj):
 
 def find(*key):
     """The board's object for `key` (see `key_of`), or None."""
-    objects = board.collection.all_objects
     pointer = board.collection.as_pointer()
     if board.component_names_of != pointer:
         _index(pointer)
-    obj = objects.get(board.component_names.get(key, ""))
+    obj = lookup(board.component_names.get(key, ""))
     if obj is not None and key_of(obj) == key:
         return obj
     if key in board.component_names:  # renamed or removed since (the Outliner, a view-only board)
         _index(pointer)
-        obj = objects.get(board.component_names.get(key, ""))
+        obj = lookup(board.component_names.get(key, ""))
     return obj
 
 

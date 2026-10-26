@@ -12,7 +12,7 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 from . import components, focus, materials, transform
-from .objects import (camera_rays_only, hide, owned_object, read_attribute, read_coordinates, read_edges,
+from .objects import (camera_rays_only, hide, lookup, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, write_attribute)
 from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward, via_plating
 from .state import board
@@ -121,7 +121,7 @@ def _refresh_tracks(wanted, only_layer=None):
             continue
         if not any(wanted.values()):  # nothing highlighted: skip reading the copper mesh
             for kind in wanted:
-                obj = board.collection.all_objects.get(f"KLS {layer} highlight {kind}")
+                obj = lookup(f"KLS {layer} highlight {kind}")
                 if obj is not None:
                     _hide(obj)
             continue
@@ -133,7 +133,7 @@ def _refresh_tracks(wanted, only_layer=None):
             name = f"KLS {layer} highlight {kind}"
             keep = _item_mask(ids, chosen, item)
             if not keep.any():
-                if (obj := board.collection.all_objects.get(name)) is not None:
+                if (obj := lookup(name)) is not None:
                     _hide(obj)
                 continue
             chosen_vertices = np.flatnonzero(keep)  # a segment's two vertices share its item
@@ -161,6 +161,7 @@ def _refresh_tracks(wanted, only_layer=None):
 
 
 def _refresh_zones(wanted, only_layer=None):
+    copper = {}  # layer -> its material, painted once (layer_material repaints it)
     for obj in _copper_sources("zones"):
         layer = obj["kls_copper"][0]
         if only_layer not in (None, layer):
@@ -170,8 +171,9 @@ def _refresh_zones(wanted, only_layer=None):
         if obj.get("kls_zone_highlight", "") == kind:
             continue
         obj["kls_zone_highlight"] = kind
-        set_node_input(obj, "Material",
-                       board.materials[f"highlight_{kind}"] if kind else materials.layer_material(layer))
+        if not kind and layer not in copper:
+            copper[layer] = materials.layer_material(layer)
+        set_node_input(obj, "Material", board.materials[f"highlight_{kind}"] if kind else copper[layer])
 
 
 def _refresh_pads(wanted, component_pads, only_layer=None):
@@ -191,7 +193,7 @@ def _refresh_pads(wanted, component_pads, only_layer=None):
 
 def _refresh_pad_sheet(source, layer, kind, chosen):
     name = f"KLS {layer} highlight pads" + ("" if kind == "selected" else f" {kind}")
-    existing = board.collection.all_objects.get(name)
+    existing = lookup(name)
     if not chosen:  # nothing selected: skip reading the pad mesh
         if existing is not None:
             _hide(existing)
@@ -227,7 +229,7 @@ def _refresh_pad_sheet(source, layer, kind, chosen):
 def _refresh_vias(wanted):
     """Highlighted vias: lands slightly larger and higher, barrel slightly narrower
     than the real via, so the colour sits on top of it and inside the hole."""
-    source = board.collection.all_objects.get("KLS vias")
+    source = lookup("KLS vias")
     ids = list(source.get("kls_ids", ())) if source is not None else []
     mesh = source.data if source is not None else None
     count = len(mesh.vertices) if mesh is not None else 0
@@ -236,7 +238,7 @@ def _refresh_vias(wanted):
         keep = (np.fromiter((item_id in chosen for item_id in ids), bool, len(ids))
                 if chosen and len(ids) == count else np.zeros(count, bool))
         if not keep.any():
-            if (obj := board.collection.all_objects.get(name)) is not None:
+            if (obj := lookup(name)) is not None:
                 _hide(obj)
             continue
         chosen_vertices = np.flatnonzero(keep)
@@ -264,7 +266,7 @@ def _refresh_vias(wanted):
 
 def _refresh_via_rings(wanted, ids, count):
     """A highlighted via's inner annular rings, in its highlight colour (X-ray mode shows them)."""
-    source = board.collection.all_objects.get("KLS vias rings")
+    source = lookup("KLS vias rings")
     mesh = source.data if source is not None else None
     owners = read_attribute(mesh, "via", np.int32) if mesh is not None and "via" in mesh.attributes else []
     for kind, chosen in wanted.items():
@@ -273,7 +275,7 @@ def _refresh_via_rings(wanted, ids, count):
                   if chosen and len(ids) == count else np.zeros(count, bool))
         keep = picked[owners] if len(owners) and len(picked) else np.zeros(len(owners), bool)
         if not keep.any():
-            if (obj := board.collection.all_objects.get(name)) is not None:
+            if (obj := lookup(name)) is not None:
                 _hide(obj)
             continue
         chosen_points = np.flatnonzero(keep)
@@ -295,7 +297,7 @@ def _component_extent(footprint_id, footprint):
     to_local = footprint.matrix_world.inverted()
     corners = []
     for name in board.model_objects_by_fp.get(footprint_id, ()):
-        part = board.collection.all_objects.get(name)
+        part = lookup(name)
         if part is not None and not part.hide_get():
             corners += [_in_frame(part, footprint, to_local) @ Vector(corner) for corner in part.bound_box]
     if corners:

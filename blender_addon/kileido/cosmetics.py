@@ -3,21 +3,24 @@
 The worker exports the bridge's live board copy (unsaved edits included) when the
 bridge provides one, else the saved board, as Gerbers in one kicad-cli call
 (~0.8 s on the reference board; KiCad's SVG plot took ~4.4 s), and `gerber.py`
-draws them into images. Results are cached by board content. The outer copper
+draws them into images, in a Python process of its own (`overlay_plots.py`).
+Results are cached by board content. The outer copper
 layers are plotted too, blurred, as the relief of the mask lying over the copper
 (materials.set_relief_image): no overlay of their own.
 """
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import bpy
 import numpy as np
 
-from . import cut, focus, gerber, holes, kicad_cli, materials, nodes, shading
-from .objects import (OUTLINE, find, link_owned, outline_bounds, owned_object, set_modifier, set_node_input,
+from . import cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, shading
+from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_object, set_modifier, set_node_input,
                       set_visible)
 from .placement import laminate_faces, mask_thickness, outward
 from .state import board
@@ -55,6 +58,7 @@ RELIEF = ("F.Cu", "B.Cu")  # plotted for the mask's relief over the copper, not 
 RELIEF_BLUR_M = 50e-6
 
 OVERLAY_CACHE = "gerber-5"  # part of the cache key: bump when the plots or the entry layout change
+PLOT_TIMEOUT_S = 120  # drawing a board's overlays (overlay_plots), as long as its Gerber export may take
 
 
 def object_name(layer):
@@ -119,13 +123,13 @@ def drain():
 def set_layer_visible(layer, visible):
     if board.collection is None:
         return
-    obj = board.collection.all_objects.get(object_name(layer))
+    obj = lookup(object_name(layer))
     shown = False
     if obj is not None:
         shown = (visible and obj.get("kls_board_path") == board.board_path and
                  obj.get("kls_overlay_available", True))
         set_visible(obj, shown)
-    walls = board.collection.all_objects.get(walls_name(layer))
+    walls = lookup(walls_name(layer))
     if walls is not None:
         set_visible(walls, shown and walls.get("kls_walls_active", False))
     if layer.endswith((".Mask", ".SilkS")):
@@ -137,7 +141,7 @@ def visible_layers():
     if board.collection is None or board.drop_if_freed("panel draw"):
         return []
     return [entry for entry in LAYERS
-            if (obj := board.collection.all_objects.get(object_name(entry[0]))) is not None
+            if (obj := lookup(object_name(entry[0]))) is not None
             and obj.get("kls_board_path") == board.board_path]
 
 
@@ -186,7 +190,7 @@ def recolor():
             materials.set_surface(wall, board.color_mode == "REALISTIC", roughness=0.4)
         if layer.endswith(".Mask"):
             _mask_opacity(material, opacity)
-        obj = board.collection.all_objects.get(object_name(layer)) if board.collection else None
+        obj = lookup(object_name(layer)) if board.collection else None
         if obj is not None:
             _place(obj)
         set_layer_visible(layer, getattr(bpy.context.scene, property_name(layer), default))
@@ -292,7 +296,7 @@ def refresh_silk():
     scene = bpy.context.scene
     for side in "FB":
         layer = f"{side}.SilkS"
-        sheet = board.collection.all_objects.get(object_name(layer))
+        sheet = lookup(object_name(layer))
         material = bpy.data.materials.get(material_name(layer))
         if sheet is None or material is None:
             board.silk.pop(side, None)
@@ -306,7 +310,7 @@ def refresh_silk():
         sheet["kls_silk_on_surface"] = active
         materials.set_silk_state(material, side, active, True)
         _place(sheet)
-        walls = board.collection.all_objects.get(walls_name(layer))
+        walls = lookup(walls_name(layer))
         if walls is not None:
             set_visible(walls, not sheet.hide_get() and walls.get("kls_walls_active", False))
     materials.refresh_mask_colors()  # outer copper and vias
@@ -394,6 +398,43 @@ def _export_gerbers(cli, board_path, board_text, layers, directory, project):
     return found
 
 
+def _draw(job, files, layers, directory):
+    """Worker: `overlay_plots.plot` in a Python process of its own, where parsing cannot
+    hold the GIL from Blender's main thread; in place when Blender's Python cannot run it.
+    None once the job was stopped."""
+    request = directory / "plot_job.json"
+    request.write_text(json.dumps({
+        "files": {layer: str(path) for layer, path in files.items()}, "layers": layers,
+        "directory": str(directory), "relief": list(RELIEF), "relief_blur_m": RELIEF_BLUR_M,
+        "walled": list(WALLED)}), encoding="utf-8")
+    python = Path(sys.executable)
+    if python.stem.lower().startswith("python"):  # Blender's own (sys.executable is never blender itself)
+        try:
+            process = subprocess.Popen([str(python), "-I", overlay_plots.__file__, str(request)],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                                       encoding="utf-8", errors="replace",
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as exc:
+            print(f"KiLeidoscope: overlays drawn in Blender, no separate Python ({exc})")
+        else:
+            started = time.monotonic()
+            while True:
+                try:
+                    _, errors = process.communicate(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    if job.stop.is_set() or time.monotonic() - started > PLOT_TIMEOUT_S:
+                        process.kill()
+                        process.communicate()
+                        if job.stop.is_set():
+                            return None
+                        raise RuntimeError("Drawing the overlays took too long") from None
+            if process.returncode == 0:
+                return json.loads((directory / overlay_plots.ANSWER).read_text(encoding="utf-8"))
+            print(f"KiLeidoscope: overlays drawn in Blender, the separate Python failed:\n{errors.strip()[-600:]}")
+    return overlay_plots.plot(files, layers, directory, RELIEF, RELIEF_BLUR_M, WALLED)
+
+
 def _on_board_change(job, _memory):
     """Worker: plot every used drawing layer; results are cached by board content."""
     with job.scratch_directory("kileido_overlays_") as directory:
@@ -417,42 +458,13 @@ def _on_board_change(job, _memory):
         files = _export_gerbers(cli, board_file, board_text, [*wanted, *RELIEF, "Edge.Cuts"], directory, project)
         if job.stop.is_set():
             return
-        with ThreadPoolExecutor(max_workers=4) as pool:  # numpy releases the GIL while drawing
-            parsed = dict(zip(files, pool.map(lambda path: gerber.parse(path.read_text(encoding="utf-8")),
-                                              files.values())))
-            edge = parsed.pop("Edge.Cuts", None)
-            # The images cover the board outline's box, as KiCad's board-area SVG plots did.
-            bounds = edge.bounds(centre_line=True) if edge is not None else None
-            if bounds is None:
-                boxes = [box for plot in parsed.values() if (box := plot.bounds()) is not None]
-                bounds = (min(b[0] for b in boxes), min(b[1] for b in boxes),
-                          max(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes else None
-            if bounds is None:
-                job.emit(directory, finish=finish, plots=[])
-                return
-            pixel, _, _, rect = gerber.grid(bounds)
-
-            def draw(layer):
-                plot = parsed[layer]
-                if not plot.groups and not layer.endswith(".Mask"):
-                    return None  # an empty layer gets no overlay (a mask without openings does)
-                png = directory / f"{layer}.png"
-                coverage = gerber.rasterize(plot, bounds)
-                if layer in RELIEF:
-                    coverage = gerber.blur(coverage, max(0.7, RELIEF_BLUR_M * 1e9 / pixel))
-                gerber.write_png(png, coverage)
-                outline = None
-                if layer.endswith(WALLED):
-                    points, sizes = gerber.contours(plot, spacing=pixel)
-                    outline = directory / f"{layer}.npz"
-                    # float32 relative to the image corner: a few nm at board scale
-                    np.savez(outline, points=(points - rect[:2]).astype(np.float32), sizes=sizes)
-                return layer, str(png), str(outline) if outline else None
-
-            plots = [row for row in pool.map(draw, [layer for layer in (*wanted, *RELIEF) if layer in parsed])
-                     if row]
-        if job.stop.is_set():
+        drawn = _draw(job, files, [*wanted, *RELIEF], directory)
+        if drawn is None or job.stop.is_set():
             return
+        if drawn["rect"] is None:
+            job.emit(directory, finish=finish, plots=[])
+            return
+        rect, plots = drawn["rect"], drawn["plots"]
         rows = [(layer, Path(png).name, list(rect), Path(outline).name if outline else None)
                 for layer, png, outline in plots]
         (directory / "results.json").write_text(json.dumps(rows), encoding="utf-8")
@@ -635,7 +647,7 @@ def _clip_walls(obj):
     modifier = obj.modifiers.get(group.name)
     if modifier is None:
         return
-    outline = board.collection.all_objects.get(OUTLINE)
+    outline = lookup(OUTLINE)
     clip = outline is not None and getattr(bpy.context.scene, "kileido_clip_silkscreen", True)
     nodes.modifier_input(modifier, group, "Outline", outline)
     nodes.modifier_input(modifier, group, "Clip", 1.0 if clip else 0.0)
@@ -675,7 +687,7 @@ def _apply(plots, board_path):
             reliefs.add(layer[0])
             continue
         name = object_name(layer)
-        obj = board.collection.all_objects.get(name)
+        obj = lookup(name)
         if obj is None:
             obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
             link_owned(obj)

@@ -16,9 +16,9 @@ from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fol
                laminate, layers, lighting, materials, models, nodes, phase, protection, render_depth, solder, studio,
                transform)
 from .client import FrameDecoder
-from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, owned_object, read_attribute, read_coordinates,
-                      read_edges, set_modifier, set_node_input, set_visible, single_point, view3d_spaces,
-                      write_attribute, outline_bounds)
+from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
+                      read_attribute, read_coordinates, read_edges, set_modifier, set_node_input, set_visible,
+                      single_point, view3d_spaces, write_attribute)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
 from . import state
@@ -308,13 +308,14 @@ def _ring_edges(mesh, arrays):
     mesh.update()
 
 
-def _place_copper(obj, header, layer, kind, group):
-    """Height, ids and the copper modifier of one layer's copper object."""
+def _place_copper(obj, header, layer, kind, group, material=None):
+    """Height, ids and the copper modifier of one layer's copper object. `material`: the
+    layer's, when the caller places many objects of one layer (`layer_material` repaints it)."""
     z, thickness = copper_placement(layer, kind)
     obj.location.z = z
     obj["kls_ids"] = header["ids"]
     obj["kls_copper"] = (layer, kind)
-    set_modifier(obj, board.groups[group], materials.layer_material(layer),
+    set_modifier(obj, board.groups[group], material or materials.layer_material(layer),
                  {"Thickness": thickness, "Up": outward(layer)})
     board.touched.add(obj.name)
 
@@ -506,6 +507,9 @@ def _zone_arrays(arrays, index):
 def _apply_zones(header, arrays):
     """One object per zone, so an edited zone rebuilds alone (zones are the heaviest geometry)."""
     layer = header["layer"]
+    # Painted once: repainting it per zone cost 3.4 ms each in a live session (measured,
+    # 400 zones a layer on MedusaV5), while a headless Blender barely notices.
+    material = materials.layer_material(layer)
     active = set()
     for index, item_id in enumerate(header["ids"]):
         obj = owned_object(f"KLS {layer} zone {item_id}")
@@ -519,7 +523,7 @@ def _apply_zones(header, arrays):
         if obj.get("kls_geometry_hash") != digest:
             _ring_edges(obj.data, item_arrays)
             obj["kls_geometry_hash"] = digest
-        _place_copper(obj, {"ids": [item_id]}, layer, "zones", "fill_single")
+        _place_copper(obj, {"ids": [item_id]}, layer, "zones", "fill_single", material)
         obj["kls_zone_highlight"] = ""  # copper again; highlight.refresh re-applies it
         set_visible(obj, True)
         active.add(obj.name)
@@ -704,7 +708,7 @@ def _smooth_walls(obj, on):
 def _place_ims_base(outline):
     """The IMS metal base: the outline's fill (sharing its mesh), from the board's bottom
     up to the dielectric. Gone again when IMS mode is off."""
-    existing = board.collection.all_objects.get(IMS_BASE)
+    existing = lookup(IMS_BASE)
     if board.ims is None:
         if existing is not None:
             bpy.data.objects.remove(existing)
@@ -741,7 +745,7 @@ def set_board_visible(visible):
     if board.collection is None:
         return
     for name in (OUTLINE, IMS_BASE):
-        obj = board.collection.all_objects.get(name)
+        obj = lookup(name)
         if obj is not None:
             set_visible(obj, visible)
     cut.invalidate()  # the section has no laminate while the board solid is hidden
@@ -800,7 +804,7 @@ def refresh_protection(highlights=True):
     holes into the hole mask, on the sides they open on."""
     if board.collection is None:
         return
-    vias = board.collection.all_objects.get("KLS vias")
+    vias = lookup("KLS vias")
     if vias is None or "protection" not in vias.data.attributes:
         return
     mesh = vias.data
@@ -832,7 +836,7 @@ def refresh_plating():
     """The panel's Via wall: the barrels, the holes inside them, and the cut."""
     if board.collection is None:
         return
-    vias = board.collection.all_objects.get("KLS vias")
+    vias = lookup("KLS vias")
     if vias is not None and vias.modifiers:
         set_node_input(vias, "Plating", via_plating())
     refresh_protection()
@@ -859,11 +863,11 @@ def refresh_thickness():
             obj.location.z = z
             set_node_input(obj, "Thickness", thickness)
             obj.update_tag()
-    vias = board.collection.all_objects.get("KLS vias")
+    vias = lookup("KLS vias")
     if vias is not None and vias.modifiers:
         set_node_input(vias, "Top Thickness", copper_thickness("F.Cu"))
         set_node_input(vias, "Bottom Thickness", copper_thickness("B.Cu"))
-    outline = board.collection.all_objects.get(OUTLINE)
+    outline = lookup(OUTLINE)
     if outline is not None:
         _place_board(outline)
     holes.refresh_sides()  # which heights are the board's top and bottom side

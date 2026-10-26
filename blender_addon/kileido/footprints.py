@@ -10,7 +10,7 @@ import math
 from mathutils import Matrix
 
 from . import components, models, transform
-from .objects import new_owned, set_modifier, set_visible, single_point
+from .objects import lookup, new_owned, set_modifier, set_visible, single_point
 from . import state
 from .state import board
 
@@ -95,7 +95,7 @@ def _unbind_models(footprint_id):
     state.log(f"models unbound from footprint {footprint_id}: its model definitions changed")
     board.model_bound.discard(footprint_id)
     for model_name in board.model_objects_by_fp.pop(footprint_id, ()):
-        model_obj = board.collection.all_objects.get(model_name)
+        model_obj = lookup(model_name)
         if model_obj is not None:
             set_visible(model_obj, False)
 
@@ -166,7 +166,7 @@ def _move_models(footprint_id, footprint, world):
     its reference, in their names)."""
     names = board.model_objects_by_fp.get(footprint_id, [])
     for index, model_name in enumerate(names):
-        model_obj = board.collection.all_objects.get(model_name)
+        model_obj = lookup(model_name)
         if model_obj is None:
             continue
         components.rename(model_obj, components.model_name(
