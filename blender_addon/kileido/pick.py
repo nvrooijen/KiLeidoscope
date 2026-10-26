@@ -10,7 +10,7 @@ Only the live board picks: view-only boards are not in KiCad. With the board cut
 
 import numpy as np
 
-from . import cut, fold
+from . import cut, fold, poses
 from .objects import OUTLINE, lookup, read_attribute, read_coordinates, read_edges, role
 from .state import board
 
@@ -77,8 +77,8 @@ def _item_on_copy(copy, depsgraph, location, face):
     original = lookup(copy["kls_folded_from"])
     if original is None:
         return None, True  # a stiffener: in the way, but no KiCad item
-    flat = fold.flat_point(copy, depsgraph, location, face)
-    return _item(original, flat) if flat is not None else (None, True)
+    flat = fold.flat_point(copy, depsgraph, location, face)  # in the board root's space
+    return _item(original, poses.to_world() @ flat) if flat is not None else (None, True)
 
 
 def _item(obj, location):
@@ -141,7 +141,7 @@ def item_at(scene, depsgraph, origin, direction, max_hits=32):
         hit, location, _normal, _index, obj, _matrix = scene.ray_cast(depsgraph, origin, direction, distance=reach)
         if not hit:
             return None
-        if obj.name in collection.all_objects and not obj.name.startswith(SKIP_PREFIXES) and "highlight" not in obj.name:
+        if obj.name in collection.all_objects and not role(obj.name).startswith(SKIP_PREFIXES) and "highlight" not in obj.name:
             item, stop = _item_on_copy(obj, depsgraph, location, _index) if obj.get("kls_folded_from") is not None \
                 else _item(obj, location)
             if item is not None or stop:

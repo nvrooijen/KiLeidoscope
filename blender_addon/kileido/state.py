@@ -33,6 +33,10 @@ class BoardState:
         self.board_name = ""
         self.board_path = ""
         self.origin_nm = (0, 0)
+        # Where it stands (poses.py): T_B, ((x, y, z) metres, XYZ Euler radians) of KiCad's frame,
+        # and the board (path, else name) it is for. Kept when its Blender data goes (reset).
+        self.pose = None
+        self.pose_of = ""
         self.heights = {}  # copper layer name -> z (m)
         self.layer_thickness = {}  # stackup thickness (m) of copper, mask, ... by layer name
         self.thickness_m = 0.0
@@ -100,7 +104,9 @@ class BoardState:
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
         if self.model_bound:
             log(f"board {self.slot} state reset; {len(self.model_bound)} bound models forgotten")
+        kept = self.pose, self.pose_of  # rebuilt, the board stands where it stood
         self.__init__(self.slot)
+        self.pose, self.pose_of = kept
 
     @property
     def loaded(self):

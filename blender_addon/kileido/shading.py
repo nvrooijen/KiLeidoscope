@@ -9,17 +9,41 @@ def srgb_to_linear(rgb):
 
 
 FLAT_POSITION = "KLS flat position"
+BOARD_SPACE = "KLS board space"
+
+
+def board_space(tree):
+    """The tree's node of the board's "KLS board space" group (poses.space_group): a point and
+    its normal in the board root's space, wherever the board stands. One per tree."""
+    from . import poses  # poses imports objects, which imports modules importing this one
+    node = tree.nodes.get(BOARD_SPACE)
+    if node is None:
+        node = tree.nodes.new("ShaderNodeGroup")
+        node.name = BOARD_SPACE
+    group = poses.space_group()
+    if node.node_tree != group:
+        node.node_tree = group
+    return node
+
+
+def _in_board_space(tree, mix, output):
+    """A tree from before boards had roots: its mix fed the world position or normal; now the
+    board space's."""
+    socket = mix.inputs["A"]
+    if socket.links and socket.links[0].from_node.type == "NEW_GEOMETRY":
+        tree.links.new(board_space(tree).outputs[output], socket)
 
 
 def flat_position(tree):
-    """Where a surface point lies on the flat board: its position, or on a folded board's
-    copy (fold.py) the position it had before folding, so plots stay put as it folds. One
-    per tree, named FLAT_POSITION."""
+    """Where a surface point lies on the flat board, in its root's space: its position, or on
+    a folded board's copy (fold.py) the position it had before folding, so plots stay put as
+    it folds. One per tree, named FLAT_POSITION."""
     nodes, links = tree.nodes, tree.links
     existing = nodes.get(FLAT_POSITION)
     if existing is not None:
+        _in_board_space(tree, existing, "Position")
         return existing.outputs["Result"]
-    position = nodes.new("ShaderNodeNewGeometry").outputs["Position"]
+    position = board_space(tree).outputs["Position"]
     flat = nodes.new("ShaderNodeAttribute")
     flat.attribute_name = "kls_flat"
     folded = nodes.new("ShaderNodeAttribute")
@@ -37,11 +61,13 @@ FLAT_NORMAL = "KLS flat normal"
 
 def flat_normal(tree):
     """The surface's normal as it faced on the flat board (towards the viewer, as Blender's
-    own): on a folded copy (fold.py) the one stored before folding, so what tells top from
-    bottom (bare inner copper, wall weave) stays put as it folds. One per tree."""
+    own), in its root's space: on a folded copy (fold.py) the one stored before folding, so
+    what tells top from bottom (bare inner copper, wall weave) stays put as it folds or the
+    board turns. One per tree."""
     nodes, links = tree.nodes, tree.links
     existing = nodes.get(FLAT_NORMAL)
     if existing is not None:
+        _in_board_space(tree, existing, "Normal")
         return existing.outputs["Result"]
     geometry = nodes.new("ShaderNodeNewGeometry")
     stored = nodes.new("ShaderNodeAttribute")
@@ -59,7 +85,7 @@ def flat_normal(tree):
     choose = nodes.new("ShaderNodeMix")
     choose.name, choose.data_type = FLAT_NORMAL, "VECTOR"
     links.new(folded.outputs["Fac"], choose.inputs["Factor"])
-    links.new(geometry.outputs["Normal"], choose.inputs["A"])
+    links.new(board_space(tree).outputs["Normal"], choose.inputs["A"])
     links.new(seen.outputs["Vector"], choose.inputs["B"])
     return choose.outputs["Result"]
 

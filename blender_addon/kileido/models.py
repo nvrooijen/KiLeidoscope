@@ -21,7 +21,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import components, cut, focus, fold, highlight, kicad_cli, solder
+from . import components, cut, focus, fold, highlight, kicad_cli, poses, solder
 from .objects import link_owned, lookup, set_visible
 from . import state
 from .state import SLOTS, board
@@ -369,14 +369,16 @@ def model_is_visible(footprint, model_obj):
 
 
 def _saved_footprint_matrix(target, saved_positions):
-    """Build KiCad's saved footprint frame in Blender's board-centred axes."""
+    """Build KiCad's saved footprint frame in Blender's board-centred axes (the board root's
+    space: models bind wherever the board stands)."""
     entries = [row for row in saved_positions
                if row["Ref"] == target.get("kls_reference") and
                row["Side"].lower() == target.get("kls_side")]
+    placed = poses.in_root(target)
     if not entries:
-        return target.matrix_world.copy()
+        return placed
     origin_x, origin_y = board.origin_nm
-    tx, ty = target.matrix_world.translation[:2]
+    tx, ty = placed.translation[:2]
     row = min(entries, key=lambda item:
               (float(item["PosX"]) * 0.001 - origin_x * 1e-9 - tx) ** 2 +
               (float(item["PosY"]) * 0.001 + origin_y * 1e-9 - ty) ** 2)

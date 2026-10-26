@@ -15,9 +15,9 @@ import json
 import math
 
 import bpy
-from mathutils import Quaternion, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
-from . import cut, transform
+from . import cut, poses, transform
 from .objects import shown_views, view3d_spaces
 from .state import board
 
@@ -118,14 +118,14 @@ def _saved(scene):
 # --- Showing and putting back ---------------------------------------------------------------
 
 def _facing():
-    """Horizontal unit vector from the board towards the user's eye in the current view
-    (the view's bottom edge when it looks straight down), or None."""
+    """Unit vector in the board's XY (its root's space) from the board towards the user's eye
+    in the current view (the view's bottom edge when it looks straight down), or None."""
     view = next((view for _, view in shown_views()), None)
     if view is None:
         view = next((space.region_3d for space in _views()), None)
     if view is None:
         return None
-    rotation = view.view_rotation
+    rotation = poses.to_root().to_quaternion() @ view.view_rotation
     for towards in (rotation @ Vector((0.0, 0.0, 1.0)), rotation @ Vector((0.0, -1.0, 0.0))):
         flat = Vector((towards.x, towards.y))
         if flat.length > 1e-3:
@@ -159,8 +159,9 @@ def show(finding):
         if not _same(current_views, saved["applied_views"]):
             saved["views"] = current_views
     middle = (a + b) / 2
-    plane = {"location": [middle.x, middle.y, (board.thickness_m or 0.0016) / 2],
-             "rotation": [math.pi / 2, 0.0, math.atan2(normal.x, -normal.y)],  # local z (the arrow) along `normal`
+    turn = Euler((math.pi / 2, 0.0, math.atan2(normal.x, -normal.y))).to_matrix().to_4x4()  # local z (the arrow) along `normal`
+    placed = poses.to_world() @ Matrix.Translation((middle.x, middle.y, (board.thickness_m or 0.0016) / 2)) @ turn
+    plane = {"location": list(placed.translation), "rotation": list(placed.to_euler("XYZ")),
              "quaternion": [1.0, 0.0, 0.0, 0.0], "mode": "XYZ"}
     _set_cut(scene, {"on": True, "flip": False, "face": True, "light": current_cut["light"], "plane": plane})
     _frame(a, b, normal)
@@ -172,7 +173,8 @@ def show(finding):
 def _frame(a, b, normal):
     """Every 3D view on the gap, looking at the cut face from the removed side, a little from above."""
     from . import findings_draw  # it imports this module
-    towards_eye = Vector((normal.x * math.cos(TILT), normal.y * math.cos(TILT), math.sin(TILT)))
+    towards_eye = poses.to_world().to_3x3() @ Vector((normal.x * math.cos(TILT), normal.y * math.cos(TILT),
+                                                         math.sin(TILT)))
     rotation = towards_eye.to_track_quat("Z", "Y")  # a view's z points back at the eye, its y up
     for space in _views():
         view = space.region_3d

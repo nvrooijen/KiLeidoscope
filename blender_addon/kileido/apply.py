@@ -11,10 +11,11 @@ import time
 
 import bpy
 import numpy as np
+from mathutils import Vector
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, phase, protection, render_depth, solder, studio,
-               transform)
+               laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, solder,
+               studio, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
                       read_attribute, read_coordinates, read_edges, set_modifier, set_node_input, set_visible,
@@ -226,6 +227,7 @@ def apply_board(header):
     board.appearance = header.get("appearance", {})
     board.board_path = header.get("board_path", "")
     board.export = header.get("export") or {}
+    poses.follow_board()  # its root Empty, where the board stands
     set_color_mode(getattr(bpy.context.scene, "kileido_color_mode", "FAB"))
     board.warnings = list(header.get("warnings", []))
     board.status = f"Loaded {name}"
@@ -278,9 +280,10 @@ def frame_board(force=False):
         return
     xmin, ymin, xmax, ymax = bounds
     extent = max(xmax - xmin, ymax - ymin)
+    middle = poses.to_world() @ Vector(((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2))
     for space in view3d_spaces():
         view = space.region_3d
-        view.view_location = ((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2)
+        view.view_location = middle
         view.view_distance = extent * 1.5  # the whole board fits a 50 mm lens view
         space.clip_start = VIEW_CLIP_START_M
     board.framed_board = board.board_name

@@ -35,7 +35,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import delaunay_2d_cdt
 
-from . import components, fold, models, transform
+from . import components, fold, models, poses, transform
 from .objects import owned_name, owned_object, read_attribute, set_visible
 from .placement import stencil_thickness
 from .state import board, boards, each_loaded, using
@@ -282,7 +282,7 @@ def _build(paste, obj, parts):
     outward = 1.0 if paste["kls_paste_side"] == "F" else -1.0
     obj.location = paste.location
     obj.rotation_euler = paste.rotation_euler
-    matrix = np.array(paste.matrix_world, dtype=np.float64)
+    matrix = np.array(poses.in_root(paste), dtype=np.float64)  # the board root's space, as the parts
     lows = np.array([part[3] for part in parts]).reshape(-1, 3)
     highs = np.array([part[4] for part in parts]).reshape(-1, 3)
     apertures = _apertures(paste)
@@ -504,9 +504,9 @@ def _metal_tree(obj):
 
 def _parts(objects=None):
     """Model parts on the board (shown by KiCad, not an excluded DNP part) that have metal:
-    (tree, world matrix, its inverse, world box min, max, what an aperture's solder depends
-    on: the tree and where it is, the board side the part is on). `objects`: the board's,
-    if already at hand.
+    (tree, matrix, its inverse, box min, max, what an aperture's solder depends on: the tree
+    and where it is, the board side the part is on), in the board root's space: wherever the
+    board stands, its solder is the same. `objects`: the board's, if already at hand.
 
     Each part is looked at again only when it changed (moved, shown or hidden, other mesh or
     materials); the boxes where parts changed, appeared or went are logged in `_s().moves`."""
@@ -514,6 +514,7 @@ def _parts(objects=None):
     # Bound now: a part left behind (its footprint gone, its model changed, waiting for the
     # next export) stays in the scene, hidden, and must not hold solder meanwhile
     bound = {name for names in board.model_objects_by_fp.values() for name in names}
+    world_to_root = poses.to_root()
     for obj in tuple(board.collection.all_objects) if objects is None else objects:
         footprint_id = obj.get("kls_model_fp_id")
         if footprint_id is None or obj.type != "MESH":
@@ -523,7 +524,7 @@ def _parts(objects=None):
         frame = obj.parent  # its footprint (components.attach), else looked up
         if frame is None or frame.get("kls_footprint") != 1:
             frame = components.find(components.FRAME, footprint_id)
-        matrix = np.array(obj.matrix_world, dtype=np.float64)
+        matrix = np.array(poses.in_root(obj, world_to_root), dtype=np.float64)
         now = (obj.name in bound and models.model_is_visible(frame, obj), obj.data.as_pointer(), matrix.tobytes(),
                tuple(slot.material.as_pointer() if slot.material else 0 for slot in obj.material_slots),
                obj.get("kls_role"))

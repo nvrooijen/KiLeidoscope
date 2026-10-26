@@ -4,11 +4,13 @@ import re
 
 import bpy
 import numpy as np
+from mathutils import Matrix
 
 from . import nodes
 from .state import board
 
 OUTLINE = "KLS outline"
+ROOT = "KLS root"  # the board's root Empty: everything it owns hangs from it (poses.py)
 VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
 _BOARD_PREFIX = re.compile(r"^(?:B\d+|KV\d+) (?=KLS)")  # a live board's (state.slot_prefix) or a view-only one's
 
@@ -123,6 +125,21 @@ def link_owned(obj, key=None):
     group.objects.link(obj)
     _index()[obj.name] = obj
     lock_in_place(obj)
+    adopt(obj)
+
+
+def root():
+    """The board's root Empty (poses.py), or None before it has one."""
+    return lookup(ROOT) if board.collection is not None else None
+
+
+def adopt(obj, parent=None):
+    """A board object that hangs from nothing hangs from the board's root (`parent`, else
+    looked up), with an identity parent inverse: what it was placed at is in the root's space."""
+    parent = parent or root()
+    if parent is not None and obj.parent is None and obj != parent:
+        obj.parent = parent
+        obj.matrix_parent_inverse = Matrix.Identity(4)
 
 
 def lock_in_place(obj):
@@ -277,7 +294,7 @@ def shown_views():
 
 
 def outline_bounds():
-    """(xmin, ymin, xmax, ymax) of the board outline in Blender metres, or None."""
+    """(xmin, ymin, xmax, ymax) of the board outline in metres, in the board root's space, or None."""
     if board.collection is None:
         return None
     outline = lookup(OUTLINE)

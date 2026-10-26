@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 
 import kileido  # noqa: E402
-from kileido import components, layers, live, models, state  # noqa: E402
+from kileido import components, layers, live, models, objects, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402
 from kileido_bridge.protocol import FrameDecoder, messages_for, snapshot_frames  # noqa: E402
 
@@ -82,7 +82,7 @@ def main():
         footprint_empty = components.find(components.FRAME, first.id)
         assert footprint_empty.name == first.reference
         assert placeholder.name == f"{first.reference} · body (box)"
-        assert placeholder.parent == footprint_empty and footprint_empty.parent is None  # one row per part
+        assert placeholder.parent == footprint_empty and footprint_empty.parent == objects.root()  # a row per part
         assert not footprint_empty.hide_get() and footprint_empty["kls_active"] == 1
         assert footprint_empty.empty_display_size < 1.01e-4
         assert placeholder["kls_footprint_id"] == first.id

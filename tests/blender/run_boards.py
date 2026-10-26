@@ -169,9 +169,10 @@ def main():
                        for kind in packages.DATA_KINDS for block in getattr(bpy.data, kind)), \
             "a live-board name was taken by imported data"
         assert x_range(state.board.collection)[1] <= x_range(one)[0] < x_range(one)[1] <= x_range(two)[0]
-        remapped = [node for material in packages._owned_data(one)[0] if material.node_tree
-                    for node in material.node_tree.nodes if node.type == "TEX_COORD" and node.object == first]
-        assert remapped, "hole and mask plots still sampled at world XY"
+        spaces = {node.node_tree for material in packages._owned_data(one)[0] if material.node_tree
+                  for node in material.node_tree.nodes if node.name == "KLS board space"}
+        assert spaces and all(group.name == "KV1 KLS board space" and group.nodes["KLS root"].object.parent == first
+                              for group in spaces), "hole and mask plots not sampled in the board's own space"
 
         assert not any("highlight" in obj.name and not obj.hide_get() for obj in one.all_objects),             "KiCad's selection was exported"
 
