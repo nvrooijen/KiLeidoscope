@@ -15,7 +15,7 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import kileido  # noqa: E402
-from kileido import devices, dump, live, lighting  # noqa: E402
+from kileido import devices, dump, join, live, lighting  # noqa: E402
 
 if (bpy.context.window is not None and not bpy.data.filepath and
         {obj.name for obj in bpy.context.scene.objects} == {"Cube", "Camera", "Light"}):
@@ -71,6 +71,7 @@ port = os.environ.pop("KILEIDO_BRIDGE_PORT", "")
 token = os.environ.pop("KILEIDO_BRIDGE_TOKEN", "")
 if port and token:
     live.connect(int(port), token)
+    join.offer()  # Open in Blender in another KiCad may add its board to this window
 if "--" in sys.argv:
     args = sys.argv[sys.argv.index("--") + 1:]
     if len(args) != 1 or not Path(args[0]).is_file():

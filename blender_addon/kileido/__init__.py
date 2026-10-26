@@ -24,8 +24,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
-               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, kicad_cli, layers,
-               lighting, live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
+               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, join, kicad_cli,
+               layers, lighting, live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
 from .objects import view3d_spaces
 from .state import SLOTS, board, boards, using
 
@@ -1109,6 +1109,7 @@ class _Boards:
 
     def draw(self, context):
         scene = context.scene
+        join.draw(self.layout, context)  # a board from another KiCad asking to join
         self._draw_boards(context)
         index = _layers_board(scene)
         if packages.roots():
@@ -1774,6 +1775,7 @@ def register():
     watcher.sweep_stale()  # scratch folders a crashed Blender left behind
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    join.register()
     for name, prop in _scene_properties().items():
         setattr(bpy.types.Scene, name, prop)
     keyconfig = bpy.context.window_manager.keyconfigs.addon
@@ -1836,6 +1838,7 @@ def unregister():
     edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
+    join.unregister()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
     global _icons
