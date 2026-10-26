@@ -196,6 +196,12 @@ def uninstall():
     for handlers, function in _handlers():
         if function in handlers:
             handlers.remove(function)
+    release()
+
+
+def release():
+    """The board as without the fold: no keys, copies or handles, its parts flat (the add-on
+    switched off, or another board picked: the fold works on the picked board)."""
     if bpy.app.timers.is_registered(_settled):
         bpy.app.timers.unregister(_settled)
     for step in (lambda: clear_animation(refold=False), clear, _remove_grips, lambda: _place_parts(None, None)):

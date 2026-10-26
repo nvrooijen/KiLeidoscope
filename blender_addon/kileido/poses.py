@@ -28,9 +28,10 @@ from mathutils import Matrix, Vector
 
 from . import objects
 from .objects import ROOT, link_owned, lookup, owned_name
-from .state import SLOTS, board, boards
+from .state import SLOTS, board, boards, each_loaded
 
 ROOT_TAG = "kls_root"  # on a live board's root Empty: its slot
+POSE_KEY = "kls_pose"  # on it: the pose it was placed for, translation then angles
 STACK_GAP_M = 0.01  # a board that joins others: this far above the highest thing shown
 SPACE = "KLS board space"  # the shader group giving a point and its normal in the root's space
 _session = {"offset": None}  # scene_offset: (x, y, z) metres in KiCad's frame
@@ -221,11 +222,16 @@ def place_root(obj):
         return
     matrix = root_matrix()
     target = Matrix(matrix.tolist())
+    stored = [*board.pose[0], *board.pose[1]]  # what an undo step puts back with the root (`_undone`)
+    if list(obj.get(POSE_KEY, ())) != stored:
+        obj[POSE_KEY] = stored
     if any(abs(a - b) > 1e-9 for row, other in zip(obj.matrix_world, target) for a, b in zip(row, other)):
         obj.matrix_world = target  # only when it moved: every object of the board follows
     group = bpy.data.node_groups.get(owned_name(SPACE))
     if group is not None:
         _bind(group, obj, matrix)
+    from . import findings_markers  # it imports modules that import this one
+    findings_markers.invalidate()  # drawn where the board stands now
 
 
 def to_root():
@@ -256,6 +262,10 @@ def set_in_root(obj, matrix, root_to_world=None):
 
 
 # --- Shaders: a point and its normal in the root's space -------------------------------------------
+
+def space_group_name():
+    return owned_name(SPACE)
+
 
 def space_group():
     """The board's "KLS board space" shader group: Position (the root's TexCoord Object) and
@@ -294,3 +304,33 @@ def _bind(group, obj, matrix):
         socket = group.nodes[f"KLS root {axis}"].inputs[1]
         if tuple(socket.default_value) != column:
             socket.default_value = column
+
+
+# --- Undo ----------------------------------------------------------------------------------------
+
+@bpy.app.handlers.persistent
+def _undone(*_):
+    """An undo or redo step put each root back where it stood then: the board's pose goes back
+    with it, so the panel's numbers and what follows the pose agree."""
+    for _slot in each_loaded():
+        try:
+            board.collection.name
+        except ReferenceError:  # freed by the step: its next snapshot starts over (apply._begin_snapshot)
+            continue
+        obj = root()
+        stored = list(obj.get(POSE_KEY, ())) if obj is not None else []
+        if len(stored) == 6:
+            board.pose = (tuple(stored[:3]), tuple(stored[3:]))
+            place_root(obj)
+
+
+def install():
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _undone not in handlers:
+            handlers.append(_undone)
+
+
+def uninstall():
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _undone in handlers:
+            handlers.remove(_undone)

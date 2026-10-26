@@ -118,6 +118,7 @@ def apply_layer_data(header, arrays):
 # --- Snapshots ------------------------------------------------------------------------------
 
 def _hide_collection(hidden):
+    hidden = hidden or board.hidden  # a board its eye hides stays hidden
     board.collection.hide_viewport = hidden
     board.collection.hide_render = hidden
 
@@ -228,6 +229,9 @@ def apply_board(header):
     board.board_path = header.get("board_path", "")
     board.export = header.get("export") or {}
     poses.follow_board()  # its root Empty, where the board stands
+    if not state.boards[state.picked()].loaded:  # the panel had no board: this one
+        from . import slots  # slots imports modules that import this one
+        slots.follow()
     set_color_mode(getattr(bpy.context.scene, "kileido_color_mode", "FAB"))
     board.warnings = list(header.get("warnings", []))
     board.status = f"Loaded {name}"

@@ -2,9 +2,10 @@
 session, each in a slot.
 
 Every module reads and writes `board`, which stands for the board being worked on: a live
-frame, a finished export or a panel setting switches to its own board with `using(slot)`
-first. Board 1 keeps the names KiLeidoscope always used; the others' objects, materials
-and images carry their slot's prefix ("B2 KLS outline"), as Blender names are global.
+frame or a finished export switches to its own board with `using(slot)` first; outside
+that, `board` is the picked board (`pick`), the one the panel shows and its tools work on.
+Board 1 keeps the names KiLeidoscope always used; the others' objects, materials and
+images carry their slot's prefix ("B2 KLS outline"), as Blender names are global.
 Nothing else holds board state.
 """
 
@@ -37,6 +38,7 @@ class BoardState:
         # and the board (path, else name) it is for. Kept when its Blender data goes (reset).
         self.pose = None
         self.pose_of = ""
+        self.hidden = False  # its eye in the Boards list is shut (slots.set_hidden); kept like the pose
         self.heights = {}  # copper layer name -> z (m)
         self.layer_thickness = {}  # stackup thickness (m) of copper, mask, ... by layer name
         self.thickness_m = 0.0
@@ -104,9 +106,9 @@ class BoardState:
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
         if self.model_bound:
             log(f"board {self.slot} state reset; {len(self.model_bound)} bound models forgotten")
-        kept = self.pose, self.pose_of  # rebuilt, the board stands where it stood
+        kept = self.pose, self.pose_of, self.hidden  # rebuilt, the board stands where it stood
         self.__init__(self.slot)
-        self.pose, self.pose_of = kept
+        self.pose, self.pose_of, self.hidden = kept
 
     @property
     def loaded(self):
@@ -135,8 +137,8 @@ class BoardState:
         """Show `message` and never leave a half-loaded board hidden."""
         if self.collection is not None:
             try:
-                self.collection.hide_viewport = False
-                self.collection.hide_render = False
+                self.collection.hide_viewport = self.hidden
+                self.collection.hide_render = self.hidden
             except ReferenceError:  # freed under us (file load, undo): a resync rebuilds it
                 self.reset()
         self.status = message
@@ -145,6 +147,8 @@ class BoardState:
 
 boards = {slot: BoardState(slot) for slot in SLOTS}
 _current = [1]
+_picked = [1]  # the board the panel shows and its tools work on (slots.pick), outside any `using`
+_depth = [0]  # `using` blocks open
 
 
 def current():
@@ -152,15 +156,30 @@ def current():
     return boards[_current[0]]
 
 
+def picked():
+    """The slot of the picked board: what the panel, its buttons and the tools work on."""
+    return _picked[0]
+
+
+def pick(slot):
+    """`board` stands for board `slot` outside any `using` block from now on (slots.pick hands
+    the tools over)."""
+    _picked[0] = slot
+    if not _depth[0]:
+        _current[0] = slot
+
+
 @contextmanager
 def using(slot):
     """Work on board `slot` inside the block."""
     previous = _current[0]
     _current[0] = slot
+    _depth[0] += 1
     try:
         yield boards[slot]
     finally:
-        _current[0] = previous
+        _depth[0] -= 1
+        _current[0] = previous if _depth[0] else _picked[0]
 
 
 def each_loaded():

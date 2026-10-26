@@ -21,7 +21,7 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
-from . import findings, findings_draw, fold, transform
+from . import findings, findings_draw, fold, poses, transform
 from .objects import shown_view_areas
 from .state import board
 
@@ -55,7 +55,7 @@ def invalidate():
 
 def markers():
     """Every finding with a place on the board: {"source", "key", "finding", "kind" (its
-    ICONS key), "at" (Blender, out from its side), "side" (+1, -1 or None), "box" (Blender
+    ICONS key), "at" (the board root's space, out from its side), "side" (+1, -1 or None), "box" (Blender
     x0, y0, x1, y1)}. Placed once per findings frame and board (item_sides reads every
     copper object once)."""
     if _cache["markers"] is not None:
@@ -173,10 +173,11 @@ def _draw():
     from bpy_extras.view3d_utils import location_3d_to_region_2d
     scale = context.preferences.system.ui_scale or 1.0
     size = MARKER_PX * scale
-    from_top = view.view_matrix.inverted().col[2].z >= 0  # the eye above the board
+    to_world = poses.to_world()  # the markers sit on the board, in its root's space
+    from_top = view.view_matrix.inverted().col[2].xyz.dot(to_world.col[2].xyz) >= 0  # the eye above the board
     points = []
     for marker in items:
-        xy = location_3d_to_region_2d(region, view, marker["at"])
+        xy = location_3d_to_region_2d(region, view, to_world @ marker["at"])
         if xy is not None and -size <= xy.x <= region.width + size and -size <= xy.y <= region.height + size:
             points.append((xy.x, xy.y, marker))
     showing = board.findings_shown

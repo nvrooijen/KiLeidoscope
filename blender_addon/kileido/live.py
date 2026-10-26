@@ -230,6 +230,11 @@ def linked() -> bool:
     return _link().client is not None and _link().client.state == "connected"
 
 
+def any_linked() -> bool:
+    """Some board's bridge is reachable now."""
+    return any(link.client is not None and link.client.state == "connected" for link in links.values())
+
+
 def connect(port: int, token: str, slot: int = 1):
     links[slot].connect(port, token)
 
