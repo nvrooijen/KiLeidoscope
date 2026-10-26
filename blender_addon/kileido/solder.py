@@ -36,9 +36,9 @@ from mathutils.bvhtree import BVHTree
 from mathutils.geometry import delaunay_2d_cdt
 
 from . import components, fold, models, transform
-from .objects import owned_object, read_attribute, set_visible
+from .objects import owned_name, owned_object, read_attribute, set_visible
 from .placement import stencil_thickness
-from .state import board
+from .state import board, boards, each_loaded, using
 
 # The KiCad library's metal materials (VRML names; sRGB as its .wrl files give them).
 METAL_SRGB = (
@@ -87,19 +87,33 @@ PIN_INSET_M = 20e-6
 WALL_GAP_M = 10e-6  # the barrel's solder stops this far inside the drill (the plated wall's face)
 WET_FILM_M = 15e-6  # solder on a through-hole pad's corners, past the round fillet
 
-THT = "THT"  # the through-hole joints' entry in `_sides`
+THT = "THT"  # the through-hole joints' entry in `_s().sides`
 MIN_FILLET_M = 0.05e-3  # a through-hole fillet starts at least this far out from the pin
 
 # Keyed by Blender pointers (and names): `forget` drops them whenever Blender may have
 # freed and reused those addresses (a file loaded, an undo, new model meshes imported).
 _trees = {}  # (mesh pointer and name, sizes, metal faces) -> BVHTree of a model part's metal, or None
-_built = {}  # side (outward) -> {what an aperture's solder depends on: its solder}, from the last build
-_known = {}  # model part (pointer, name) -> (what it was when last looked at, its `_parts` entry or None)
-_moves = []  # (generation, box min, box max): where parts changed, appeared or went
-_generation = 0
-_sides = {}  # side (outward) or THT -> its last build: per pad its solder, and the mesh's layout
-_stats = {}  # side ("F", "B") or THT -> its last build's numbers; "latest": which built last
-_due = [None]  # when a change asked for a build (time.monotonic()), or None
+_waiting = set()  # boards (slots) whose build the `_settled` timer runs
+
+
+class _Builds:
+    """One board's solder builds (`board.solder`, made by `_s`)."""
+
+    def __init__(self):
+        self.built = {}  # side (outward) -> {what an aperture's solder depends on: its solder}, from the last build
+        self.known = {}  # model part (pointer, name) -> (what it was when last looked at, its `_parts` entry or None)
+        self.moves = []  # (generation, box min, box max): where parts changed, appeared or went
+        self.generation = 0
+        self.sides = {}  # side (outward) or THT -> its last build: per pad its solder, and the mesh's layout
+        self.stats = {}  # side ("F", "B") or THT -> its last build's numbers; "latest": which built last
+        self.due = None  # when a change asked for a build (time.monotonic()), or None
+
+
+def _s():
+    """The board's solder builds."""
+    if board.solder is None:
+        board.solder = _Builds()
+    return board.solder
 
 
 def reflowed():
@@ -127,46 +141,53 @@ def invalidate():
     keeps Blender busy pumps it (studio.pump)."""
     if not reflowed():
         return
-    _due[0] = time.monotonic() + SETTLE_S
+    _s().due = time.monotonic() + SETTLE_S
     if bpy.app.background:
         if not board.in_snapshot:
             flush()
         return
+    _waiting.add(board.slot)
     if bpy.app.timers.is_registered(_settled):
         bpy.app.timers.unregister(_settled)
     bpy.app.timers.register(_settled, first_interval=SETTLE_S)
 
 
 def pending():
-    """A build was asked for and has not run yet."""
-    return _due[0] is not None
+    """A build was asked for, on some board, and has not run yet."""
+    return any(state.solder is not None and state.solder.due is not None for state in boards.values())
 
 
 def flush(now=True):
-    """Run the build a change asked for: now, or (`now` False) once it is due."""
-    if _due[0] is not None and (now or time.monotonic() >= _due[0]):
-        refresh()
+    """Run the builds changes asked for, on every board: now, or (`now` False) once due."""
+    for slot, state in boards.items():
+        due = state.solder.due if state.solder is not None else None
+        if due is not None and (now or time.monotonic() >= due):
+            with using(slot):
+                refresh()
 
 
 def _settled():
-    if _due[0] is not None:  # not already built by `flush`
-        try:
-            refresh()
-        except ReferenceError:  # the board went away meanwhile
-            pass
+    waiting = sorted(_waiting)
+    _waiting.clear()
+    for slot in waiting:
+        with using(slot):
+            if _s().due is not None:  # not already built by `flush`
+                try:
+                    refresh()
+                except ReferenceError:  # the board went away meanwhile
+                    pass
     return None
 
 
 def forget(*_args):
     """Blender freed IDs (a file loaded, an undo or redo, new model meshes imported): drop
     everything kept by their addresses; the next build starts over."""
-    global _generation
     _trees.clear()
-    _built.clear()
-    _known.clear()
-    _moves.clear()
-    _sides.clear()
-    _generation = 0
+    for state in boards.values():
+        if state.solder is not None:
+            due = state.solder.due
+            state.solder = _Builds()
+            state.solder.due = due
 
 
 _HANDLERS = ("load_post", "undo_post", "redo_post")
@@ -191,12 +212,13 @@ def uninstall():
 @bpy.app.handlers.persistent
 def _on_reload(*_args):
     forget()
-    invalidate()  # an undo may bring back older solder: build it as the board is now
+    for _ in each_loaded():
+        invalidate()  # an undo may bring back older solder: build it as the board is now
 
 
 def refresh():
     """Show the paste as printed or reflowed, building the reflowed solder when shown."""
-    _due[0] = None
+    _s().due = None
     if board.collection is None:
         return
     show = reflowed()
@@ -207,14 +229,14 @@ def refresh():
         parts = _parts(named.values()) if show else []
         for paste in [obj for obj in named.values() if obj.get("kls_paste_side")]:
             name = NAME.format(layer=f"{paste['kls_paste_side']}.Paste")
-            obj = named.get(name) or (owned_object(name) if show else None)
+            obj = named.get(owned_name(name)) or (owned_object(name) if show else None)
             if obj is None:
                 continue
             obj["kls_reflowed_side"] = paste["kls_paste_side"]
             if show:
                 _build(paste, obj, parts)
             set_visible(obj, show)
-        obj = named.get(THT_NAME) or (owned_object(THT_NAME) if show else None)
+        obj = named.get(owned_name(THT_NAME)) or (owned_object(THT_NAME) if show else None)
         if obj is not None:
             obj["kls_reflowed_side"] = THT
             if show:
@@ -268,14 +290,14 @@ def _build(paste, obj, parts):
     target -= target % TARGET_STEP  # a pad more or less rarely changes every aperture's grid
     volume_per_area = stencil_thickness() * SOLDER_FRACTION
     settings = (outward, volume_per_area, target)
-    last = _sides.get(outward)
+    last = _s().sides.get(outward)
     moved = _moved(outward)
     if last is not None and last["settings"] != (settings, matrix.round(9).tobytes()):
         last = None  # thickness or stencil changed: every aperture
     outlines = [b"".join(points.tobytes() + bytes([hole]) for points, hole in rings) for _, rings in apertures]
     previous = [last["entries"].get(pad_id) if last is not None else None for pad_id, _ in apertures]
     keep = _unchanged(previous, outlines, moved)
-    cache, built = _built.get(outward, {}), {}
+    cache, built = _s().built.get(outward, {}), {}
     entries = {}
     computed = revisited = 0
     for (pad_id, rings), outline, entry, kept_as_is in zip(apertures, outlines, previous, keep):
@@ -300,10 +322,10 @@ def _build(paste, obj, parts):
         back = np.linalg.inv(frame)
         entries[pad_id] = {"outline": outline, "low": low, "high": high, "key": key, "kept": kept,
                            "vertices": None if kept is None else kept[0] @ back[:3, :3].T + back[:3, 3]}
-    _built[outward] = built
+    _s().built[outward] = built
     layout = _place(obj.data, last, entries)
-    _sides[outward] = {"settings": (settings, matrix.round(9).tobytes()), "entries": entries,
-                       "generation": _generation, **layout}
+    _s().sides[outward] = {"settings": (settings, matrix.round(9).tobytes()), "entries": entries,
+                       "generation": _s().generation, **layout}
     _use_solder_material(obj)
     obj["kls_stencil_m"] = stencil_thickness()  # what it was built for (packages.refresh_thickness)
     obj.scale = (1.0, 1.0, 1.0)
@@ -415,12 +437,12 @@ def last_build(side=None):
     """A build's numbers: one side's ("F", "B": time in ms, apertures, those with metal over
     them, grid points, how many were worked out or revisited, whether the mesh was written
     anew) or the through-hole joints' (THT); by default whichever was built last."""
-    return dict(_stats.get(side or _stats.get("latest"), {}))
+    return dict(_s().stats.get(side or _s().stats.get("latest"), {}))
 
 
 def _note(side, **numbers):
-    _stats[side] = numbers
-    _stats["latest"] = side
+    _s().stats[side] = numbers
+    _s().stats["latest"] = side
 
 
 # --- Metal --------------------------------------------------------------------------------
@@ -487,8 +509,7 @@ def _parts(objects=None):
     if already at hand.
 
     Each part is looked at again only when it changed (moved, shown or hidden, other mesh or
-    materials); the boxes where parts changed, appeared or went are logged in `_moves`."""
-    global _generation
+    materials); the boxes where parts changed, appeared or went are logged in `_s().moves`."""
     found, changed, seen = [], [], set()
     # Bound now: a part left behind (its footprint gone, its model changed, waiting for the
     # next export) stays in the scene, hidden, and must not hold solder meanwhile
@@ -506,7 +527,7 @@ def _parts(objects=None):
         now = (obj.name in bound and models.model_is_visible(frame, obj), obj.data.as_pointer(), matrix.tobytes(),
                tuple(slot.material.as_pointer() if slot.material else 0 for slot in obj.material_slots),
                obj.get("kls_role"))
-        known = _known.get(pointer)
+        known = _s().known.get(pointer)
         if known is not None and known[0] == now:
             if known[1] is not None:
                 found.append(known[1])
@@ -520,26 +541,26 @@ def _parts(objects=None):
                 part = (tree, matrix, np.linalg.inv(matrix), world.min(axis=0), world.max(axis=0),
                         (key, matrix.round(9).tobytes()), obj.get("kls_side", "top"))
         changed += [(entry[3], entry[4]) for entry in (known[1] if known else None, part) if entry is not None]
-        _known[pointer] = (now, part)
+        _s().known[pointer] = (now, part)
         if part is not None:
             found.append(part)
-    for pointer in [pointer for pointer in _known if pointer not in seen]:
-        gone = _known.pop(pointer)[1]
+    for pointer in [pointer for pointer in _s().known if pointer not in seen]:
+        gone = _s().known.pop(pointer)[1]
         if gone is not None:
             changed.append((gone[3], gone[4]))
     if changed:
-        _generation += 1
-        _moves.extend((_generation, low, high) for low, high in changed)
+        _s().generation += 1
+        _s().moves.extend((_s().generation, low, high) for low, high in changed)
     return found
 
 
 def _moved(consumer):
     """The boxes (k, 2, 3) where parts changed since `consumer` (a side, or "THT") last
     built; log entries every consumer has seen are dropped."""
-    since = _sides[consumer]["generation"] if consumer in _sides else _generation
-    boxes = [(low, high) for generation, low, high in _moves if generation > since]
-    oldest = min((side["generation"] for side in _sides.values()), default=_generation)
-    _moves[:] = [move for move in _moves if move[0] > min(oldest, since)]
+    since = _s().sides[consumer]["generation"] if consumer in _s().sides else _s().generation
+    boxes = [(low, high) for generation, low, high in _s().moves if generation > since]
+    oldest = min((side["generation"] for side in _s().sides.values()), default=_s().generation)
+    _s().moves[:] = [move for move in _s().moves if move[0] > min(oldest, since)]
     return np.array(boxes, dtype=np.float64).reshape(-1, 2, 3)
 
 
@@ -858,10 +879,10 @@ def _build_through_hole(obj, parts, named):
     obj.rotation_euler = (0.0, 0.0, 0.0)
     lows = np.array([part[3] for part in parts]).reshape(-1, 3)
     highs = np.array([part[4] for part in parts]).reshape(-1, 3)
-    top, bottom = _pad_rings(named.get("KLS F.Cu pads")), _pad_rings(named.get("KLS B.Cu pads"))
+    top, bottom = _pad_rings(named.get(owned_name("KLS F.Cu pads"))), _pad_rings(named.get(owned_name("KLS B.Cu pads")))
     z_top = transform.copper_z("F.Cu", "drills", board.heights)
     z_bottom = transform.copper_z("B.Cu", "drills", board.heights)
-    last = _sides.get(THT)
+    last = _s().sides.get(THT)
     moved = _moved(THT)
     if last is not None and last["settings"] != (z_top, z_bottom):
         last = None
@@ -889,7 +910,7 @@ def _build_through_hole(obj, parts, named):
         entries[pad_id] = {"shape": shape, "low": low, "high": high, "kept": joint,
                            "vertices": None if joint is None else joint[0]}
     layout = _place(obj.data, last, entries)
-    _sides[THT] = {"settings": (z_top, z_bottom), "entries": entries, "generation": _generation, **layout}
+    _s().sides[THT] = {"settings": (z_top, z_bottom), "entries": entries, "generation": _s().generation, **layout}
     _use_solder_material(obj)
     _note(THT, ms=(time.perf_counter() - started) * 1000,
           joints=sum(entry["kept"] is not None for entry in entries.values()), revisited=revisited,

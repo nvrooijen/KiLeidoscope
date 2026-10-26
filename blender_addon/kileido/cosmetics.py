@@ -23,7 +23,7 @@ from . import cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, sha
 from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_name, owned_object, set_modifier,
                       set_node_input, set_visible)
 from .placement import laminate_faces, mask_thickness, outward
-from .state import board
+from .state import SLOTS, board
 from .watcher import BoardWatcher
 
 LAYERS = (  # (KiCad layer, panel label, visible by default)
@@ -95,27 +95,27 @@ def silkscreen_opacity():
 
 
 def status():
-    return _watcher.status
+    return _board_watcher().status
 
 
 def follow_board(board_path, export=None):
     """The overlays plot every footprint whatever the assembly variant, so a variant
     switch (new export settings) does not restart this watch."""
-    _watcher.follow(board_path, {key: value for key, value in (export or {}).items() if key != "variant"})
+    _board_watcher().follow(board_path, {key: value for key, value in (export or {}).items() if key != "variant"})
 
 
 def stop_following():
-    _watcher.stop()
+    _board_watcher().stop()
 
 
 def export_again():
     """After `kicad_cli.clear_cache`: plot from scratch (the watch forgets its key)."""
-    _watcher.restart()
+    _board_watcher().restart()
 
 
 def drain():
     """Handle one finished export now (headless tools; the GUI timer does this)."""
-    return _watcher.drain()
+    return _board_watcher().drain()
 
 
 # --- Visibility and colour ------------------------------------------------------------------
@@ -484,11 +484,24 @@ def _on_result(result):
     return f"Loaded {count} drawing layers"
 
 
-_watcher = BoardWatcher(
+_watchers = {slot: BoardWatcher(
     "overlay export", _on_board_change, _on_result,
     starting=lambda export: ("Loading overlays from the open board…" if export.get("live")
                              else "Loading saved-board overlays…"),
-    unavailable="", failed="Overlay export failed", import_failed="Overlay import failed")
+    unavailable="", failed="Overlay export failed", import_failed="Overlay import failed",
+    slot=slot) for slot in SLOTS}  # one per board
+
+
+def _board_watcher():
+    """The watcher of the board in use."""
+    return _watchers[board.slot]
+
+
+def __getattr__(name):
+    """`<module>._watcher`: the watcher of the board in use (tests)."""
+    if name == "_watcher":
+        return _board_watcher()
+    raise AttributeError(name)
 
 
 # --- Overlay objects (main thread) ----------------------------------------------------------

@@ -19,7 +19,7 @@ import numpy as np
 from . import cut
 from .objects import OUTLINE, lookup, owned_object, set_visible
 from .placement import copper_placement
-from .state import board
+from .state import board, using
 
 OBJECT = "KLS edge plating"
 MILLED = "KLS {} milled edge"  # per outer layer: its copper's cut face where it crosses the outline
@@ -215,14 +215,22 @@ def refresh():
     board.touched.add(obj.name)
 
 
+_waiting = set()  # boards (slots) `_refresh_soon` draws again
+
+
 def invalidate():
     """The board or its stackup changed: draw the plating again soon (once per burst)."""
+    _waiting.add(board.slot)
     if not bpy.app.timers.is_registered(_refresh_soon):
         bpy.app.timers.register(_refresh_soon, first_interval=REFRESH_DELAY_S)
 
 
 def _refresh_soon():
-    refresh()
+    waiting = sorted(_waiting)
+    _waiting.clear()
+    for slot in waiting:
+        with using(slot):
+            refresh()
     return None
 
 

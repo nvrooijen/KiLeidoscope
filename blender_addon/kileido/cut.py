@@ -58,8 +58,6 @@ CLICK_REACH_PX = 8  # a click this close to one of those lines is a click on the
 REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
-_data = None  # the board's geometry for the section (`_gather`), until it changes
-_edges = {}  # stretches along the outline until the board changes: "plated" (`plated_edges`), "milled" (`milled_edges`)
 # How the section's copper is lit (`set_look`): Realistic, its linear colour, metallic, roughness.
 _look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
@@ -578,12 +576,28 @@ def _face_object(create):
     return face
 
 
+def _cache():
+    """The board's own, until it changes (`board.cut_cache`): "data", its geometry for the
+    section (`_gather`), and "edges", stretches along its outline: "plated" (`plated_edges`),
+    "milled" (`milled_edges`)."""
+    if board.cut_cache is None:
+        board.cut_cache = {"data": None, "edges": {}}
+    return board.cut_cache
+
+
+def _forget():
+    """The board changed: read it again when asked."""
+    cache = _cache()
+    cache["data"] = None
+    cache["edges"].clear()
+
+
 def shapes():
     """The board's geometry as the section reads it (read once per board change)."""
-    global _data
-    if _data is None:
-        _data = _gather()
-    return _data
+    cache = _cache()
+    if cache["data"] is None:
+        cache["data"] = _gather()
+    return cache["data"]
 
 
 def plated_edges():
@@ -591,12 +605,13 @@ def plated_edges():
     copper on both outer layers reaches the edge; empty when the board has none."""
     if not board.appearance.get("edge_plating") or board.collection is None or board.in_snapshot:
         return []
-    if "plated" not in _edges:
+    edges = _cache()["edges"]
+    if "plated" not in edges:
         data = shapes()
         copper = data["copper"]
-        _edges["plated"] = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
-                            if data["outline"] is not None else [])
-    return _edges["plated"]
+        edges["plated"] = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
+                           if data["outline"] is not None else [])
+    return edges["plated"]
 
 
 def milled_edges():
@@ -604,11 +619,12 @@ def milled_edges():
     back to the edge, leaving a cut copper face there (section.milled_edges)."""
     if board.collection is None or board.in_snapshot:
         return {}
-    if "milled" not in _edges:
+    edges = _cache()["edges"]
+    if "milled" not in edges:
         data = shapes()
-        _edges["milled"] = ({layer: section.milled_edges(data["outline"], data["copper"][layer], data["drills"])
-                             for layer in section.OUTER if layer in data["copper"]} if data["outline"] is not None else {})
-    return _edges["milled"]
+        edges["milled"] = ({layer: section.milled_edges(data["outline"], data["copper"][layer], data["drills"])
+                            for layer in section.OUTER if layer in data["copper"]} if data["outline"] is not None else {})
+    return edges["milled"]
 
 
 def rectangles(scene=None):
@@ -690,9 +706,7 @@ def rebuild(scene=None):
 
 def invalidate():
     """The board changed: read it again for the next section (soon, once per burst of edits)."""
-    global _data
-    _data = None
-    _edges.clear()
+    _forget()
     if enabled() and not bpy.app.timers.is_registered(_rebuild_soon):
         bpy.app.timers.register(_rebuild_soon, first_interval=REBUILD_DELAY_S)
 
@@ -752,9 +766,8 @@ def place_light(scene=None):
 
 def refresh():
     """The tick box, or a whole new board: bring materials, plane and face in line."""
-    global _pushed, _data
-    _data = None  # before ensure_plane: placing a new plane already draws the section
-    _edges.clear()
+    global _pushed
+    _forget()  # before ensure_plane: placing a new plane already draws the section
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:

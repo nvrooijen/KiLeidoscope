@@ -27,7 +27,7 @@ from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_pl
                findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, kicad_cli, layers,
                lighting, live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
 from .objects import view3d_spaces
-from .state import board, boards
+from .state import SLOTS, board, boards, using
 
 
 class KILEIDO_OT_load_dump(bpy.types.Operator, ImportHelper):
@@ -1759,7 +1759,9 @@ def _file_loaded(_):
         state.reset()
     hole_cut.restore()  # a file saved with a hole finding's cut: the user's own cut back
     lighting.refresh_reflections()
-    live.request_resync()
+    for slot in SLOTS:  # every live board
+        with using(slot):
+            live.request_resync()
 
 
 def register():
@@ -1816,11 +1818,13 @@ def unregister():
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
-    live.disconnect()
+    for slot in SLOTS:  # every board's link and exports
+        with using(slot):
+            live.disconnect()
+            models.stop_following()
+            cosmetics.stop_following()
     studio.uninstall()
-    models.stop_following()
     phase.stop_pulses()
-    cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
     columns.uninstall()

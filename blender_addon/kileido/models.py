@@ -24,7 +24,7 @@ from mathutils import Euler, Matrix
 from . import components, cut, focus, fold, highlight, kicad_cli, solder
 from .objects import link_owned, lookup, set_visible
 from . import state
-from .state import board
+from .state import SLOTS, board
 from .watcher import BoardWatcher
 
 _BLENDER_SUFFIX = re.compile(r"\.\d{3}$")
@@ -182,34 +182,47 @@ def problems_text(problems):
             (", …" if len(names) > 3 else ""))
 
 
-_watcher = BoardWatcher(
+_watchers = {slot: BoardWatcher(
     "model export", _on_board_change, _on_result,
     starting=lambda export: "Finding 3D models from the KiCad board…",
     unavailable="3D models unavailable: save the board in KiCad, then press Resync",
-    failed="Model export failed", import_failed="Model import failed", first_interval=0.1)
+    failed="Model export failed", import_failed="Model import failed", first_interval=0.1,
+    slot=slot) for slot in SLOTS}  # one per board
+
+
+def _board_watcher():
+    """The watcher of the board in use."""
+    return _watchers[board.slot]
+
+
+def __getattr__(name):
+    """`<module>._watcher`: the watcher of the board in use (tests)."""
+    if name == "_watcher":
+        return _board_watcher()
+    raise AttributeError(name)
 
 
 def export_status():
-    return _watcher.status
+    return _board_watcher().status
 
 
 def follow_board(board_path, export=None):
     """Start automatic model loading when a board snapshot becomes visible."""
-    _watcher.follow(board_path, export)
+    _board_watcher().follow(board_path, export)
 
 
 def stop_following():
-    _watcher.stop()
+    _board_watcher().stop()
 
 
 def export_again():
     """After `kicad_cli.clear_cache`: export from scratch (the watch forgets its key)."""
-    _watcher.restart()
+    _board_watcher().restart()
 
 
 def drain():
     """Handle one finished export now (headless tools; the GUI timer does this)."""
-    return _watcher.drain()
+    return _board_watcher().drain()
 
 
 def _reference(name):

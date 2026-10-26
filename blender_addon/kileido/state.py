@@ -66,6 +66,8 @@ class BoardState:
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
         self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
         self.holes = None  # its hole mask (holes._Mask)
+        self.solder = None  # its reflowed solder builds (solder._Builds)
+        self.cut_cache = None  # its geometry for the section and edges (cut._cache)
 
         # Snapshot bookkeeping: objects not touched by a full snapshot are cleared.
         self.in_snapshot = False
