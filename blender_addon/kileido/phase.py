@@ -35,7 +35,7 @@ import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
-from . import holes, live, transform
+from . import boardprops, holes, live, transform
 from .objects import link_owned, lookup, owned_name, owned_object, set_visible, write_attribute
 from .placement import copper_thickness
 from .state import board
@@ -143,11 +143,11 @@ def _enabled():
     """Dynamic phase draws only with the Diff pairs column open and switched on."""
     scene = bpy.context.scene
     return (getattr(scene, "kileido_column", "NONE") == "HIGH_SPEED"
-            and bool(getattr(scene, "kileido_phase_enabled", True)))
+            and bool(boardprops.get(scene, "kileido_phase_enabled", True)))
 
 
 def _shown():
-    return _enabled() and bool(getattr(bpy.context.scene, "kileido_phase_show", True))
+    return _enabled() and bool(boardprops.get(bpy.context.scene, "kileido_phase_show", True))
 
 
 def _node(tree, kind, name=None, **inputs):
@@ -314,19 +314,19 @@ def _material(role):
 
 
 def _scale():
-    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_scale_ps", 3.0)))
+    return max(0.01, float(boardprops.get(bpy.context.scene, "kileido_phase_scale_ps", 3.0)))
 
 
 def _pulse_width():
-    return max(0.1, float(getattr(bpy.context.scene, "kileido_phase_pulse_width_ps", 1.5)))
+    return max(0.1, float(boardprops.get(bpy.context.scene, "kileido_phase_pulse_width_ps", 1.5)))
 
 
 def _pulse_tail():
-    return max(0.01, float(getattr(bpy.context.scene, "kileido_phase_pulse_tail_ps", 5.0)))
+    return max(0.01, float(boardprops.get(bpy.context.scene, "kileido_phase_pulse_tail_ps", 5.0)))
 
 
 def _brightness():
-    return max(0.0, float(getattr(bpy.context.scene, "kileido_phase_pulse_glow", 5.0)))
+    return max(0.0, float(boardprops.get(bpy.context.scene, "kileido_phase_pulse_glow", 5.0)))
 
 
 def _set(name, value):
@@ -348,7 +348,7 @@ def set_scale():
 
 def _pulsing(scene):
     """Pulses run whether or not the colours show (Colours only fades the tint)."""
-    return _enabled() and getattr(scene, "kileido_phase_pulses", False) and bool(board.phase)
+    return _enabled() and boardprops.get(scene, "kileido_phase_pulses", False) and bool(board.phase)
 
 
 def _trace_shown(scene):
@@ -363,8 +363,8 @@ def _set_clock(scene, seconds):
     longest = max(max(float(data.get("delay_p_ps", 0.0)), float(data.get("delay_n_ps", 0.0)))
                   for data in board.phase.values())
     period = longest + 6 * width + _pulse_tail() * 4  # in before the start, out with its tail past the end
-    rate = max(0.1, float(getattr(scene, "kileido_phase_pulse_rate", 30.0)))
-    count = max(1, min(PULSES, int(getattr(scene, "kileido_phase_pulse_count", 1))))
+    rate = max(0.1, float(boardprops.get(scene, "kileido_phase_pulse_rate", 30.0)))
+    count = max(1, min(PULSES, int(boardprops.get(scene, "kileido_phase_pulse_count", 1))))
     _set(PULSE_NODE, 1.0)
     for index, name in enumerate(CLOCK_NODES):  # the panel's number, evenly spaced over the loop; the rest parked
         _set(name, (seconds * rate + index * period / count) % period - 3 * width if index < count else PARKED)
@@ -377,7 +377,7 @@ def _cycles_viewport(scene):
 
 
 def _timeline(scene):
-    return getattr(scene, "kileido_phase_pulse_clock", "LIVE") == "TIMELINE"
+    return boardprops.get(scene, "kileido_phase_pulse_clock", "LIVE") == "TIMELINE"
 
 
 def _pulse_tick():
@@ -764,7 +764,7 @@ def draw(key):
         glow.data.update()
         set_visible(glow, pulsing)
         active.add(glow.name)
-    labels = getattr(bpy.context.scene, "kileido_phase_labels", True)
+    labels = boardprops.get(bpy.context.scene, "kileido_phase_labels", True)
     path = data.get("p_xyz", np.zeros((1, 3)))
     line = transform.xy_m(path[:, :2], board.origin_nm).astype(np.float64)
     for role, ahead in (("start", line[:12]), ("end", line[::-1][:12])):
@@ -874,7 +874,7 @@ def refresh_highlight(redraw=True):
 def refresh_visibility():
     """Colours, labels or pulses switched: markers and labels follow Colours; the trace
     copies stay while pulsing, with their tint faded out (COLOUR_NODE)."""
-    shown, labels = _shown(), getattr(bpy.context.scene, "kileido_phase_labels", True)
+    shown, labels = _shown(), boardprops.get(bpy.context.scene, "kileido_phase_labels", True)
     _set(COLOUR_NODE, 1.0 if shown else 0.0)
     refresh_highlight()
     for obj in _objects():
@@ -888,9 +888,9 @@ def refresh_visibility():
 
 def settings():
     scene = bpy.context.scene
-    return {"tolerance_ps": float(scene.kileido_phase_tolerance_ps),
-            "min_length_mm": float(scene.kileido_phase_min_mm),
-            "follow_series": bool(scene.kileido_phase_follow_series),
+    return {"tolerance_ps": float(boardprops.get(scene, "kileido_phase_tolerance_ps")),
+            "min_length_mm": float(boardprops.get(scene, "kileido_phase_min_mm")),
+            "follow_series": bool(boardprops.get(scene, "kileido_phase_follow_series")),
             "flipped": sorted(flipped())}
 
 
@@ -911,7 +911,7 @@ def send_settings(_scene=None, _context=None):
 
 def flipped():
     try:
-        return set(json.loads(bpy.context.scene.kileido_phase_flipped or "[]"))
+        return set(json.loads(boardprops.get(bpy.context.scene, "kileido_phase_flipped") or "[]"))
     except ValueError:
         return set()
 
@@ -919,7 +919,7 @@ def flipped():
 def flip(key):
     """Walk this pair from its other end (the bridge measures again)."""
     keys = flipped() ^ {key}
-    bpy.context.scene.kileido_phase_flipped = json.dumps(sorted(keys))
+    boardprops.put(bpy.context.scene, "kileido_phase_flipped", json.dumps(sorted(keys)))
     send_settings()
 
 
@@ -991,7 +991,7 @@ def _highlighted():
 def flip_selected():
     """Walk every selected pair from its other end."""
     keys = flipped() ^ set(selected_pairs())
-    bpy.context.scene.kileido_phase_flipped = json.dumps(sorted(keys))
+    boardprops.put(bpy.context.scene, "kileido_phase_flipped", json.dumps(sorted(keys)))
     send_settings()
 
 

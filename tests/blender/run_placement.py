@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kileido  # noqa: E402
-from kileido import (apply, components, cut, fold, foldmath, highlight, models, objects, pick, poses,  # noqa: E402
+from kileido import (apply, boardprops, components, cut, fold, foldmath, highlight, models, objects, pick, poses,  # noqa: E402
                      solder, state)
 from kileido.objects import read_attribute, read_coordinates  # noqa: E402
 import run_flex  # noqa: E402  (its frames: the fixture with a bend)
@@ -175,8 +175,8 @@ def check_fold(scene):
     fold and come back to where they were on the board."""
     with state.using(2):
         flat_places = in_root_all(2)
-        scene.kileido_flex = True
-        scene.kileido_fold = 1.0
+        boardprops.put(scene, "kileido_flex", True)  # board 2's own
+        boardprops.put(scene, "kileido_fold", 1.0)
         root = objects.root()
         board = state.board
         plan = foldmath.plan(board.flex, board.origin_nm, board.heights, board.layer_thickness)
@@ -204,9 +204,9 @@ def check_fold(scene):
         assert any(np.abs(np.array(poses.in_root(obj)) - flat_places[obj.name]).max() > 1e-4 for obj in parts)
         for grip in fold._grips():
             assert grip.parent.parent == root, grip.name
-        scene.kileido_fold = 0.0
+        boardprops.put(scene, "kileido_fold", 0.0)
         same_places(flat_places, in_root_all(2), "unfolding")
-        scene.kileido_flex = False
+        boardprops.put(scene, "kileido_flex", False)
 
 
 def check_models():

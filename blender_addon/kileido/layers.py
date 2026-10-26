@@ -18,7 +18,7 @@ import re
 
 import bpy
 
-from . import cut, edge_plating
+from . import boardprops, cut, edge_plating
 from .objects import hide, role
 from .state import board
 
@@ -30,8 +30,9 @@ COPPER_LAYERS = ("F.Cu", *(f"In{number}.Cu" for number in range(1, 31)), "B.Cu")
 
 
 def property_name(row):
-    """The Scene property behind a row (the overlay layers' existing names included)."""
-    return EXTRA.get(row) or "kileido_show_" + row.replace(".", "_")
+    """The current board's Scene property behind a row (the overlay layers' existing names
+    included; boardprops: each board has its own)."""
+    return boardprops.name(EXTRA.get(row) or "kileido_show_" + row.replace(".", "_"))
 
 
 def row_of(obj):

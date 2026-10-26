@@ -19,7 +19,7 @@ from . import (apply, components, cosmetics, cut, findings_draw, highlight, ims,
                render_depth, transform)
 from .objects import OUTLINE, find, hide, role, set_modifier, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
-from . import state
+from . import boardprops, state
 from .state import board
 
 ROOT_TAG = "kls_view_only_root"
@@ -160,8 +160,8 @@ def _export_board(filepath):
     stackup = {"heights": board.heights, "layer_thickness": board.layer_thickness, "color_mode": board.color_mode}
     if board.ims is not None:  # its metal base goes along as drawn; this places the rest around it again
         stackup["ims"] = {"base": list(board.ims.base), "dielectric": list(board.ims.dielectric),
-                          "metal": getattr(bpy.context.scene, "kileido_ims_metal", "AL"),
-                          "finish": getattr(bpy.context.scene, "kileido_ims_finish", "MILL")}
+                          "metal": boardprops.get(bpy.context.scene, "kileido_ims_metal", "AL"),
+                          "finish": boardprops.get(bpy.context.scene, "kileido_ims_finish", "MILL")}
     collection["kls_stackup"] = json.dumps(stackup)
     finished = _finished_materials()
     for material, side in finished:  # a view-only mask eye recolours covered copper like the live one
@@ -516,9 +516,9 @@ def _board_rows():
     """(board, {row: entry}) for the live board and every view-only board. An entry is
     (section title, label, kind, colour); `board` is None for the live one."""
     found = []
-    if board.collection is not None:
-        found.append((None, {entry.row: (title, entry.label, entry.kind, layers.swatch_color(entry))
-                             for title, entries in layers.sections() for entry in entries}))
+    for slot in state.each_loaded():  # each live board: "S<slot>"
+        found.append((f"S{slot}", {entry.row: (title, entry.label, entry.kind, layers.swatch_color(entry))
+                                   for title, entries in layers.sections() for entry in entries}))
     for root in roots():
         recorded = layer_list(root[ROOT_TAG])
         if recorded:
@@ -545,8 +545,13 @@ def all_boards_sections():
 
 def shown_everywhere(row):
     """True when every board that has this row shows it."""
-    return all(layers.shown(row) if index is None else row_shown(index, row)
+    return all(_live_shown(index, row) if isinstance(index, str) else row_shown(index, row)
                for index, rows in _board_rows() if row in rows)
+
+
+def _live_shown(key, row):
+    with state.using(int(key[1:])):
+        return layers.shown(row)
 
 
 def set_row_everywhere(row, visible):
@@ -554,8 +559,9 @@ def set_row_everywhere(row, visible):
     for index, rows in _board_rows():
         if row not in rows:
             continue
-        if index is None:
-            setattr(bpy.context.scene, layers.property_name(row), visible)
+        if isinstance(index, str):  # a live board's own eye
+            with state.using(int(index[1:])):
+                setattr(bpy.context.scene, layers.property_name(row), visible)
         else:
             set_row_visible(index, row, visible)
 

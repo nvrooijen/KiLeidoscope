@@ -14,15 +14,15 @@ import numpy as np
 from mathutils import Vector
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, solder,
-               studio, transform)
+               laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, saved,
+               solder, studio, transform)
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
                       read_attribute, read_coordinates, read_edges, set_modifier, set_node_input, set_visible,
                       single_point, view3d_spaces, write_attribute)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
-from . import state
+from . import boardprops, state
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
@@ -63,6 +63,7 @@ def apply_frame(header, arrays):
         board.warnings = list(dict.fromkeys([*board.warnings, *header.get("warnings", [])]))
         board.layer_names = dict(header.get("display_names", {}))  # the Layers list uses KiCad's names
         board.stackup = list(header.get("layers", []))  # the Layers list draws it, dielectrics included
+        saved.remember_stackup()
     elif message_type == "snapshot_end":
         _end_snapshot()
     elif message_type == "selection":
@@ -229,6 +230,7 @@ def apply_board(header):
     board.board_path = header.get("board_path", "")
     board.export = header.get("export") or {}
     poses.follow_board()  # its root Empty, where the board stands
+    saved.remember(header)  # kept on the collection: a saved file reopens with it (saved.restore)
     if not state.boards[state.picked()].loaded:  # the panel had no board: this one
         from . import slots  # slots imports modules that import this one
         slots.follow()
@@ -246,8 +248,8 @@ def _shape_ims():
     was = board.ims is not None
     scene = bpy.context.scene
     board.ims = None
-    if getattr(scene, "kileido_ims", False) and ims.eligible(board.heights)[0]:
-        board.ims = ims.stack(board.heights, board.layer_thickness, scene.kileido_ims_epoxy_um * 1e-6)
+    if boardprops.get(scene, "kileido_ims", False) and ims.eligible(board.heights)[0]:
+        board.ims = ims.stack(board.heights, board.layer_thickness, boardprops.get(scene, "kileido_ims_epoxy_um") * 1e-6)
         board.heights = board.ims.heights
         board.layer_thickness = board.ims.layer_thickness
         board.thickness_m = board.ims.thickness_m

@@ -39,6 +39,7 @@ class BoardState:
         self.pose = None
         self.pose_of = ""
         self.hidden = False  # its eye in the Boards list is shut (slots.set_hidden); kept like the pose
+        self.saved_copy = False  # rebuilt from a saved .blend (saved.restore) until its KiCad sends it again
         self.heights = {}  # copper layer name -> z (m)
         self.layer_thickness = {}  # stackup thickness (m) of copper, mask, ... by layer name
         self.thickness_m = 0.0

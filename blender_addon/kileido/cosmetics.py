@@ -19,7 +19,7 @@ from pathlib import Path
 import bpy
 import numpy as np
 
-from . import cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, shading
+from . import boardprops, cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, shading
 from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_name, owned_object, set_modifier,
                       set_node_input, set_visible)
 from .placement import laminate_faces, mask_thickness, outward
@@ -70,7 +70,8 @@ def material_name(layer):
 
 
 def property_name(layer):
-    return "kileido_show_" + layer.replace(".", "_")
+    """The current board's Scene property behind an overlay layer's eye (boardprops)."""
+    return boardprops.name("kileido_show_" + layer.replace(".", "_"))
 
 
 def walls_name(layer):

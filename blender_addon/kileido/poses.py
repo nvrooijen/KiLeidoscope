@@ -35,11 +35,24 @@ POSE_KEY = "kls_pose"  # on it: the pose it was placed for, translation then ang
 STACK_GAP_M = 0.01  # a board that joins others: this far above the highest thing shown
 SPACE = "KLS board space"  # the shader group giving a point and its normal in the root's space
 _session = {"offset": None}  # scene_offset: (x, y, z) metres in KiCad's frame
+OFFSET_KEY = "kls_scene_offset"  # on the scene: the session offset, for a saved file (saved.restore)
 
 
 def reset_session():
     """No board shown any more: the next one to come is centred again."""
     _session["offset"] = None
+    bpy.context.scene.pop(OFFSET_KEY, None)
+
+
+def restore_session(scene):
+    """A file opened: its session offset, if it kept one (else the next board sets it)."""
+    stored = list(scene.get(OFFSET_KEY, ()))
+    _session["offset"] = tuple(float(v) for v in stored) if len(stored) == 3 else None
+
+
+def _set_offset(offset):
+    _session["offset"] = tuple(float(v) for v in offset)
+    bpy.context.scene[OFFSET_KEY] = list(_session["offset"])
 
 
 def centre():
@@ -83,7 +96,7 @@ def euler(turned):
 
 def _offset():
     if _session["offset"] is None:
-        _session["offset"] = tuple(float(v) for v in (*centre()[:2], 0.0))
+        _set_offset((*centre()[:2], 0.0))
     return np.array(_session["offset"])
 
 
@@ -111,12 +124,23 @@ def _key():
 
 
 def _default_pose():
-    """Where a board new to its slot goes: alone, where it always went (the scene centred on
-    it); beside others, at KiCad's X and Y, a gap above the highest thing they show."""
+    """Where a board new to its slot goes: where an opened arrangement puts it (arrangement.py);
+    else alone, where it always went (the scene centred on it); beside others, at KiCad's X
+    and Y, a gap above the highest thing they show."""
+    from . import arrangement  # it imports this module
     others = [slot for slot in SLOTS if slot != board.slot and boards[slot].loaded]
+    entry = arrangement.wanted()
     if not others:
         reset_session()
+        if entry is not None:  # the scene centred on it where the arrangement puts it
+            middle = centre()
+            middle[2] = 0.0
+            at = rotation(entry["angles"]) @ middle + np.array(entry["translation"])
+            _set_offset((at[0], at[1], 0.0))
     _offset()
+    if entry is not None:
+        board.hidden = bool(entry["hidden"])
+        return tuple(float(v) for v in entry["translation"]), tuple(float(v) for v in entry["angles"])
     top = max((_top(boards[slot].collection) for slot in others), default=None)
     lift = 0.0 if top is None else top + STACK_GAP_M
     return (0.0, 0.0, float(lift)), (0.0, 0.0, 0.0)

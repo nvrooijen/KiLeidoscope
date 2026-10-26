@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kileido  # noqa: E402
-from kileido import apply, fold, layers, objects, pick, poses, slots, state  # noqa: E402
+from kileido import apply, boardprops, fold, layers, objects, packages, pick, poses, slots, state  # noqa: E402
 import run_flex  # noqa: E402  (its frames: the fixture with a bend)
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -155,8 +155,10 @@ def check_fold_handover(scene):
     folds it again."""
     with state.using(2):
         flat = {obj.name: np.array(poses.in_root(obj)) for obj in fold._parts()}
-    scene.kileido_flex = True
-    scene.kileido_fold = 1.0
+    assert boardprops.name("kileido_flex") == "kileido_b2_flex"  # the picked board's own, as the panel shows it
+    boardprops.put(scene, "kileido_flex", True)
+    boardprops.put(scene, "kileido_fold", 1.0)
+    assert scene.kileido_b2_flex and not scene.kileido_flex and scene.kileido_b2_fold == 1.0
     assert fold._folded_collection() is not None and fold._grips()
     slots.pick(1)
     with state.using(2):
@@ -168,8 +170,8 @@ def check_fold_handover(scene):
     slots.pick(2)
     fold._settled()  # the timer `pick` started
     assert fold._folded_collection() is not None, "board 2 folded again"
-    scene.kileido_fold = 0.0
-    scene.kileido_flex = False
+    boardprops.put(scene, "kileido_fold", 0.0)
+    boardprops.put(scene, "kileido_flex", False)
     fold._settled()
 
 
@@ -185,18 +187,29 @@ def check_eye():
     assert not second.hide_viewport
 
 
+def top_copper_hidden(slot):
+    with state.using(slot):
+        copper = [obj for obj in state.board.collection.all_objects
+                  if (obj.get("kls_copper") or ("",))[0] == "F.Cu" and len(obj.data.vertices)]
+        assert copper, slot
+        return all(obj.hide_get() for obj in copper)
+
+
 def check_shared(scene):
-    """A setting both boards share reaches both, whichever is picked."""
+    """A setting both boards share reaches both, whichever is picked; a layer's eye is each
+    board's own, the All boards eye switches both."""
     scene.kileido_color_mode = "EDITOR"
     assert state.boards[1].color_mode == state.boards[2].color_mode == "EDITOR"
     scene.kileido_color_mode = "FAB"
+    assert state.picked() == 2 and layers.property_name("F.Cu") == "kileido_b2_show_F_Cu"
     setattr(scene, layers.property_name("F.Cu"), False)
-    for slot in (1, 2):
-        with state.using(slot):
-            copper = [obj for obj in state.board.collection.all_objects
-                      if (obj.get("kls_copper") or ("",))[0] == "F.Cu" and len(obj.data.vertices)]
-            assert copper and all(obj.hide_get() for obj in copper), slot
+    assert top_copper_hidden(2) and not top_copper_hidden(1) and scene.kileido_show_F_Cu
     setattr(scene, layers.property_name("F.Cu"), True)
+    assert not top_copper_hidden(2)
+    packages.set_row_everywhere("F.Cu", False)
+    assert top_copper_hidden(1) and top_copper_hidden(2) and not packages.shown_everywhere("F.Cu")
+    packages.set_row_everywhere("F.Cu", True)
+    assert not top_copper_hidden(1) and not top_copper_hidden(2)
 
 
 def check_remove():

@@ -8,7 +8,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 
 import bpy
 
-from . import cut, focus, holes, ims, laminate, section, shading
+from . import boardprops, cut, focus, holes, ims, laminate, section, shading
 from .objects import owned_name
 from .placement import copper_thickness
 from .state import board
@@ -873,9 +873,9 @@ def _tint_see_through(material, color, tint=FILM_TINT):
 def _paint_ims_base(material, realistic):
     """The IMS base: its metal, or nickel over it, with the panel's finish."""
     scene = bpy.context.scene
-    finish = getattr(scene, "kileido_ims_finish", "MILL")
+    finish = boardprops.get(scene, "kileido_ims_finish", "MILL")
     _, roughness, anisotropy = ims.FINISHES.get(finish, ims.FINISHES["MILL"])
-    color = ims.NICKEL if finish == "NICKEL" else ims.COLORS.get(getattr(scene, "kileido_ims_metal", "AL"),
+    color = ims.NICKEL if finish == "NICKEL" else ims.COLORS.get(boardprops.get(scene, "kileido_ims_metal", "AL"),
                                                                  ims.COLORS["AL"])
     paint(material, _lit_metal(color))
     set_surface(material, realistic, 1.0, roughness)

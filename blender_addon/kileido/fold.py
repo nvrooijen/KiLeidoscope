@@ -21,7 +21,7 @@ import numpy as np
 from mathutils import Matrix, Vector, geometry
 from mathutils.bvhtree import BVHTree
 
-from . import foldmath, materials, nodes, objects, poses
+from . import boardprops, foldmath, materials, nodes, objects, poses
 from . import section as section_module
 from .objects import hide, lookup, owned_name, read_attribute, read_coordinates, role
 from .state import board, log
@@ -98,7 +98,7 @@ def refresh():
     try:
         if _state["keyed"] is not None and _state["keyed"] is not plan:  # keyed for a board that has changed since
             clear_animation(refold=False)
-            _turn_grips(plan, bpy.context.scene.kileido_fold)
+            _turn_grips(plan, boardprops.get(bpy.context.scene, "kileido_fold"))
         else:
             _ensure_grips(plan)
         handles = [grip.rotation_euler.z for grip in _grips()]
@@ -307,7 +307,7 @@ def clear_animation(refold=True):
          scene.render.use_lock_interface) = _state["render"]
         _state["render"] = None
     if was and refold and _plan() is not None:
-        set_progress(bpy.context.scene.kileido_fold)
+        set_progress(boardprops.get(bpy.context.scene, "kileido_fold"))
 
 
 def _reset_parts():
@@ -343,7 +343,7 @@ def _plan():
     """The fold plan for the board's flex report while flex mode is on (the Flex column's
     Enable), made again only when the report or the board's frame changes (each handle
     turn asks for it)."""
-    if board.collection is None or not board.flex or not getattr(bpy.context.scene, "kileido_flex", False):
+    if board.collection is None or not board.flex or not boardprops.get(bpy.context.scene, "kileido_flex", False):
         return None
     key = (tuple(board.origin_nm), tuple(sorted(board.heights.items())), tuple(sorted(board.layer_thickness.items())))
     cached = _planned.get("plan")
