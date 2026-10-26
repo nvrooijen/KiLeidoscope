@@ -334,7 +334,7 @@ def check_castellation(scene):
     outline = folded.objects["KLS folded outline"]
     flex = state.board.materials["flex"]
     plot = flex.node_tree.nodes.get("KLS holes plot")
-    assert plot is not None and plot.image == bpy.data.images[holes.IMAGE], "the flex is holed"
+    assert plot is not None and plot.image == holes.mask_image(), "the flex is holed"
     centre = foldmath.world_xy([(40_000_000, 15_000_000)], state.board.origin_nm)[0]
     materials = [slot.name for slot in outline.data.materials]
     walls = [face for face in outline.data.polygons if abs(face.normal.z) < 0.5
@@ -342,11 +342,11 @@ def check_castellation(scene):
                  outline.data.vertices[k].co.y for k in face.vertices)) < centre[1] < max(
                  outline.data.vertices[k].co.y for k in face.vertices)]
     assert walls and {materials[face.material_index] for face in walls} == {flex.name}, walls
-    mask = bpy.data.images[holes.IMAGE]
+    mask = holes.mask_image()
     pixels = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
     mask.pixels.foreach_get(pixels)
     pixels = pixels.reshape(mask.size[1], mask.size[0], 4)
-    xmin, ymin, xmax, ymax = holes._bounds
+    xmin, ymin, xmax, ymax = holes._m().bounds
     pixel = max(xmax - xmin, ymax - ymin) / holes.RESOLUTION
     column, row = int((centre[0] - 0.25e-3 - xmin) / pixel), int((centre[1] - ymin) / pixel)
     assert pixels[row, column, 3] > 0.99, pixels[row, column]  # inside the board, inside the drill

@@ -11,7 +11,7 @@ Only the live board picks: view-only boards are not in KiCad. With the board cut
 import numpy as np
 
 from . import cut, fold
-from .objects import OUTLINE, lookup, read_attribute, read_coordinates, read_edges
+from .objects import OUTLINE, lookup, read_attribute, read_coordinates, read_edges, role
 from .state import board
 
 SKIP_PREFIXES = ("KLS overlay", "KLS footprint highlight")
@@ -94,14 +94,14 @@ def _item(obj, location):
         finder = _track_at if kind == "tracks" else _pad_at
         index = finder(obj, _local_xy(obj, location))
         return (ids[index] if index is not None and index < len(ids) else None), index is not None
-    if obj.name == "KLS vias":
+    if role(obj.name) == "KLS vias":
         index = _via_at(obj, _local_xy(obj, location))
         return (ids[index] if index is not None and index < len(ids) else None), index is not None
     if obj.get("kls_model_fp_id") is not None:
         return obj["kls_model_fp_id"], True
     if obj.get("kls_footprint_placeholder") == 1:
         return obj.get("kls_footprint_id"), True
-    if obj.name == OUTLINE:
+    if role(obj.name) == OUTLINE:
         return None, True
     return None, False  # overlays, highlights, solder, drill walls: look further
 
@@ -117,7 +117,7 @@ def describe(item_id):
                 placement = obj.get("kls_copper")
                 if placement:
                     return {"tracks": "a track", "pads": "a pad's component", "zones": "a pour"}.get(placement[1], "an item")
-                if obj.name == "KLS vias":
+                if role(obj.name) == "KLS vias":
                     return "a via"
     return "a component"
 

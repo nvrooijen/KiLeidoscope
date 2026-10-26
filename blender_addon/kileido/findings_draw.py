@@ -85,8 +85,8 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 from . import components, focus, fold, highlight, hole_cut, label_place, layers, materials, transform
-from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, lookup, outline_bounds, set_visible,
-                      shown_views, view3d_spaces)
+from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, lookup, outline_bounds, owned_name,
+                      set_visible, shown_views, view3d_spaces)
 from .placement import outward
 from .state import board
 
@@ -559,7 +559,7 @@ def uninstall():
 def _new(name, data, finding):
     """A drawing object, seen by camera rays only: an overlay casts no shadow and lights
     nothing, so it adds no grain to the board in a rendered view."""
-    obj = bpy.data.objects.new(name, data)
+    obj = bpy.data.objects.new(owned_name(name), data)
     camera_rays_only(obj)
     obj["kileido_owned"] = 1
     obj[TAG] = finding.get("key", "")
@@ -654,7 +654,7 @@ def _short(text):
 def _eye():
     eye = lookup(EYE)
     if eye is None:
-        eye = bpy.data.objects.new(EYE, None)
+        eye = bpy.data.objects.new(owned_name(EYE), None)
         eye["kileido_owned"] = 1
         eye[TAG] = "eye"
         eye.empty_display_size = 1e-4
@@ -866,7 +866,7 @@ def _place_labels(finding, box, unit):
     hole finding's open cut face, flat there; else facing the eye (laid out by
     `_lay_out`, again whenever the eye moves), each with a thin leader to its anchor."""
     labels = _state["labels"]
-    objects = [board.collection.all_objects[entry["name"]] for entry in labels]
+    objects = [lookup(entry["name"]) for entry in labels]
     section = hole_cut.section(finding)
     if section is not None:
         bounds = outline_bounds()

@@ -149,8 +149,8 @@ def main():
     alpha = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
     mask.pixels.foreach_get(alpha)
     alpha = alpha.reshape(mask.size[1], mask.size[0], 4)[..., 3]
-    xmin, ymin = holes._bounds[:2]
-    pixel = max(holes._bounds[2] - xmin, holes._bounds[3] - ymin) / holes.RESOLUTION
+    xmin, ymin = holes._m().bounds[:2]
+    pixel = max(holes._m().bounds[2] - xmin, holes._m().bounds[3] - ymin) / holes.RESOLUTION
     column, row = int((drill.location.x - xmin) / pixel), int((drill.location.y - ymin) / pixel)
     assert alpha[row, column] > 0.99 and alpha[0, 0] == 0.0
     assert "KLS holes mix" in state.board.materials["copper:F.Cu"].node_tree.nodes
@@ -427,8 +427,8 @@ def main():
             pixels = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
             mask.pixels.foreach_get(pixels)
             pixels = pixels.reshape(mask.size[1], mask.size[0], 4)[..., 3]
-            xmin, ymin = holes._bounds[:2]
-            pixel = max(holes._bounds[2] - xmin, holes._bounds[3] - ymin) / holes.RESOLUTION
+            xmin, ymin = holes._m().bounds[:2]
+            pixel = max(holes._m().bounds[2] - xmin, holes._m().bounds[3] - ymin) / holes.RESOLUTION
             return pixels[int((via_xy[1] - ymin) / pixel), int((via_xy[0] - xmin) / pixel)]
 
         scene = bpy.context.scene

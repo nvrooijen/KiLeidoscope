@@ -171,14 +171,21 @@ def _end_snapshot():
         solder.flush()  # no timers run there: the snapshot's reflowed solder now
 
 
+def collection_name(board_name):
+    """The board collection's name: "KiLeidoscope: <board>", board 2's "KiLeidoscope 2: <board>"
+    (two KiCads may show boards of one name)."""
+    return f"KiLeidoscope: {board_name}" if board.slot == 1 else f"KiLeidoscope {board.slot}: {board_name}"
+
+
 def _collection(board_name):
-    name = f"KiLeidoscope: {board_name}"
+    name = collection_name(board_name)
     collection = bpy.data.collections.get(name)
     if collection is not None and collection.get("kileido_owned") != 1:
         raise RuntimeError(f"Collection {name!r} already exists and is not owned by KiLeidoscope")
     if collection is None:
         collection = bpy.data.collections.new(name)
         collection["kileido_owned"] = 1
+    collection["kls_slot"] = board.slot
     if collection.name not in bpy.context.scene.collection.children:
         bpy.context.scene.collection.children.link(collection)
     return collection
@@ -195,10 +202,10 @@ def apply_board(header):
     if board.collection is None:
         board.collection = _collection(name)
     elif board_changed:
-        existing = bpy.data.collections.get(f"KiLeidoscope: {name}")
+        existing = bpy.data.collections.get(collection_name(name))
         if existing is not None and existing != board.collection:
             raise RuntimeError(f"Collection {existing.name!r} already exists")
-        board.collection.name = f"KiLeidoscope: {name}"
+        board.collection.name = collection_name(name)
     ensure_groups()
     lock_selection(board.collection)
     if board_changed:

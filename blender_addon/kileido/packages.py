@@ -17,8 +17,9 @@ from mathutils import Vector
 
 from . import (apply, components, cosmetics, cut, findings_draw, highlight, ims, layers, lighting, materials, nodes,
                render_depth, transform)
-from .objects import OUTLINE, find, hide, set_modifier, set_node_input, view3d_spaces
+from .objects import OUTLINE, find, hide, role, set_modifier, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
+from . import state
 from .state import board
 
 ROOT_TAG = "kls_view_only_root"
@@ -172,7 +173,7 @@ def _export_board(filepath):
         material["kls_mask_colors"] = json.dumps(colors)
     for obj in tuple(collection.all_objects):  # hide_set is view-layer state, not saved with the object
         obj["kls_hidden"] = obj.hide_get()
-        obj["kls_row"] = "Board" if obj.name == OUTLINE else layers.row_of(obj) or ""
+        obj["kls_row"] = "Board" if role(obj.name) == OUTLINE else layers.row_of(obj) or ""
     swapped = []
     # No cut-plane stage in the package: its shared values would cut the importing session's boards.
     clipped = [material for material in cut.materials()
@@ -415,7 +416,8 @@ def _refresh_silk(collection):
 def _as_board(collection):
     """Lend `board` a view-only board's stackup while the shared placement code runs
     on its objects; the live board's state comes back after."""
-    saved = dict(vars(board))
+    lent = state.current()
+    saved = dict(vars(lent))
     stackup = _stackup(collection)
     board.collection = collection
     board.name_prefix = f"KV{collection['kls_view_only']} "
@@ -429,8 +431,8 @@ def _as_board(collection):
     try:
         yield
     finally:
-        board.__dict__.clear()
-        board.__dict__.update(saved)
+        lent.__dict__.clear()
+        lent.__dict__.update(saved)
 
 
 def _stackup(collection):

@@ -20,8 +20,8 @@ import bpy
 import numpy as np
 
 from . import cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, shading
-from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_object, set_modifier, set_node_input,
-                      set_visible)
+from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_name, owned_object, set_modifier,
+                      set_node_input, set_visible)
 from .placement import laminate_faces, mask_thickness, outward
 from .state import board
 from .watcher import BoardWatcher
@@ -62,11 +62,11 @@ PLOT_TIMEOUT_S = 120  # drawing a board's overlays (overlay_plots), as long as i
 
 
 def object_name(layer):
-    return f"KLS overlay {layer}"
+    return owned_name(f"KLS overlay {layer}")
 
 
 def material_name(layer):
-    return f"KLS overlay {layer} material"
+    return owned_name(f"KLS overlay {layer} material")
 
 
 def property_name(layer):
@@ -74,11 +74,11 @@ def property_name(layer):
 
 
 def walls_name(layer):
-    return f"KLS overlay {layer} walls"
+    return owned_name(f"KLS overlay {layer} walls")
 
 
 def wall_material_name(layer):
-    return f"KLS overlay {layer} wall material"
+    return owned_name(f"KLS overlay {layer} wall material")
 
 
 def silkscreen_thickness():
@@ -659,7 +659,7 @@ def refresh_geometry():
     bounds = outline_bounds()
     if bounds is None:
         return
-    outline = board.collection.all_objects[OUTLINE]
+    outline = lookup(OUTLINE)
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_cosmetic_layer") and obj.get("kls_board_path") == board.board_path:
             _geometry(obj, bounds, outline)
@@ -673,7 +673,7 @@ def _apply(plots, board_path):
     bounds = outline_bounds()
     if bounds is None:
         raise ValueError("Board outline is unavailable for overlay alignment")
-    outline = board.collection.all_objects[OUTLINE]
+    outline = lookup(OUTLINE)
     superseded = [silk["image"] for silk in board.silk.values()]
     superseded += [image for image, _ in board.relief_images.values()]
     loaded = set()

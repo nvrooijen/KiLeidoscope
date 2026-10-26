@@ -27,7 +27,7 @@ from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_pl
                findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, kicad_cli, layers,
                lighting, live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
 from .objects import view3d_spaces
-from .state import board
+from .state import board, boards
 
 
 class KILEIDO_OT_load_dump(bpy.types.Operator, ImportHelper):
@@ -1755,7 +1755,8 @@ def _file_loaded(_):
     found again in this one. A finding drawn when the file was saved is gone: it may be stale."""
     findings_draw.purge()
     findings.stop_progress()  # the LLM's progress comes again with the findings
-    board.reset()
+    for state in boards.values():
+        state.reset()
     hole_cut.restore()  # a file saved with a hole finding's cut: the user's own cut back
     lighting.refresh_reflections()
     live.request_resync()

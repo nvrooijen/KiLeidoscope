@@ -171,12 +171,12 @@ def main():
         scene.cycles.use_denoising = False
         protect(layered, [OPEN] * 3)
         # Holes: the through via both sides, the blind one from the top; the buried one is none.
-        assert holes._sources["vias"][:, 3].tolist() == [holes.TOP, holes.THROUGH]
-        mask = bpy.data.images[holes.IMAGE]
+        assert holes._m().sources["vias"][:, 3].tolist() == [holes.TOP, holes.THROUGH]
+        mask = holes.mask_image()
         pixels = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
         mask.pixels.foreach_get(pixels)
         pixels = pixels.reshape(mask.size[1], mask.size[0], 4)
-        xmin, ymin, xmax, ymax = holes._bounds
+        xmin, ymin, xmax, ymax = holes._m().bounds
         pixel = max(xmax - xmin, ymax - ymin) / holes.RESOLUTION
 
         def channels_at(index):
@@ -187,7 +187,7 @@ def main():
 
         assert channels_at(0) == (1, 0, 0) and channels_at(1) == (0, 0, 0) and channels_at(2) == (1, 1, 1)
         protect(layered, [PLUGGED] * 3)
-        assert len(holes._sources["vias"]) == 2  # still holes: their lands are rings, the plug shows in them
+        assert len(holes._m().sources["vias"]) == 2  # still holes: their lands are rings, the plug shows in them
         assert attribute("bare_barrel") == [1, 1, 1]  # the plug kept the finish out
         # In 3D too the barrels are plugged: a core in the plug's material, and a highlighted
         # via's core in the highlight's (solid in X-ray mode, where everything else fades).
@@ -224,7 +224,7 @@ def main():
         scene.kileido_via_plating_um = 10.0
         assert attribute("tent_top") == [0, 0, 0] and board.via_too_big == 2  # a 0.33 mm hole: too large
         scene.kileido_via_plating_um = 25.0
-        assert len(holes._sources["vias"]) == 2 and attribute("tent_top") == [1, 0, 1]  # holes, closed by tents
+        assert len(holes._m().sources["vias"]) == 2 and attribute("tent_top") == [1, 0, 1]  # holes, closed by tents
         assert attribute("tent_bottom") == [0, 0, 1]  # the blind via has no bottom end to tent
         assert {board.materials["tent_F"].name, board.materials["tent_B"].name} <= via_faces()[1]
         assert board.materials["plating_bare"].name in via_faces()[1]

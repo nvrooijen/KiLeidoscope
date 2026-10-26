@@ -36,7 +36,7 @@ import numpy as np
 from bpy.app.handlers import persistent
 
 from . import holes, live, transform
-from .objects import link_owned, lookup, owned_object, set_visible, write_attribute
+from .objects import link_owned, lookup, owned_name, owned_object, set_visible, write_attribute
 from .placement import copper_thickness
 from .state import board
 
@@ -697,7 +697,7 @@ def _board_face(layer):
 def _label(name, key, role, text, location, up, ids, align):
     obj = lookup(name)
     if obj is None:
-        obj = bpy.data.objects.new(name, bpy.data.curves.new(name, "FONT"))
+        obj = bpy.data.objects.new(owned_name(name), bpy.data.curves.new(owned_name(name), "FONT"))
         obj["kileido_owned"] = 1
         link_owned(obj)
     obj.data.body = text

@@ -1,7 +1,21 @@
-"""What the add-on knows about the board it currently shows (one board per Blender session).
+"""What the add-on knows about the boards it shows: up to four live boards per Blender
+session, each in a slot.
 
-Every module reads and writes the same `board` instance; nothing else holds board state.
+Every module reads and writes `board`, which stands for the board being worked on: a live
+frame, a finished export or a panel setting switches to its own board with `using(slot)`
+first. Board 1 keeps the names KiLeidoscope always used; the others' objects, materials
+and images carry their slot's prefix ("B2 KLS outline"), as Blender names are global.
+Nothing else holds board state.
 """
+
+from contextlib import contextmanager
+
+SLOTS = (1, 2, 3, 4)
+
+
+def slot_prefix(slot):
+    """The prefix of a live board's names: none for board 1, "B<slot> " for the others."""
+    return "" if slot == 1 else f"B{slot} "
 
 
 def log(message):
@@ -10,10 +24,12 @@ def log(message):
 
 
 class BoardState:
-    def __init__(self):
+    def __init__(self, slot=1):
+        self.slot = slot
         # Identity and frame: KiCad nanometres become Blender metres around `origin_nm`.
         self.collection = None  # "KiLeidoscope: <board>", owns every KiLeidoscope object
-        self.name_prefix = ""  # of its object names: "" live, "KV<n> " while a view-only board is placed
+        # Of its names: the slot's (slot_prefix), "KV<n> " while a view-only board is placed
+        self.name_prefix = slot_prefix(slot)
         self.board_name = ""
         self.board_path = ""
         self.origin_nm = (0, 0)
@@ -49,6 +65,7 @@ class BoardState:
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
         self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
+        self.holes = None  # its hole mask (holes._Mask)
 
         # Snapshot bookkeeping: objects not touched by a full snapshot are cleared.
         self.in_snapshot = False
@@ -80,8 +97,12 @@ class BoardState:
     def reset(self):
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
         if self.model_bound:
-            log(f"board state reset; {len(self.model_bound)} bound models forgotten")
-        self.__init__()
+            log(f"board {self.slot} state reset; {len(self.model_bound)} bound models forgotten")
+        self.__init__(self.slot)
+
+    @property
+    def loaded(self):
+        return self.collection is not None
 
     def drop_if_freed(self, where, resync=True):
         """True after a collection freed under us (undo, file load) was forgotten: the board
@@ -97,7 +118,8 @@ class BoardState:
             self.reset()
             if resync:
                 from . import live
-                live.request_resync()
+                with using(self.slot):
+                    live.request_resync()
             return True
         return False
 
@@ -113,4 +135,44 @@ class BoardState:
         self.in_snapshot = False
 
 
-board = BoardState()
+boards = {slot: BoardState(slot) for slot in SLOTS}
+_current = [1]
+
+
+def current():
+    """The BoardState `board` stands for now."""
+    return boards[_current[0]]
+
+
+@contextmanager
+def using(slot):
+    """Work on board `slot` inside the block."""
+    previous = _current[0]
+    _current[0] = slot
+    try:
+        yield boards[slot]
+    finally:
+        _current[0] = previous
+
+
+def each_loaded():
+    """Slots with a board, each while it is the current board."""
+    for slot in SLOTS:
+        if boards[slot].loaded:
+            with using(slot):
+                yield slot
+
+
+class _Current:
+    """`board`: the BoardState of the slot being worked on (see `using`)."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        return getattr(boards[_current[0]], name)
+
+    def __setattr__(self, name, value):
+        setattr(boards[_current[0]], name, value)
+
+
+board = _Current()

@@ -18,7 +18,7 @@ import bpy
 
 from . import section, shading
 from .placement import ims_band
-from .state import board
+from .state import board, slot_prefix
 
 GROUP = "KLS_Laminate_v3"
 # Glass cloth (yarn pitch, ply thickness) in mm: a core's heavy 7628 and a prepreg's 2116
@@ -50,13 +50,18 @@ EDGE_NODE = "KLS laminate"
 _bands_set = None
 
 
+def group_name():
+    """The board's group: it holds the board's stackup bands (board 2's "B2 KLS_Laminate_v3")."""
+    return slot_prefix(board.slot) + GROUP
+
+
 def group():
     """Color = Base (or the stackup band at Height, by Banded) shaded by the weave at
     (Along, Height), by Weave (0: flat)."""
-    found = bpy.data.node_groups.get(GROUP)
+    found = bpy.data.node_groups.get(group_name())
     if found is not None:
         return found
-    tree = bpy.data.node_groups.new(GROUP, "ShaderNodeTree")
+    tree = bpy.data.node_groups.new(group_name(), "ShaderNodeTree")
     for name, kind in (("Base", "NodeSocketColor"), ("Along", "NodeSocketFloat"), ("Height", "NodeSocketFloat"),
                        ("Banded", "NodeSocketFloat"), ("Weave", "NodeSocketFloat")):
         tree.interface.new_socket(name=name, in_out="INPUT", socket_type=kind)
@@ -170,7 +175,7 @@ def group():
 def update_bands(tree=None):
     """Fill the group's stackup bands from the live board (edges in Realistic mode)."""
     global _bands_set
-    tree = tree or bpy.data.node_groups.get(GROUP)
+    tree = tree or bpy.data.node_groups.get(group_name())
     if tree is None or not board.heights:
         return
     _, bands = section.stack_layout(board.heights, board.layer_thickness, board.stackup,

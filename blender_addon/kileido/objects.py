@@ -1,5 +1,7 @@
 """Small helpers for the Blender objects, meshes and modifiers KiLeidoscope owns."""
 
+import re
+
 import bpy
 import numpy as np
 
@@ -8,6 +10,20 @@ from .state import board
 
 OUTLINE = "KLS outline"
 VIEW_CLIP_START_M = 0.001  # 3D views' near clip, set once per board: close enough to look into a cut via
+_BOARD_PREFIX = re.compile(r"^(?:B\d+|KV\d+) (?=KLS)")  # a live board's (state.slot_prefix) or a view-only one's
+
+
+def owned_name(name):
+    """This board's Blender name for a KiLeidoscope name ("KLS ..."): with its prefix
+    ("B2 KLS outline" for board 2, "KV1 KLS outline" while a view-only board is placed),
+    as Blender names are global. Other names (a component's "R12", one already
+    prefixed) are kept."""
+    return board.name_prefix + name if board.name_prefix and name.startswith("KLS ") else name
+
+
+def role(name):
+    """A KiLeidoscope name without its board's prefix: what name parsers read."""
+    return _BOARD_PREFIX.sub("", name, count=1)
 
 
 def set_visible(obj, visible):
@@ -70,6 +86,7 @@ _COPPER_KINDS = {"tracks": "copper", "pads": "copper", "graphics": "copper", "zo
 
 def group_of(name):
     """The GROUPS key for a KiLeidoscope object name ("KLS F.Cu zone <id>" -> "pours")."""
+    name = role(name)
     if name.startswith("KLS finding "):
         return "findings"
     if "highlight" in name:
@@ -92,7 +109,7 @@ def ensure_groups():
     children = {child.get("kls_group") for child in board.collection.children}
     for key, label in GROUPS:
         if key not in children:
-            child = bpy.data.collections.new(label)
+            child = bpy.data.collections.new(board.name_prefix + label)  # "Copper", board 2's "B2 Copper"
             child["kls_group"] = key  # no "kileido_owned": that tag marks a whole board
             board.collection.children.link(child)
 
@@ -124,10 +141,12 @@ def _index():
 
 
 def lookup(name):
-    """The board collection's object `name`, or None. A collection's `all_objects.get`
+    """The board collection's object `name` (a "KLS ..." name under the board's prefix,
+    `owned_name`), or None. A collection's `all_objects.get`
     walks every object: 0.2 ms each on a 1,500-object board while an edit is applied
     (measured, MedusaV5), and one edit makes thousands. So objects found are remembered,
     and checked by name on the way out (removed, undone or renamed since: looked up again)."""
+    name = owned_name(name)
     index = _index()
     obj = index.get(name)
     if obj is not None:
@@ -145,8 +164,8 @@ def lookup(name):
 
 
 def find(name):
-    """The board's object `name` ("KLS ..."), under its view-only prefix if it has one."""
-    return lookup(board.name_prefix + name)
+    """The board's object `name` ("KLS ..."), under its prefix if it has one."""
+    return lookup(name)
 
 
 def owned_object(name, kind="MESH", group=None):
@@ -159,6 +178,7 @@ def owned_object(name, kind="MESH", group=None):
 
 def new_owned(name, kind="MESH", group=None):
     """A new object in the board collection (in `group`, else the one its name picks)."""
+    name = owned_name(name)
     obj = bpy.data.objects.new(name, bpy.data.meshes.new(name) if kind == "MESH" else None)
     obj["kileido_owned"] = 1
     link_owned(obj, group)

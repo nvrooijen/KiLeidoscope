@@ -23,7 +23,7 @@ from mathutils.bvhtree import BVHTree
 
 from . import foldmath, materials, nodes
 from . import section as section_module
-from .objects import hide, lookup, read_attribute, read_coordinates
+from .objects import hide, lookup, owned_name, read_attribute, read_coordinates, role
 from .state import board, log
 
 COLLECTION = "KLS folded"
@@ -290,7 +290,7 @@ def clear_animation(refold=True):
     grips = _grips()
     for obj in (*grips, *_parts()):
         action = obj.animation_data.action if obj.animation_data else None
-        if action is not None and action.name.startswith(("KLS fold", "KLS sweep")) or obj in grips:
+        if action is not None and role(action.name).startswith(("KLS fold", "KLS sweep")) or obj in grips:
             obj.animation_data_clear()
             if action is not None and action.users == 0:
                 bpy.data.actions.remove(action)
@@ -361,7 +361,7 @@ def _originals():
     return [obj for obj in board.collection.all_objects
             if obj.type == "MESH" and obj not in skip and obj.get("kls_model_fp_id") is None
             and obj.get("kls_footprint_placeholder") != 1  # parts: placeholders and boxes fold whole
-            and not obj.name.startswith("KLS footprint ")
+            and not role(obj.name).startswith("KLS footprint ")
             and obj.get("kls_finding") is None  # drawn on the flat board only (findings_draw)
             and not obj.hide_get() and (not obj.hide_viewport or obj.get("kls_hidden_by_fold"))]
 
@@ -466,7 +466,7 @@ def _bake_object(original, plan, collection):
     coverlay = board.flex.get("coverlay", "AMBER")  # from KiCad: a "Coverlay black" text on the Flex layer
     if original.get("kls_cosmetic_layer") in ("F.Mask", "B.Mask"):
         _on_flex(mesh, plan, lambda mask: materials.coverlay_variant(mask, coverlay))  # it takes the mask's place
-    elif original.name == "KLS outline":
+    elif role(original.name) == "KLS outline":
         _flex_faces(mesh, plan, board.materials["flex"])
     else:
         finished = {board.materials[key].name for key in materials.FINISHED if key in board.materials}
@@ -894,7 +894,7 @@ def _parts():
     """Footprint frames (their models and placeholders ride on them) and highlight boxes:
     each folds as one piece."""
     return [obj for obj in board.collection.all_objects
-            if obj.get("kls_footprint") == 1 or obj.name.startswith("KLS footprint ")
+            if obj.get("kls_footprint") == 1 or role(obj.name).startswith("KLS footprint ")
             or (obj.parent is None and (obj.get("kls_model_fp_id") is not None
                                         or obj.get("kls_footprint_placeholder") == 1))]
 
@@ -983,10 +983,10 @@ def _ensure_grips(plan):
     collection = _grip_collection(create=True)
     for index, members in enumerate(plan.handles):
         bend = plan.bends[members[len(members) // 2]]  # a dome's: its middle finger
-        frame = bpy.data.objects.new(f"KLS bend {index + 1} frame", None)
+        frame = bpy.data.objects.new(owned_name(f"KLS bend {index + 1} frame"), None)
         frame.empty_display_size = 0.0
         frame.hide_select = True
-        grip = bpy.data.objects.new(f"KLS bend {index + 1}", None)
+        grip = bpy.data.objects.new(owned_name(f"KLS bend {index + 1}"), None)
         grip.empty_display_type = "CIRCLE"
         grip.empty_display_size = max(1e-3, min(bend.length / 3, 4e-3))
         grip.parent = frame

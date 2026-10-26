@@ -22,7 +22,7 @@ import numpy as np
 from mathutils import Euler, Matrix
 
 from . import components, cut, focus, fold, highlight, kicad_cli, solder
-from .objects import link_owned, set_visible
+from .objects import link_owned, lookup, set_visible
 from . import state
 from .state import board
 from .watcher import BoardWatcher
@@ -465,7 +465,7 @@ def bind_root(root, asset_hash, saved_positions=None):
               f"{len(matches)} GLB roots matched, {len(unbound)} without parts")
     return {"matched": len(board.model_bound),
             "parts": len(active),
-            "distinct_meshes": len({board.collection.all_objects[name].data.as_pointer()
+            "distinct_meshes": len({lookup(name).data.as_pointer()
                                     for name in active}),
             "unmatched": sum(bool(_source_meshes(obj)) for obj in root.children) - len(matches)}
 

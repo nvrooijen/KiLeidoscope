@@ -25,7 +25,8 @@ from mathutils import Vector
 
 from . import focus, laminate, metal, nodes, section, shading, transform
 from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
-from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
+from .objects import (camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates,
+                      read_edges, role)
 from .state import board
 
 GROUP = "KLS_Clip_v1"
@@ -438,10 +439,10 @@ def _gather():
                         else np.zeros(len(xy), np.int32))[edges[:, 0]].astype(np.int64) + next_item
                 next_item = int(item.max()) + 1
                 shapes["rings"].append((xy[edges[:, 0]], xy[edges[:, 1]], item))
-        elif obj.name == "KLS outline":
+        elif role(obj.name) == "KLS outline":
             xy, edges = _world_xy(obj), read_edges(obj.data)
             outline = (xy[edges[:, 0]], xy[edges[:, 1]], np.zeros(len(edges), np.int64))
-        elif obj.name == "KLS vias" and board.heights:
+        elif role(obj.name) == "KLS vias" and board.heights:
             mesh = obj.data
             lift = _land_lift()  # a via's z sits this far outside its copper
             vias = {"xy": _world_xy(obj),

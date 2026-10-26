@@ -9,6 +9,7 @@ KiCad's 3D-viewer colours, saved stackup colours, or the PCB Editor theme.
 import bpy
 
 from . import cut, focus, holes, ims, laminate, section, shading
+from .objects import owned_name
 from .placement import copper_thickness
 from .state import board
 
@@ -136,7 +137,9 @@ def create_all():
 
 
 def make(name, color, alpha=1.0):
-    """A flat emission material (translucent below alpha 1); an existing one is reused."""
+    """A flat emission material (translucent below alpha 1); an existing one is reused.
+    Each board has its own (`owned_name`): colours, hole and mask plots differ."""
+    name = owned_name(name)
     existing = bpy.data.materials.get(name)
     if existing is not None:
         return existing

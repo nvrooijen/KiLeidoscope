@@ -19,7 +19,7 @@ import re
 import bpy
 
 from . import cut, edge_plating
-from .objects import hide
+from .objects import hide, role
 from .state import board
 
 _COPPER = re.compile(r"^KLS ((?:F|B|In\d+)\.Cu) (?:tracks|pads|graphics|zone |highlight|milled edge)")
@@ -39,7 +39,7 @@ def row_of(obj):
     layer = obj.get("kls_cosmetic_layer") or obj.get("kls_overlay_walls")
     if layer:
         return layer
-    name = obj.name
+    name = role(obj.name)
     if name.startswith("KLS vias"):
         return "Vias"
     if obj.get("kls_footprint_placeholder") == 1:
