@@ -247,12 +247,36 @@ def wanted():
     return None
 
 
+def _matches(entry, path, name):
+    return _same_file(entry["path"], path) or (not (entry["path"] and path) and bool(entry["name"])
+                                               and entry["name"] == name)
+
+
+def waiting_entries():
+    """The opened arrangement's boards that are not shown: each waits for Open in Blender."""
+    shown = [state for state in boards.values() if state.loaded]
+    return [entry for entry in _entries()
+            if not any(_matches(entry, state.board_path, state.board_name) for state in shown)]
+
+
 def waiting():
     """Names of the opened arrangement's boards that are not shown."""
-    shown = [state for state in boards.values() if state.loaded]
-    return [entry["name"] or Path(entry["path"]).name for entry in _entries()
-            if not any(_same_file(entry["path"], state.board_path) or
-                       (entry["name"] and entry["name"] == state.board_name) for state in shown)]
+    return [entry["name"] or Path(entry["path"]).name for entry in waiting_entries()]
+
+
+def expects(path, name):
+    """A board the opened arrangement waits for (Open in Blender in its KiCad: no question)."""
+    return any(_matches(entry, path, name) for entry in waiting_entries())
+
+
+def forget(path, name):
+    """Stop waiting for a board: it leaves the opened arrangement's list (not the file)."""
+    try:
+        opened = json.loads(bpy.context.scene.get(KEY) or "{}")
+    except ValueError:
+        return
+    opened["boards"] = [entry for entry in opened.get("boards") or [] if not _matches(entry, path, name)]
+    bpy.context.scene[KEY] = json.dumps(opened)
 
 
 def file_name():

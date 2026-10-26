@@ -27,8 +27,8 @@ from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
                findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, join, kicad_cli,
-               layers, lighting, live, models, packages, phase, pick, poses, protection, render_depth, saved, slots,
-               solder, studio, watcher)
+               kicad_app, layers, lighting, live, models, packages, phase, pick, poses, protection, render_depth,
+               saved, slots, solder, studio, watcher)
 from . import arrangement, boardprops
 from .objects import view3d_spaces
 from . import state
@@ -152,6 +152,8 @@ class KILEIDO_MT_boards(bpy.types.Menu):
         layout = self.layout
         if board.loaded:
             layout.label(text=_short_name(board.board_name))
+            if live.health() in ("off", "down") and board.board_path:
+                layout.operator(KILEIDO_OT_open_in_kicad.bl_idname, icon="WINDOW").slot = board.slot
             layout.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
             layout.separator()
         layout.label(text="All boards")
@@ -1007,14 +1009,15 @@ def _layers_board(scene):
     value = getattr(scene, "kileido_layers_board", "LIVE")
     if value == "ALL" and _several_boards():
         return "ALL"
-    if value in ("", "LIVE", "ALL") or value.startswith("S") or packages.collection_of(int(value)) is None:
+    if value in ("", "LIVE", "ALL") or value[:1] in ("S", "W") or packages.collection_of(int(value)) is None:
         return None
     return int(value)
 
 
 def _several_boards():
-    """More than one board shown: live ones and view-only ones."""
-    return len(slots.loaded()) + len(packages.roots()) > 1
+    """More than one board shown (live ones and view-only ones), or waited for by an opened
+    arrangement."""
+    return len(slots.loaded()) + len(packages.roots()) + len(arrangement.waiting_entries()) > 1
 
 
 def _live_row(slot):
@@ -1076,6 +1079,8 @@ def _board_rows_wanted():
     rows = [("ALL", "All boards")]
     rows.extend((_live_row(slot), boards[slot].board_name or "Live board") for slot in slots.loaded())
     rows.extend((str(root[packages.ROOT_TAG]), root["kls_board_name"]) for root in packages.roots())
+    rows.extend((f"W{index}", entry["name"] or Path(entry["path"]).name)
+                for index, entry in enumerate(arrangement.waiting_entries()))
     return rows
 
 
@@ -1119,6 +1124,9 @@ def _board_row_chosen(scene, _context):
     rows = scene.kileido_board_rows
     if 0 <= scene.kileido_board_row < len(rows):
         value = rows[scene.kileido_board_row].value
+        if value.startswith("W"):  # a board on its way: nothing to show yet, the highlight goes back
+            _layers_board_changed(scene, None)
+            return
         if value.startswith("S"):
             slots.pick(int(value[1:]))
         if scene.kileido_layers_board != value:
@@ -1143,10 +1151,12 @@ def _hint(line, text):
 
 def _live_board_cells(line):
     """The live board's icon, name and source: the assembly variant selected in
-    KiCad, else "live", or "dump"."""
+    KiCad, else "live", or "dump"; offline with a file, Open in KiCad."""
     line.label(text="", icon="LINKED" if live.connected() else "FILE")
     line.label(text=board.board_name)
     _hint(line, _source_hint())
+    if live.health() in ("off", "down") and board.board_path:
+        line.operator(KILEIDO_OT_open_in_kicad.bl_idname, text="", emboss=False, icon="WINDOW").slot = board.slot
 
 
 def _short_name(board_name):
@@ -1184,13 +1194,36 @@ class KILEIDO_UL_boards(bpy.types.UIList):
                                    icon="HIDE_OFF" if shown else "HIDE_ON")
             toggle.slot, toggle.action = slot, "TOGGLE"
             with using(slot):
-                line.label(text="", icon_value=_swatch("led", LED_COLORS[live.health()]))
+                health = live.health()
+                line.label(text="", icon_value=_swatch("led", LED_COLORS[health]))
                 name = line.row(align=True)
                 name.active = shown
                 name.label(text=_short_name(item.label))
                 _hint(line, _source_hint())
+                if health in ("off", "down") and board.board_path:  # offline: KiCad brings it back live
+                    line.operator(KILEIDO_OT_open_in_kicad.bl_idname, text="", emboss=False,
+                                  icon="WINDOW").slot = slot
             drop = line.operator(KILEIDO_OT_live_board.bl_idname, text="", emboss=False, icon="X")
             drop.slot, drop.action = slot, "REMOVE"
+            return
+        if item.value.startswith("W"):  # an opened arrangement waits for it
+            entries = arrangement.waiting_entries()
+            entry = entries[int(item.value[1:])] if int(item.value[1:]) < len(entries) else None
+            if entry is None:
+                return
+            line.label(text="", icon="BLANK1")
+            line.label(text="", icon="BLANK1")
+            line.label(text="", icon_value=_swatch("led", LED_COLORS["off"]))
+            name = line.row(align=True)
+            name.active = False
+            name.label(text=_short_name(item.label))
+            _hint(line, "waiting")
+            opening = line.row(align=True)
+            opening.enabled = bool(entry["path"])
+            button = opening.operator(KILEIDO_OT_open_in_kicad.bl_idname, text="", emboss=False, icon="WINDOW")
+            button.path = entry["path"]
+            drop = line.operator(KILEIDO_OT_forget_waiting.bl_idname, text="", emboss=False, icon="X")
+            drop.path, drop.name = entry["path"], entry["name"]
             return
         board_index = int(item.value)
         collection = packages.collection_of(board_index)
@@ -1211,6 +1244,41 @@ class KILEIDO_UL_boards(bpy.types.UIList):
 
     def draw_filter(self, context, layout):
         pass  # a few rows: nothing to filter or sort
+
+
+class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
+    bl_idname = "kileido.open_in_kicad"
+    bl_label = "Open in KiCad"
+    bl_description = ("Open this board in KiCad's PCB editor; Open in Blender there brings it back live here, "
+                      "where it stands")
+
+    slot: IntProperty(default=0)  # a board shown offline, else
+    path: StringProperty()  # a board an opened arrangement waits for
+
+    def execute(self, context):
+        path, export = self.path, None
+        if self.slot:
+            path, export = boards[self.slot].board_path, boards[self.slot].export
+        try:
+            kicad_app.open_board(path, export)
+        except (FileNotFoundError, OSError) as exc:
+            self.report({"ERROR"}, f"KiLeidoscope: cannot open it in KiCad: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"KiLeidoscope: opening {Path(path).name} in KiCad; then use Open in Blender there")
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_forget_waiting(bpy.types.Operator):
+    bl_idname = "kileido.forget_waiting"
+    bl_label = "Stop waiting"
+    bl_description = "Stop waiting for this board of the opened arrangement (the file keeps it)"
+
+    path: StringProperty()
+    name: StringProperty()
+
+    def execute(self, context):
+        arrangement.forget(self.path, self.name)
+        return {"FINISHED"}
 
 
 class KILEIDO_OT_mated(bpy.types.Operator):
@@ -1340,7 +1408,7 @@ class _Boards:
 
     def draw(self, context):
         scene = context.scene
-        join.draw(self.layout, context)  # a board from another KiCad asking to join
+        join.draw(self.layout, context, _several_boards())  # a board from another KiCad asking to join
         self._draw_boards(context)
         index = _layers_board(scene)
         if packages.roots():
@@ -1388,10 +1456,6 @@ class _Boards:
             row.menu(KILEIDO_MT_boards.bl_idname, text="", icon="THREE_DOTS")
             if context.scene.kileido_collisions:
                 self._draw_collisions()
-        waiting = arrangement.waiting()
-        if waiting:
-            _draw_wrapped(layout.box(), f"{arrangement.file_name()}: open {', '.join(waiting)} in KiCad "
-                                        "(Open in Blender) to place it here")
 
     def _draw_collisions(self):
         """What collides, the worst few: parts on two boards get a Mated button (a connector
@@ -1610,7 +1674,8 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
-           KILEIDO_UL_boards, KILEIDO_MT_boards, KILEIDO_OT_mated, KILEIDO_OT_live_board, KILEIDO_OT_select_live_board, KILEIDO_OT_board_turn,
+           KILEIDO_UL_boards, KILEIDO_MT_boards, KILEIDO_OT_open_in_kicad, KILEIDO_OT_forget_waiting,
+           KILEIDO_OT_mated, KILEIDO_OT_live_board, KILEIDO_OT_select_live_board, KILEIDO_OT_board_turn,
            KILEIDO_OT_save_arrangement,
            KILEIDO_OT_open_arrangement, KILEIDO_OT_resync,
            KILEIDO_OT_reset_cache,

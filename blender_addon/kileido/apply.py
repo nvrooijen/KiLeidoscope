@@ -16,6 +16,7 @@ from mathutils import Vector
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
                laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, saved,
                solder, studio, transform)
+from . import kicad_app
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
                       read_attribute, read_coordinates, read_edges, set_modifier, set_node_input, set_visible,
@@ -231,6 +232,7 @@ def apply_board(header):
     board.export = header.get("export") or {}
     poses.follow_board()  # its root Empty, where the board stands
     saved.remember(header)  # kept on the collection: a saved file reopens with it (saved.restore)
+    kicad_app.remember(board.export)  # its KiCad, for Open in KiCad on a board shown offline later
     if not state.boards[state.picked()].loaded:  # the panel had no board: this one
         from . import slots  # slots imports modules that import this one
         slots.follow()

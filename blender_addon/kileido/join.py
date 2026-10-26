@@ -152,6 +152,9 @@ def handle(request):
         except OSError:
             pass
     slot, reason = choose_slot(offered)
+    from . import arrangement  # it imports modules that import this one
+    if slot is not None and reason == "free" and arrangement.expects(offered["board_path"], offered["board_name"]):
+        return _accept(nonce, offered, slot, "arranged")  # an opened arrangement waits for it: no question
     if reason == "already shown" or (slot is not None and choice() == "ADD"):
         return _accept(nonce, offered, slot, reason)
     if slot is None or choice() == "OWN":
@@ -242,12 +245,12 @@ def _ask():
         pass
 
 
-def draw(layout, context):
+def draw(layout, context, listed=False):
     """The Boards section's part: open questions, and the remembered choice once there is one
-    (with more boards it sits in the Boards menu, `draw_choice`)."""
+    (`listed`, the Boards list shown: it sits in the Boards menu, `draw_choice`)."""
     for entry in _pending:
         _draw_question(layout.box(), entry, context)
-    if choice() != "ASK" and sum(state.loaded for state in boards.values()) <= 1:
+    if choice() != "ASK" and not listed:
         layout.prop(context.window_manager, "kileido_join_choice", text="Other KiCads")
 
 
