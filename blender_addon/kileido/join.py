@@ -243,12 +243,18 @@ def _ask():
 
 
 def draw(layout, context):
-    """The Boards section's part: open questions, and the remembered choice once there is
-    one or a second board."""
+    """The Boards section's part: open questions, and the remembered choice once there is one
+    (with more boards it sits in the Boards menu, `draw_choice`)."""
     for entry in _pending:
         _draw_question(layout.box(), entry, context)
-    if choice() != "ASK" or sum(state.loaded for state in boards.values()) > 1:
+    if choice() != "ASK" and sum(state.loaded for state in boards.values()) <= 1:
         layout.prop(context.window_manager, "kileido_join_choice", text="Other KiCads")
+
+
+def draw_choice(layout, context):
+    """The remembered choice as menu entries: what Open in Blender in another KiCad does."""
+    layout.label(text="Open in Blender in another KiCad")
+    layout.props_enum(context.window_manager, "kileido_join_choice")
 
 
 def _redraw():

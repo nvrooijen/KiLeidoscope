@@ -77,7 +77,7 @@ def check_save(file):
     entries = arrangement.read(file)
     assert [Path(entry["path"]) for entry in entries] == [MAIN, DAUGHTER], entries
     assert same_pose((entries[1]["translation"], entries[1]["angles"]), pose(2))
-    assert arrangement._read_text(file)[1][3].round(9).tolist() == np.array(
+    assert arrangement._read_text(file)[0][1][4].round(9).tolist() == np.array(
         [*poses_matrix_rows(2)]).round(9).tolist(), "the reader without USD differs"
 
 

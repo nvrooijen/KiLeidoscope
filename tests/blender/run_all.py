@@ -70,7 +70,8 @@ def main():
     milliseconds = apply.load_frames(frames_of(snapshot))
     collection = bpy.data.collections["KiLeidoscope: synthetic_rf_geometry.kicad_pcb"]
     assert collection.get("kileido_owned") == 1
-    assert collection.hide_select, "the live board follows KiCad and must not be selectable"
+    assert collection.children and all(group.hide_select for group in collection.children), \
+        "the live board follows KiCad and must not be selectable"  # but its root: G and R move it
     assert not collection.hide_viewport
     assert all(not area.spaces.active.overlay.show_relationship_lines
                for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")
@@ -85,7 +86,7 @@ def main():
     bottom = collection.all_objects["KLS B.Cu tracks"]
     groups = {child["kls_group"]: child for child in collection.children}
     assert [child["kls_group"] for child in collection.children] == [key for key, _ in kileido.objects.GROUPS]
-    assert not collection.objects  # every object sits in a group
+    assert [obj.name for obj in collection.objects] == ["KLS root"]  # every other object sits in a group
     assert top.name in groups["copper"].objects and "KLS outline" in groups["board"].objects
     assert "KLS vias" in groups["vias"].objects
     assert all(components.key_of(obj) for obj in groups["components"].objects)

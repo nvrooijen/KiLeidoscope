@@ -148,11 +148,13 @@ def main():
         first = packages.import_board(str(package))
         second = packages.import_board(str(package))
         assert live_objects() == live_before, "the import touched the live board"
-        assert state.board.collection.hide_select, "the live board can be selected (and moved)"
+        assert all(group.hide_select for group in state.board.collection.children), \
+            "the live board can be selected (and moved)"
         assert not packages.collection_of(first[packages.ROOT_TAG]).hide_select, "a view-only board is locked"
         bpy.ops.object.select_all(action="DESELECT")
         bpy.ops.object.select_all(action="SELECT")
-        assert not any(obj.select_get() for obj in state.board.collection.all_objects)
+        assert [obj.name for obj in state.board.collection.all_objects if obj.select_get()] == ["KLS root"], \
+            "more of the live board than its root can be selected"
         assert first.select_get(), "a view-only board's root cannot be selected"
         bpy.ops.object.select_all(action="DESELECT")
         assert {material.name for material in state.board.materials.values()} == live_materials
@@ -241,9 +243,13 @@ def main():
         packages.set_row_everywhere("F.Cu", True)
         assert packages.shown_everywhere("F.Cu") and bpy.context.scene.kileido_show_F_Cu
 
-        # Select: a view-only board moves as one; the live board is locked in place.
+        # Select: a view-only board moves as one; the live board is locked in place, but for its
+        # root (G and R move the whole board, its pose following) which never scales.
         assert all(obj.lock_location[:] == (True,) * 3 and obj.lock_rotation[:] == (True,) * 3 and
-                   obj.lock_scale[:] == (True,) * 3 for obj in state.board.collection.all_objects)
+                   obj.lock_scale[:] == (True,) * 3 for obj in state.board.collection.all_objects
+                   if obj.name != "KLS root")
+        live_root = state.board.collection.objects["KLS root"]
+        assert not any(live_root.lock_location) and not any(live_root.lock_rotation) and all(live_root.lock_scale)
         assert packages.select(index)
         view_layer = bpy.context.view_layer
         assert view_layer.objects.active == first and not any(first.lock_location)

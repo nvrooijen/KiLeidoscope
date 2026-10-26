@@ -266,6 +266,8 @@ def import_board(filepath):
         group.name = f"{name}: {_DUPLICATE.sub('', group.name)}"
     collection.pop("kileido_owned", None)
     collection.hide_select = False  # exported with the live board's selection lock
+    for group in collection.children_recursive:
+        group.hide_select = False
     collection["kls_view_only"] = index
     collection["kls_rows_off"] = (layer_list(index) or {}).get("off", [])
     scene = bpy.context.scene
@@ -278,6 +280,7 @@ def import_board(filepath):
     root["kls_board_name"] = name
     collection.objects.link(root)
     for obj in tuple(collection.all_objects):
+        obj.pop("kls_root", None)  # the live board's root came along: no longer any live board's
         if obj != root and obj.parent is None:
             obj.parent = root
         if obj.pop("kls_hidden", False):

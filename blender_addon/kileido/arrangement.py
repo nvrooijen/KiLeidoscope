@@ -3,7 +3,8 @@ a USD text file (.usda) any USD tool reads. Millimetres (metersPerUnit 0.001), Z
 per board placing that board's KiCad frame (x, -y, z up, z 0 at its bottom face: poses.py)
 with a translate and an XYZ rotation, and the board's .kicad_pcb as an asset path relative to
 the file. KiCad stays the source of every board: the file holds no geometry. Our own values
-sit under a "kileidoscope:" namespace.
+sit under a "kileidoscope:" namespace. Parts marked Mated (collisions.py) are a Scope per
+pair under "Boards/Mates": a relationship to each board's prim and the part's reference.
 
 Saving writes every board shown. Opening places the boards shown now that it names (by file,
 else by name) and keeps the others on the scene: each is placed as it comes (poses.follow_board
@@ -70,24 +71,36 @@ def save(filepath):
              f"            int version = {VERSION}", "        }", "    }", '    defaultPrim = "Boards"',
              '    doc = "KiLeidoscope arrangement: where each board stands. The boards are KiCad files."',
              "    metersPerUnit = 0.001", '    upAxis = "Z"', ")", "", 'def Xform "Boards"', "{"]
-    taken, count = set(), 0
+    from . import collisions  # it imports modules that import this one
+    taken, prims = set(), {}
     for slot in SLOTS:
         state = boards[slot]
         if not state.loaded or state.pose is None:
             continue
         translation, angles = state.pose
-        lines += ["", f'    def Xform "{_prim_name(state.board_name, taken)}"', "    {",
+        prim = _prim_name(state.board_name, taken)
+        prims[collisions.board_key(state.board_path, state.board_name)] = prim
+        lines += ["", f'    def Xform "{prim}"', "    {",
                   f"        asset kileidoscope:board = @{_asset(state.board_path, folder)}@",
                   f"        string kileidoscope:name = {_string(state.board_name)}",
                   f"        bool kileidoscope:hidden = {int(state.hidden)}",
                   "        double3 xformOp:translate = ({})".format(", ".join(_number(v * 1e3) for v in translation)),
                   "        double3 xformOp:rotateXYZ = ({})".format(", ".join(_number(math.degrees(a)) for a in angles)),
                   '        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]', "    }"]
-        count += 1
+    mates = [pair for pair in sorted(collisions.mated()) if all(key in prims for key, _ in pair)]
+    if mates:
+        lines += ["", '    def Scope "Mates"', "    {"]
+        for number, ((key_a, ref_a), (key_b, ref_b)) in enumerate(mates, start=1):
+            lines += [f'        def Scope "Mate_{number}"', "        {",
+                      f"            rel kileidoscope:first = </Boards/{prims[key_a]}>",
+                      f"            string kileidoscope:firstReference = {_string(ref_a)}",
+                      f"            rel kileidoscope:second = </Boards/{prims[key_b]}>",
+                      f"            string kileidoscope:secondReference = {_string(ref_b)}", "        }"]
+        lines += ["    }"]
     lines += ["}", ""]
     Path(filepath).write_text("\n".join(lines), encoding="utf-8")
     bpy.context.scene[KEY] = json.dumps({"file": os.path.abspath(filepath), "boards": _shown_entries(folder)})
-    return count
+    return len(prims)
 
 
 def _shown_entries(folder):
@@ -110,8 +123,13 @@ def _read_pxr(filepath):
     if stage is None:
         raise ValueError("Not a USD file")
     metres = UsdGeom.GetStageMetersPerUnit(stage)
-    found = []
+    found, mates = [], []
     for prim in stage.Traverse():
+        first, second = prim.GetRelationship("kileidoscope:first"), prim.GetRelationship("kileidoscope:second")
+        if first and second and first.GetTargets() and second.GetTargets():
+            mates.append((str(first.GetTargets()[0]), prim.GetAttribute("kileidoscope:firstReference").Get() or "",
+                          str(second.GetTargets()[0]), prim.GetAttribute("kileidoscope:secondReference").Get() or ""))
+            continue
         attribute = prim.GetAttribute("kileidoscope:board")
         if not attribute or not prim.IsA(UsdGeom.Xformable):
             continue
@@ -120,12 +138,13 @@ def _read_pxr(filepath):
         hidden = prim.GetAttribute("kileidoscope:hidden")
         matrix = np.array(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).T
         matrix[:3, 3] *= metres
-        found.append((asset.path if asset is not None else "", name.Get() if name else "",
+        found.append((str(prim.GetPath()), asset.path if asset is not None else "", name.Get() if name else "",
                       bool(hidden.Get()) if hidden else False, matrix))
-    return found
+    return found, mates
 
 
-_PRIM = re.compile(r'def Xform "[^"]*"\s*\{(?P<body>[^{}]*)\}', re.S)
+_PRIM = re.compile(r'def Xform "(?P<name>[^"]*)"\s*\{(?P<body>[^{}]*)\}', re.S)
+_MATE = re.compile(r'def Scope "[^"]*"\s*\{(?P<body>[^{}]*)\}', re.S)
 
 
 def _read_text(filepath):
@@ -149,33 +168,54 @@ def _read_text(filepath):
         matrix = np.eye(4)
         matrix[:3, :3] = poses.rotation([math.radians(v) for v in vector("rotateXYZ")])
         matrix[:3, 3] = np.array(vector("translate")) * metres
-        found.append((asset[1], json.loads(name[1]) if name else "",
+        found.append((f"/Boards/{match['name']}", asset[1], json.loads(name[1]) if name else "",
                       bool(hidden) and hidden[1] in ("1", "true"), matrix))
-    return found
+    mates = []
+    for match in _MATE.finditer(text):
+        body = match["body"]
+        targets = re.findall(r"rel kileidoscope:(first|second)\s*=\s*<([^>]*)>", body)
+        refs = dict(re.findall(r'string kileidoscope:(first|second)Reference\s*=\s*("(?:[^"\\]|\\.)*")', body))
+        targets = dict(targets)
+        if "first" in targets and "second" in targets:
+            mates.append((targets["first"], json.loads(refs.get("first", '""')),
+                          targets["second"], json.loads(refs.get("second", '""'))))
+    return found, mates
 
 
 def read(filepath):
     """[{"path", "name", "translation", "angles", "hidden"}] of the boards a file places; paths
     made absolute from the file's folder."""
+    return read_all(filepath)[0]
+
+
+def read_all(filepath):
+    """(the boards a file places as `read` gives them, the parts it marks Mated:
+    [[board, reference, board, reference]] by collisions.board_key)."""
+    from . import collisions  # it imports modules that import this one
     try:
-        rows = _read_pxr(filepath)
+        rows, mates = _read_pxr(filepath)
     except ImportError:
-        rows = _read_text(filepath)
+        rows, mates = _read_text(filepath)
     folder = os.path.dirname(os.path.abspath(filepath))
-    entries = []
-    for path, name, hidden, matrix in rows:
+    entries, keys = [], {}
+    for prim, path, name, hidden, matrix in rows:
         translation, angles = _matrix_pose(matrix)
         absolute = os.path.normpath(os.path.join(folder, path)) if path else ""
         entries.append({"path": absolute, "name": name, "translation": list(translation),
                         "angles": list(angles), "hidden": hidden})
-    return entries
+        keys[prim] = collisions.board_key(absolute, name)
+    pairs = [[keys[a], ref_a, keys[b], ref_b] for a, ref_a, b, ref_b in mates if a in keys and b in keys]
+    return entries, pairs
 
 
 def load(filepath):
     """Open an arrangement: the boards shown that it names are placed now, the others as they
     come. (placed now, waiting)"""
-    entries = read(filepath)
+    entries, pairs = read_all(filepath)
     bpy.context.scene[KEY] = json.dumps({"file": os.path.abspath(filepath), "boards": entries})
+    from . import collisions  # it imports modules that import this one
+    for pair in pairs:  # the file's marks join those already made
+        collisions.set_mated(*pair)
     placed = 0
     from . import slots  # slots imports modules that import this one
     for slot in SLOTS:

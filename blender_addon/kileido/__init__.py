@@ -11,6 +11,7 @@ bl_info = {
 }
 VERSION = "{}.{}.{}".format(*bl_info["version"])
 
+import json
 import math
 import re
 import textwrap
@@ -141,6 +142,24 @@ class KILEIDO_OT_open_arrangement(bpy.types.Operator, ImportHelper):
         self.report({"INFO"}, f"KiLeidoscope: {placed} board{'s' if placed != 1 else ''} placed"
                               + (f", {waiting} waiting for KiCad" if waiting else ""))
         return {"FINISHED"}
+
+
+class KILEIDO_MT_boards(bpy.types.Menu):
+    bl_idname = "KILEIDO_MT_boards"
+    bl_label = "Boards"
+
+    def draw(self, context):
+        layout = self.layout
+        if board.loaded:
+            layout.label(text=_short_name(board.board_name))
+            layout.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
+            layout.separator()
+        layout.label(text="All boards")
+        layout.operator(KILEIDO_OT_import_board.bl_idname, text="Import board…", icon="IMPORT")
+        layout.operator(KILEIDO_OT_save_arrangement.bl_idname, text="Save arrangement…", icon="FILE_TICK")
+        layout.operator(KILEIDO_OT_open_arrangement.bl_idname, text="Open arrangement…", icon="FILE_FOLDER")
+        layout.separator()
+        join.draw_choice(layout, context)
 
 
 class KILEIDO_OT_view_only_board(bpy.types.Operator):
@@ -316,6 +335,14 @@ class KILEIDO_OT_reset_lights(bpy.types.Operator):
     def execute(self, context):
         lighting.reset_lights()
         return {"FINISHED"}
+
+
+def _menu_import(self, _context):
+    self.layout.operator(KILEIDO_OT_open_arrangement.bl_idname, text="KiLeidoscope arrangement (.usda)")
+
+
+def _menu_export(self, _context):
+    self.layout.operator(KILEIDO_OT_save_arrangement.bl_idname, text="KiLeidoscope arrangement (.usda)")
 
 
 def _viewport_mode(context):
@@ -1148,10 +1175,11 @@ class KILEIDO_UL_boards(bpy.types.UIList):
             return
         if item.value.startswith("S"):
             slot = int(item.value[1:])
-            arrow = line.row(align=True)
-            arrow.enabled = False  # a live board is placed with its Position numbers, not moved by hand
-            arrow.operator(KILEIDO_OT_select_board.bl_idname, text="", emboss=False, icon="RESTRICT_SELECT_ON")
             shown = not slots.hidden(slot)
+            arrow = line.row(align=True)
+            arrow.enabled = shown  # select needs it visible
+            arrow.operator(KILEIDO_OT_select_live_board.bl_idname, text="", emboss=False,
+                           icon="RESTRICT_SELECT_OFF").slot = slot
             toggle = line.operator(KILEIDO_OT_live_board.bl_idname, text="", emboss=False,
                                    icon="HIDE_OFF" if shown else "HIDE_ON")
             toggle.slot, toggle.action = slot, "TOGGLE"
@@ -1183,6 +1211,26 @@ class KILEIDO_UL_boards(bpy.types.UIList):
 
     def draw_filter(self, context, layout):
         pass  # a few rows: nothing to filter or sort
+
+
+class KILEIDO_OT_mated(bpy.types.Operator):
+    bl_idname = "kileido.mated"
+    bl_label = "Mated"
+    bl_description = ("Mated: these two parts are plugged into each other (a connector and its mate), so they "
+                      "and each one in the other's board are no collision. Kept in the file and the arrangement")
+    bl_options = {"REGISTER", "UNDO"}
+
+    pair: StringProperty()  # [board, reference, board, reference] (collisions.board_key)
+    mated: BoolProperty(default=True)
+
+    @classmethod
+    def description(cls, context, properties):
+        return cls.bl_description if properties.mated else "Take the Mated mark off: check these two parts again"
+
+    def execute(self, context):
+        collisions.set_mated(*json.loads(self.pair), self.mated)
+        collisions.run()
+        return {"FINISHED"}
 
 
 class KILEIDO_OT_live_board(bpy.types.Operator):
@@ -1226,11 +1274,34 @@ class KILEIDO_OT_board_turn(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_select_live_board(bpy.types.Operator):
+    bl_idname = "kileido.select_live_board"
+    bl_label = "Select board"
+    bl_description = ("Select this board to move (G) or turn (R) it; its Position numbers follow. "
+                      "What is on it still follows KiCad")
+    bl_options = {"REGISTER", "UNDO"}
+
+    slot: IntProperty()
+
+    def execute(self, context):
+        _pick_board(context.scene, self.slot)
+        root = poses.root()
+        if root is None or slots.hidden(self.slot):
+            self.report({"WARNING"}, "KiLeidoscope: show the board first")
+            return {"CANCELLED"}
+        view_layer = context.view_layer
+        for obj in tuple(view_layer.objects.selected):
+            obj.select_set(False)
+        root.select_set(True)
+        view_layer.objects.active = root
+        self.report({"INFO"}, f"KiLeidoscope: {_short_name(board.board_name)} selected (G moves it, R turns it)")
+        return {"FINISHED"}
+
+
 class KILEIDO_OT_select_board(bpy.types.Operator):
     bl_idname = "kileido.select_board"
     bl_label = "Select board"
-    bl_description = ("Select this view-only board to move (G), rotate (R) or scale (S) it. "
-                      "The live board stays where KiCad puts it")
+    bl_description = "Select this view-only board to move (G), rotate (R) or scale (S) it"
     bl_options = {"REGISTER", "UNDO"}
 
     index: IntProperty()
@@ -1301,7 +1372,11 @@ class _Boards:
                                  scene, "kileido_board_row", rows=len(rows), maxrows=len(rows))
             if board.loaded and _layers_board(scene) is None:
                 self._draw_position(scene)
-        if packages.roots():
+        if not _several_boards():  # one board: its export and an import, no arrangement
+            row = layout.row(align=True)
+            row.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
+            row.operator(KILEIDO_OT_import_board.bl_idname, text="Import…", icon="IMPORT")
+        else:  # the collision check and one menu for the files (KILEIDO_MT_boards)
             row = layout.row(align=True)
             row.prop(context.scene, "kileido_collisions", text="Collision check")
             text = collisions.status() if context.scene.kileido_collisions else None
@@ -1310,27 +1385,47 @@ class _Boards:
                 found.alignment = "RIGHT"
                 found.alert = text != "No collisions"
                 found.label(text=text, icon="ERROR" if found.alert else "CHECKMARK")
-        row = layout.row(align=True)
-        row.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
-        row.operator(KILEIDO_OT_import_board.bl_idname, text="Import…", icon="IMPORT")
-        row = layout.row(align=True)
-        row.label(text="Arrangement")
-        row.operator(KILEIDO_OT_save_arrangement.bl_idname, text="Save…", icon="FILE_TICK")
-        row.operator(KILEIDO_OT_open_arrangement.bl_idname, text="Open…", icon="FILE_FOLDER")
+            row.menu(KILEIDO_MT_boards.bl_idname, text="", icon="THREE_DOTS")
+            if context.scene.kileido_collisions:
+                self._draw_collisions()
         waiting = arrangement.waiting()
         if waiting:
             _draw_wrapped(layout.box(), f"{arrangement.file_name()}: open {', '.join(waiting)} in KiCad "
                                         "(Open in Blender) to place it here")
 
+    def _draw_collisions(self):
+        """What collides, the worst few: parts on two boards get a Mated button (a connector
+        in its mate); and the pairs marked Mated, each with an X to take the mark off."""
+        hits, pairs = collisions.hits(), collisions.mated_shown()
+        if not hits and not pairs:
+            return
+        column = self.layout.box().column(align=True)
+        for hit in hits[:COLLISIONS_LISTED]:
+            line = column.row(align=True)
+            line.label(text=hit["text"], icon="ERROR")
+            if hit["pair"] is not None:
+                button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="LINKED", emboss=False)
+                button.pair, button.mated = json.dumps(hit["pair"]), True
+        if len(hits) > COLLISIONS_LISTED:
+            column.label(text=f"and {len(hits) - COLLISIONS_LISTED} more", icon="BLANK1")
+        for pair, text in pairs:
+            line = column.row(align=True)
+            line.label(text=text, icon="LINKED")  # the link icon says Mated: the row keeps its width for names
+            button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="X", emboss=False)
+            button.pair, button.mated = json.dumps([*pair[0], *pair[1]]), False
+
     def _draw_position(self, scene):
-        """Where the picked live board stands: its centre's offset from KiCad's place and its
-        turn (X, then Y, then Z), Flip and Turn 90° about its centre."""
-        box = self.layout.box()
-        box.label(text=f"Position: {_short_name(board.board_name)}")
-        column = box.column(align=True)
+        """Where the picked live board stands, folded away by default (set once, then left):
+        its centre's offset from KiCad's place and its turn (X, then Y, then Z), Flip and
+        Turn 90° about its centre."""
+        header, body = self.layout.panel("KILEIDO_position", default_closed=True)
+        header.label(text=f"Position: {_short_name(board.board_name)}")
+        if body is None:
+            return
+        column = body.column(align=True)
         column.prop(scene, "kileido_board_offset", text="Offset (mm)")
         column.prop(scene, "kileido_board_rotation", text="Rotation")
-        row = box.row(align=True)
+        row = body.row(align=True)
         row.operator(KILEIDO_OT_board_turn.bl_idname, text="Flip").turn = "FLIP"
         row.operator(KILEIDO_OT_board_turn.bl_idname, text="Turn 90°").turn = "TURN"
 
@@ -1462,6 +1557,7 @@ class _Status:
             self.layout.operator("kileido.reset_cache", icon="TRASH", text="Reset cache")
 
 
+COLLISIONS_LISTED = 6  # collisions named in the Boards section; the rest counted
 LED_COLORS = {"ok": (0.2, 0.85, 0.3), "busy": (1.0, 0.68, 0.1), "down": (0.92, 0.2, 0.18),
               "off": (0.45, 0.45, 0.45)}
 SWATCH_PX = 32
@@ -1514,7 +1610,8 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
-           KILEIDO_UL_boards, KILEIDO_OT_live_board, KILEIDO_OT_board_turn, KILEIDO_OT_save_arrangement,
+           KILEIDO_UL_boards, KILEIDO_MT_boards, KILEIDO_OT_mated, KILEIDO_OT_live_board, KILEIDO_OT_select_live_board, KILEIDO_OT_board_turn,
+           KILEIDO_OT_save_arrangement,
            KILEIDO_OT_open_arrangement, KILEIDO_OT_resync,
            KILEIDO_OT_reset_cache,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
@@ -1669,7 +1766,7 @@ def _properties():
             update=_board_row_chosen),
         "kileido_collisions": BoolProperty(
             name="Collision check", default=True,
-            description="Mark where the live board and the view-only boards overlap, with a red box",
+            description="Mark where the boards shown overlap, with a red box, and list what collides",
             update=lambda self, context: collisions.schedule()),
         "kileido_color_mode": EnumProperty(
             name="Colors", items=(("FAB", "Board stackup", "Saved mask colors and KiCad 3D copper color"),
@@ -2042,10 +2139,14 @@ def register():
     solder.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.frame_change_pre.append(phase.on_frame)
+    bpy.types.TOPBAR_MT_file_import.append(_menu_import)
+    bpy.types.TOPBAR_MT_file_export.append(_menu_export)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
+    bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
     if phase.on_frame in bpy.app.handlers.frame_change_pre:

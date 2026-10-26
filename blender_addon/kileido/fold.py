@@ -417,6 +417,7 @@ def bake(plan):
     collection = bpy.data.collections.new(COLLECTION)
     collection["kls_folded"] = 1
     collection["kls_plan_id"] = _plan_id(plan)
+    collection.hide_select = True  # like the board's own groups (apply.lock_selection)
     board.collection.children.link(collection)
     group = _fold_group(plan)
     planes = foldmath.cut_planes(plan)

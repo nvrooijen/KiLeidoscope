@@ -28,9 +28,10 @@ from mathutils import Matrix, Vector
 
 from . import objects
 from .objects import ROOT, link_owned, lookup, owned_name
-from .state import SLOTS, board, boards, each_loaded
+from .state import SLOTS, board, boards, each_loaded, using
 
 ROOT_TAG = "kls_root"  # on a live board's root Empty: its slot
+MOVED_M = 1e-6  # the root this far (m, or rad) from where its pose puts it: moved by hand
 POSE_KEY = "kls_pose"  # on it: the pose it was placed for, translation then angles
 STACK_GAP_M = 0.01  # a board that joins others: this far above the highest thing shown
 SPACE = "KLS board space"  # the shader group giving a point and its normal in the root's space
@@ -222,7 +223,13 @@ def ensure_root():
         obj["kileido_owned"] = 1
         obj.empty_display_type = "PLAIN_AXES"
         obj.empty_display_size = 1e-4  # Blender's minimum: a millimetre board's frame, unseen
-        link_owned(obj, "board")
+        link_owned(obj, "root")  # no such group: the board collection's top, the one place not locked
+    if obj.name not in board.collection.objects:  # a session before the root could be selected
+        board.collection.objects.link(obj)
+        for group in board.collection.children:
+            if obj.name in group.objects:
+                group.objects.unlink(obj)
+    obj.lock_location = obj.lock_rotation = (False, False, False)  # G and R move the board (follow_root)
     obj[ROOT_TAG] = board.slot
     board.touched.add(obj.name)
     adopt_all()
@@ -256,6 +263,44 @@ def place_root(obj):
         _bind(group, obj, matrix)
     from . import findings_markers  # it imports modules that import this one
     findings_markers.invalidate()  # drawn where the board stands now
+
+
+def follow_root(obj):
+    """The root moved by hand (G, R in the viewport): the pose follows it, so the panel's
+    numbers, a saved arrangement and the next frame from KiCad keep the board there."""
+    if board.pose is None:
+        return
+    matrix = np.array(obj.matrix_world, dtype=np.float64)
+    if np.abs(matrix - root_matrix()).max() <= MOVED_M:
+        return
+    turned = matrix[:3, :3] / np.linalg.norm(matrix[:3, :3], axis=0)  # its turn alone
+    middle = centre()
+    middle[2] = 0.0
+    board.pose = (tuple(float(v) for v in matrix[:3, 3] + _offset() - turned @ middle), euler(turned))
+    obj[POSE_KEY] = [*board.pose[0], *board.pose[1]]
+    group = bpy.data.node_groups.get(owned_name(SPACE))
+    if group is not None:
+        _bind(group, obj, root_matrix())
+    from . import findings_markers  # it imports modules that import this one
+    findings_markers.invalidate()
+
+
+@bpy.app.handlers.persistent
+def _moved(_scene, depsgraph):
+    """A live board's root moved in the viewport: its pose follows (`follow_root`)."""
+    for update in depsgraph.updates:
+        if not update.is_updated_transform:
+            continue
+        obj = getattr(update.id, "original", None)
+        slot = obj.get(ROOT_TAG) if isinstance(obj, bpy.types.Object) else None
+        if slot not in SLOTS or not boards[slot].loaded:
+            continue
+        with using(slot):
+            try:
+                if root() == obj:
+                    follow_root(obj)
+            except ReferenceError:  # freed by an undo: its next snapshot starts over
+                pass
 
 
 def to_root():
@@ -352,9 +397,13 @@ def install():
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _undone not in handlers:
             handlers.append(_undone)
+    if _moved not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_moved)
 
 
 def uninstall():
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _undone in handlers:
             handlers.remove(_undone)
+    if _moved in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_moved)

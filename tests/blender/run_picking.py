@@ -17,7 +17,7 @@ from pathlib import Path
 
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
@@ -58,6 +58,17 @@ class Layout:
     def separator(self, *args, **kwargs):
         pass
 
+    def panel(self, idname, default_closed=False):
+        """A fold, drawn open."""
+        self.drawn.append(("panel", idname))
+        return type(self)(self.drawn), type(self)(self.drawn)
+
+    def menu(self, idname, **kwargs):
+        self.drawn.append(("menu", idname))
+
+    def props_enum(self, data, name):
+        self.drawn.append(("enum", name))
+
 
 def frames(name):
     """The plain fixture under `name`."""
@@ -95,6 +106,13 @@ def check_rows(scene):
     drawn = drawn_boards()
     assert ("list", kileido.KILEIDO_UL_boards.bl_idname) in drawn, drawn
     assert ("prop", "kileido_board_offset") in drawn and ("prop", "kileido_board_rotation") in drawn, drawn
+    assert ("panel", "KILEIDO_position") in drawn and ("menu", "KILEIDO_MT_boards") in drawn, drawn
+    menu = Layout()  # the files and the choice for other KiCads, in one menu
+    kileido.KILEIDO_MT_boards.draw(type("Menu", (), {"layout": menu})(), bpy.context)
+    assert [entry for entry in menu.drawn if entry[0] in ("operator", "enum")] == [
+        ("operator", "kileido.export_board"), ("operator", "kileido.import_board"),
+        ("operator", "kileido.save_arrangement"), ("operator", "kileido.open_arrangement"),
+        ("enum", "kileido_join_choice")], menu.drawn
 
 
 def check_pick_by_row(scene):
@@ -120,6 +138,29 @@ def check_position(scene):
     scene.kileido_board_rotation = (0.0, 0.0, math.pi / 2)
     assert np.abs(np.array(scene.kileido_board_offset) - (10.0, 0.0, 5.0)).max() < 1e-6, "turned about its centre"
     assert state.boards[1].pose == first
+
+
+def check_select_and_move(scene):
+    """The arrow on board 2's row selects its root alone; moved and turned there (as G and R
+    do), the board's pose follows, and a resync keeps it where it was put."""
+    assert bpy.ops.kileido.select_live_board(slot=2) == {"FINISHED"}
+    root = objects.root()
+    assert root.select_get() and bpy.context.view_layer.objects.active == root
+    assert [obj.name for obj in bpy.context.selected_objects] == [root.name]
+    centre = np.array(poses.to_world() @ Vector((0.0, 0.0, 0.0)))
+    turned = scene.kileido_board_rotation[2]
+    root.matrix_world = Matrix.Translation((0.004, -0.003, 0.002)) @ root.matrix_world  # G
+    root.rotation_euler.z += math.radians(15)  # R about the root's own place: the centre
+    bpy.context.view_layer.update()  # the depsgraph handler follows the root
+    moved = poses.pose_matrix()
+    assert np.abs(np.array(poses.to_world() @ Vector((0.0, 0.0, 0.0))) - centre - (0.004, -0.003, 0.002)).max() \
+        < 1e-6
+    assert abs(scene.kileido_board_rotation[2] - turned - math.radians(15)) < 1e-6, tuple(scene.kileido_board_rotation)
+    placed = np.array(root.matrix_world)
+    apply.load_frames(second_frames())  # a resync
+    assert np.abs(np.array(root.matrix_world) - placed).max() < 1e-6 and np.abs(poses.pose_matrix() - moved).max() \
+        < 1e-12
+    root.select_set(False)
 
 
 def check_undo():
@@ -239,6 +280,7 @@ def main():
         check_rows(scene)
         check_pick_by_row(scene)
         check_position(scene)
+        check_select_and_move(scene)
         check_undo()
         check_click()
         check_fold_handover(scene)
