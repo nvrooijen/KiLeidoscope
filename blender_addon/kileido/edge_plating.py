@@ -17,7 +17,7 @@ import bpy
 import numpy as np
 
 from . import cut
-from .objects import OUTLINE, owned_object, set_visible
+from .objects import OUTLINE, lookup, owned_object, set_visible
 from .placement import copper_placement
 from .state import board
 
@@ -167,7 +167,7 @@ def refresh_milled():
     found = cut.milled_edges()
     for layer in ("F.Cu", "B.Cu"):
         name, stretches = MILLED.format(layer), found.get(layer, ())
-        obj = board.collection.all_objects.get(name)
+        obj = lookup(name)
         if not stretches:
             if obj is not None:
                 obj.data.clear_geometry()
@@ -194,7 +194,7 @@ def refresh():
         return
     refresh_milled()
     stretches = cut.plated_edges()
-    obj = board.collection.all_objects.get(OBJECT)
+    obj = lookup(OBJECT)
     if not stretches:
         if obj is not None:
             obj.data.clear_geometry()
@@ -210,7 +210,7 @@ def refresh():
         vertices += part[0]
         smooth += part[2]
     _fill(obj.data, vertices, faces, board.materials["plating_edge"], smooth)  # outside the outline: never clipped
-    outline = board.collection.all_objects.get(OUTLINE)
+    outline = lookup(OUTLINE)
     set_visible(obj, outline is None or not outline.hide_get())  # with the board solid
     board.touched.add(obj.name)
 

@@ -23,7 +23,7 @@ from mathutils.bvhtree import BVHTree
 
 from . import foldmath, materials, nodes
 from . import section as section_module
-from .objects import hide, read_attribute, read_coordinates
+from .objects import hide, lookup, read_attribute, read_coordinates
 from .state import board, log
 
 COLLECTION = "KLS folded"
@@ -395,7 +395,7 @@ def _realized_mesh(obj):
 
 
 def _body_range():
-    outline = board.collection.all_objects.get("KLS outline")
+    outline = lookup("KLS outline")
     if outline is None:
         return 0.0, board.thickness_m
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -497,7 +497,7 @@ def refresh_highlights():
     try:
         _restore_highlight_originals()
         for copy in tuple(collection.objects):
-            original = board.collection.all_objects.get(copy.get("kls_folded_from", ""))
+            original = lookup(copy.get("kls_folded_from", ""))
             if original is not None and _stale_highlight(copy, original):
                 _remove_copy(copy)
                 _unhide(original)  # Blender evaluates no hidden object: baked hidden, a zone comes out bare
@@ -829,7 +829,7 @@ def _show_folded():
     collection.hide_viewport = collection.hide_render = False
     _follow_layer_eyes(collection)
     for obj in tuple(collection.objects):
-        original = board.collection.all_objects.get(obj.get("kls_folded_from", ""))
+        original = lookup(obj.get("kls_folded_from", ""))
         if original is not None and not original.get("kls_hidden_by_fold"):
             original["kls_hidden_by_fold"] = 1
             original.hide_viewport = original.hide_render = True
@@ -846,7 +846,7 @@ def follow_layers():
 
 def _follow_layer_eyes(collection):
     for obj in tuple(collection.objects):
-        original = board.collection.all_objects.get(obj.get("kls_folded_from", ""))
+        original = lookup(obj.get("kls_folded_from", ""))
         hidden = bool(original is not None and original.get("kls_layer_hidden"))  # its row's eye
         if obj.hide_get() != hidden:
             hide(obj, hidden)

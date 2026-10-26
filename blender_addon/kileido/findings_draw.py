@@ -85,7 +85,7 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 from . import components, focus, fold, highlight, hole_cut, label_place, layers, materials, transform
-from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, outline_bounds, set_visible,
+from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, lookup, outline_bounds, set_visible,
                       shown_views, view3d_spaces)
 from .placement import outward
 from .state import board
@@ -514,7 +514,7 @@ def _place_eye(eye_view=None, force=False):
     labels facing it laid out for it when it moved. Compared with the view last placed, not
     the eye's matrix_world: Blender reads that back a few um off, and every needless move
     restarts a rendered view."""
-    eye = board.collection.all_objects.get(EYE) if board.collection is not None else None
+    eye = lookup(EYE) if board.collection is not None else None
     if eye is None:
         return
     matrix, ortho, near = eye_view if eye_view is not None else _eye_matrix()
@@ -652,7 +652,7 @@ def _short(text):
 
 
 def _eye():
-    eye = board.collection.all_objects.get(EYE)
+    eye = lookup(EYE)
     if eye is None:
         eye = bpy.data.objects.new(EYE, None)
         eye["kileido_owned"] = 1
@@ -2014,7 +2014,7 @@ def _lifts_wanted():
 
 def _part_objects(footprint_id):
     """A part's objects as shown: its bound model parts, else its placeholder box."""
-    parts = [board.collection.all_objects.get(name) for name in board.model_objects_by_fp.get(footprint_id, ())]
+    parts = [lookup(name) for name in board.model_objects_by_fp.get(footprint_id, ())]
     parts = [obj for obj in parts if obj is not None and not obj.hide_get()]
     if parts:
         return parts
@@ -2043,7 +2043,7 @@ def rehide_lifted():
     """After a footprints update (apply): a part a lifted copy stands in for stays hidden
     (placing a moved part shows its objects again; the next findings frame redraws)."""
     for name in _state["lifted"]:
-        obj = board.collection.all_objects.get(name)
+        obj = lookup(name)
         if obj is not None and obj.get("kls_lift_hidden") is not None:
             hide(obj, True)
             obj.hide_render = True

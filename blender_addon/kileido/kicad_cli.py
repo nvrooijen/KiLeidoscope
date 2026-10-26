@@ -22,13 +22,17 @@ _MODEL_PROBLEM = re.compile(r"File not found: (.+)|No model for filename '(.+)'"
 
 
 def executable(export=None):
-    """The kicad-cli of the running KiCad (sent by the bridge), else a local install."""
-    candidates = [(export or {}).get("kicad_cli"), os.environ.get("KILEIDO_KICAD_CLI"),
-                  shutil.which("kicad-cli")]
-    candidates += [str(path) for path in _installed()]
-    for candidate in candidates:
+    """The kicad-cli of the running KiCad (sent by the bridge), else a local install.
+    Searched in that order, each only when the ones before are missing."""
+    for candidate in ((export or {}).get("kicad_cli"), os.environ.get("KILEIDO_KICAD_CLI")):
         if candidate and Path(candidate).is_file():
             return candidate
+    found = shutil.which("kicad-cli")  # ~15 ms with a long PATH (measured, Windows)
+    if found and Path(found).is_file():
+        return found
+    for path in _installed():
+        if path.is_file():
+            return str(path)
     raise RuntimeError("kicad-cli was not found; set KILEIDO_KICAD_CLI to its path")
 
 
