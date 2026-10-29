@@ -96,6 +96,12 @@ def check_open(file):
     assert same_pose(pose(2), kept) and state.boards[2].hidden and arrangement.waiting() == []
     slots.remove(2)
     assert arrangement.waiting() == ["Daughter.kicad_pcb"]
+    saved_over = file.with_name("boards saved over.usda")  # saved while Daughter waits: it stays, where it was
+    assert arrangement.save(saved_over) == 2
+    entries = arrangement.read(saved_over)
+    assert [entry["name"] for entry in entries] == ["Main.kicad_pcb", "Daughter.kicad_pcb"], entries
+    assert same_pose((entries[1]["translation"], entries[1]["angles"]), kept) and entries[1]["hidden"]
+    assert arrangement.waiting() == ["Daughter.kicad_pcb"], "the save forgot the waiting board"
     load(2, DAUGHTER)  # Open in Blender in its KiCad: placed as the file says, not stacked
     assert same_pose(pose(2), kept) and state.boards[2].collection.hide_viewport
     assert arrangement.waiting() == []

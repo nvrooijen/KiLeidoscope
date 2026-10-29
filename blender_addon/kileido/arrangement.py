@@ -65,27 +65,27 @@ def _number(value):
 
 
 def save(filepath):
-    """Write the boards shown to `filepath` (.usda); the number written."""
+    """Write the boards shown to `filepath` (.usda), and the boards an opened arrangement still
+    waits for, where it puts them (a file saved over keeps them); the number written."""
     folder = os.path.dirname(os.path.abspath(filepath))
     lines = ["#usda 1.0", "(", "    customLayerData = {", "        dictionary kileidoscope = {",
              f"            int version = {VERSION}", "        }", "    }", '    defaultPrim = "Boards"',
              '    doc = "KiLeidoscope arrangement: where each board stands. The boards are KiCad files."',
              "    metersPerUnit = 0.001", '    upAxis = "Z"', ")", "", 'def Xform "Boards"', "{"]
     from . import collisions  # it imports modules that import this one
+    entries = [*_shown_entries(), *waiting_entries()]
     taken, prims = set(), {}
-    for slot in SLOTS:
-        state = boards[slot]
-        if not state.loaded or state.pose is None:
-            continue
-        translation, angles = state.pose
-        prim = _prim_name(state.board_name, taken)
-        prims[collisions.board_key(state.board_path, state.board_name)] = prim
+    for entry in entries:
+        prim = _prim_name(entry["name"] or entry["path"], taken)
+        prims[collisions.board_key(entry["path"], entry["name"])] = prim
         lines += ["", f'    def Xform "{prim}"', "    {",
-                  f"        asset kileidoscope:board = @{_asset(state.board_path, folder)}@",
-                  f"        string kileidoscope:name = {_string(state.board_name)}",
-                  f"        bool kileidoscope:hidden = {int(state.hidden)}",
-                  "        double3 xformOp:translate = ({})".format(", ".join(_number(v * 1e3) for v in translation)),
-                  "        double3 xformOp:rotateXYZ = ({})".format(", ".join(_number(math.degrees(a)) for a in angles)),
+                  f"        asset kileidoscope:board = @{_asset(entry['path'], folder)}@",
+                  f"        string kileidoscope:name = {_string(entry['name'])}",
+                  f"        bool kileidoscope:hidden = {int(entry['hidden'])}",
+                  "        double3 xformOp:translate = ({})".format(
+                      ", ".join(_number(v * 1e3) for v in entry["translation"])),
+                  "        double3 xformOp:rotateXYZ = ({})".format(
+                      ", ".join(_number(math.degrees(a)) for a in entry["angles"])),
                   '        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]', "    }"]
     mates = [pair for pair in sorted(collisions.mated()) if all(key in prims for key, _ in pair)]
     if mates:
@@ -99,14 +99,15 @@ def save(filepath):
         lines += ["    }"]
     lines += ["}", ""]
     Path(filepath).write_text("\n".join(lines), encoding="utf-8")
-    bpy.context.scene[KEY] = json.dumps({"file": os.path.abspath(filepath), "boards": _shown_entries(folder)})
+    bpy.context.scene[KEY] = json.dumps({"file": os.path.abspath(filepath), "boards": entries})
     return len(prims)
 
 
-def _shown_entries(folder):
+def _shown_entries():
+    """The boards shown, as `read` gives a file's: in slot order."""
     return [{"path": state.board_path, "name": state.board_name, "translation": list(state.pose[0]),
              "angles": list(state.pose[1]), "hidden": state.hidden}
-            for state in boards.values() if state.loaded and state.pose is not None]
+            for slot in SLOTS if (state := boards[slot]).loaded and state.pose is not None]
 
 
 # --- Opening --------------------------------------------------------------------------------
