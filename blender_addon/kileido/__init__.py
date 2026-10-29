@@ -1252,8 +1252,9 @@ class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
     bl_description = ("Open this board in KiCad's PCB editor; Open in Blender there brings it back live here, "
                       "where it stands")
 
-    slot: IntProperty(default=0)  # a board shown offline, else
-    path: StringProperty()  # a board an opened arrangement waits for
+    # A row's button sets one of these; SKIP_SAVE: Blender fills the other from the last click otherwise
+    slot: IntProperty(default=0, options={"SKIP_SAVE"})  # a board shown offline, else
+    path: StringProperty(options={"SKIP_SAVE"})  # a board an opened arrangement waits for
 
     def execute(self, context):
         path, export = self.path, None

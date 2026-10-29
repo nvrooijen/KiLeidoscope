@@ -105,6 +105,9 @@ def main():
         assert command == [str(EDITOR), str(MAIN)] and apart == [True], command
         assert "KICAD_API_SOCKET" not in options["env"] and "PYTHONHOME" not in options["env"]
         assert options["cwd"] == str(FOLDER)
+        properties = bpy.ops.kileido.open_in_kicad.get_rna_type().properties
+        assert all(properties[name].is_skip_save for name in ("slot", "path")), \
+            "a waiting board's button would open the board of the last offline-row click"
         try:
             kicad_app.open_board(str(FOLDER / "gone.kicad_pcb"))
         except FileNotFoundError as exc:
