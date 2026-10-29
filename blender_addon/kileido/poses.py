@@ -142,8 +142,8 @@ def _default_pose():
     if entry is not None:
         board.hidden = bool(entry["hidden"])
         return tuple(float(v) for v in entry["translation"]), tuple(float(v) for v in entry["angles"])
-    top = max((_top(boards[slot].collection) for slot in others), default=None)
-    lift = 0.0 if top is None else top + STACK_GAP_M
+    tops = [top for top in (_top(boards[slot].collection) for slot in others) if top is not None]
+    lift = max(tops) + STACK_GAP_M if tops else 0.0  # a board hidden, or still in its first snapshot, shows nothing
     return (0.0, 0.0, float(lift)), (0.0, 0.0, 0.0)
 
 
@@ -163,6 +163,7 @@ def follow_board():
     """A board frame (apply.apply_board): the root made if missing and placed; a board new to
     its slot (another file, another board) gets the default place first."""
     if board.pose is None or board.pose_of != _key():
+        board.hidden = False  # new to its slot: shown, unless an opened arrangement hides it (_default_pose)
         board.pose, board.pose_of = _default_pose(), _key()
     place_root(ensure_root())
 

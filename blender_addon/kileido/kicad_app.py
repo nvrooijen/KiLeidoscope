@@ -43,6 +43,8 @@ def _editor_beside(cli):
     if sys.platform == "win32":
         found = cli.with_name("pcbnew.exe")
     elif sys.platform == "darwin":  # .../KiCad/KiCad.app/Contents/MacOS/kicad-cli
+        if len(cli.parents) < 4:  # too short a path to hold an app bundle
+            return None
         found = cli.parents[3] / "pcbnew.app" / "Contents" / "MacOS" / "pcbnew"
     else:
         found = cli.with_name("pcbnew")

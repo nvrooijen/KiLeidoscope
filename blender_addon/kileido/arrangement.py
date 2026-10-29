@@ -228,11 +228,24 @@ def load(filepath):
     return placed, len(waiting())
 
 
+_opened = {"text": None, "data": {}}  # the scene's KEY as last parsed: the panel asks several times per draw
+
+
+def _read():
+    """The opened arrangement as the scene keeps it ({"file", "boards"}; {} when none), parsed
+    again only when the scene's text changed. Callers read it; they never change it."""
+    text = bpy.context.scene.get(KEY) or "{}"
+    if text != _opened["text"]:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = {}
+        _opened.update(text=text, data=data if isinstance(data, dict) else {})
+    return _opened["data"]
+
+
 def _entries():
-    try:
-        return json.loads(bpy.context.scene.get(KEY) or "{}").get("boards") or []
-    except ValueError:
-        return []
+    return _read().get("boards") or []
 
 
 def wanted():
@@ -268,17 +281,11 @@ def expects(path, name):
 
 def forget(path, name):
     """Stop waiting for a board: it leaves the opened arrangement's list (not the file)."""
-    try:
-        opened = json.loads(bpy.context.scene.get(KEY) or "{}")
-    except ValueError:
-        return
+    opened = dict(_read())
     opened["boards"] = [entry for entry in opened.get("boards") or [] if not _matches(entry, path, name)]
     bpy.context.scene[KEY] = json.dumps(opened)
 
 
 def file_name():
     """The opened (or saved) arrangement's file name, or ""."""
-    try:
-        return Path(json.loads(bpy.context.scene.get(KEY) or "{}").get("file") or "").name
-    except ValueError:
-        return ""
+    return Path(_read().get("file") or "").name

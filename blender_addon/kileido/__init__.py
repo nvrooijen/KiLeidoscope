@@ -229,8 +229,11 @@ class KILEIDO_OT_pick(bpy.types.Operator):
         if found is not None:  # a board's own: picked, and its KiCad selects
             slot, item = found
             _pick_board(context.scene, slot)
-        if not live.linked():
-            self.report({"INFO"}, "KiLeidoscope: this board is not connected to KiCad")
+            if not live.linked():
+                self.report({"INFO"}, "KiLeidoscope: this board is not connected to KiCad")
+                return {"FINISHED"}
+        elif not live.linked():  # a miss, and the picked board has no KiCad whose selection to clear
+            self.report({"INFO"}, "KiLeidoscope: nothing to select here")
             return {"FINISHED"}
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.

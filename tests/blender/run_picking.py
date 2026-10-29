@@ -230,6 +230,31 @@ def check_eye():
     assert not second.hide_viewport
 
 
+def check_join_while_hidden():
+    """A third board joins while board 2 is hidden: it comes in above board 1 (a hidden board
+    shows nothing to stack on). And a slot's hidden flag does not outlive its board: the next
+    board to take the slot (as after a file load that restored nothing there) starts shown."""
+    slots.set_hidden(2, True)
+    with state.using(3):
+        apply.load_frames(frames("Third board.kicad_pcb"))
+    assert state.boards[3].loaded and not state.boards[3].collection.hide_viewport
+    with state.using(1):
+        top = poses._top(state.board.collection)
+    assert state.boards[3].pose[0][2] >= top + poses.STACK_GAP_M - 1e-9, (state.boards[3].pose, top)
+    slots.set_hidden(2, False)
+    slots.set_hidden(3, True)
+    with state.using(3):
+        gone = state.board.collection
+        state.board.reset()  # as a file load does (_file_loaded), the file holding nothing for slot 3
+        slots._delete(gone)
+    assert state.boards[3].hidden and not state.boards[3].loaded
+    with state.using(3):
+        apply.load_frames(frames("Fourth board.kicad_pcb"))
+    assert not state.boards[3].hidden and not state.boards[3].collection.hide_viewport, "the old flag hid the new board"
+    slots.remove(3)
+    assert state.picked() == 2
+
+
 def top_copper_hidden(slot):
     with state.using(slot):
         copper = [obj for obj in state.board.collection.all_objects
@@ -288,6 +313,7 @@ def main():
         check_click()
         check_fold_handover(scene)
         check_eye()
+        check_join_while_hidden()
         check_shared(scene)
         check_remove()
         print("picking checks passed")
