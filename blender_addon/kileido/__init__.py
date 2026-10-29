@@ -30,7 +30,7 @@ from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_pl
                kicad_app, layers, lighting, live, models, packages, phase, pick, poses, protection, render_depth,
                saved, slots, solder, studio, watcher)
 from . import arrangement, boardprops
-from .objects import view3d_spaces
+from .objects import outline_bounds, view3d_spaces
 from . import state
 from .state import SLOTS, board, boards, using
 
@@ -557,8 +557,11 @@ def _draw_thickness(layout, scene, copper_m):
     reflow.prop(scene, "kileido_solder_reflowed")
 
 
-def _draw_wrapped(layout, text, icon="INFO"):
-    for index, line in enumerate(_wrap(bpy.context, text)):
+COLUMN_WRAP_MARGIN_PX = 76  # unscaled: a column's box and icon, and the UI font a little wider than measured
+
+
+def _draw_wrapped(layout, text, icon="INFO", margin=WRAP_MARGIN_PX):
+    for index, line in enumerate(_wrap(bpy.context, text, margin)):
         layout.label(text=line, icon=icon if index == 0 else "BLANK1")
 
 
@@ -700,19 +703,23 @@ def _high_speed_state():
 
 
 def _draw_boards_column(layout, scene):
-    """The Boards column, with two boards or more: where the picked board stands, the collision
-    check with what collides and the Mated marks, the arrangement file, and what Open in
-    Blender in another KiCad does. The Boards list itself stays in the panel: it picks the
-    board every column works on."""
-    layout.label(text="Boards")
+    """The Multi-board column, with two boards or more: the picked board (its link, source and
+    size) and where it stands, the collision check with what collides and the Mated marks,
+    the arrangement file, and what Open in Blender in another KiCad does. The Boards list
+    itself stays in the panel: it picks the board every column works on."""
+    layout.label(text="Multi-board")
+    _draw_wrapped(layout, "Boards from other KiCads in one window: place them, check them, keep the arrangement",
+                  margin=COLUMN_WRAP_MARGIN_PX)
     box = layout.box()
     if not _several_boards():
         _draw_wrapped(box, "One board is shown. Open in Blender in another KiCad adds its board beside it "
-                           "(or Import… a board exported from one); this column then places the boards, "
-                           "checks them against each other and keeps the arrangement in a file")
+                           "(or Import… a board exported from one)", margin=COLUMN_WRAP_MARGIN_PX)
         return
     if board.loaded:
-        _draw_position(box, scene)
+        _draw_board_card(box)
+        _draw_place(box, scene)
+    else:
+        _draw_wrapped(box, "Pick a live board in the Boards list to place it", margin=COLUMN_WRAP_MARGIN_PX)
     box = layout.box()
     row = box.row(align=True)
     row.prop(scene, "kileido_collisions", text="Collision check")
@@ -733,16 +740,46 @@ def _draw_boards_column(layout, scene):
     join.draw_choice(layout.box(), bpy.context)
 
 
-def _draw_position(layout, scene):
-    """Where the picked live board stands: its centre's offset from KiCad's place and its turn
-    (X, then Y, then Z), Flip and Turn 90° about its centre."""
-    layout.label(text=f"Position: {_short_name(board.board_name)}", icon="OBJECT_ORIGIN")
+def _draw_board_card(layout):
+    """The picked board as its row in the Boards list shows it (its link, name and source),
+    and its size: the subject of the place controls below."""
+    line = layout.row(align=True)
+    line.label(text="", icon_value=_swatch("led", LED_COLORS[live.health()]))
+    line.label(text=_short_name(board.board_name))
+    _hint(line, _source_hint())
+    size = _board_size_text()
+    if size:
+        note = layout.row()
+        note.active = False
+        note.label(text=size, icon="BLANK1")
+
+
+def _board_size_text():
+    """"80 × 50 mm · 1.6 mm · 4 layers" (its outline, thickness and copper layers) for the picked
+    board; "" without an outline."""
+    bounds = outline_bounds()
+    if bounds is None:
+        return ""
+    xmin, ymin, xmax, ymax = bounds
+    layers = len(board.heights)
+    return (f"{_mm(xmax - xmin)} × {_mm(ymax - ymin)} mm · {_mm(board.thickness_m)} mm"
+            + (f" · {layers} layer{'s' if layers != 1 else ''}" if layers else ""))
+
+
+def _mm(metres):
+    return f"{metres * 1e3:.2f}".rstrip("0").rstrip(".")
+
+
+def _draw_place(layout, scene):
+    """Where the picked board stands: its centre's offset from where its KiCad coordinates put
+    it, and its turn (X, then Y, then Z); Flip and Turn 90° about its centre, Reset back."""
     column = layout.column(align=True)
     column.prop(scene, "kileido_board_offset", text="Offset (mm)")
     column.prop(scene, "kileido_board_rotation", text="Rotation")
     row = layout.row(align=True)
     row.operator(KILEIDO_OT_board_turn.bl_idname, text="Flip").turn = "FLIP"
     row.operator(KILEIDO_OT_board_turn.bl_idname, text="Turn 90°").turn = "TURN"
+    row.operator(KILEIDO_OT_board_turn.bl_idname, text="Reset").turn = "RESET"
 
 
 def _draw_collisions(layout):
@@ -1386,16 +1423,24 @@ class KILEIDO_OT_live_board(bpy.types.Operator):
 class KILEIDO_OT_board_turn(bpy.types.Operator):
     bl_idname = "kileido.board_turn"
     bl_label = "Turn board"
-    bl_description = "Turn the picked board about its centre"
+    bl_description = "Turn the picked board about its centre, or put it back where its KiCad coordinates put it"
     bl_options = {"REGISTER", "UNDO"}
 
     turn: EnumProperty(items=(("FLIP", "Flip", "Turn the board over: 180° about X through its centre"),
-                              ("TURN", "Turn 90°", "Turn the board 90° about Z through its centre")))
+                              ("TURN", "Turn 90°", "Turn the board 90° about Z through its centre"),
+                              ("RESET", "Reset", "Put the board back where its KiCad coordinates put it, unturned")))
+
+    @classmethod
+    def description(cls, context, properties):
+        return cls.bl_rna.properties["turn"].enum_items[properties.turn].description
 
     def execute(self, context):
         if not board.loaded:
             return {"CANCELLED"}
-        poses.turn(*((0, math.pi) if self.turn == "FLIP" else (2, math.pi / 2)))
+        if self.turn == "RESET":
+            poses.set_shown(offset=(0.0, 0.0, 0.0), angles=(0.0, 0.0, 0.0))
+        else:
+            poses.turn(*((0, math.pi) if self.turn == "FLIP" else (2, math.pi / 2)))
         collisions.schedule()
         return {"FINISHED"}
 

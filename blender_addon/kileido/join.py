@@ -232,9 +232,9 @@ def draw(layout, context, listed=False):
 
 
 def draw_choice(layout, context):
-    """The remembered choice as menu entries: what Open in Blender in another KiCad does."""
-    layout.label(text="Open in Blender in another KiCad")
-    layout.props_enum(context.window_manager, "kileido_join_choice")
+    """The remembered choice: what Open in Blender in another KiCad does."""
+    layout.label(text="Other KiCads")
+    layout.prop(context.window_manager, "kileido_join_choice", text="")
 
 
 class KILEIDO_OT_join_answer(bpy.types.Operator):

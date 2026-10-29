@@ -2,7 +2,7 @@
 
 A product is rarely one board. KiLeidoscope shows up to four boards from four KiCad PCB editors in one Blender window, each following its own KiCad live, and lets you stand them where they go in the product: stacked on headers, folded over each other, side by side in a housing. It marks where they collide, remembers which connectors are plugged into which, and keeps where each board stands in a small arrangement file in an open standard (OpenUSD) that other tools read too.
 
-KiCad itself has no notion of an assembly: each PCB editor holds one board. KiLeidoscope works with that rather than against it. The way that works best is to keep **one board live at a time**: the board you are editing follows its KiCad, the others stay in Blender as saved copies where you put them, and swapping which board is live is one click in Blender and one in KiCad.
+KiCad itself has no notion of an assembly: each PCB editor holds one board. KiLeidoscope works with that rather than against it. The way that works best is to keep **one board live at a time**: the board you are editing follows its KiCad, the others stay in Blender as saved copies where you put them, and swapping which board is live is one click in Blender and one in KiCad. The **Multi-board** column holds the controls.
 
 <p align="center">
 <img src="../assets/collisions.png" width="520" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
@@ -14,7 +14,7 @@ KiCad itself has no notion of an assembly: each PCB editor holds one board. KiLe
 - [The workflow: one live board, swapped](#the-workflow-one-live-board-swapped)
 - [A second board joins](#a-second-board-joins)
 - [The Boards list](#the-boards-list)
-- [The Boards column](#the-boards-column)
+- [The Multi-board column](#the-multi-board-column)
 - [Placing a board](#placing-a-board)
 - [Collisions and Mated parts](#collisions-and-mated-parts)
 - [Saving and reopening](#saving-and-reopening)
@@ -27,9 +27,9 @@ KiCad itself has no notion of an assembly: each PCB editor holds one board. KiLe
 ## The workflow: one live board, swapped
 
 1. **Open in Blender** from the PCB editor, as always. The first board comes in centred, as it always did.
-2. Open the second board in a **second PCB editor window** (open its project in a new KiCad window) and click **Open in Blender** there. Blender asks whether to **Add here** or open the board in its own window. Add it: it comes in at its own KiCad coordinates, a centimetre above the first board, and the **Boards** tab on the sidebar's edge lights up.
-3. **Place** the boards: the select arrow in front of a board's row, then **G** and **R** in the 3D view, or the Position numbers, **Flip** and **Turn 90°** in the Boards column. **Collision check** shows where they run into each other; mark a connector and its mate **Mated** so they stop counting.
-4. **Save** the arrangement (`.usda`) from the Boards column, and the `.blend` if you want the scene back as it is.
+2. Open the second board in a **second PCB editor window** (open its project in a new KiCad window) and click **Open in Blender** there. Blender asks whether to **Add here** or open the board in its own window. Add it: it comes in at its own KiCad coordinates, a centimetre above the first board, and the **Multi-board** tab on the sidebar's edge lights up.
+3. **Place** the boards: the select arrow in front of a board's row, then **G** and **R** in the 3D view, or the Offset and Rotation numbers, **Flip** and **Turn 90°** in the Multi-board column. **Collision check** shows where they run into each other; mark a connector and its mate **Mated** so they stop counting.
+4. **Save** the arrangement (`.usda`) from the Multi-board column, and the `.blend` if you want the scene back as it is.
 5. **Swap.** Close the first board's PCB editor: its board stays in Blender exactly where it stands, its LED goes red and an **Open in KiCad** button appears on its row. Edit the second board in KiCad, live in Blender. When you want the first board live again, click **Open in KiCad** on its row: its PCB editor opens with its file, and **Open in Blender** there puts the board back live in its slot, in place.
 
 Everything below is detail; the five steps are the feature.
@@ -43,7 +43,7 @@ Everything below is detail; the five steps are the feature.
 | The board is shown already (its KiCad came back after a crash, or Open in Blender was clicked again) | Its slot takes the new connection, without asking. |
 | An opened arrangement was waiting for this board | It is placed where the arrangement says, without asking. |
 | Otherwise, the first time | A question, as a popup and in the Boards section: *Main wants to join this window*, with **Add here** and **Open in its own window**. Tick **Remember my choice** and it is not asked again. |
-| A remembered choice | **Add here** adds the board; **Own window** starts a Blender of its own for it. Change the choice under **Other KiCads** in the Boards column: Ask, Add here or Own window. |
+| A remembered choice | **Add here** adds the board; **Own window** starts a Blender of its own for it. Change the choice under **Other KiCads** in the Multi-board column: Ask, Add here or Own window. |
 | Four boards shown already | The board opens in a window of its own, and KiCad says so. |
 
 The question waits two minutes; unanswered, the board opens in its own window. Up to four live boards share a window.
@@ -63,15 +63,15 @@ With one board, the KiLeidoscope panel shows its name, its source (**live**, the
 
 Clicking a row **picks** that board: the Layers list, the cut plane, the fold, a finding's drawing, the Diff pairs list and the Status section all work on the picked board. Clicking a board in the 3D view picks it as well, and a click on a track or part selects it in that board's own KiCad.
 
-## The Boards column
+## The Multi-board column
 
-The **Boards** tab on the sidebar's left edge opens a column beside the panel. It is greyed with one board and lit with two or more.
+The **Multi-board** tab on the sidebar's left edge opens a column beside the panel. It is greyed with one board and lit with two or more. At its top, the picked board as its row shows it, with its size, thickness and copper layer count; the controls below work on that board.
 
 | Control | What it does |
 | --- | --- |
-| **Position: Offset (mm)** | How far the picked board's centre has moved from where its KiCad coordinates put it. |
+| **Offset (mm)** | How far the picked board's centre has moved from where its KiCad coordinates put it. |
 | **Rotation** | The picked board's turn about its centre: X first, then Y, then Z. |
-| **Flip** / **Turn 90°** | Turn the board over (180° about X) or a quarter turn about Z, about its centre. |
+| **Flip** / **Turn 90°** / **Reset** | Turn the board over (180° about X) or a quarter turn about Z, about its centre; or put it back where its KiCad coordinates put it, unturned. |
 | **Collision check** | On by default: red boxes where boards and parts overlap, and the list of what collides. |
 | **Mated** (link icon on a listed pair) | These two parts are plugged into each other: no collision between them, nor between each and the other's board. The marks are listed with an **X** to take them off. |
 | **Arrangement: Save… / Open…** | Where every board stands, as a `.usda` file (also under **File > Export** and **File > Import**). |
@@ -163,7 +163,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/multi-board-dark.svg">
-  <img src="../assets/multi-board-light.svg" width="680" alt="Each KiCad's Open in Blender runs a launcher, which joins the KiLeidoscope Blender that is open already through request and reply files, or starts a Blender of its own, and serves the board through a bridge of its own. The Blender add-on holds up to four boards in slots, each under its own root Empty with a pose and its own names, lists them in the Boards list and places them from the Boards column, checks collisions between them in world space, keeps where they stand in an arrangement file in OpenUSD and brings them back from a saved .blend. Open in KiCad starts a board's PCB editor again, and Open in Blender there takes its slot back.">
+  <img src="../assets/multi-board-light.svg" width="680" alt="Each KiCad's Open in Blender runs a launcher, which joins the KiLeidoscope Blender that is open already through request and reply files, or starts a Blender of its own, and serves the board through a bridge of its own. The Blender add-on holds up to four boards in slots, each under its own root Empty with a pose and its own names, lists them in the Boards list and places them from the Multi-board column, checks collisions between them in world space, keeps where they stand in an arrangement file in OpenUSD and brings them back from a saved .blend. Open in KiCad starts a board's PCB editor again, and Open in Blender there takes its slot back.">
 </picture>
 </p>
 

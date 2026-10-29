@@ -108,13 +108,16 @@ def check_rows(scene):
     assert ("operator", "kileido.export_board") in drawn and ("operator", "kileido.import_board") in drawn, drawn
     assert ("prop", "kileido_board_offset") not in drawn and ("menu", "KILEIDO_MT_boards") not in drawn, drawn
     assert columns.tab_state("BOARDS") == "on"
-    column = Layout()  # the Boards column: the picked board's place, the collision check, the file, other KiCads
+    column = Layout()  # the Multi-board column: the picked board and its place, the collision check, the file, other KiCads
     kileido.COLUMNS["BOARDS"](column, scene)
+    assert ("label", "Multi-board") in column.drawn and ("label", "First board") in column.drawn, column.drawn
+    assert any(kind == "label" and " mm · " in text and text.endswith(" layers") for kind, text in column.drawn), column.drawn
     assert [entry for entry in column.drawn if entry[0] in ("operator", "enum", "prop")] == [
         ("prop", "kileido_board_offset"), ("prop", "kileido_board_rotation"),
-        ("operator", "kileido.board_turn"), ("operator", "kileido.board_turn"), ("prop", "kileido_collisions"),
+        ("operator", "kileido.board_turn"), ("operator", "kileido.board_turn"), ("operator", "kileido.board_turn"),
+        ("prop", "kileido_collisions"),
         ("operator", "kileido.save_arrangement"), ("operator", "kileido.open_arrangement"),
-        ("enum", "kileido_join_choice")], column.drawn
+        ("prop", "kileido_join_choice")], column.drawn
 
 
 def check_pick_by_row(scene):
@@ -139,6 +142,12 @@ def check_position(scene):
     assert np.abs(np.array(scene.kileido_board_offset) - (10.0, 0.0, 5.0)).max() < 1e-6, "flipped about its centre"
     scene.kileido_board_rotation = (0.0, 0.0, math.pi / 2)
     assert np.abs(np.array(scene.kileido_board_offset) - (10.0, 0.0, 5.0)).max() < 1e-6, "turned about its centre"
+    assert state.boards[1].pose == first
+    assert bpy.ops.kileido.board_turn(turn="RESET") == {"FINISHED"}  # back where its KiCad coordinates put it
+    assert np.abs(np.array(scene.kileido_board_offset)).max() < 1e-6, tuple(scene.kileido_board_offset)
+    assert np.abs(np.array(scene.kileido_board_rotation)).max() < 1e-9, tuple(scene.kileido_board_rotation)
+    scene.kileido_board_offset = (10.0, 0.0, 5.0)  # stacked over board 1 again, as the checks below expect
+    scene.kileido_board_rotation = (0.0, 0.0, math.pi / 2)
     assert state.boards[1].pose == first
 
 

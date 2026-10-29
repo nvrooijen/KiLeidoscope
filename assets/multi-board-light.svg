@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="680" height="660" viewBox="0 0 680 660" role="img">
 <title>KiLeidoscope multi-board</title>
-<desc>Each KiCad's Open in Blender runs a launcher, which joins the KiLeidoscope Blender that is open already through request and reply files, or starts a Blender of its own, and serves the board through a bridge of its own. The Blender add-on holds up to four boards in slots, each under its own root Empty with a pose and its own names, lists them in the Boards list and places them from the Boards column, checks collisions between them in world space, keeps where they stand in an arrangement file in OpenUSD and brings them back from a saved .blend. Open in KiCad starts a board's PCB editor again, and Open in Blender there takes its slot back.</desc>
+<desc>Each KiCad's Open in Blender runs a launcher, which joins the KiLeidoscope Blender that is open already through request and reply files, or starts a Blender of its own, and serves the board through a bridge of its own. The Blender add-on holds up to four boards in slots, each under its own root Empty with a pose and its own names, lists them in the Boards list and places them from the Multi-board column, checks collisions between them in world space, keeps where they stand in an arrangement file in OpenUSD and brings them back from a saved .blend. Open in KiCad starts a board's PCB editor again, and Open in Blender there takes its slot back.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
 <style>
@@ -52,8 +52,8 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 <text class="th lbl" x="535" y="338" text-anchor="middle">Slots 3 and 4</text>
 <text class="ts lbl" x="535" y="356" text-anchor="middle">free until a board joins</text>
 <rect x="45" y="418" width="380" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
-<text class="th" x="235" y="438" text-anchor="middle" fill="#412402">Boards list and Boards column</text>
-<text class="ts" x="235" y="456" text-anchor="middle" fill="#633806">pick, eye, X · Position, Flip, Turn 90° · Mated</text>
+<text class="th" x="235" y="438" text-anchor="middle" fill="#412402">Boards list and Multi-board column</text>
+<text class="ts" x="235" y="456" text-anchor="middle" fill="#633806">pick, eye, X · place, Flip, Turn 90°, Reset · Mated</text>
 <rect x="450" y="418" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
 <text class="th" x="535" y="438" text-anchor="middle" fill="#412402">Collision check</text>
 <text class="ts" x="535" y="456" text-anchor="middle" fill="#633806">world space, red boxes</text>
