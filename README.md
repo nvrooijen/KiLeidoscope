@@ -35,7 +35,7 @@ Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Be
 - Selection both ways: a click in Blender selects in KiCad, and KiCad's selection shows in Blender, with the differential-pair partner in blue.
 - Blender's EEVEE preview or Cycles engine, using different colour modes for either KiCad's PCB editor theme or realistic representations.
 - Per-layer visibility, X-ray mode and adjustable layer thickness.
-- View-only boards: save a board as a `.blend` package, place several side by side and check them for collisions. In a future update, Linux users will be able to control multiple boards simultaneously in the same Blender UI, allowing for true multi-PCB assemblies. 
+- Multi-board assemblies (beta): up to four boards from four KiCad PCB editors in one window, each live from its own KiCad, placed as they sit in the product and checked for collisions, with the arrangement kept in an OpenUSD file. See the [multi-board guide](docs/multi-board.md).
 - IMS boards: a 2-layer board drawn on its aluminum or copper base, the thin epoxy under F.Cu, in 3D and in the cross section, with warnings for vias and plated holes that would short to the base. See the [IMS guide](docs/ims.md).
 - Flex and rigid-flex boards (beta): bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
@@ -157,9 +157,9 @@ A click on a track, via, pad or component selects it in KiCad (Shift+click adds 
 
 Components without a model file show an envelope of KiCad's footprint bounds, this can be turned off. Colours and layer heights are display approximations, not measured optical or physical properties.
 
-### View-only boards
+### Multi-board assemblies
 
-**Export…** saves the live board, as it looks now, to a `.blend` package. **Import…** adds such a package beside the others in any KiLeidoscope session, with or without KiCad. Imported boards join the live one in a list: click a board for its layers below (or **All boards**), and the select arrow in front of a view-only board picks it to move, rotate or scale. **Collision check** marks where boards overlap (components and board solids) with red boxes. Future version will enable multi-board editing on KiCad for linux. 
+**Open in Blender** in a second KiCad PCB editor adds its board beside the first, live from its own KiCad; up to four boards share a window. Each board has a row in the **Boards** list: click one to work on it, the arrow in front of it selects it to move (**G**) or turn (**R**), the eye hides it and the X removes it. The **Multi-board** column places the picked board by numbers, runs the **Collision check** (red boxes where boards and parts overlap; a connector and its mate marked **Mated** no longer count) and saves the arrangement as a `.usda` file in OpenUSD. The usual way of working keeps one board live at a time: close a board's KiCad and it stays where it stands, and **Open in KiCad** on its row brings it back. A saved `.blend` reopens with its boards as saved copies. **Export…** still saves a board as a `.blend` package and **Import…** adds one to any session, with or without KiCad. See the [multi-board guide](docs/multi-board.md).
 
 ## Known limitations
 
