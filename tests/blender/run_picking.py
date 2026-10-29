@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kileido  # noqa: E402
-from kileido import apply, boardprops, fold, layers, objects, packages, pick, poses, slots, state  # noqa: E402
+from kileido import apply, boardprops, columns, fold, layers, objects, packages, pick, poses, slots, state  # noqa: E402
 import run_flex  # noqa: E402  (its frames: the fixture with a bend)
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -105,14 +105,16 @@ def check_rows(scene):
     assert scene.kileido_layers_board == "S1" and scene.kileido_board_row == 1
     drawn = drawn_boards()
     assert ("list", kileido.KILEIDO_UL_boards.bl_idname) in drawn, drawn
-    assert ("prop", "kileido_board_offset") in drawn and ("prop", "kileido_board_rotation") in drawn, drawn
-    assert ("panel", "KILEIDO_position") in drawn and ("menu", "KILEIDO_MT_boards") in drawn, drawn
-    menu = Layout()  # the files and the choice for other KiCads, in one menu
-    kileido.KILEIDO_MT_boards.draw(type("Menu", (), {"layout": menu})(), bpy.context)
-    assert [entry for entry in menu.drawn if entry[0] in ("operator", "enum")] == [
-        ("operator", "kileido.export_board"), ("operator", "kileido.import_board"),
+    assert ("operator", "kileido.export_board") in drawn and ("operator", "kileido.import_board") in drawn, drawn
+    assert ("prop", "kileido_board_offset") not in drawn and ("menu", "KILEIDO_MT_boards") not in drawn, drawn
+    assert columns.tab_state("BOARDS") == "on"
+    column = Layout()  # the Boards column: the picked board's place, the collision check, the file, other KiCads
+    kileido.COLUMNS["BOARDS"](column, scene)
+    assert [entry for entry in column.drawn if entry[0] in ("operator", "enum", "prop")] == [
+        ("prop", "kileido_board_offset"), ("prop", "kileido_board_rotation"),
+        ("operator", "kileido.board_turn"), ("operator", "kileido.board_turn"), ("prop", "kileido_collisions"),
         ("operator", "kileido.save_arrangement"), ("operator", "kileido.open_arrangement"),
-        ("enum", "kileido_join_choice")], menu.drawn
+        ("enum", "kileido_join_choice")], column.drawn
 
 
 def check_pick_by_row(scene):
@@ -262,6 +264,7 @@ def check_remove():
             for block in getattr(bpy.data, kind) if block.name.startswith(("B2 ", "KiLeidoscope 2"))]
     assert not left, left[:8]
     assert kileido._board_rows_wanted() == [("ALL", "All boards"), ("S1", "First board.kicad_pcb")]
+    assert columns.tab_state("BOARDS") == "unavailable", "one board: nothing to place or check"
     with state.using(2):
         apply.load_frames(frames("Third board.kicad_pcb"))
     assert state.boards[2].loaded and state.picked() == 1

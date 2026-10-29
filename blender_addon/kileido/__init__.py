@@ -144,26 +144,6 @@ class KILEIDO_OT_open_arrangement(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
-class KILEIDO_MT_boards(bpy.types.Menu):
-    bl_idname = "KILEIDO_MT_boards"
-    bl_label = "Boards"
-
-    def draw(self, context):
-        layout = self.layout
-        if board.loaded:
-            layout.label(text=_short_name(board.board_name))
-            if live.health() in ("off", "down") and board.board_path:
-                layout.operator(KILEIDO_OT_open_in_kicad.bl_idname, icon="WINDOW").slot = board.slot
-            layout.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
-            layout.separator()
-        layout.label(text="All boards")
-        layout.operator(KILEIDO_OT_import_board.bl_idname, text="Import board…", icon="IMPORT")
-        layout.operator(KILEIDO_OT_save_arrangement.bl_idname, text="Save arrangement…", icon="FILE_TICK")
-        layout.operator(KILEIDO_OT_open_arrangement.bl_idname, text="Open arrangement…", icon="FILE_FOLDER")
-        layout.separator()
-        join.draw_choice(layout, context)
-
-
 class KILEIDO_OT_view_only_board(bpy.types.Operator):
     bl_idname = "kileido.view_only_board"
     bl_label = "View-only board"
@@ -716,11 +696,85 @@ def _high_speed_state():
     return "on" if boardprops.get(bpy.context.scene, "kileido_phase_enabled") else "off"
 
 
-COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,
+def _draw_boards_column(layout, scene):
+    """The Boards column, with two boards or more: where the picked board stands, the collision
+    check with what collides and the Mated marks, the arrangement file, and what Open in
+    Blender in another KiCad does. The Boards list itself stays in the panel: it picks the
+    board every column works on."""
+    layout.label(text="Boards")
+    box = layout.box()
+    if not _several_boards():
+        _draw_wrapped(box, "One board is shown. Open in Blender in another KiCad adds its board beside it "
+                           "(or Import… a board exported from one); this column then places the boards, "
+                           "checks them against each other and keeps the arrangement in a file")
+        return
+    if board.loaded:
+        _draw_position(box, scene)
+    box = layout.box()
+    row = box.row(align=True)
+    row.prop(scene, "kileido_collisions", text="Collision check")
+    text = collisions.status() if scene.kileido_collisions else None
+    if text:
+        found = row.row(align=True)
+        found.alignment = "RIGHT"
+        found.alert = text != "No collisions"
+        found.label(text=text, icon="ERROR" if found.alert else "CHECKMARK")
+    if scene.kileido_collisions:
+        _draw_collisions(box)
+    box = layout.box()
+    name = arrangement.file_name()
+    box.label(text=f"Arrangement: {name}" if name else "Arrangement", icon="FILE")
+    row = box.row(align=True)
+    row.operator(KILEIDO_OT_save_arrangement.bl_idname, text="Save…", icon="FILE_TICK")
+    row.operator(KILEIDO_OT_open_arrangement.bl_idname, text="Open…", icon="FILE_FOLDER")
+    join.draw_choice(layout.box(), bpy.context)
+
+
+def _draw_position(layout, scene):
+    """Where the picked live board stands: its centre's offset from KiCad's place and its turn
+    (X, then Y, then Z), Flip and Turn 90° about its centre."""
+    layout.label(text=f"Position: {_short_name(board.board_name)}", icon="OBJECT_ORIGIN")
+    column = layout.column(align=True)
+    column.prop(scene, "kileido_board_offset", text="Offset (mm)")
+    column.prop(scene, "kileido_board_rotation", text="Rotation")
+    row = layout.row(align=True)
+    row.operator(KILEIDO_OT_board_turn.bl_idname, text="Flip").turn = "FLIP"
+    row.operator(KILEIDO_OT_board_turn.bl_idname, text="Turn 90°").turn = "TURN"
+
+
+def _draw_collisions(layout):
+    """What collides, the worst few: parts on two boards get a Mated button (a connector in
+    its mate); and the pairs marked Mated, each with an X to take the mark off."""
+    hits, pairs = collisions.hits(), collisions.mated_shown()
+    if not hits and not pairs:
+        return
+    column = layout.column(align=True)
+    for hit in hits[:COLLISIONS_LISTED]:
+        line = column.row(align=True)
+        line.label(text=hit["text"], icon="ERROR")
+        if hit["pair"] is not None:
+            button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="LINKED", emboss=False)
+            button.pair, button.mated = json.dumps(hit["pair"]), True
+    if len(hits) > COLLISIONS_LISTED:
+        column.label(text=f"and {len(hits) - COLLISIONS_LISTED} more", icon="BLANK1")
+    for pair, text in pairs:
+        line = column.row(align=True)
+        line.label(text=text, icon="LINKED")  # the link icon says Mated: the row keeps its width for names
+        button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="X", emboss=False)
+        button.pair, button.mated = json.dumps([*pair[0], *pair[1]]), False
+
+
+def _boards_state():
+    """The Boards tab: lit with two boards or more, greyed with one."""
+    return "on" if _several_boards() else "unavailable"
+
+
+COLUMNS = {"STUDIO": _draw_studio, "BOARDS": _draw_boards_column, "IMS": _draw_ims, "FLEX": _draw_flex_column,
            "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM"),
            "HIGH_SPEED": _draw_high_speed}  # columns.TABS keys -> what the column draws
-columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=lambda: findings.tab_state("DRC"),
-                      LLM=lambda: findings.tab_state("LLM"), HIGH_SPEED=_high_speed_state)
+columns.STATES.update(BOARDS=_boards_state, IMS=_ims_state, FLEX=_flex_state,
+                      DRC=lambda: findings.tab_state("DRC"), LLM=lambda: findings.tab_state("LLM"),
+                      HIGH_SPEED=_high_speed_state)
 
 
 def _draw_flex(layout, scene):
@@ -1423,8 +1477,9 @@ class _Boards:
 
     def _draw_boards(self, context):
         """One live board: its name. With more boards: the Boards list (KILEIDO_UL_boards),
-        its rows refreshed by a timer when the boards changed, and the picked live board's
-        Position."""
+        its rows refreshed by a timer when the boards changed; the Boards column places
+        them, checks them and keeps the arrangement. Then the picked board's export and an
+        import."""
         global _rows_sync_pending
         layout = self.layout
         scene = context.scene
@@ -1439,60 +1494,9 @@ class _Boards:
                 bpy.app.timers.register(_sync_board_rows)
             layout.template_list(KILEIDO_UL_boards.bl_idname, "", scene, "kileido_board_rows",
                                  scene, "kileido_board_row", rows=len(rows), maxrows=len(rows))
-            if board.loaded and _layers_board(scene) is None:
-                self._draw_position(scene)
-        if not _several_boards():  # one board: its export and an import, no arrangement
-            row = layout.row(align=True)
-            row.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
-            row.operator(KILEIDO_OT_import_board.bl_idname, text="Import…", icon="IMPORT")
-        else:  # the collision check and one menu for the files (KILEIDO_MT_boards)
-            row = layout.row(align=True)
-            row.prop(context.scene, "kileido_collisions", text="Collision check")
-            text = collisions.status() if context.scene.kileido_collisions else None
-            if text:
-                found = row.row(align=True)
-                found.alignment = "RIGHT"
-                found.alert = text != "No collisions"
-                found.label(text=text, icon="ERROR" if found.alert else "CHECKMARK")
-            row.menu(KILEIDO_MT_boards.bl_idname, text="", icon="THREE_DOTS")
-            if context.scene.kileido_collisions:
-                self._draw_collisions()
-
-    def _draw_collisions(self):
-        """What collides, the worst few: parts on two boards get a Mated button (a connector
-        in its mate); and the pairs marked Mated, each with an X to take the mark off."""
-        hits, pairs = collisions.hits(), collisions.mated_shown()
-        if not hits and not pairs:
-            return
-        column = self.layout.box().column(align=True)
-        for hit in hits[:COLLISIONS_LISTED]:
-            line = column.row(align=True)
-            line.label(text=hit["text"], icon="ERROR")
-            if hit["pair"] is not None:
-                button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="LINKED", emboss=False)
-                button.pair, button.mated = json.dumps(hit["pair"]), True
-        if len(hits) > COLLISIONS_LISTED:
-            column.label(text=f"and {len(hits) - COLLISIONS_LISTED} more", icon="BLANK1")
-        for pair, text in pairs:
-            line = column.row(align=True)
-            line.label(text=text, icon="LINKED")  # the link icon says Mated: the row keeps its width for names
-            button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="X", emboss=False)
-            button.pair, button.mated = json.dumps([*pair[0], *pair[1]]), False
-
-    def _draw_position(self, scene):
-        """Where the picked live board stands, folded away by default (set once, then left):
-        its centre's offset from KiCad's place and its turn (X, then Y, then Z), Flip and
-        Turn 90° about its centre."""
-        header, body = self.layout.panel("KILEIDO_position", default_closed=True)
-        header.label(text=f"Position: {_short_name(board.board_name)}")
-        if body is None:
-            return
-        column = body.column(align=True)
-        column.prop(scene, "kileido_board_offset", text="Offset (mm)")
-        column.prop(scene, "kileido_board_rotation", text="Rotation")
-        row = body.row(align=True)
-        row.operator(KILEIDO_OT_board_turn.bl_idname, text="Flip").turn = "FLIP"
-        row.operator(KILEIDO_OT_board_turn.bl_idname, text="Turn 90°").turn = "TURN"
+        row = layout.row(align=True)
+        row.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
+        row.operator(KILEIDO_OT_import_board.bl_idname, text="Import…", icon="IMPORT")
 
     def _draw_live(self, scene):
         rows = layers.rows()
@@ -1675,7 +1679,7 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
-           KILEIDO_UL_boards, KILEIDO_MT_boards, KILEIDO_OT_open_in_kicad, KILEIDO_OT_forget_waiting,
+           KILEIDO_UL_boards, KILEIDO_OT_open_in_kicad, KILEIDO_OT_forget_waiting,
            KILEIDO_OT_mated, KILEIDO_OT_live_board, KILEIDO_OT_select_live_board, KILEIDO_OT_board_turn,
            KILEIDO_OT_save_arrangement,
            KILEIDO_OT_open_arrangement, KILEIDO_OT_resync,
