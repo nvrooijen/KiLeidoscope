@@ -158,6 +158,30 @@ def test_launch_opens_its_own_window_when_asked_to(monkeypatch, tmp_path):
     assert runtime.started == 1  # started once, for the request, not again
 
 
+def test_a_question_answered_late_does_not_cost_the_new_blender_its_bridge(monkeypatch, tmp_path):
+    """The user takes minutes over the open Blender's question, then it opens in its own
+    window: the bridge serves that Blender (its START_S counts from when it was started)."""
+    server, runtime = _launch_parts(monkeypatch, authenticated=False)
+    _viewer(launcher.viewer_folder(), 5150)
+    monkeypatch.setattr(launcher, "process_alive", lambda pid: True)
+    clock = Clock()
+    monkeypatch.setattr(launcher.time, "monotonic", clock)
+    runtime.wait = lambda timeout: clock.wait(timeout)
+
+    def declined_late(folder, pid, offer, wait):
+        wait(launcher.REPLY_WAIT_S + launcher.ANSWER_WAIT_S)  # "Open in its own window", after two minutes
+        return {"accepted": False, "slot": None, "reason": "own window"}
+
+    monkeypatch.setattr(launcher, "ask_to_join", declined_late)
+    monkeypatch.setattr(launcher, "find_blender", lambda: "blender")
+    outcomes = iter((None, None, None, 0))
+    steps_at_start = []
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *a, **k: steps_at_start.append(runtime.steps) or
+                        SimpleNamespace(poll=lambda: next(outcomes), returncode=0, pid=6002))
+    assert launcher.launch(tmp_path) == 0
+    assert runtime.steps - steps_at_start[0] >= 3, "the bridge gave up on the Blender it had just started"
+
+
 def test_a_bridge_left_by_its_viewer_ends_while_blender_runs_on(monkeypatch, tmp_path):
     server, runtime = _launch_parts(monkeypatch, authenticated=False)
     monkeypatch.setattr(launcher, "find_blender", lambda: "blender")

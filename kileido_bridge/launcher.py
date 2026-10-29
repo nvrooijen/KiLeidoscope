@@ -363,7 +363,6 @@ def launch(root=None) -> int:
     server = BridgeServer(port=0)
     runtime = BridgeRuntime(server)
     pid_path = _viewer_file(socket, ".pid")
-    abandoned = Abandoned(server)
 
     def serve(seconds):
         runtime.step()
@@ -379,6 +378,7 @@ def launch(root=None) -> int:
             joined = _join(viewers, runtime, server, serve)
             if joined is not None:
                 pid_path.write_text(str(joined), encoding="ascii")  # named if a later click finds it open
+                abandoned = Abandoned(server)  # from now: that Blender connects in a moment
                 while process_alive(joined) and not abandoned():
                     serve(0.05)
                 return 0
@@ -392,6 +392,7 @@ def launch(root=None) -> int:
         environment["KILEIDO_BRIDGE_TOKEN"] = server.token
         output = log_path(shared=bool(viewers))
         output.parent.mkdir(parents=True, exist_ok=True)
+        abandoned = Abandoned(server)  # from now, not from before a question the user took minutes over
         with open(output, "wb") as log:
             viewer = subprocess.Popen(
                 [executable, "--python", str(root / "blender_addon" / "start.py")],
