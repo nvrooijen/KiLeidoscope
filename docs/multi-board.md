@@ -42,7 +42,7 @@ Everything below is detail; the five steps are the feature.
 | --- | --- |
 | The board is shown already (its KiCad came back after a crash, or Open in Blender was clicked again) | Its slot takes the new connection, without asking. |
 | An opened arrangement was waiting for this board | It is placed where the arrangement says, without asking. |
-| Otherwise, the first time | A question, as a popup and in the Boards section: *Main wants to join this window*, with **Add here** and **Open in its own window**. Tick **Remember my choice** and it is not asked again. |
+| Otherwise, the first time | A question, as a popup and in the Boards section: *Board B wants to join this window*, with **Add here** and **Open in its own window**. Tick **Remember my choice** and it is not asked again. |
 | A remembered choice | **Add here** adds the board; **Own window** starts a Blender of its own for it. Change the choice under **Other KiCads** in the Multi-board column: Ask, Add here or Own window. |
 | Four boards shown already | The board opens in a window of its own, and KiCad says so. |
 
@@ -87,7 +87,7 @@ Each board keeps its own **IMS**, **Flex** and **Dynamic phase** settings and it
 
 ## Collisions and Mated parts
 
-The check runs a moment after the boards stop changing, whenever two boards or more are shown. Each part is a box (its 3D model's bounds in the footprint's frame, or the placeholder envelope) and each board a solid of its outline; parts are tested against the other boards' parts and solids, and boards against boards. A pair listed as *J3 (Main) ↔ J1 (Sensor)* can be marked **Mated**; a part against a board solid cannot, as a connector reaching into its mate's board is excused by the mark on the pair. Parts touching within 20 µm are no collision.
+The check runs a moment after the boards stop changing, whenever two boards or more are shown. Each part is a box (its 3D model's bounds in the footprint's frame, or the placeholder envelope) and each board a solid of its outline; parts are tested against the other boards' parts and solids, and boards against boards. A pair listed as *J3 (Board A) ↔ J1 (Board B)* can be marked **Mated**; a part against a board solid cannot, as a connector reaching into its mate's board is excused by the mark on the pair. Parts touching within 20 µm are no collision.
 
 The marks live in the scene (a saved `.blend` keeps them) and in the arrangement file, named by board and reference, so they survive a board being closed and reopened.
 
@@ -123,20 +123,20 @@ The arrangement is an **OpenUSD** text file (`.usda`, "usda 1.0"). USD, the Univ
 
 def Xform "Boards"
 {
-    def Xform "Main"
+    def Xform "BoardA"
     {
-        asset kileidoscope:board = @Main/Main.kicad_pcb@
-        string kileidoscope:name = "Main.kicad_pcb"
+        asset kileidoscope:board = @BoardA/BoardA.kicad_pcb@
+        string kileidoscope:name = "BoardA.kicad_pcb"
         bool kileidoscope:hidden = 0
         double3 xformOp:translate = (0, 0, 0)
         double3 xformOp:rotateXYZ = (0, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
     }
 
-    def Xform "Sensor"
+    def Xform "BoardB"
     {
-        asset kileidoscope:board = @Sensor/Sensor.kicad_pcb@
-        string kileidoscope:name = "Sensor.kicad_pcb"
+        asset kileidoscope:board = @BoardB/BoardB.kicad_pcb@
+        string kileidoscope:name = "BoardB.kicad_pcb"
         bool kileidoscope:hidden = 0
         double3 xformOp:translate = (20, -5, 11.6)
         double3 xformOp:rotateXYZ = (180, 0, 30)
@@ -147,9 +147,9 @@ def Xform "Boards"
     {
         def Scope "Mate_1"
         {
-            rel kileidoscope:first = </Boards/Sensor>
+            rel kileidoscope:first = </Boards/BoardB>
             string kileidoscope:firstReference = "J1"
-            rel kileidoscope:second = </Boards/Main>
+            rel kileidoscope:second = </Boards/BoardA>
             string kileidoscope:secondReference = "J3"
         }
     }
@@ -169,7 +169,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 
 **One bridge per KiCad.** Every Open in Blender starts a launcher and a bridge of its own, on its own port with its own token, as before. New is what the launcher does first: it looks in KiLeidoscope's per-user cache for Blenders that take requests (each lists itself in `viewers/viewer-<pid>.json`), leaves a request file with its port, token and board, and waits for the reply file. Until Blender takes the request the launcher can withdraw it; once taken, the user may be asked, so the launcher waits up to two minutes. Declined, or with no Blender open, it starts a Blender of its own, as before. A bridge whose board's slot has taken a newer bridge, or whose Blender has closed, stops by itself half a minute later.
 
-**Slots.** The add-on runs one live link per slot, up to four; each KiCad's frames reach that slot's board and nothing else. Board 1 keeps the names KiLeidoscope always used; boards 2 to 4 carry their slot in front of every object, material, image and node group name (`B2 KLS outline`) and live in collections of their own (`KiLeidoscope 2: Sensor.kicad_pcb`), as Blender's names are global. Each board's settings that cannot be shared, IMS, flex, fold, dynamic phase and the layer eyes, are Scene properties of its own.
+**Slots.** The add-on runs one live link per slot, up to four; each KiCad's frames reach that slot's board and nothing else. Board 1 keeps the names KiLeidoscope always used; boards 2 to 4 carry their slot in front of every object, material, image and node group name (`B2 KLS outline`) and live in collections of their own (`KiLeidoscope 2: BoardB.kicad_pcb`), as Blender's names are global. Each board's settings that cannot be shared, IMS, flex, fold, dynamic phase and the layer eyes, are Scene properties of its own.
 
 **Roots and poses.** Everything a board owns hangs from its root Empty, and the add-on places it in the root's space: KiCad nanometres around the board's origin, Z 0 at the bottom face. So a board moves as one, and nothing it draws needs to know where it stands; only what looks at the scene as a whole works in world space: picking, the camera and lights, collisions, the cut plane, the views. A board's pose is kept in KiCad's frame, not around its centre, which moves with an outline edit; the panel's numbers are worked out about the centre each time. A move by hand updates the pose, a KiCad frame places the root from it, and an undo step carries it back with the root.
 
