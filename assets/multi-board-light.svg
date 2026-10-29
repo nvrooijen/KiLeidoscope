@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="660" viewBox="0 0 680 660" role="img">
+<title>KiLeidoscope multi-board</title>
+<desc>Each KiCad's Open in Blender runs a launcher, which joins the KiLeidoscope Blender that is open already through request and reply files, or starts a Blender of its own, and serves the board through a bridge of its own. The Blender add-on holds up to four boards in slots, each under its own root Empty with a pose and its own names, lists them in the Boards list and places them from the Boards column, checks collisions between them in world space, keeps where they stand in an arrangement file in OpenUSD and brings them back from a saved .blend. Open in KiCad starts a board's PCB editor again, and Open in Blender there takes its slot back.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; dominant-baseline: central; }
+.th { font-size: 14px; font-weight: 500; }
+.ts { font-size: 12px; font-weight: 400; }
+.tx { font-size: 11px; font-weight: 400; }
+.lbl { fill: #59636E; }
+.arr { stroke: #818B98; stroke-width: 1.5; fill: none; }
+.back { stroke: #818B98; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+.group { stroke: #818B98; stroke-width: 0.5; stroke-dasharray: 4 4; fill: none; }
+.later { stroke-width: 1; stroke-dasharray: 4 3; fill: none; }
+</style>
+</defs>
+<rect x="30" y="14" width="620" height="92" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="30">KiCad: one PCB editor per board</text>
+<rect x="30" y="118" width="620" height="152" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="134">Launcher and bridges: one of each per Open in Blender</text>
+<rect x="30" y="282" width="620" height="364" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="298">Blender add-on: one window, up to four boards</text>
+<rect x="60" y="40" width="170" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="145" y="60" text-anchor="middle" fill="#FFFFFF">KiCad A: Main</text>
+<text class="ts" x="145" y="78" text-anchor="middle" fill="#D6DDF5">Open in Blender</text>
+<rect x="255" y="40" width="170" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="340" y="60" text-anchor="middle" fill="#FFFFFF">KiCad B: Daughter</text>
+<text class="ts" x="340" y="78" text-anchor="middle" fill="#D6DDF5">Open in Blender</text>
+<rect x="450" y="40" width="170" height="56" rx="8" stroke="#314CB0" class="later"/>
+<text class="th lbl" x="535" y="60" text-anchor="middle">KiCad C, D</text>
+<text class="ts lbl" x="535" y="78" text-anchor="middle">later, or never</text>
+<rect x="45" y="146" width="590" height="44" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="340" y="161" text-anchor="middle" fill="#173404">Launcher</text>
+<text class="ts" x="340" y="178" text-anchor="middle" fill="#3B6D11">asks the open KiLeidoscope Blender to show the board, else starts a Blender of its own</text>
+<rect x="45" y="206" width="180" height="50" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="135" y="223" text-anchor="middle" fill="#173404">Bridge A</text>
+<text class="ts" x="135" y="241" text-anchor="middle" fill="#3B6D11">its own port and token</text>
+<rect x="255" y="206" width="170" height="50" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="340" y="223" text-anchor="middle" fill="#173404">Bridge B</text>
+<text class="ts" x="340" y="241" text-anchor="middle" fill="#3B6D11">its own port and token</text>
+<rect x="450" y="206" width="170" height="50" rx="8" stroke="#639922" class="later"/>
+<text class="th lbl" x="535" y="223" text-anchor="middle">Bridge C, D</text>
+<text class="ts lbl" x="535" y="241" text-anchor="middle">stop when left behind</text>
+<rect x="45" y="318" width="180" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="135" y="338" text-anchor="middle" fill="#412402">Slot 1: Main</text>
+<text class="ts" x="135" y="356" text-anchor="middle" fill="#633806">root, pose, KLS names</text>
+<rect x="255" y="318" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="338" text-anchor="middle" fill="#412402">Slot 2: Daughter</text>
+<text class="ts" x="340" y="356" text-anchor="middle" fill="#633806">root, pose, B2 KLS names</text>
+<rect x="450" y="318" width="170" height="56" rx="8" stroke="#E87D0D" class="later"/>
+<text class="th lbl" x="535" y="338" text-anchor="middle">Slots 3 and 4</text>
+<text class="ts lbl" x="535" y="356" text-anchor="middle">free until a board joins</text>
+<rect x="45" y="418" width="380" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="235" y="438" text-anchor="middle" fill="#412402">Boards list and Boards column</text>
+<text class="ts" x="235" y="456" text-anchor="middle" fill="#633806">pick, eye, X · Position, Flip, Turn 90° · Mated</text>
+<rect x="450" y="418" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="535" y="438" text-anchor="middle" fill="#412402">Collision check</text>
+<text class="ts" x="535" y="456" text-anchor="middle" fill="#633806">world space, red boxes</text>
+<rect x="45" y="518" width="180" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="135" y="538" text-anchor="middle" fill="#412402">Arrangement (.usda)</text>
+<text class="ts" x="135" y="556" text-anchor="middle" fill="#633806">where each board stands</text>
+<rect x="255" y="518" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="538" text-anchor="middle" fill="#412402">Saved .blend</text>
+<text class="ts" x="340" y="556" text-anchor="middle" fill="#633806">boards as saved copies</text>
+<rect x="450" y="518" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="535" y="538" text-anchor="middle" fill="#412402">Open in KiCad</text>
+<text class="ts" x="535" y="556" text-anchor="middle" fill="#633806">reopens the PCB editor</text>
+<text class="tx lbl" x="340" y="612" text-anchor="middle">Open in KiCad reopens a board's PCB editor; Open in Blender there takes its slot back, where it stands.</text>
+<text class="tx lbl" x="340" y="628" text-anchor="middle">Join files, per user: viewer-&lt;pid&gt;.json, join-&lt;pid&gt;-&lt;nonce&gt;.json and reply-&lt;nonce&gt;.json in the viewers folder.</text>
+<line x1="145" y1="96" x2="145" y2="144" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="96" x2="340" y2="144" class="arr" marker-end="url(#arrow)"/>
+<line x1="535" y1="96" x2="535" y2="144" class="arr" marker-end="url(#arrow)"/>
+<line x1="135" y1="190" x2="135" y2="204" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="190" x2="340" y2="204" class="arr" marker-end="url(#arrow)"/>
+<line x1="535" y1="190" x2="535" y2="204" class="arr" marker-end="url(#arrow)"/>
+<line x1="135" y1="256" x2="135" y2="316" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="256" x2="340" y2="316" class="arr" marker-end="url(#arrow)"/>
+<line x1="535" y1="256" x2="535" y2="316" class="arr" marker-end="url(#arrow)"/>
+<line x1="135" y1="374" x2="135" y2="416" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="374" x2="340" y2="416" class="arr" marker-end="url(#arrow)"/>
+<line x1="535" y1="374" x2="535" y2="416" class="arr" marker-end="url(#arrow)"/>
+<line x1="135" y1="474" x2="135" y2="516" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="474" x2="340" y2="516" class="arr" marker-end="url(#arrow)"/>
+<line x1="535" y1="474" x2="535" y2="516" class="arr" marker-end="url(#arrow)"/>
+<path d="M620 546 H662 V68 H626" class="back" marker-end="url(#arrow)"/>
+</svg>
