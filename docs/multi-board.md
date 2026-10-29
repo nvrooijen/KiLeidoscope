@@ -48,7 +48,7 @@ Everything below is detail; the five steps are the feature.
 
 The question waits two minutes; unanswered, the board opens in its own window. Up to four live boards share a window.
 
-**Windows.** KiCad on Windows lets every running PCB editor answer on one connection, so a second KiCad window started *before* the first Open in Blender reaches the first KiCad's board. Close and reopen that KiCad: KiLeidoscope leaves a marker that gives every KiCad started afterwards a connection of its own (KiCad issue [23994](https://gitlab.com/kicad/code/kicad/-/work_items/23994)). On Linux each KiCad has its own socket already.
+**Windows.** KiCad on Windows lets every running PCB editor answer on one connection, so a second KiCad window started *before* the first Open in Blender reaches the first KiCad's board. Close and reopen that KiCad: KiLeidoscope leaves a marker that gives every KiCad started afterwards a connection of its own (KiCad issue [23994](https://gitlab.com/kicad/code/kicad/-/work_items/23994)). The marker trick is the one [Kikakuka](https://github.com/buganini/Kikakuka) documents. On Linux each KiCad has its own socket already.
 
 ## The Boards list
 
