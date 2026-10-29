@@ -19,11 +19,11 @@ from pathlib import Path
 import bpy
 import numpy as np
 
-from . import cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, shading
-from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_object, set_modifier, set_node_input,
-                      set_visible)
+from . import boardprops, cut, focus, holes, kicad_cli, materials, nodes, overlay_plots, shading
+from .objects import (OUTLINE, find, link_owned, lookup, outline_bounds, owned_name, owned_object, set_modifier,
+                      set_node_input, set_visible)
 from .placement import laminate_faces, mask_thickness, outward
-from .state import board
+from .state import SLOTS, board
 from .watcher import BoardWatcher
 
 LAYERS = (  # (KiCad layer, panel label, visible by default)
@@ -62,23 +62,24 @@ PLOT_TIMEOUT_S = 120  # drawing a board's overlays (overlay_plots), as long as i
 
 
 def object_name(layer):
-    return f"KLS overlay {layer}"
+    return owned_name(f"KLS overlay {layer}")
 
 
 def material_name(layer):
-    return f"KLS overlay {layer} material"
+    return owned_name(f"KLS overlay {layer} material")
 
 
 def property_name(layer):
-    return "kileido_show_" + layer.replace(".", "_")
+    """The current board's Scene property behind an overlay layer's eye (boardprops)."""
+    return boardprops.name("kileido_show_" + layer.replace(".", "_"))
 
 
 def walls_name(layer):
-    return f"KLS overlay {layer} walls"
+    return owned_name(f"KLS overlay {layer} walls")
 
 
 def wall_material_name(layer):
-    return f"KLS overlay {layer} wall material"
+    return owned_name(f"KLS overlay {layer} wall material")
 
 
 def silkscreen_thickness():
@@ -95,27 +96,27 @@ def silkscreen_opacity():
 
 
 def status():
-    return _watcher.status
+    return _board_watcher().status
 
 
 def follow_board(board_path, export=None):
     """The overlays plot every footprint whatever the assembly variant, so a variant
     switch (new export settings) does not restart this watch."""
-    _watcher.follow(board_path, {key: value for key, value in (export or {}).items() if key != "variant"})
+    _board_watcher().follow(board_path, {key: value for key, value in (export or {}).items() if key != "variant"})
 
 
 def stop_following():
-    _watcher.stop()
+    _board_watcher().stop()
 
 
 def export_again():
     """After `kicad_cli.clear_cache`: plot from scratch (the watch forgets its key)."""
-    _watcher.restart()
+    _board_watcher().restart()
 
 
 def drain():
     """Handle one finished export now (headless tools; the GUI timer does this)."""
-    return _watcher.drain()
+    return _board_watcher().drain()
 
 
 # --- Visibility and colour ------------------------------------------------------------------
@@ -484,11 +485,24 @@ def _on_result(result):
     return f"Loaded {count} drawing layers"
 
 
-_watcher = BoardWatcher(
+_watchers = {slot: BoardWatcher(
     "overlay export", _on_board_change, _on_result,
     starting=lambda export: ("Loading overlays from the open board…" if export.get("live")
                              else "Loading saved-board overlays…"),
-    unavailable="", failed="Overlay export failed", import_failed="Overlay import failed")
+    unavailable="", failed="Overlay export failed", import_failed="Overlay import failed",
+    slot=slot) for slot in SLOTS}  # one per board
+
+
+def _board_watcher():
+    """The watcher of the board in use."""
+    return _watchers[board.slot]
+
+
+def __getattr__(name):
+    """`<module>._watcher`: the watcher of the board in use (tests)."""
+    if name == "_watcher":
+        return _board_watcher()
+    raise AttributeError(name)
 
 
 # --- Overlay objects (main thread) ----------------------------------------------------------
@@ -659,7 +673,7 @@ def refresh_geometry():
     bounds = outline_bounds()
     if bounds is None:
         return
-    outline = board.collection.all_objects[OUTLINE]
+    outline = lookup(OUTLINE)
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_cosmetic_layer") and obj.get("kls_board_path") == board.board_path:
             _geometry(obj, bounds, outline)
@@ -673,7 +687,7 @@ def _apply(plots, board_path):
     bounds = outline_bounds()
     if bounds is None:
         raise ValueError("Board outline is unavailable for overlay alignment")
-    outline = board.collection.all_objects[OUTLINE]
+    outline = lookup(OUTLINE)
     superseded = [silk["image"] for silk in board.silk.values()]
     superseded += [image for image, _ in board.relief_images.values()]
     loaded = set()

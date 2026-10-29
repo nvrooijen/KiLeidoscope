@@ -84,9 +84,9 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from . import components, focus, fold, highlight, hole_cut, label_place, layers, materials, transform
-from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, lookup, outline_bounds, set_visible,
-                      shown_views, view3d_spaces)
+from . import components, focus, fold, highlight, hole_cut, label_place, layers, materials, poses, transform
+from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, lookup, outline_bounds, owned_name,
+                      set_visible, shown_views, view3d_spaces)
 from .placement import outward
 from .state import board
 
@@ -346,7 +346,7 @@ def item_sides():
                 sides.setdefault(item_id, set()).add(_outer_side(copper[0]))
         key = components.key_of(obj)
         if key is not None and key[0] == components.FRAME:
-            sides.setdefault(key[1], set()).add(1.0 if obj.matrix_world.col[2].z >= 0 else -1.0)
+            sides.setdefault(key[1], set()).add(1.0 if poses.in_root(obj).col[2].z >= 0 else -1.0)
     return sides
 
 
@@ -523,7 +523,7 @@ def _place_eye(eye_view=None, force=False):
             any(abs(a - b) > 1e-7 for row, other in zip(last[0], matrix) for a, b in zip(row, other))):
         eye.matrix_world = matrix
         _state["eye"] = (matrix.copy(), ortho, near)
-        _lay_out(matrix, ortho, near)
+        _lay_out(poses.to_root() @ matrix, ortho, near)  # the labels are laid out on the board, in its root's space
 
 
 @bpy.app.handlers.persistent
@@ -559,7 +559,7 @@ def uninstall():
 def _new(name, data, finding):
     """A drawing object, seen by camera rays only: an overlay casts no shadow and lights
     nothing, so it adds no grain to the board in a rendered view."""
-    obj = bpy.data.objects.new(name, data)
+    obj = bpy.data.objects.new(owned_name(name), data)
     camera_rays_only(obj)
     obj["kileido_owned"] = 1
     obj[TAG] = finding.get("key", "")
@@ -654,7 +654,7 @@ def _short(text):
 def _eye():
     eye = lookup(EYE)
     if eye is None:
-        eye = bpy.data.objects.new(EYE, None)
+        eye = bpy.data.objects.new(owned_name(EYE), None)
         eye["kileido_owned"] = 1
         eye[TAG] = "eye"
         eye.empty_display_size = 1e-4
@@ -866,7 +866,7 @@ def _place_labels(finding, box, unit):
     hole finding's open cut face, flat there; else facing the eye (laid out by
     `_lay_out`, again whenever the eye moves), each with a thin leader to its anchor."""
     labels = _state["labels"]
-    objects = [board.collection.all_objects[entry["name"]] for entry in labels]
+    objects = [lookup(entry["name"]) for entry in labels]
     section = hole_cut.section(finding)
     if section is not None:
         bounds = outline_bounds()
@@ -878,10 +878,11 @@ def _place_labels(finding, box, unit):
         corners = []
         for obj, entry, (location, turn, scale) in zip(objects, labels, spots):
             obj.data.size *= scale
-            obj.matrix_world = Matrix.Translation(location) @ turn.to_4x4()
+            placed = Matrix.Translation(location) @ turn.to_4x4()
+            poses.set_in_root(obj, placed)
             _plate(obj, finding, entry.get("icon"))
             (x0, y0, x1, y1), _ = _plate_rect(obj)
-            corners += [obj.matrix_world @ Vector((x, y, 0.0)) for x in (x0, x1) for y in (y0, y1)]
+            corners += [placed @ Vector((x, y, 0.0)) for x in (x0, x1) for y in (y0, y1)]
         _reach(corners)
         _state["labels"] = []  # fixed on the face: nothing follows the eye
         return
@@ -901,8 +902,9 @@ def _place_labels(finding, box, unit):
 
 
 def _lay_out(matrix, ortho=False, near=0.0):
-    """The labels facing the eye (`matrix`) put where label_place says for it, leaders too;
-    one a part would hide brought towards the eye, in front of it (label_place.pull)."""
+    """The labels facing the eye (`matrix`, in the board root's space) put where label_place
+    says for it, leaders too; one a part would hide brought towards the eye, in front of it
+    (label_place.pull)."""
     if _state["layout"] is None or not _state["labels"]:
         return
     box, top, bottom, unit = _state["layout"]
@@ -912,7 +914,7 @@ def _lay_out(matrix, ortho=False, near=0.0):
                                box, matrix, top, bottom, unit)
     right, up = matrix.col[0].xyz.normalized(), matrix.col[2].xyz.normalized()
     if _state["parts"] is None:  # once per drawing, not per eye move: every object's box is read
-        _state["parts"] = part_boxes()
+        _state["parts"] = part_boxes(poses.to_root())
     parts = _state["parts"]
     corners = []
     for entry, (location, foot) in zip(entries, spots):
@@ -974,7 +976,7 @@ def _mesh(name, build, matrix, finding, material):
         bm.free()
     mesh.materials.append(material)
     obj = _new(name, mesh, finding)
-    obj.matrix_world = matrix
+    poses.set_in_root(obj, matrix)
     return obj
 
 
@@ -1317,7 +1319,8 @@ def _part_top(draw, up):
         extent = highlight._component_extent(item_id, frame) if frame is not None else None
         if extent is None:
             continue
-        heights = [(frame.matrix_world @ Vector(tuple(float(v) for v in corner))).z for corner in extent]
+        placed = poses.in_root(frame)
+        heights = [(placed @ Vector(tuple(float(v) for v in corner))).z for corner in extent]
         return max(heights) if up > 0 else min(heights)
     return None
 
@@ -1963,6 +1966,7 @@ def _draw_lift(draw, unit, name, finding):
     angle = math.radians(float(draw.get("rotation_deg") or LIFT_DEG))
     turn = Matrix.Translation(pivot) @ Matrix.Rotation(angle, 4, axis) @ Matrix.Translation(-pivot)
     bpy.context.view_layer.update()  # the parts' world matrices as placed now
+    world_to_root = poses.to_root()
     count = 0
     for item_id in draw["ids"]:
         for original in _part_objects(item_id):
@@ -1976,8 +1980,8 @@ def _draw_lift(draw, unit, name, finding):
                         "kls_layer_hidden"):  # a drawing, not a part: nothing else places or folds it
                 copy.pop(key, None)
             copy[TAG] = finding.get("key", "")
-            copy.matrix_world = turn @ original.matrix_world
             link_owned(copy, "findings")
+            poses.set_in_root(copy, turn @ poses.in_root(original, world_to_root))
             hide(original, True)
             original.hide_render = True
             original["kls_lift_hidden"] = 1
@@ -2070,11 +2074,15 @@ def frame_bounds(xmin, ymin, xmax, ymax, side=None):
     (+1 top, -1 bottom), a view looking from the other side is mirrored through the board."""
     extent = label_place.extent((xmin, ymin, xmax, ymax))  # a hole gap is a fraction of a millimetre: at least FRAME_MIN_M
     boxes = part_boxes()
+    to_world = poses.to_world()
+    middle = to_world @ Vector(((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2))
+    if side is not None and to_world.col[2].z < 0:  # the board turned over: its top looks down
+        side = -side
     for space in view3d_spaces():
         view = space.region_3d
         if side is not None:
             _look_from(view, side)
-        view.view_location = ((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2)
+        view.view_location = middle
         view.view_distance = _outside(boxes, view.view_location, view.view_rotation @ Vector((0, 0, 1)),
                                       extent * FRAME_MARGIN)
         space.clip_start = VIEW_CLIP_START_M
@@ -2093,14 +2101,16 @@ def _look_from(view, side):
     view.view_rotation = turned.to_quaternion()
 
 
-def part_boxes():
-    """World boxes (low, high) of the shown parts' models and placeholder boxes."""
+def part_boxes(to=None):
+    """Boxes (low, high) of the shown parts' models and placeholder boxes: in world space, or
+    in the space the matrix `to` takes world points to."""
     boxes = []
     for obj in board.collection.all_objects if board.collection is not None else ():
         key = components.key_of(obj)
         if key is None or key[0] == components.FRAME or not obj.visible_get():
             continue
-        corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        matrix = obj.matrix_world if to is None else to @ obj.matrix_world
+        corners = [matrix @ Vector(corner) for corner in obj.bound_box]
         boxes.append((Vector([min(c[i] for c in corners) for i in range(3)]),
                       Vector([max(c[i] for c in corners) for i in range(3)])))
     return boxes

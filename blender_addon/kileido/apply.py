@@ -11,17 +11,19 @@ import time
 
 import bpy
 import numpy as np
+from mathutils import Vector
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, phase, protection, render_depth, solder, studio,
-               transform)
+               laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, saved,
+               solder, studio, transform)
+from . import kicad_app
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
                       read_attribute, read_coordinates, read_edges, set_modifier, set_node_input, set_visible,
                       single_point, view3d_spaces, write_attribute)
 from .placement import (BOARD_FACE_CLEARANCE_M, CAP_PLATING_M, copper_placement, copper_thickness,
                         laminate_faces, outward, stencil_thickness, via_plating)
-from . import state
+from . import boardprops, state
 from .state import board
 
 MIN_TRANSPARENT_BOUNCES = 32
@@ -62,6 +64,7 @@ def apply_frame(header, arrays):
         board.warnings = list(dict.fromkeys([*board.warnings, *header.get("warnings", [])]))
         board.layer_names = dict(header.get("display_names", {}))  # the Layers list uses KiCad's names
         board.stackup = list(header.get("layers", []))  # the Layers list draws it, dielectrics included
+        saved.remember_stackup()
     elif message_type == "snapshot_end":
         _end_snapshot()
     elif message_type == "selection":
@@ -117,6 +120,7 @@ def apply_layer_data(header, arrays):
 # --- Snapshots ------------------------------------------------------------------------------
 
 def _hide_collection(hidden):
+    hidden = hidden or board.hidden  # a board its eye hides stays hidden
     board.collection.hide_viewport = hidden
     board.collection.hide_render = hidden
 
@@ -171,14 +175,21 @@ def _end_snapshot():
         solder.flush()  # no timers run there: the snapshot's reflowed solder now
 
 
+def collection_name(board_name):
+    """The board collection's name: "KiLeidoscope: <board>", board 2's "KiLeidoscope 2: <board>"
+    (two KiCads may show boards of one name)."""
+    return f"KiLeidoscope: {board_name}" if board.slot == 1 else f"KiLeidoscope {board.slot}: {board_name}"
+
+
 def _collection(board_name):
-    name = f"KiLeidoscope: {board_name}"
+    name = collection_name(board_name)
     collection = bpy.data.collections.get(name)
     if collection is not None and collection.get("kileido_owned") != 1:
         raise RuntimeError(f"Collection {name!r} already exists and is not owned by KiLeidoscope")
     if collection is None:
         collection = bpy.data.collections.new(name)
         collection["kileido_owned"] = 1
+    collection["kls_slot"] = board.slot
     if collection.name not in bpy.context.scene.collection.children:
         bpy.context.scene.collection.children.link(collection)
     return collection
@@ -195,10 +206,10 @@ def apply_board(header):
     if board.collection is None:
         board.collection = _collection(name)
     elif board_changed:
-        existing = bpy.data.collections.get(f"KiLeidoscope: {name}")
+        existing = bpy.data.collections.get(collection_name(name))
         if existing is not None and existing != board.collection:
             raise RuntimeError(f"Collection {existing.name!r} already exists")
-        board.collection.name = f"KiLeidoscope: {name}"
+        board.collection.name = collection_name(name)
     ensure_groups()
     lock_selection(board.collection)
     if board_changed:
@@ -219,6 +230,12 @@ def apply_board(header):
     board.appearance = header.get("appearance", {})
     board.board_path = header.get("board_path", "")
     board.export = header.get("export") or {}
+    poses.follow_board()  # its root Empty, where the board stands
+    saved.remember(header)  # kept on the collection: a saved file reopens with it (saved.restore)
+    kicad_app.remember(board.export)  # its KiCad, for Open in KiCad on a board shown offline later
+    if not state.boards[state.picked()].loaded:  # the panel had no board: this one
+        from . import slots  # slots imports modules that import this one
+        slots.follow()
     set_color_mode(getattr(bpy.context.scene, "kileido_color_mode", "FAB"))
     board.warnings = list(header.get("warnings", []))
     board.status = f"Loaded {name}"
@@ -233,8 +250,8 @@ def _shape_ims():
     was = board.ims is not None
     scene = bpy.context.scene
     board.ims = None
-    if getattr(scene, "kileido_ims", False) and ims.eligible(board.heights)[0]:
-        board.ims = ims.stack(board.heights, board.layer_thickness, scene.kileido_ims_epoxy_um * 1e-6)
+    if boardprops.get(scene, "kileido_ims", False) and ims.eligible(board.heights)[0]:
+        board.ims = ims.stack(board.heights, board.layer_thickness, boardprops.get(scene, "kileido_ims_epoxy_um") * 1e-6)
         board.heights = board.ims.heights
         board.layer_thickness = board.ims.layer_thickness
         board.thickness_m = board.ims.thickness_m
@@ -245,10 +262,13 @@ def _shape_ims():
 
 def lock_selection(collection):
     """The live board follows KiCad, so nothing in it can be selected (and so moved) in
-    Blender; the lock covers its child collections too. Clicks still pick KiCad items
-    (pick.py casts its own ray). Exported, then imported boards are selectable again
-    (packages.import_board)."""
-    collection.hide_select = True
+    Blender: each of its groups is locked, and what they hold. Its root Empty alone, at the
+    collection's top, can be selected: G and R then move and turn the whole board
+    (poses.follow_root). Clicks still pick KiCad items (pick.py casts its own ray).
+    Exported, then imported boards are selectable again (packages.import_board)."""
+    collection.hide_select = False
+    for child in collection.children:
+        child.hide_select = True
 
 
 def see_through_holes(scene):
@@ -271,9 +291,10 @@ def frame_board(force=False):
         return
     xmin, ymin, xmax, ymax = bounds
     extent = max(xmax - xmin, ymax - ymin)
+    middle = poses.to_world() @ Vector(((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2))
     for space in view3d_spaces():
         view = space.region_3d
-        view.view_location = ((xmin + xmax) / 2, (ymin + ymax) / 2, board.thickness_m / 2)
+        view.view_location = middle
         view.view_distance = extent * 1.5  # the whole board fits a 50 mm lens view
         space.clip_start = VIEW_CLIP_START_M
     board.framed_board = board.board_name

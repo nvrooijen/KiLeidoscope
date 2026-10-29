@@ -1,4 +1,4 @@
-"""Collisions between boards: the live board and the view-only boards beside it.
+"""Collisions between the boards shown: every live board and the view-only boards.
 
 Each board is its components and its board solid. A component is an oriented box
 (its 3D model parts' bounds in the footprint frame, else the placeholder envelope);
@@ -7,27 +7,35 @@ different boards are tested: component against component (separating axes),
 component against board (the box's outline in the board's plane against the board
 polygon), and board against board. A red box marks each overlap.
 
-Runs a moment after the boards stop changing (a moved view-only board, a live edit),
-only while a view-only board exists and the panel's check is on. The same moment
-refits the studio softboxes over all boards (lighting.fit_to_boards).
+Two parts the user marks Mated (a connector plugged into its mate on another board) are
+no collision: not with each other, nor each with the other's board. The marks are kept on
+the scene (a saved file keeps them) and in a saved arrangement (arrangement.py), by board
+(its file, else its name) and reference.
+
+Runs a moment after the boards stop changing (a moved board, a live edit), while two
+boards or more are shown and the panel's check is on. The same moment refits the studio
+softboxes over all boards (lighting.fit_to_boards).
 """
+
+import json
 
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
 from . import lighting, packages
-from .objects import OUTLINE, hide, read_coordinates, read_edges
+from .objects import OUTLINE, hide, read_coordinates, read_edges, role
 from .placement import PLACEHOLDER_HEIGHT_M
-from .state import board
+from .state import boards as live_boards, file_key
 
 COLLECTION = "KiLeidoscope collisions"
 MATERIAL = "KiLeidoscope collision"
 TOLERANCE_M = 20e-6  # parts touching (a connector seated on a board) are not a collision
 DELAY_S = 0.3
 MAX_BOXES = 200
+MATED_KEY = "kls_mated"  # on the scene: [[board, reference, board, reference], ...] (JSON), see `mated`
 
-_result = {"count": 0, "checked": False}
+_result = {"count": 0, "checked": False, "hits": []}
 
 
 # --- What a board is made of ----------------------------------------------------------------
@@ -35,10 +43,11 @@ _result = {"count": 0, "checked": False}
 class Solid:
     """One board's components (oriented boxes) and its board solid (outline polygon)."""
 
-    def __init__(self, collection):
-        self.collection = collection
-        centers, axes, halves = [], [], []
-        for low, high, frame in _components(collection):
+    def __init__(self, collection, key="", label=""):
+        self.collection, self.key, self.label = collection, key, label
+        centers, axes, halves, self.refs = [], [], [], []
+        for low, high, frame, ref in _components(collection):
+            self.refs.append(ref)
             center, rotation, scale = frame.decompose()
             matrix = rotation.to_matrix()
             local_center = (np.asarray(low) + np.asarray(high)) / 2
@@ -70,7 +79,7 @@ class Solid:
 
 
 def _components(collection):
-    """(local low, local high, footprint matrix) of every shown component."""
+    """(local low, local high, footprint matrix, reference) of every shown component."""
     parts = {}
     for obj in collection.all_objects:
         if obj.get("kls_model_fp_id") is not None and obj.type == "MESH" and not obj.hide_get():
@@ -87,7 +96,7 @@ def _components(collection):
                    for part in parts.get(footprint_id, ()) for corner in part.bound_box]
         if corners:
             points = np.array([tuple(corner) for corner in corners])
-            yield points.min(axis=0), points.max(axis=0), frame
+            yield points.min(axis=0), points.max(axis=0), frame, footprint.get("kls_reference", "")
             continue
         box = placeholders.get(footprint_id)
         if box is None or "kls_placeholder_width_m" not in box:
@@ -96,7 +105,7 @@ def _components(collection):
         half = np.array((box["kls_placeholder_width_m"] / 2, box["kls_placeholder_height_m"] / 2, 0.0))
         low, high = center - half, center + half
         low[2], high[2] = 0.0, PLACEHOLDER_HEIGHT_M  # footprint frame: +z points away from the board
-        yield low, high, frame
+        yield low, high, frame, footprint.get("kls_reference", "")
 
 
 def _box_corners(centers, axes, halves):
@@ -223,39 +232,96 @@ def _aabb_pairs(a, b):
 
 # --- Running and showing --------------------------------------------------------------------
 
+def board_key(path, name):
+    """A board as the marks name it: its file, else its name."""
+    return file_key(path) if path else f"name:{name}"
+
+
 def boards():
-    """Every board shown: the live one and the visible view-only ones."""
-    found = [board.collection] if board.collection is not None and not board.collection.hide_viewport else []
+    """Every board shown, (key, label, collection): the live ones and the visible view-only ones."""
+    found = []
+    for state in live_boards.values():
+        if state.loaded and not state.collection.hide_viewport:
+            found.append((board_key(state.board_path, state.board_name), _label(state.board_name), state.collection))
     for root in packages.roots():
         collection = packages.collection_of(root[packages.ROOT_TAG])
         if collection is not None and not collection.hide_viewport:
-            found.append(collection)
+            found.append((board_key("", root["kls_board_name"]), _label(root["kls_board_name"]), collection))
     return found
 
 
-def find():
-    """World (low, high) of every overlap between two different boards."""
-    solids = [Solid(collection) for collection in boards()]
-    regions = []
+def _label(name):
+    return name.removesuffix(".kicad_pcb")
+
+
+def _pair(key_a, ref_a, key_b, ref_b):
+    return tuple(sorted(((key_a, ref_a), (key_b, ref_b))))
+
+
+def mated():
+    """The pairs marked Mated: {((board, reference), (board, reference))}, each pair sorted."""
+    try:
+        rows = json.loads(bpy.context.scene.get(MATED_KEY) or "[]")
+    except ValueError:
+        rows = []
+    return {_pair(*row) for row in rows if len(row) == 4}
+
+
+def set_mated(key_a, ref_a, key_b, ref_b, on=True):
+    """Mark two parts on two boards Mated (`on`), or not (the caller checks again: `run`)."""
+    pairs = mated()
+    (pairs.add if on else pairs.discard)(_pair(key_a, ref_a, key_b, ref_b))
+    bpy.context.scene[MATED_KEY] = json.dumps(sorted([*a, *b] for a, b in pairs))
+
+
+def mated_shown():
+    """The Mated pairs between boards shown: [(pair, "J3 (Main) ↔ J1 (Daughter)")]."""
+    labels = {key: label for key, label, _ in boards()}
+    return [(pair, " ↔ ".join(f"{ref} ({labels[key]})" for key, ref in pair))
+            for pair in sorted(mated()) if all(key in labels for key, _ in pair)]
+
+
+def _mated_with(pairs, key, ref, other):
+    """Part `ref` of board `key` is mated with a part of board `other`."""
+    part = (key, ref)
+    return any((first == part and second[0] == other) or (second == part and first[0] == other)
+               for first, second in pairs)
+
+
+def find(shown=None):
+    """Every overlap between two different boards that no Mated mark excuses: [{"low", "high"
+    (world), "text" ("J3 (Main) ↔ J1 (Daughter)"), "pair" (the two parts, for a mark; None
+    when a board solid is in it)}]."""
+    solids = [Solid(collection, key, label) for key, label, collection in (boards() if shown is None else shown)]
+    pairs = mated()
+    hits = []
     for n, a in enumerate(solids):
         for b in solids[n + 1:]:
             i, j = _aabb_pairs(a, b)
             hit = _boxes_overlap(a, i, b, j)
-            regions += [(np.maximum(a.low[p], b.low[q]), np.minimum(a.high[p], b.high[q]))
-                        for p, q in zip(i[hit], j[hit])]
+            for p, q in zip(i[hit], j[hit]):
+                pair = (a.key, a.refs[p], b.key, b.refs[q])
+                if _pair(*pair) in pairs:
+                    continue
+                hits.append({"low": np.maximum(a.low[p], b.low[q]), "high": np.minimum(a.high[p], b.high[q]),
+                             "text": f"{a.refs[p]} ({a.label}) ↔ {b.refs[q]} ({b.label})", "pair": pair})
             for parts, slab in ((a, b), (b, a)):
                 if slab.edges is None or not len(parts.low):
                     continue
                 near = np.nonzero(np.all((parts.low < slab.slab_high) & (slab.slab_low < parts.high), axis=1))[0]
                 corners = _box_corners(parts.centers[near], parts.axes[near], parts.halves[near])
                 for index, box in zip(near, corners):
+                    if _mated_with(pairs, parts.key, parts.refs[index], slab.key):
+                        continue  # a connector reaches into its mate's board
                     if _region_hits_board(box, slab):
-                        regions.append((np.maximum(parts.low[index], slab.slab_low),
-                                        np.minimum(parts.high[index], slab.slab_high)))
+                        hits.append({"low": np.maximum(parts.low[index], slab.slab_low),
+                                     "high": np.minimum(parts.high[index], slab.slab_high),
+                                     "text": f"{parts.refs[index]} ({parts.label}) ↔ {slab.label} board", "pair": None})
             if a.edges is not None and b.edges is not None and \
                     np.all((a.slab_low < b.slab_high) & (b.slab_low < a.slab_high)) and _boards_overlap(a, b):
-                regions.append((np.maximum(a.slab_low, b.slab_low), np.minimum(a.slab_high, b.slab_high)))
-    return regions
+                hits.append({"low": np.maximum(a.slab_low, b.slab_low), "high": np.minimum(a.slab_high, b.slab_high),
+                             "text": f"{a.label} board ↔ {b.label} board", "pair": None})
+    return hits
 
 
 def _material():
@@ -290,16 +356,18 @@ def clear():
     if collection is not None:
         for obj in list(collection.objects):
             bpy.data.objects.remove(obj)
-    _result.update(count=0, checked=False)
+    _result.update(count=0, checked=False, hits=[])
 
 
 def run():
     """Check now and show a box on every overlap."""
     scene = bpy.context.scene
-    if not getattr(scene, "kileido_collisions", True) or not packages.roots():
+    shown = boards()
+    if not getattr(scene, "kileido_collisions", True) or len(shown) < 2:
         clear()
         return 0
-    regions = find()
+    hits = find(shown)
+    regions = [(hit["low"], hit["high"]) for hit in hits]
     collection = bpy.data.collections.get(COLLECTION)
     if collection is None:
         collection = bpy.data.collections.new(COLLECTION)
@@ -319,8 +387,13 @@ def run():
         hide(obj, False)
     for obj in boxes[len(regions):]:
         bpy.data.objects.remove(obj)
-    _result.update(count=len(regions), checked=True)
+    _result.update(count=len(regions), checked=True, hits=hits)
     return len(regions)
+
+
+def hits():
+    """The overlaps of the last check (`find`)."""
+    return _result["hits"] if _result["checked"] else []
 
 
 def status():
@@ -351,13 +424,13 @@ def _on_depsgraph(scene, depsgraph):
     """A board object moved or changed: check again. Not for what the check moves
     itself, its boxes and the studio softboxes ("KLS Studio softbox"): each check
     then scheduled the next, re-rendering the viewport ~3 times a second while idle."""
-    if not packages.roots():
+    if sum(state.loaded for state in live_boards.values()) + len(packages.roots()) < 2:
         return
     for update in depsgraph.updates:
         block = update.id
         if isinstance(block, bpy.types.Object) and not block.name.startswith("KiLeidoscope collision") and \
                 not block.get("kls_studio_side") and \
-                (block.name.startswith(("KLS ", "KV")) or block.get("kileido_owned") or block.get(packages.ROOT_TAG)):
+                (role(block.name).startswith("KLS ") or block.name.startswith("KV") or block.get("kileido_owned") or block.get(packages.ROOT_TAG)):
             schedule()
             return
 

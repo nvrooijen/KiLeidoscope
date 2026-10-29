@@ -19,7 +19,7 @@ from pathlib import Path
 import bpy
 
 from .kicad_cli import file_stamps
-from .state import board
+from .state import board, using
 
 POLL_S = 0.5  # the bridge rewrites its copy ~0.5 s after edits settle
 TIMER_S = 0.2
@@ -120,8 +120,9 @@ class BoardWatcher:
     """
 
     def __init__(self, name, on_change, on_result, *, starting, unavailable, failed, import_failed,
-                 first_interval=TIMER_S):
+                 first_interval=TIMER_S, slot=1):
         self.name = name
+        self.slot = slot  # the board it exports for: results are applied to that board
         self.on_change = on_change
         self.on_result = on_result
         self.starting = starting  # callable(export) -> status while the first export runs
@@ -157,7 +158,8 @@ class BoardWatcher:
         self._stop = threading.Event()
         self.status = self.starting(export)
         job = Job(Path(source), board_path, export, self._generation, self._stop, self._results)
-        threading.Thread(target=self._watch, args=(job,), name=f"KiLeidoscope {self.name}", daemon=True).start()
+        threading.Thread(target=self._watch, args=(job,), name=f"KiLeidoscope {self.name} {self.slot}",
+                         daemon=True).start()
         if not bpy.app.timers.is_registered(self._timer):
             bpy.app.timers.register(self._timer, first_interval=self.first_interval)
 
@@ -213,6 +215,10 @@ class BoardWatcher:
         return self._drain()
 
     def _drain(self):
+        with using(self.slot):
+            return self._drain_one()
+
+    def _drain_one(self):
         try:
             result = self._results.get_nowait()
         except queue.Empty:

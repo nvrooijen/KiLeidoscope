@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, holes, materials, packages, section, state  # noqa: E402
+from kileido import apply, cut, materials, packages, section, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -62,9 +62,8 @@ def fresh_session():
     """A new Blender session: empty file, add-on state as after a restart."""
     kileido.unregister()
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    state.board.__init__()
-    holes._sources = {key: value[:0] for key, value in holes._sources.items()}
-    holes._bounds = holes._digest = holes._drawn = None
+    for board_state in state.boards.values():
+        board_state.__init__(board_state.slot)  # the hole mask too
     kileido.register()
 
 

@@ -21,10 +21,10 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import components, cut, focus, fold, highlight, kicad_cli, solder
-from .objects import link_owned, set_visible
+from . import components, cut, focus, fold, highlight, kicad_cli, poses, solder
+from .objects import link_owned, lookup, set_visible
 from . import state
-from .state import board
+from .state import SLOTS, board
 from .watcher import BoardWatcher
 
 _BLENDER_SUFFIX = re.compile(r"\.\d{3}$")
@@ -182,34 +182,47 @@ def problems_text(problems):
             (", …" if len(names) > 3 else ""))
 
 
-_watcher = BoardWatcher(
+_watchers = {slot: BoardWatcher(
     "model export", _on_board_change, _on_result,
     starting=lambda export: "Finding 3D models from the KiCad board…",
     unavailable="3D models unavailable: save the board in KiCad, then press Resync",
-    failed="Model export failed", import_failed="Model import failed", first_interval=0.1)
+    failed="Model export failed", import_failed="Model import failed", first_interval=0.1,
+    slot=slot) for slot in SLOTS}  # one per board
+
+
+def _board_watcher():
+    """The watcher of the board in use."""
+    return _watchers[board.slot]
+
+
+def __getattr__(name):
+    """`<module>._watcher`: the watcher of the board in use (tests)."""
+    if name == "_watcher":
+        return _board_watcher()
+    raise AttributeError(name)
 
 
 def export_status():
-    return _watcher.status
+    return _board_watcher().status
 
 
 def follow_board(board_path, export=None):
     """Start automatic model loading when a board snapshot becomes visible."""
-    _watcher.follow(board_path, export)
+    _board_watcher().follow(board_path, export)
 
 
 def stop_following():
-    _watcher.stop()
+    _board_watcher().stop()
 
 
 def export_again():
     """After `kicad_cli.clear_cache`: export from scratch (the watch forgets its key)."""
-    _watcher.restart()
+    _board_watcher().restart()
 
 
 def drain():
     """Handle one finished export now (headless tools; the GUI timer does this)."""
-    return _watcher.drain()
+    return _board_watcher().drain()
 
 
 def _reference(name):
@@ -356,14 +369,16 @@ def model_is_visible(footprint, model_obj):
 
 
 def _saved_footprint_matrix(target, saved_positions):
-    """Build KiCad's saved footprint frame in Blender's board-centred axes."""
+    """Build KiCad's saved footprint frame in Blender's board-centred axes (the board root's
+    space: models bind wherever the board stands)."""
     entries = [row for row in saved_positions
                if row["Ref"] == target.get("kls_reference") and
                row["Side"].lower() == target.get("kls_side")]
+    placed = poses.in_root(target)
     if not entries:
-        return target.matrix_world.copy()
+        return placed
     origin_x, origin_y = board.origin_nm
-    tx, ty = target.matrix_world.translation[:2]
+    tx, ty = placed.translation[:2]
     row = min(entries, key=lambda item:
               (float(item["PosX"]) * 0.001 - origin_x * 1e-9 - tx) ** 2 +
               (float(item["PosY"]) * 0.001 + origin_y * 1e-9 - ty) ** 2)
@@ -465,7 +480,7 @@ def bind_root(root, asset_hash, saved_positions=None):
               f"{len(matches)} GLB roots matched, {len(unbound)} without parts")
     return {"matched": len(board.model_bound),
             "parts": len(active),
-            "distinct_meshes": len({board.collection.all_objects[name].data.as_pointer()
+            "distinct_meshes": len({lookup(name).data.as_pointer()
                                     for name in active}),
             "unmatched": sum(bool(_source_meshes(obj)) for obj in root.children) - len(matches)}
 

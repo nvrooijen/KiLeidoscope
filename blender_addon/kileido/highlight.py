@@ -11,7 +11,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from . import components, focus, materials, transform
+from . import components, focus, materials, poses, transform
 from .objects import (camera_rays_only, hide, lookup, owned_object, read_attribute, read_coordinates, read_edges,
                       set_modifier, set_node_input, set_visible, single_point, write_attribute)
 from .placement import PLACEHOLDER_HEIGHT_M, copper_placement, copper_thickness, outward, via_plating
@@ -335,7 +335,7 @@ def _refresh_component_boxes(chosen, kind="selected"):
         obj = owned_object(prefix + footprint_id)
         obj["kls_highlight_box"] = tag
         single_point(obj.data)
-        obj.matrix_world = footprint.matrix_world @ Matrix.Translation(Vector(tuple((low + high) / 2)))
+        poses.set_in_root(obj, poses.in_root(footprint) @ Matrix.Translation(Vector(tuple((low + high) / 2))))
         material = "highlight_box" if kind == "selected" else f"highlight_{kind}_box"
         set_modifier(obj, board.groups["highlight_box"], material, {"Size": tuple(float(v) for v in np.abs(high - low))})
         _show(obj)

@@ -16,15 +16,18 @@ import numpy as np
 from mathutils import Vector
 
 from . import (apply, components, cosmetics, cut, findings_draw, highlight, ims, layers, lighting, materials, nodes,
-               render_depth, transform)
-from .objects import OUTLINE, find, hide, set_modifier, set_node_input, view3d_spaces
+               poses, render_depth, transform)
+from .objects import OUTLINE, find, hide, role, set_modifier, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
+from . import boardprops, state
 from .state import board
 
 ROOT_TAG = "kls_view_only_root"
 OUTLINE_PROBLEM = "Board outline is missing or malformed"  # kileido_bridge.geometry.OUTLINE_PROBLEM
 GAP_M = 0.005  # between boards placed side by side
 PACKAGE_PREFIX = "KiLeidoscope: "  # the live collection's name, as written to a package
+_PACKAGE = re.compile(r"^KiLeidoscope(?: \d+)?: ")  # board 1's "KiLeidoscope: X", board 2's "KiLeidoscope 2: X"
+_SLOT_PREFIX = re.compile(r"^B\d+ ")  # a live board's names in slots 2-4 (state.slot_prefix): not a view-only's
 DATA_KINDS = ("collections", "objects", "meshes", "materials", "images", "node_groups")
 _DUPLICATE = re.compile(r"\.\d{3}$")  # Blender's suffix for a name already taken
 
@@ -159,8 +162,8 @@ def _export_board(filepath):
     stackup = {"heights": board.heights, "layer_thickness": board.layer_thickness, "color_mode": board.color_mode}
     if board.ims is not None:  # its metal base goes along as drawn; this places the rest around it again
         stackup["ims"] = {"base": list(board.ims.base), "dielectric": list(board.ims.dielectric),
-                          "metal": getattr(bpy.context.scene, "kileido_ims_metal", "AL"),
-                          "finish": getattr(bpy.context.scene, "kileido_ims_finish", "MILL")}
+                          "metal": boardprops.get(bpy.context.scene, "kileido_ims_metal", "AL"),
+                          "finish": boardprops.get(bpy.context.scene, "kileido_ims_finish", "MILL")}
     collection["kls_stackup"] = json.dumps(stackup)
     finished = _finished_materials()
     for material, side in finished:  # a view-only mask eye recolours covered copper like the live one
@@ -172,7 +175,7 @@ def _export_board(filepath):
         material["kls_mask_colors"] = json.dumps(colors)
     for obj in tuple(collection.all_objects):  # hide_set is view-layer state, not saved with the object
         obj["kls_hidden"] = obj.hide_get()
-        obj["kls_row"] = "Board" if obj.name == OUTLINE else layers.row_of(obj) or ""
+        obj["kls_row"] = "Board" if role(obj.name) == OUTLINE else layers.row_of(obj) or ""
     swapped = []
     # No cut-plane stage in the package: its shared values would cut the importing session's boards.
     clipped = [material for material in cut.materials()
@@ -246,7 +249,7 @@ def import_board(filepath):
     """Append a board package as a view-only board right of the others; its root Empty."""
     before = {kind: set(getattr(bpy.data, kind)) for kind in DATA_KINDS}
     with bpy.data.libraries.load(filepath, link=False) as (source, target):
-        names = [name for name in source.collections if name.startswith(PACKAGE_PREFIX)]
+        names = [name for name in source.collections if _PACKAGE.match(name)]
         if len(names) != 1:
             raise ValueError("Not a KiLeidoscope board export")
         target.collections = names
@@ -257,14 +260,17 @@ def import_board(filepath):
     index = max((obj[ROOT_TAG] for obj in roots()), default=0) + 1
     for kind in DATA_KINDS:
         for block in set(getattr(bpy.data, kind)) - before[kind]:
-            if block.name.startswith("KLS") or (isinstance(block, bpy.types.Object) and components.key_of(block)):
-                block.name = f"KV{index} {_DUPLICATE.sub('', block.name)}"  # parts: "KV2 R12 · ..."
-    name = collection.get("kls_board_name") or collection.name.removeprefix(PACKAGE_PREFIX)
+            own = _SLOT_PREFIX.sub("", block.name)  # board 2's "B2 KLS outline": "KLS outline"
+            if own.startswith("KLS") or (isinstance(block, bpy.types.Object) and components.key_of(block)):
+                block.name = f"KV{index} {_DUPLICATE.sub('', own)}"  # parts: "KV2 R12 · ..."
+    name = collection.get("kls_board_name") or _PACKAGE.sub("", collection.name)
     collection.name = f"KiLeidoscope view-only: {name}"
-    for group in collection.children:  # "Copper.001" beside the live board's "Copper"
-        group.name = f"{name}: {_DUPLICATE.sub('', group.name)}"
+    for group in collection.children:  # "Copper.001" beside the live board's "Copper" (board 2's "B2 Copper")
+        group.name = f"{name}: {_DUPLICATE.sub('', _SLOT_PREFIX.sub('', group.name))}"
     collection.pop("kileido_owned", None)
     collection.hide_select = False  # exported with the live board's selection lock
+    for group in collection.children_recursive:
+        group.hide_select = False
     collection["kls_view_only"] = index
     collection["kls_rows_off"] = (layer_list(index) or {}).get("off", [])
     scene = bpy.context.scene
@@ -277,12 +283,16 @@ def import_board(filepath):
     root["kls_board_name"] = name
     collection.objects.link(root)
     for obj in tuple(collection.all_objects):
+        obj.pop("kls_root", None)  # the live board's root came along: no longer any live board's
         if obj != root and obj.parent is None:
             obj.parent = root
         if obj.pop("kls_hidden", False):
             hide(obj, True)
     for material in _owned_data(collection)[0]:
         _world_position_to_root(material, root)
+    space = bpy.data.node_groups.get(f"KV{index} KLS board space")
+    if space is not None:  # it came bound with the live board's turn (poses.space_group)
+        poses.unturned(space)
 
     # What a live board sets up for itself, for a session without one.
     apply.see_through_holes(scene)
@@ -415,7 +425,8 @@ def _refresh_silk(collection):
 def _as_board(collection):
     """Lend `board` a view-only board's stackup while the shared placement code runs
     on its objects; the live board's state comes back after."""
-    saved = dict(vars(board))
+    lent = state.current()
+    saved = dict(vars(lent))
     stackup = _stackup(collection)
     board.collection = collection
     board.name_prefix = f"KV{collection['kls_view_only']} "
@@ -429,8 +440,8 @@ def _as_board(collection):
     try:
         yield
     finally:
-        board.__dict__.clear()
-        board.__dict__.update(saved)
+        lent.__dict__.clear()
+        lent.__dict__.update(saved)
 
 
 def _stackup(collection):
@@ -514,9 +525,9 @@ def _board_rows():
     """(board, {row: entry}) for the live board and every view-only board. An entry is
     (section title, label, kind, colour); `board` is None for the live one."""
     found = []
-    if board.collection is not None:
-        found.append((None, {entry.row: (title, entry.label, entry.kind, layers.swatch_color(entry))
-                             for title, entries in layers.sections() for entry in entries}))
+    for slot in state.each_loaded():  # each live board: "S<slot>"
+        found.append((f"S{slot}", {entry.row: (title, entry.label, entry.kind, layers.swatch_color(entry))
+                                   for title, entries in layers.sections() for entry in entries}))
     for root in roots():
         recorded = layer_list(root[ROOT_TAG])
         if recorded:
@@ -543,8 +554,13 @@ def all_boards_sections():
 
 def shown_everywhere(row):
     """True when every board that has this row shows it."""
-    return all(layers.shown(row) if index is None else row_shown(index, row)
+    return all(_live_shown(index, row) if isinstance(index, str) else row_shown(index, row)
                for index, rows in _board_rows() if row in rows)
+
+
+def _live_shown(key, row):
+    with state.using(int(key[1:])):
+        return layers.shown(row)
 
 
 def set_row_everywhere(row, visible):
@@ -552,8 +568,9 @@ def set_row_everywhere(row, visible):
     for index, rows in _board_rows():
         if row not in rows:
             continue
-        if index is None:
-            setattr(bpy.context.scene, layers.property_name(row), visible)
+        if isinstance(index, str):  # a live board's own eye
+            with state.using(int(index[1:])):
+                setattr(bpy.context.scene, layers.property_name(row), visible)
         else:
             set_row_visible(index, row, visible)
 

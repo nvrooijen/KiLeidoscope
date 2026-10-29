@@ -7,7 +7,7 @@ from pathlib import Path
 import bpy
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 
-from . import live, phase, phase_chart
+from . import boardprops, live, phase, phase_chart
 from .state import board
 
 
@@ -192,36 +192,36 @@ def draw(layout, context, wrap, swatch, width):
     settings and the pair list. `wrap(context, text)`, `swatch(kind, color)` and
     `width(context)` (px a line has) are the KiLeidoscope panel's own helpers."""
     top = layout.row()
-    top.prop(context.scene, "kileido_phase_enabled", text="Enable")
+    top.prop(context.scene, boardprops.name("kileido_phase_enabled"), text="Enable")
     top.operator(KILEIDO_OT_phase_help.bl_idname, text="", icon="QUESTION", emboss=False)
     body = layout.column()
-    body.active = context.scene.kileido_phase_enabled
+    body.active = boardprops.get(context.scene, "kileido_phase_enabled")
     _draw_dynamic_phase(body, context, wrap, swatch, width)
 
 
 def _draw_dynamic_phase(layout, context, wrap, swatch, width):
     scene = context.scene
     row = layout.row(align=True)
-    row.prop(scene, "kileido_phase_show", text="Colours")
-    row.prop(scene, "kileido_phase_labels", text="Labels")
-    row.prop(scene, "kileido_phase_pulses", text="Pulses")
-    layout.prop(scene, "kileido_phase_follow_series", text="Through series parts (AC caps)")
+    row.prop(scene, boardprops.name("kileido_phase_show"), text="Colours")
+    row.prop(scene, boardprops.name("kileido_phase_labels"), text="Labels")
+    row.prop(scene, boardprops.name("kileido_phase_pulses"), text="Pulses")
+    layout.prop(scene, boardprops.name("kileido_phase_follow_series"), text="Through series parts (AC caps)")
     layout.operator(KILEIDO_OT_phase_flip_selected.bl_idname, icon="ARROW_LEFTRIGHT")
     column = layout.column(align=True)
-    column.prop(scene, "kileido_phase_scale_ps", text="Colour scale (ps)")
-    column.prop(scene, "kileido_phase_tolerance_ps", text="Marker above (ps)")
-    column.prop(scene, "kileido_phase_min_mm", text="Marker longer than (mm)")
+    column.prop(scene, boardprops.name("kileido_phase_scale_ps"), text="Colour scale (ps)")
+    column.prop(scene, boardprops.name("kileido_phase_tolerance_ps"), text="Marker above (ps)")
+    column.prop(scene, boardprops.name("kileido_phase_min_mm"), text="Marker longer than (mm)")
     pulses = layout.column(align=True)
-    pulses.active = scene.kileido_phase_pulses
-    pulses.row().prop(scene, "kileido_phase_pulse_clock", expand=True)
-    if scene.kileido_phase_pulse_clock == "TIMELINE":
+    pulses.active = boardprops.get(scene, "kileido_phase_pulses")
+    pulses.row().prop(scene, boardprops.name("kileido_phase_pulse_clock"), expand=True)
+    if boardprops.get(scene, "kileido_phase_pulse_clock") == "TIMELINE":
         for line in wrap(context, "The frame sets the pulses: Play animates them, and renders show them."):
             pulses.label(text=line, icon="INFO")
-    pulses.prop(scene, "kileido_phase_pulse_count", text="Number of pulses")
-    pulses.prop(scene, "kileido_phase_pulse_rate", text="Pulse speed (ps/s)")
-    pulses.prop(scene, "kileido_phase_pulse_width_ps", text="Pulse width (ps)")
-    pulses.prop(scene, "kileido_phase_pulse_tail_ps", text="Pulse tail (ps)")
-    pulses.prop(scene, "kileido_phase_pulse_glow", text="Pulse brightness")
+    pulses.prop(scene, boardprops.name("kileido_phase_pulse_count"), text="Number of pulses")
+    pulses.prop(scene, boardprops.name("kileido_phase_pulse_rate"), text="Pulse speed (ps/s)")
+    pulses.prop(scene, boardprops.name("kileido_phase_pulse_width_ps"), text="Pulse width (ps)")
+    pulses.prop(scene, boardprops.name("kileido_phase_pulse_tail_ps"), text="Pulse tail (ps)")
+    pulses.prop(scene, boardprops.name("kileido_phase_pulse_glow"), text="Pulse brightness")
     _draw_legend(layout.box().column(align=True), context, wrap, swatch, width)
     info = layout.column(align=True)
     pending = board.phase_list.get("pending", 0)
@@ -260,7 +260,7 @@ def _draw_legend(column, context, wrap, swatch, width):
     aligned row packs edge to edge. Each icon is drawn ICON_PX wide from its tile's left
     and the next tile paints over the rest, so the last one reaches past its tile: the
     bar leaves it that much room, or it would stick out of the box."""
-    scale = context.scene.kileido_phase_scale_ps
+    scale = boardprops.get(context.scene, "kileido_phase_scale_ps")
     for line in wrap(context, "Dynamic phase: how far P and N are apart"):  # wrapped: a narrow column cut it off
         column.label(text=line)
     icon_px = ICON_PX * (context.preferences.system.ui_scale or 1.0)
@@ -280,7 +280,7 @@ def _draw_legend(column, context, wrap, swatch, width):
     right.alignment = "RIGHT"
     right.label(text=f"{scale:.2f} ps  N")
     column.separator()
-    tolerance, length = context.scene.kileido_phase_tolerance_ps, context.scene.kileido_phase_min_mm
+    tolerance, length = boardprops.get(context.scene, "kileido_phase_tolerance_ps"), boardprops.get(context.scene, "kileido_phase_min_mm")
     for role, text in (("start", "Start of the pair"), ("end", "End of the pair"),
                        ("excursion", f"P and N over {tolerance:g} ps apart for {length:g} mm or more"),
                        ("short", "P and N shorted"), ("loop", "A loop beside the route")):

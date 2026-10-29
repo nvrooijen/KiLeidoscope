@@ -1,7 +1,33 @@
-"""What the add-on knows about the board it currently shows (one board per Blender session).
+"""What the add-on knows about the boards it shows: up to four live boards per Blender
+session, each in a slot.
 
-Every module reads and writes the same `board` instance; nothing else holds board state.
+Every module reads and writes `board`, which stands for the board being worked on: a live
+frame or a finished export switches to its own board with `using(slot)` first; outside
+that, `board` is the picked board (`pick`), the one the panel shows and its tools work on.
+Board 1 keeps the names KiLeidoscope always used; the others' objects, materials and
+images carry their slot's prefix ("B2 KLS outline"), as Blender names are global.
+Nothing else holds board state.
 """
+
+import os
+from contextlib import contextmanager
+
+SLOTS = (1, 2, 3, 4)
+
+
+def file_key(path):
+    """A board file as the add-on tells files apart: its path, normalised."""
+    return os.path.normcase(os.path.normpath(path))
+
+
+def same_file(a, b):
+    """Two board paths name one file (never when either is unknown)."""
+    return bool(a and b) and file_key(a) == file_key(b)
+
+
+def slot_prefix(slot):
+    """The prefix of a live board's names: none for board 1, "B<slot> " for the others."""
+    return "" if slot == 1 else f"B{slot} "
 
 
 def log(message):
@@ -10,13 +36,21 @@ def log(message):
 
 
 class BoardState:
-    def __init__(self):
+    def __init__(self, slot=1):
+        self.slot = slot
         # Identity and frame: KiCad nanometres become Blender metres around `origin_nm`.
         self.collection = None  # "KiLeidoscope: <board>", owns every KiLeidoscope object
-        self.name_prefix = ""  # of its object names: "" live, "KV<n> " while a view-only board is placed
+        # Of its names: the slot's (slot_prefix), "KV<n> " while a view-only board is placed
+        self.name_prefix = slot_prefix(slot)
         self.board_name = ""
         self.board_path = ""
         self.origin_nm = (0, 0)
+        # Where it stands (poses.py): T_B, ((x, y, z) metres, XYZ Euler radians) of KiCad's frame,
+        # and the board (path, else name) it is for. Kept when its Blender data goes (reset).
+        self.pose = None
+        self.pose_of = ""
+        self.hidden = False  # its eye in the Boards list is shut (slots.set_hidden); kept like the pose
+        self.saved_copy = False  # rebuilt from a saved .blend (saved.restore) until its KiCad sends it again
         self.heights = {}  # copper layer name -> z (m)
         self.layer_thickness = {}  # stackup thickness (m) of copper, mask, ... by layer name
         self.thickness_m = 0.0
@@ -49,6 +83,9 @@ class BoardState:
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
         self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
+        self.holes = None  # its hole mask (holes._Mask)
+        self.solder = None  # its reflowed solder builds (solder._Builds)
+        self.cut_cache = None  # its geometry for the section and edges (cut._cache)
 
         # Snapshot bookkeeping: objects not touched by a full snapshot are cleared.
         self.in_snapshot = False
@@ -80,8 +117,14 @@ class BoardState:
     def reset(self):
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
         if self.model_bound:
-            log(f"board state reset; {len(self.model_bound)} bound models forgotten")
-        self.__init__()
+            log(f"board {self.slot} state reset; {len(self.model_bound)} bound models forgotten")
+        kept = self.pose, self.pose_of, self.hidden  # rebuilt, the board stands where it stood
+        self.__init__(self.slot)
+        self.pose, self.pose_of, self.hidden = kept
+
+    @property
+    def loaded(self):
+        return self.collection is not None
 
     def drop_if_freed(self, where, resync=True):
         """True after a collection freed under us (undo, file load) was forgotten: the board
@@ -97,7 +140,8 @@ class BoardState:
             self.reset()
             if resync:
                 from . import live
-                live.request_resync()
+                with using(self.slot):
+                    live.request_resync()
             return True
         return False
 
@@ -105,12 +149,69 @@ class BoardState:
         """Show `message` and never leave a half-loaded board hidden."""
         if self.collection is not None:
             try:
-                self.collection.hide_viewport = False
-                self.collection.hide_render = False
+                self.collection.hide_viewport = self.hidden
+                self.collection.hide_render = self.hidden
             except ReferenceError:  # freed under us (file load, undo): a resync rebuilds it
                 self.reset()
         self.status = message
         self.in_snapshot = False
 
 
-board = BoardState()
+boards = {slot: BoardState(slot) for slot in SLOTS}
+_current = [1]
+_picked = [1]  # the board the panel shows and its tools work on (slots.pick), outside any `using`
+_depth = [0]  # `using` blocks open
+
+
+def current():
+    """The BoardState `board` stands for now."""
+    return boards[_current[0]]
+
+
+def picked():
+    """The slot of the picked board: what the panel, its buttons and the tools work on."""
+    return _picked[0]
+
+
+def pick(slot):
+    """`board` stands for board `slot` outside any `using` block from now on (slots.pick hands
+    the tools over)."""
+    _picked[0] = slot
+    if not _depth[0]:
+        _current[0] = slot
+
+
+@contextmanager
+def using(slot):
+    """Work on board `slot` inside the block."""
+    previous = _current[0]
+    _current[0] = slot
+    _depth[0] += 1
+    try:
+        yield boards[slot]
+    finally:
+        _depth[0] -= 1
+        _current[0] = previous if _depth[0] else _picked[0]
+
+
+def each_loaded():
+    """Slots with a board, each while it is the current board."""
+    for slot in SLOTS:
+        if boards[slot].loaded:
+            with using(slot):
+                yield slot
+
+
+class _Current:
+    """`board`: the BoardState of the slot being worked on (see `using`)."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        return getattr(boards[_current[0]], name)
+
+    def __setattr__(self, name, value):
+        setattr(boards[_current[0]], name, value)
+
+
+board = _Current()

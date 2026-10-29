@@ -26,8 +26,9 @@ import bpy
 import numpy as np
 
 from . import focus, outline_mask, shading
+from .objects import owned_name
 from .placement import laminate_faces
-from .state import board
+from .state import SLOTS, board, using
 
 RESOLUTION = 2048  # long side; ~22 um per pixel on the reference board, edges sharpened in shading
 EDGE_PIXELS = 2  # the mask reaches this far past the outline's box (`set_bounds`)
@@ -50,12 +51,30 @@ CLIP_EDGE = "KLS board clip edge"  # the coverage ramp: crisp at 0.5, or `WALL_R
 TINT = "KLS see-through tint"  # a film's tint on what shows through it (`_clear_where_open`)
 FILMS = ("flex",)  # the holed materials that are a tinted film: clear in their holes
 
-_sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
-_bounds = None
-_outline = (np.empty((0, 2)), np.empty((0, 2)))  # the board outline's edges a -> b, Blender metres
-_inside = None  # (key, coverage) of the last drawn board area
-_digest = None
-_drawn = None  # (bounds, {channel: (rows, alpha)}, pixels) of the last redraw, for partial redraws
+
+
+class _Mask:
+    """One board's hole mask (`board.holes`, made by `_m`)."""
+
+    def __init__(self):
+        self.sources = {"vias": np.empty((0, 4), np.float64), "pads": np.empty((0, 6), np.float64)}
+        self.bounds = None
+        self.outline = (np.empty((0, 2)), np.empty((0, 2)))  # the board outline's edges a -> b, Blender metres
+        self.inside = None  # (key, coverage) of the last drawn board area
+        self.digest = None
+        self.drawn = None  # (bounds, {channel: (rows, alpha)}, pixels) of the last redraw, for partial redraws
+
+
+def _m():
+    """The board's mask state."""
+    if board.holes is None:
+        board.holes = _Mask()
+    return board.holes
+
+
+def mask_image():
+    """The board's mask image ("KLS holes", board 2's "B2 KLS holes"), or None."""
+    return bpy.data.images.get(owned_name(IMAGE))
 PARTIAL_MAX = 64  # more changed holes than this: redraw the whole mask
 
 
@@ -64,14 +83,14 @@ def set_vias(xy_m, diameter_m, side=None):
     TOP or BOTTOM: the side a blind via opens on."""
     xy = np.asarray(xy_m, np.float64).reshape(-1, 2)
     side = np.full(len(xy), THROUGH) if side is None else np.asarray(side, np.float64).reshape(-1)
-    _sources["vias"] = np.column_stack((xy, np.asarray(diameter_m, np.float64).reshape(-1), side))
+    _m().sources["vias"] = np.column_stack((xy, np.asarray(diameter_m, np.float64).reshape(-1), side))
     rebuild()
 
 
 def set_pads(xy_m, size_m, angle, oval):
     """Pad drills: x, y, width, height (m), angle (rad), oval flag."""
     xy = np.asarray(xy_m, np.float64).reshape(-1, 2)
-    _sources["pads"] = np.column_stack((xy, np.asarray(size_m, np.float64).reshape(-1, 2),
+    _m().sources["pads"] = np.column_stack((xy, np.asarray(size_m, np.float64).reshape(-1, 2),
                                         np.asarray(angle, np.float64).reshape(-1),
                                         np.asarray(oval, np.float64).reshape(-1)))
     rebuild()
@@ -83,25 +102,23 @@ def set_bounds(bounds, outline=None):
     stay; empty edges: nothing is clipped. The mask covers the box and `EDGE_PIXELS`
     past it: a wall on the outline would otherwise sample the image's last half pixel,
     half a hole, and a drill on the edge (a castellation) showed a see-through band."""
-    global _bounds, _outline
     xmin, ymin, xmax, ymax = (float(value) for value in bounds)
     margin = EDGE_PIXELS * max(xmax - xmin, ymax - ymin, 1e-9) / RESOLUTION
-    _bounds = (xmin - margin, ymin - margin, xmax + margin, ymax + margin)
+    _m().bounds = (xmin - margin, ymin - margin, xmax + margin, ymax + margin)
     if outline is not None:
-        _outline = tuple(np.asarray(part, np.float64).reshape(-1, 2) for part in outline)
+        _m().outline = tuple(np.asarray(part, np.float64).reshape(-1, 2) for part in outline)
     rebuild()
 
 
 def clipping():
     """True when there is an outline to clip copper to."""
-    return len(_outline[0]) > 0
+    return len(_m().outline[0]) > 0
 
 
 def clear_outline():
     """No closed outline: copper shows wherever it is drawn."""
-    global _outline
     if clipping():
-        _outline = (np.empty((0, 2)), np.empty((0, 2)))
+        _m().outline = (np.empty((0, 2)), np.empty((0, 2)))
         rebuild()
 
 
@@ -188,42 +205,40 @@ def _redraw_changed(alpha, bounds, old_rows, rows):
 def _rows(channel_side):
     """Hole rows (x, y, w, h, angle, oval) on one channel: through holes, plus that
     side's blind vias."""
-    vias = _sources["vias"]
+    vias = _m().sources["vias"]
     vias = vias[np.isin(vias[:, 3], (THROUGH, channel_side))]
-    return np.concatenate((np.column_stack((vias[:, :3], vias[:, 2], np.zeros((len(vias), 2)))), _sources["pads"]))
+    return np.concatenate((np.column_stack((vias[:, :3], vias[:, 2], np.zeros((len(vias), 2)))), _m().sources["pads"]))
 
 
 def _board_area(shape):
-    """Blue: the board area over `_bounds` (1 everywhere without an outline), redrawn
+    """Blue: the board area over `_m().bounds` (1 everywhere without an outline), redrawn
     only when the bounds or the outline change."""
-    global _inside
     if not clipping():
         return np.ones(shape, np.float32)
-    key = hashlib.blake2b(np.asarray(_bounds).tobytes() + _outline[0].tobytes() + _outline[1].tobytes()
+    key = hashlib.blake2b(np.asarray(_m().bounds).tobytes() + _m().outline[0].tobytes() + _m().outline[1].tobytes()
                           + np.asarray(shape).tobytes(), digest_size=16).digest()
-    if _inside is None or _inside[0] != key:
-        pixel = _grid(_bounds)[0]
-        _inside = (key, outline_mask.coverage(_bounds, pixel, shape, *_outline))
-    return _inside[1]
+    if _m().inside is None or _m().inside[0] != key:
+        pixel = _grid(_m().bounds)[0]
+        _m().inside = (key, outline_mask.coverage(_m().bounds, pixel, shape, *_m().outline))
+    return _m().inside[1]
 
 
 def rebuild():
     """Redraw the mask when holes, the board bounds or its outline changed. A few moved
     holes redraw only their own pixels; a new board or bounds redraws everything.
     Inside a snapshot this waits for `snapshot_end`, which calls it once."""
-    global _digest, _drawn
-    if _bounds is None or board.in_snapshot:
+    if _m().bounds is None or board.in_snapshot:
         return
     rows = {name: _rows(side) for name, side in CHANNELS}
-    digest = hashlib.blake2b(np.asarray(_bounds).tobytes() + b"".join(r.tobytes() for r in rows.values())
-                             + _outline[0].tobytes() + _outline[1].tobytes(), digest_size=16).digest()
-    if digest == _digest and bpy.data.images.get(IMAGE) is not None:
+    digest = hashlib.blake2b(np.asarray(_m().bounds).tobytes() + b"".join(r.tobytes() for r in rows.values())
+                             + _m().outline[0].tobytes() + _m().outline[1].tobytes(), digest_size=16).digest()
+    if digest == _m().digest and mask_image() is not None:
         refresh_sides()
         return
-    _digest = digest
-    image = bpy.data.images.get(IMAGE)
-    previous = _drawn[1] if _drawn is not None and _drawn[0] == _bounds and image is not None else {}
-    pixels = _drawn[2] if previous else None
+    _m().digest = digest
+    image = mask_image()
+    previous = _m().drawn[1] if _m().drawn is not None and _m().drawn[0] == _m().bounds and image is not None else {}
+    pixels = _m().drawn[2] if previous else None
     alphas = {}
     for name, _ in CHANNELS:
         same = next((alphas[other] for other in alphas if np.array_equal(rows[other], rows[name])), None)
@@ -232,13 +247,13 @@ def rebuild():
             continue
         alpha = None
         if name in previous:
-            alpha = _redraw_changed(previous[name][1], _bounds, previous[name][0], rows[name])
-        alphas[name] = alpha if alpha is not None else rasterize(_bounds, rows[name])
+            alpha = _redraw_changed(previous[name][1], _m().bounds, previous[name][0], rows[name])
+        alphas[name] = alpha if alpha is not None else rasterize(_m().bounds, rows[name])
     height, width = alphas["through"].shape
     if image is None or tuple(image.size) != (width, height):
         if image is not None:
             bpy.data.images.remove(image)
-        image = bpy.data.images.new(IMAGE, width, height, alpha=True)
+        image = bpy.data.images.new(owned_name(IMAGE), width, height, alpha=True)
         image.colorspace_settings.name = "Non-Color"
     image.alpha_mode = "CHANNEL_PACKED"  # the colour channels are holes too, not colour under alpha
     if pixels is None or pixels.shape[:2] != (height, width):
@@ -247,7 +262,7 @@ def rebuild():
     pixels[..., 2] = _board_area((height, width))
     image.pixels.foreach_set(pixels.ravel())
     image.update()
-    _drawn = (_bounds, {name: (rows[name], alphas[name]) for name in alphas}, pixels)
+    _m().drawn = (_m().bounds, {name: (rows[name], alphas[name]) for name in alphas}, pixels)
     for key, material in board.materials.items():
         if key in HOLED or key.startswith("copper:"):
             add_to(material)
@@ -261,16 +276,19 @@ def rebuild():
 def pack_for_save(*_):
     """Before a save: pack the mask into the file. It is drawn in memory, so a plain save
     keeps no pixels, and the file would reopen with the board and copper see-through.
-    Packed once, it is packed again only when redrawn since (8-bit PNG, exact enough)."""
-    image = bpy.data.images.get(IMAGE)
-    if image is not None and (image.packed_file is None or image.is_dirty):
-        image.pack()
+    Packed once, it is packed again only when redrawn since (8-bit PNG, exact enough).
+    Every board's, also one from a file reopened before its KiCad sent the board again."""
+    for slot in SLOTS:
+        with using(slot):
+            image = mask_image()
+        if image is not None and (image.packed_file is None or image.is_dirty):
+            image.pack()
 
 
 def mask_materials():
     """Solder mask and silkscreen: an open via goes through them as well."""
     return [material for layer in ("F.Mask", "B.Mask", "F.SilkS", "B.SilkS")
-            if (material := bpy.data.materials.get(f"KLS overlay {layer} material")) is not None]
+            if (material := bpy.data.materials.get(owned_name(f"KLS overlay {layer} material"))) is not None]
 
 
 def add_to(material):
@@ -279,8 +297,8 @@ def add_to(material):
     `materials.set_surface` links the lit/flat shader into the first Mix Shader's
     second input, so this also survives colour-mode switches.
     """
-    image = bpy.data.images.get(IMAGE)
-    if image is None or _bounds is None:
+    image = mask_image()
+    if image is None or _m().bounds is None:
         return
     tree = material.node_tree
     nodes, links = tree.nodes, tree.links
@@ -299,7 +317,7 @@ def add_to(material):
         _side_select(material, texture)
     _set_side_heights(material)
     texture.image = image
-    xmin, ymin, xmax, ymax = _bounds
+    xmin, ymin, xmax, ymax = _m().bounds
     width, height = image.size
     pixel = max(xmax - xmin, ymax - ymin) / RESOLUTION
     shading.set_plot_rectangle(tree, "KLS holes offset", "KLS holes scale", xmin, ymin, width * pixel, height * pixel)
@@ -367,8 +385,8 @@ def clip_to_board(material):
     past the outline: one whose board edge follows the drill (a castellation drawn as a
     notch in Edge.Cuts) stands right on it, where the fab leaves its plating. Without
     an outline, `CLIP_OFF` keeps everything shown."""
-    image = bpy.data.images.get(IMAGE)
-    if image is None or _bounds is None or material.node_tree is None:
+    image = mask_image()
+    if image is None or _m().bounds is None or material.node_tree is None:
         return
     tree = material.node_tree
     nodes, links = tree.nodes, tree.links
@@ -392,7 +410,7 @@ def clip_to_board(material):
         wall = any(board.materials.get(key) == material for key in WALLS)
         edge.inputs["From Min"].default_value, edge.inputs["From Max"].default_value = WALL_RAMP if wall else (0.4, 0.6)
     nodes[CLIP_OFF].outputs[0].default_value = 0.0 if clipping() else 1.0
-    xmin, ymin, xmax, ymax = _bounds
+    xmin, ymin, xmax, ymax = _m().bounds
     width, height = image.size
     pixel = max(xmax - xmin, ymax - ymin) / RESOLUTION
     shading.set_plot_rectangle(tree, "KLS board offset", "KLS board scale", xmin, ymin, width * pixel, height * pixel)

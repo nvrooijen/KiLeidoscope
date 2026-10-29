@@ -1,4 +1,5 @@
-"""Blender timer for the live bridge. Socket operations are always non-blocking."""
+"""Blender timers for the live bridges, one per board (slot). Socket operations are always
+non-blocking."""
 
 import time
 from collections import deque
@@ -7,7 +8,7 @@ import bpy
 
 from . import apply, dump, studio
 from .client import PROTOCOL, SocketClient
-from .state import board
+from .state import SLOTS, board, using
 
 HOST = "127.0.0.1"
 RETRY_S = 2.0
@@ -17,14 +18,17 @@ UPDATE_FRAMES = ("layer_data", "footprints", "snapshot_end")  # "update n s ago"
 
 
 class LiveLink:
-    """One connection to a bridge, reconnecting until `disconnect`.
+    """One connection to a bridge for one board slot, reconnecting until `disconnect`.
 
-    Frames are queued as they arrive and applied within a time budget per tick. A
-    newer frame for the same (layer, kind) replaces a queued older one (a newer findings
-    frame an older one), and a snapshot supersedes everything queued before it.
+    Frames are queued as they arrive and applied within a time budget per tick, to the
+    link's own board. A newer frame for the same (layer, kind) replaces a queued older one
+    (a newer findings frame an older one), and a snapshot supersedes everything queued
+    before it.
     """
 
-    def __init__(self):
+    def __init__(self, slot=1):
+        self.slot = slot
+        self._timer = self.timer  # one bound method: Blender timers compare by identity
         self.enabled = False
         self.port = 0
         self.token = ""
@@ -42,12 +46,13 @@ class LiveLink:
     def connect(self, port, token):
         self.disconnect()
         self.enabled = True
-        dump.last_path = ""  # the board is KiCad's from here on, not the dump's
+        if self.slot == 1:
+            dump.last_path = ""  # the board is KiCad's from here on, not the dump's
         self.port, self.token = port, token
         self.next_retry = 0.0
         self.last_update_at = None
-        if not bpy.app.timers.is_registered(tick):
-            bpy.app.timers.register(tick, first_interval=TICK_S, persistent=True)
+        if not bpy.app.timers.is_registered(self._timer):
+            bpy.app.timers.register(self._timer, first_interval=TICK_S, persistent=True)
 
     def disconnect(self):
         self.enabled = False
@@ -59,10 +64,11 @@ class LiveLink:
         self.bridge_error = ""
         self.new_kicad = False
         self.outdated_pads = 0
-        if bpy.app.timers.is_registered(tick):
-            bpy.app.timers.unregister(tick)
-        if board.in_snapshot:
-            board.fail("Stale: bridge disconnected")
+        if bpy.app.timers.is_registered(self._timer):
+            bpy.app.timers.unregister(self._timer)
+        with using(self.slot):
+            if board.in_snapshot:
+                board.fail("Stale: bridge disconnected")
 
     def status_text(self):
         if not self.enabled:
@@ -88,8 +94,24 @@ class LiveLink:
             return "ok"
         return "busy" if self.bridge_status in ("connected", "editing") else "down"
 
+    def timer(self):
+        """The Blender timer: `tick`, kept alive through an error (Blender drops a timer
+        that raises): the board starts over from a full snapshot."""
+        try:
+            return self.tick()
+        except Exception as exc:
+            self.pending.clear()
+            with using(self.slot):
+                board.fail(f"Stale: {exc}")
+                request_resync()
+            return RETRY_S
+
     def tick(self):
-        """Timer callback: socket I/O, then apply queued frames within the budget."""
+        """Socket I/O, then apply queued frames within the budget, all to this link's board."""
+        with using(self.slot):
+            return self._tick()
+
+    def _tick(self):
         if not self.enabled:
             return None
         self._receive()
@@ -171,85 +193,104 @@ class LiveLink:
         return True
 
 
-link = LiveLink()
+links = {slot: LiveLink(slot) for slot in SLOTS}
+
+
+def _link():
+    """The link of the board in use."""
+    return links[board.slot]
+
+
+def __getattr__(name):
+    """`live.link`: the link of the board in use."""
+    if name == "link":
+        return _link()
+    raise AttributeError(name)
 
 
 def tick():
-    try:
-        return link.tick()
-    except Exception as exc:  # Blender drops a timer that raises: keep the link alive, start over
-        link.pending.clear()
-        board.fail(f"Stale: {exc}")
-        request_resync()
-        return RETRY_S
+    """Run every live link once (headless tools and tests; Blender's timers do this):
+    the shortest wait any of them asks for, None when none is live."""
+    waits = [wait for link in links.values() if link.enabled and (wait := link.timer()) is not None]
+    return min(waits, default=None)
+
+
+def busy():
+    """Some live board has frames waiting (or a snapshot coming)."""
+    return any(link.enabled and (link.pending or link.receiving_snapshot) for link in links.values())
 
 
 def connected() -> bool:
     """A live session (it may be reconnecting); False for a static dump."""
-    return link.enabled
+    return _link().enabled
 
 
 def linked() -> bool:
     """The bridge is reachable now, so requests to it arrive."""
-    return link.client is not None and link.client.state == "connected"
+    return _link().client is not None and _link().client.state == "connected"
 
 
-def connect(port: int, token: str):
-    link.connect(port, token)
+def any_linked() -> bool:
+    """Some board's bridge is reachable now."""
+    return any(link.client is not None and link.client.state == "connected" for link in links.values())
+
+
+def connect(port: int, token: str, slot: int = 1):
+    links[slot].connect(port, token)
 
 
 def disconnect():
-    link.disconnect()
+    _link().disconnect()
 
 
 def status_text() -> str:
-    return link.status_text()
+    return _link().status_text()
 
 
 def health() -> str:
-    return link.health()
+    return _link().health()
 
 
 def error_text() -> str:
     """The bridge's last error in full (why the board cannot be read), or ""."""
-    return link.bridge_error if link.enabled else ""
+    return _link().bridge_error if _link().enabled else ""
 
 
 def last_apply_text() -> str:
-    return "" if link.last_apply_ms is None else f"Last apply: {link.last_apply_ms:.2f} ms"
+    return "" if _link().last_apply_ms is None else f"Last apply: {_link().last_apply_ms:.2f} ms"
 
 
 def outdated_pads_text() -> str:
     """KiCad answered for some pads with an outdated copy that only placement could not fix."""
-    count = link.outdated_pads if link.enabled else 0
+    count = _link().outdated_pads if _link().enabled else 0
     return f"{count} pad shape(s) outdated in KiCad (undo): reopen the board" if count else ""
 
 
 def new_kicad() -> bool:
     """Another KiCad now serves the plugin connection; a Resync follows it."""
-    return link.enabled and link.new_kicad
+    return _link().enabled and _link().new_kicad
 
 
 def request_resync(adopt=False):
-    if link.client is not None:
-        link.client.request_resync(adopt)
+    if _link().client is not None:
+        _link().client.request_resync(adopt)
 
 
 def request_select(ids, extend=False, center=False, exact=False):
     """A click in Blender: select these items in KiCad, and with `center` pan KiCad to them;
     `exact` (a finding) highlights the items alone, not their whole nets."""
-    if link.client is not None:
-        link.client.request_select(ids, extend, center, exact)
+    if _link().client is not None:
+        _link().client.request_select(ids, extend, center, exact)
 
 
 def request_phase_settings(settings):
     """Tolerance, distance, series parts and flipped pairs for the bridge's dynamic phase."""
-    if link.client is not None:
-        link.client.request_phase_settings(settings)
+    if _link().client is not None:
+        _link().client.request_phase_settings(settings)
 
 
 def request_findings(action, key="", source="drc", checks=None, notes=None):
     """The DRC and LLM columns: confirm, dismiss or reset a finding, run DRC, or
     make a prompt for the check ids `checks` with the user's `notes`."""
-    if link.client is not None:
-        link.client.request_findings(action, key, source, checks, notes)
+    if _link().client is not None:
+        _link().client.request_findings(action, key, source, checks, notes)

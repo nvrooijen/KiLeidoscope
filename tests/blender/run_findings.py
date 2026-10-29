@@ -40,6 +40,7 @@ import kileido  # noqa: E402
 from kileido import (apply, columns, cut, findings, findings_draw, focus, hole_cut, label_place, layers,  # noqa: E402
                      live, state, transform)
 from kileido.objects import read_coordinates  # noqa: E402
+from kileido.objects import root as board_root  # noqa: E402
 from kileido_bridge import findings as bridge_findings  # noqa: E402
 from kileido_bridge import ghost_drc  # noqa: E402
 from kileido_bridge.board_index import BoardIndex  # noqa: E402
@@ -617,7 +618,7 @@ def check_lift(scene, index):
     copies = [obj for name, obj in objects().items() if name.startswith("KLS finding 2 lift")]
     assert len(copies) == 1 and body.hide_get() and body.hide_render
     (copy,) = copies
-    assert copy.data == mesh and copy.parent is None and copy.get("kls_model_fp_id") is None
+    assert copy.data == mesh and copy.parent == board_root() and copy.get("kls_model_fp_id") is None
     assert copy.get(findings_draw.TAG) and not copy.hide_get()
     # Turned 30° about the line through (11, 23) mm across the part: its left end (x = 11 mm)
     # stays put, its right end (x = 13 mm) rises by 2 mm sin 30°
@@ -650,7 +651,7 @@ def check_labels(found, count, below=False):
     the view sees with a leader to its anchor, on its plate, the plates apart on screen."""
     bpy.context.view_layer.update()
     drawn = objects()
-    texts = [obj for obj in drawn.values() if obj.type == "FONT" and obj.parent is None]  # not a glyph, a bar's
+    texts = [obj for obj in drawn.values() if obj.type == "FONT" and obj.parent == board_root()]  # not a glyph, a bar's
     assert len(texts) == count, sorted(drawn)
     box = finding_box(found)
     rect = [Vector((x, y, 0.0)) for x in (box[0], box[2]) for y in (box[1], box[3])]
@@ -774,7 +775,7 @@ def check_pull():
     home = label.matrix_world.translation.copy()
     reach = label.data.size * 2
     part_boxes = findings_draw.part_boxes
-    findings_draw.part_boxes = lambda: [(home - Vector((reach,) * 3), home + Vector((reach,) * 3))]
+    findings_draw.part_boxes = lambda to=None: [(home - Vector((reach,) * 3), home + Vector((reach,) * 3))]
     findings_draw._state["parts"] = None  # the boxes are read once per drawing: again now
     try:
         for ortho in (False, True):
@@ -2056,7 +2057,7 @@ def main():
         index = BoardIndex(snapshot)
         # Without a live link: the tab is greyed, Run DRC off, the list still shown.
         assert columns.tab_state("DRC") == "unavailable"
-        assert [key for key, _, _ in columns.TABS] == ["STUDIO", "IMS", "FLEX", "DRC", "LLM", "HIGH_SPEED"]
+        assert [key for key, _, _ in columns.TABS] == ["STUDIO", "BOARDS", "IMS", "FLEX", "DRC", "LLM", "HIGH_SPEED"]
         # A newer findings frame replaces a queued older one.
         link = live.LiveLink()
         for revision in (1, 2):

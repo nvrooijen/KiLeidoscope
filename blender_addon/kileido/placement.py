@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import section, transform
+from . import boardprops, section, transform
 from .state import board
 
 # A display clearance on both board faces, outside the KiCad copper surfaces.
@@ -53,7 +53,7 @@ def ims_band():
     """The IMS metal base as the cut and the laminate bands draw it: (z0, z1, sRGB), or None."""
     if board.ims is None:
         return None
-    metal = getattr(bpy.context.scene, "kileido_ims_metal", "AL")
+    metal = boardprops.get(bpy.context.scene, "kileido_ims_metal", "AL")
     return (*board.ims.base, section.BASE_METALS.get(metal, section.ALUMINUM))
 
 

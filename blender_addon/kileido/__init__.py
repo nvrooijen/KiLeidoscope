@@ -3,7 +3,7 @@
 bl_info = {
     "name": "KiLeidoscope",
     "author": "KiLeidoscope contributors",
-    "version": (0, 5, 3),
+    "version": (0, 5, 4),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > KiLeidoscope",
     "description": "View read-only KiCad board geometry from a dump or live bridge",
@@ -11,6 +11,8 @@ bl_info = {
 }
 VERSION = "{}.{}.{}".format(*bl_info["version"])
 
+import json
+import math
 import re
 import textwrap
 from pathlib import Path
@@ -24,10 +26,13 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
-               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, kicad_cli, layers,
-               lighting, live, models, packages, phase, pick, protection, render_depth, solder, studio, watcher)
-from .objects import view3d_spaces
-from .state import board
+               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, join, kicad_cli,
+               kicad_app, layers, lighting, live, models, packages, phase, pick, poses, protection, render_depth,
+               saved, slots, solder, studio, watcher)
+from . import arrangement, boardprops
+from .objects import outline_bounds, view3d_spaces
+from . import state
+from .state import SLOTS, board, boards, using
 
 
 class KILEIDO_OT_load_dump(bpy.types.Operator, ImportHelper):
@@ -94,6 +99,51 @@ class KILEIDO_OT_import_board(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
+class KILEIDO_OT_save_arrangement(bpy.types.Operator, ExportHelper):
+    bl_idname = "kileido.save_arrangement"
+    bl_label = "Save arrangement"
+    bl_description = ("Save where each board stands, and which KiCad file it is, as a USD file (.usda) that "
+                      "any USD tool opens")
+
+    filename_ext = ".usda"
+    filter_glob: StringProperty(default="*.usda", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        if not slots.loaded():
+            cls.poll_message_set("No board shown")
+            return False
+        return True
+
+    def execute(self, context):
+        count = arrangement.save(self.filepath)
+        self.report({"INFO"}, f"KiLeidoscope: {count} board{'s' if count != 1 else ''} saved to "
+                              f"{Path(self.filepath).name}")
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_open_arrangement(bpy.types.Operator, ImportHelper):
+    bl_idname = "kileido.open_arrangement"
+    bl_label = "Open arrangement"
+    bl_description = ("Place the boards as an arrangement file (.usda) says: those shown now at once, the "
+                      "others when Open in Blender brings them from their KiCad")
+    bl_options = {"REGISTER", "UNDO"}
+
+    filename_ext = ".usda"
+    filter_glob: StringProperty(default="*.usda;*.usd;*.usdc", options={"HIDDEN"})
+
+    def execute(self, context):
+        try:
+            placed, waiting = arrangement.load(self.filepath)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"KiLeidoscope: cannot read {Path(self.filepath).name}: {exc}")
+            return {"CANCELLED"}
+        collisions.schedule()
+        self.report({"INFO"}, f"KiLeidoscope: {placed} board{'s' if placed != 1 else ''} placed"
+                              + (f", {waiting} waiting for KiCad" if waiting else ""))
+        return {"FINISHED"}
+
+
 class KILEIDO_OT_view_only_board(bpy.types.Operator):
     bl_idname = "kileido.view_only_board"
     bl_label = "View-only board"
@@ -147,7 +197,7 @@ class KILEIDO_OT_pick(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        if not live.linked():  # the click falls through to Blender's own selection
+        if not live.any_linked():  # the click falls through to Blender's own selection
             cls.poll_message_set("Not connected to KiCad")
             return False
         return context.area is not None and context.area.type == "VIEW_3D"
@@ -174,7 +224,17 @@ class KILEIDO_OT_pick(bpy.types.Operator):
             fold.select(grip, self.extend)
             self.report({"INFO"}, f"KiLeidoscope: {grip.name} selected (R turns it, folding the board)")
             return {"FINISHED"}
-        item = pick.item_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
+        found = pick.board_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
+        item = None
+        if found is not None:  # a board's own: picked, and its KiCad selects
+            slot, item = found
+            _pick_board(context.scene, slot)
+            if not live.linked():
+                self.report({"INFO"}, "KiLeidoscope: this board is not connected to KiCad")
+                return {"FINISHED"}
+        elif not live.linked():  # a miss, and the picked board has no KiCad whose selection to clear
+            self.report({"INFO"}, "KiLeidoscope: nothing to select here")
+            return {"FINISHED"}
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
         if item is not None:
@@ -260,6 +320,14 @@ class KILEIDO_OT_reset_lights(bpy.types.Operator):
     def execute(self, context):
         lighting.reset_lights()
         return {"FINISHED"}
+
+
+def _menu_import(self, _context):
+    self.layout.operator(KILEIDO_OT_open_arrangement.bl_idname, text="KiLeidoscope arrangement (.usda)")
+
+
+def _menu_export(self, _context):
+    self.layout.operator(KILEIDO_OT_save_arrangement.bl_idname, text="KiLeidoscope arrangement (.usda)")
 
 
 def _viewport_mode(context):
@@ -394,6 +462,8 @@ class KILEIDO_PT_panel(bpy.types.Panel):
         health = live.health()
         text = {"ok": "Live with KiCad",
                 "off": "Not live: use Open in Blender in KiCad"}.get(health, live.status_text())
+        if len(slots.loaded()) > 1:  # whose link: the picked board's, in a few words
+            text = f"{_short_name(board.board_name)}: " + {"ok": "live", "off": "not live"}.get(health, text)
         layout.label(text=text, icon_value=_swatch("led", LED_COLORS[health]))
         error = live.error_text()
         if error:  # e.g. a second KiCad on Windows: say why the scene is empty
@@ -487,8 +557,11 @@ def _draw_thickness(layout, scene, copper_m):
     reflow.prop(scene, "kileido_solder_reflowed")
 
 
-def _draw_wrapped(layout, text, icon="INFO"):
-    for index, line in enumerate(_wrap(bpy.context, text)):
+COLUMN_WRAP_MARGIN_PX = 76  # unscaled: a column's box and icon, and the UI font a little wider than measured
+
+
+def _draw_wrapped(layout, text, icon="INFO", margin=WRAP_MARGIN_PX):
+    for index, line in enumerate(_wrap(bpy.context, text, margin)):
         layout.label(text=line, icon=icon if index == 0 else "BLANK1")
 
 
@@ -511,16 +584,16 @@ def _draw_ims(layout, scene):
         toggle.label(text="Enable", icon="CHECKBOX_DEHLT")
         _draw_wrapped(box, why)
         return
-    box.prop(scene, "kileido_ims", text="Enable")
+    box.prop(scene, boardprops.name("kileido_ims"), text="Enable")
     _draw_switched(box, "IMS")
     stack = board.ims
-    if scene.kileido_ims != (stack is not None) and _ims_source() is None:  # nothing to rebuild it from
+    if boardprops.get(scene, "kileido_ims") != (stack is not None) and _ims_source() is None:  # nothing to rebuild it from
         _draw_wrapped(box, "Connect KiCad or load the dump again to redraw the board")
-    if not scene.kileido_ims:
+    if not boardprops.get(scene, "kileido_ims"):
         return
-    box.row(align=True).prop(scene, "kileido_ims_metal", expand=True)
-    box.prop(scene, "kileido_ims_finish", text="Finish")
-    box.prop(scene, "kileido_ims_epoxy_um", text="Epoxy (µm)")
+    box.row(align=True).prop(scene, boardprops.name("kileido_ims_metal"), expand=True)
+    box.prop(scene, boardprops.name("kileido_ims_finish"), text="Finish")
+    box.prop(scene, boardprops.name("kileido_ims_epoxy_um"), text="Epoxy (µm)")
     if stack is None:  # the board is on its way again, with the base (_ims_update)
         if _ims_source() is not None:
             box.label(text="Rebuilding the board…", icon="TIME")
@@ -551,9 +624,9 @@ def _draw_flex_column(layout, scene):
         toggle.label(text="Enable", icon="CHECKBOX_DEHLT")
         _draw_wrapped(box, "This board has no flex. " + FLEX_HOW)
         return
-    box.prop(scene, "kileido_flex", text="Enable")
+    box.prop(scene, boardprops.name("kileido_flex"), text="Enable")
     _draw_switched(box, "FLEX")
-    if not scene.kileido_flex:
+    if not boardprops.get(scene, "kileido_flex"):
         _draw_wrapped(box, "Enable to fold the board, see its stiffeners and coverlay, and run the flex checks")
         return
     _draw_flex(layout, scene)
@@ -562,13 +635,13 @@ def _draw_flex_column(layout, scene):
 def _ims_state():
     if not ims.eligible(board.heights)[0]:
         return "unavailable"
-    return "on" if bpy.context.scene.kileido_ims else "off"
+    return "on" if boardprops.get(bpy.context.scene, "kileido_ims") else "off"
 
 
 def _flex_state():
     if not board.flex:
         return "unavailable"
-    return "on" if bpy.context.scene.kileido_flex else "off"
+    return "on" if boardprops.get(bpy.context.scene, "kileido_flex") else "off"
 
 
 def _draw_studio(layout, scene):
@@ -626,14 +699,122 @@ def _draw_high_speed(layout, scene):
 
 
 def _high_speed_state():
-    return "on" if bpy.context.scene.kileido_phase_enabled else "off"
+    return "on" if boardprops.get(bpy.context.scene, "kileido_phase_enabled") else "off"
 
 
-COLUMNS = {"STUDIO": _draw_studio, "IMS": _draw_ims, "FLEX": _draw_flex_column,
+def _draw_boards_column(layout, scene):
+    """The Multi-board column, with two boards or more: the picked board (its link, source and
+    size) and where it stands, the collision check with what collides and the Mated marks,
+    the arrangement file, and what Open in Blender in another KiCad does. The Boards list
+    itself stays in the panel: it picks the board every column works on."""
+    layout.label(text="Multi-board")
+    _draw_wrapped(layout, "Boards from other KiCads in one window: place them, check them, keep the arrangement",
+                  margin=COLUMN_WRAP_MARGIN_PX)
+    box = layout.box()
+    if not _several_boards():
+        _draw_wrapped(box, "One board is shown. Open in Blender in another KiCad adds its board beside it "
+                           "(or Import… a board exported from one)", margin=COLUMN_WRAP_MARGIN_PX)
+        return
+    if board.loaded:
+        _draw_board_card(box)
+        _draw_place(box, scene)
+    else:
+        _draw_wrapped(box, "Pick a live board in the Boards list to place it", margin=COLUMN_WRAP_MARGIN_PX)
+    box = layout.box()
+    row = box.row(align=True)
+    row.prop(scene, "kileido_collisions", text="Collision check")
+    text = collisions.status() if scene.kileido_collisions else None
+    if text:
+        found = row.row(align=True)
+        found.alignment = "RIGHT"
+        found.alert = text != "No collisions"
+        found.label(text=text, icon="ERROR" if found.alert else "CHECKMARK")
+    if scene.kileido_collisions:
+        _draw_collisions(box)
+    box = layout.box()
+    name = arrangement.file_name()
+    box.label(text=f"Arrangement: {name}" if name else "Arrangement", icon="FILE")
+    row = box.row(align=True)
+    row.operator(KILEIDO_OT_save_arrangement.bl_idname, text="Save…", icon="FILE_TICK")
+    row.operator(KILEIDO_OT_open_arrangement.bl_idname, text="Open…", icon="FILE_FOLDER")
+    join.draw_choice(layout.box(), bpy.context)
+
+
+def _draw_board_card(layout):
+    """The picked board as its row in the Boards list shows it (its link, name and source),
+    and its size: the subject of the place controls below."""
+    line = layout.row(align=True)
+    line.label(text="", icon_value=_swatch("led", LED_COLORS[live.health()]))
+    line.label(text=_short_name(board.board_name))
+    _hint(line, _source_hint())
+    size = _board_size_text()
+    if size:
+        note = layout.row()
+        note.active = False
+        note.label(text=size, icon="BLANK1")
+
+
+def _board_size_text():
+    """"80 × 50 mm · 1.6 mm · 4 layers" (its outline, thickness and copper layers) for the picked
+    board; "" without an outline."""
+    bounds = outline_bounds()
+    if bounds is None:
+        return ""
+    xmin, ymin, xmax, ymax = bounds
+    layers = len(board.heights)
+    return (f"{_mm(xmax - xmin)} × {_mm(ymax - ymin)} mm · {_mm(board.thickness_m)} mm"
+            + (f" · {layers} layer{'s' if layers != 1 else ''}" if layers else ""))
+
+
+def _mm(metres):
+    return f"{metres * 1e3:.2f}".rstrip("0").rstrip(".")
+
+
+def _draw_place(layout, scene):
+    """Where the picked board stands: its centre's offset from where its KiCad coordinates put
+    it, and its turn (X, then Y, then Z); Flip and Turn 90° about its centre, Reset back."""
+    column = layout.column(align=True)
+    column.prop(scene, "kileido_board_offset", text="Offset (mm)")
+    column.prop(scene, "kileido_board_rotation", text="Rotation")
+    row = layout.row(align=True)
+    row.operator(KILEIDO_OT_board_turn.bl_idname, text="Flip").turn = "FLIP"
+    row.operator(KILEIDO_OT_board_turn.bl_idname, text="Turn 90°").turn = "TURN"
+    row.operator(KILEIDO_OT_board_turn.bl_idname, text="Reset").turn = "RESET"
+
+
+def _draw_collisions(layout):
+    """What collides, the worst few: parts on two boards get a Mated button (a connector in
+    its mate); and the pairs marked Mated, each with an X to take the mark off."""
+    hits, pairs = collisions.hits(), collisions.mated_shown()
+    if not hits and not pairs:
+        return
+    column = layout.column(align=True)
+    for hit in hits[:COLLISIONS_LISTED]:
+        line = column.row(align=True)
+        line.label(text=hit["text"], icon="ERROR")
+        if hit["pair"] is not None:
+            button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="LINKED", emboss=False)
+            button.pair, button.mated = json.dumps(hit["pair"]), True
+    if len(hits) > COLLISIONS_LISTED:
+        column.label(text=f"and {len(hits) - COLLISIONS_LISTED} more", icon="BLANK1")
+    for pair, text in pairs:
+        line = column.row(align=True)
+        line.label(text=text, icon="LINKED")  # the link icon says Mated: the row keeps its width for names
+        button = line.operator(KILEIDO_OT_mated.bl_idname, text="", icon="X", emboss=False)
+        button.pair, button.mated = json.dumps([*pair[0], *pair[1]]), False
+
+
+def _boards_state():
+    """The Boards tab: lit with two boards or more, greyed with one."""
+    return "on" if _several_boards() else "unavailable"
+
+
+COLUMNS = {"STUDIO": _draw_studio, "BOARDS": _draw_boards_column, "IMS": _draw_ims, "FLEX": _draw_flex_column,
            "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM"),
            "HIGH_SPEED": _draw_high_speed}  # columns.TABS keys -> what the column draws
-columns.STATES.update(IMS=_ims_state, FLEX=_flex_state, DRC=lambda: findings.tab_state("DRC"),
-                      LLM=lambda: findings.tab_state("LLM"), HIGH_SPEED=_high_speed_state)
+columns.STATES.update(BOARDS=_boards_state, IMS=_ims_state, FLEX=_flex_state,
+                      DRC=lambda: findings.tab_state("DRC"), LLM=lambda: findings.tab_state("LLM"),
+                      HIGH_SPEED=_high_speed_state)
 
 
 def _draw_flex(layout, scene):
@@ -647,8 +828,8 @@ def _draw_flex(layout, scene):
     box = layout.box()
     title = box.split(factor=0.45)
     title.label(text="Use")
-    title.row(align=True).prop(scene, "kileido_flex_use", expand=True)
-    use = scene.kileido_flex_use.lower()
+    title.row(align=True).prop(scene, boardprops.name("kileido_flex_use"), expand=True)
+    use = boardprops.get(scene, "kileido_flex_use").lower()
     total, need = found["total_nm"] * 1e-9, found["limits"][use]
     column = box.column(align=True)
     for label, value in (("Flex layers", " + ".join(found["layers"]) or "–"),
@@ -679,7 +860,7 @@ def _draw_flex(layout, scene):
                      else "Dynamic flex: 1 or 2 copper layers only")
     _draw_stiffeners(box, found.get("stiffeners", ()))
     if fold.foldable():
-        box.prop(scene, "kileido_fold", text="Fold", slider=True)
+        box.prop(scene, boardprops.name("kileido_fold"), text="Fold", slider=True)
         _draw_steps(box, scene)
         _draw_animation(box, scene)
     lines = [(problem["message"], (), "INFO" if problem.get("level") == "note" else "ERROR", "")
@@ -755,7 +936,7 @@ def _draw_steps(box, scene):
     sequence = fold.foldmath.steps(plan) if plan is not None else []
     if len(sequence) < 2:
         return
-    progress = scene.kileido_fold
+    progress = boardprops.get(scene, "kileido_fold")
     column = box.column(align=True)
     for count, (number, members) in enumerate(sequence, start=1):
         start, end = (count - 1) / len(sequence), count / len(sequence)
@@ -771,8 +952,8 @@ def _draw_steps(box, scene):
 def _draw_animation(box, scene):
     """Key the fold on the timeline for rendering, or go back to live folding."""
     row = box.row(align=True)
-    row.prop(scene, "kileido_fold_frames", text="Frames")
-    row.prop(scene, "kileido_fold_fps", text="fps")
+    row.prop(scene, boardprops.name("kileido_fold_frames"), text="Frames")
+    row.prop(scene, boardprops.name("kileido_fold_fps"), text="fps")
     row = box.row(align=True)
     keyed = fold.keyed()
     row.operator(KILEIDO_OT_fold_animation.bl_idname, text="Re-key fold animation" if keyed else "Key fold animation",
@@ -802,10 +983,11 @@ class KILEIDO_OT_fold_animation(bpy.types.Operator):
             fold.clear_animation()
             return {"FINISHED"}
         scene = context.scene
-        if not fold.key_animation(scene.kileido_fold_frames, scene.kileido_fold_fps):
+        frames, fps = boardprops.get(scene, "kileido_fold_frames"), boardprops.get(scene, "kileido_fold_fps")
+        if not fold.key_animation(frames, fps):
             self.report({"WARNING"}, "Nothing to fold: no bends on this board")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Fold keyed over frames 1-{scene.kileido_fold_frames} at {scene.kileido_fold_fps} fps")
+        self.report({"INFO"}, f"Fold keyed over frames 1-{frames} at {fps} fps")
         return {"FINISHED"}
 
 
@@ -817,7 +999,7 @@ class KILEIDO_OT_fold_step(bpy.types.Operator):
     progress: FloatProperty()
 
     def execute(self, context):
-        context.scene.kileido_fold = self.progress
+        boardprops.put(context.scene, "kileido_fold", self.progress)
         return {"FINISHED"}
 
 
@@ -916,14 +1098,33 @@ class KILEIDO_OT_flex_show(bpy.types.Operator):
 
 
 def _layers_board(scene):
-    """The board the Layers list shows: None for the live board, "ALL" for every board,
-    else a view-only index."""
+    """The board the Layers list shows: None for the picked live board, "ALL" for every
+    board, else a view-only index."""
     value = getattr(scene, "kileido_layers_board", "LIVE")
-    if value == "ALL" and packages.roots():
+    if value == "ALL" and _several_boards():
         return "ALL"
-    if value in ("", "LIVE", "ALL") or packages.collection_of(int(value)) is None:
+    if value in ("", "LIVE", "ALL") or value[:1] in ("S", "W") or packages.collection_of(int(value)) is None:
         return None
     return int(value)
+
+
+def _several_boards():
+    """More than one board shown (live ones and view-only ones), or waited for by an opened
+    arrangement."""
+    return len(slots.loaded()) + len(packages.roots()) + len(arrangement.waiting_entries()) > 1
+
+
+def _live_row(slot):
+    """The Boards list's value for live board `slot`."""
+    return f"S{slot}"
+
+
+def _pick_board(scene, slot):
+    """Pick live board `slot` (slots.pick); the Boards list follows when it shows a live board."""
+    slots.pick(slot)
+    value = getattr(scene, "kileido_layers_board", "LIVE")
+    if (value in ("", "LIVE") or value.startswith("S")) and value != _live_row(slot) and len(slots.loaded()) > 1:
+        scene.kileido_layers_board = _live_row(slot)
 
 
 _board_items = []  # Blender needs the enum item strings kept alive
@@ -932,6 +1133,8 @@ _board_items = []  # Blender needs the enum item strings kept alive
 def _layers_board_items(_scene, _context):
     _board_items[:] = [("ALL", "All boards", "Every board's layers together; an eye switches that layer on all")]
     _board_items.append(("LIVE", board.board_name or "Live board", "The board that follows KiCad"))
+    _board_items.extend((_live_row(slot), boards[slot].board_name or "Live board", "A board that follows its KiCad")
+                        for slot in slots.loaded())
     _board_items.extend((str(root[packages.ROOT_TAG]), f"{root['kls_board_name']} (view-only)", "An imported board")
                         for root in packages.roots())
     return _board_items
@@ -958,16 +1161,29 @@ class KILEIDO_OT_view_only_row(bpy.types.Operator):
 
 
 class KILEIDO_board_row(bpy.types.PropertyGroup):
-    """A row of the Boards list: "ALL", "LIVE" or a view-only board's index, and its label."""
+    """A row of the Boards list: "ALL", a live board's "S<slot>" or a view-only board's index,
+    and its label."""
     value: StringProperty()
     label: StringProperty()
 
 
 def _board_rows_wanted():
-    """(value, label) per row of the Boards list, as the boards are now."""
-    rows = [("ALL", "All boards"), ("LIVE", board.board_name or "Live board")]
+    """(value, label) per row of the Boards list, as the boards are now: every board, then
+    the live boards in slot order, then the view-only ones."""
+    rows = [("ALL", "All boards")]
+    rows.extend((_live_row(slot), boards[slot].board_name or "Live board") for slot in slots.loaded())
     rows.extend((str(root[packages.ROOT_TAG]), root["kls_board_name"]) for root in packages.roots())
+    rows.extend((f"W{index}", entry["name"] or Path(entry["path"]).name)
+                for index, entry in enumerate(arrangement.waiting_entries()))
     return rows
+
+
+def _chosen_wanted(scene):
+    """The Boards list's value the picked board needs while the list shows a live board."""
+    value = getattr(scene, "kileido_layers_board", "LIVE")
+    if value in ("", "LIVE") or (value.startswith("S") and value != _live_row(state.picked())):
+        return _live_row(state.picked()) if boards[state.picked()].loaded else value
+    return value
 
 
 _rows_sync_pending = False
@@ -986,6 +1202,9 @@ def _sync_board_rows():
         for value, label in wanted:
             row = rows.add()
             row.value, row.label = value, label
+    chosen = _chosen_wanted(scene)
+    if chosen != getattr(scene, "kileido_layers_board", "LIVE"):
+        scene.kileido_layers_board = chosen
     _layers_board_changed(scene, None)
     for screen in bpy.data.screens:
         for area in screen.areas:
@@ -994,10 +1213,16 @@ def _sync_board_rows():
 
 
 def _board_row_chosen(scene, _context):
-    """The Boards list's highlight moved (a click on a row): show that board's layers."""
+    """The Boards list's highlight moved (a click on a row): show that board's layers; a live
+    board is picked (its tools, its position, its buttons)."""
     rows = scene.kileido_board_rows
     if 0 <= scene.kileido_board_row < len(rows):
         value = rows[scene.kileido_board_row].value
+        if value.startswith("W"):  # a board on its way: nothing to show yet, the highlight goes back
+            _layers_board_changed(scene, None)
+            return
+        if value.startswith("S"):
+            slots.pick(int(value[1:]))
         if scene.kileido_layers_board != value:
             scene.kileido_layers_board = value
 
@@ -1020,11 +1245,24 @@ def _hint(line, text):
 
 def _live_board_cells(line):
     """The live board's icon, name and source: the assembly variant selected in
-    KiCad, else "live", or "dump"."""
+    KiCad, else "live", or "dump"; offline with a file, Open in KiCad."""
     line.label(text="", icon="LINKED" if live.connected() else "FILE")
     line.label(text=board.board_name)
+    _hint(line, _source_hint())
+    if live.health() in ("off", "down") and board.board_path:
+        line.operator(KILEIDO_OT_open_in_kicad.bl_idname, text="", emboss=False, icon="WINDOW").slot = board.slot
+
+
+def _short_name(board_name):
+    """A board's name for a narrow row: without ".kicad_pcb"."""
+    return board_name.removesuffix(".kicad_pcb")
+
+
+def _source_hint():
+    """The board's source as a row's hint: the assembly variant selected in KiCad, else
+    "live", or "dump"."""
     variant = (board.export or {}).get("variant", "")
-    _hint(line, (variant or "live") if live.connected() else "dump")
+    return (variant or "live") if live.connected() else "saved" if board.saved_copy else "dump"
 
 
 class KILEIDO_UL_boards(bpy.types.UIList):
@@ -1039,11 +1277,47 @@ class KILEIDO_UL_boards(bpy.types.UIList):
             line.label(text="", icon="OUTLINER_COLLECTION")
             line.label(text=item.label)
             return
-        if item.value == "LIVE":
+        if item.value.startswith("S"):
+            slot = int(item.value[1:])
+            shown = not slots.hidden(slot)
             arrow = line.row(align=True)
-            arrow.enabled = False  # the live board stays where KiCad puts it
-            arrow.operator(KILEIDO_OT_select_board.bl_idname, text="", emboss=False, icon="RESTRICT_SELECT_ON")
-            _live_board_cells(line)
+            arrow.enabled = shown  # select needs it visible
+            arrow.operator(KILEIDO_OT_select_live_board.bl_idname, text="", emboss=False,
+                           icon="RESTRICT_SELECT_OFF").slot = slot
+            toggle = line.operator(KILEIDO_OT_live_board.bl_idname, text="", emboss=False,
+                                   icon="HIDE_OFF" if shown else "HIDE_ON")
+            toggle.slot, toggle.action = slot, "TOGGLE"
+            with using(slot):
+                health = live.health()
+                line.label(text="", icon_value=_swatch("led", LED_COLORS[health]))
+                name = line.row(align=True)
+                name.active = shown
+                name.label(text=_short_name(item.label))
+                _hint(line, _source_hint())
+                if health in ("off", "down") and board.board_path:  # offline: KiCad brings it back live
+                    line.operator(KILEIDO_OT_open_in_kicad.bl_idname, text="", emboss=False,
+                                  icon="WINDOW").slot = slot
+            drop = line.operator(KILEIDO_OT_live_board.bl_idname, text="", emboss=False, icon="X")
+            drop.slot, drop.action = slot, "REMOVE"
+            return
+        if item.value.startswith("W"):  # an opened arrangement waits for it
+            entries = arrangement.waiting_entries()
+            entry = entries[int(item.value[1:])] if int(item.value[1:]) < len(entries) else None
+            if entry is None:
+                return
+            line.label(text="", icon="BLANK1")
+            line.label(text="", icon="BLANK1")
+            line.label(text="", icon_value=_swatch("led", LED_COLORS["off"]))
+            name = line.row(align=True)
+            name.active = False
+            name.label(text=_short_name(item.label))
+            _hint(line, "waiting")
+            opening = line.row(align=True)
+            opening.enabled = bool(entry["path"])
+            button = opening.operator(KILEIDO_OT_open_in_kicad.bl_idname, text="", emboss=False, icon="WINDOW")
+            button.path = entry["path"]
+            drop = line.operator(KILEIDO_OT_forget_waiting.bl_idname, text="", emboss=False, icon="X")
+            drop.path, drop.name = entry["path"], entry["name"]
             return
         board_index = int(item.value)
         collection = packages.collection_of(board_index)
@@ -1066,11 +1340,142 @@ class KILEIDO_UL_boards(bpy.types.UIList):
         pass  # a few rows: nothing to filter or sort
 
 
+class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
+    bl_idname = "kileido.open_in_kicad"
+    bl_label = "Open in KiCad"
+    bl_description = ("Open this board in KiCad's PCB editor; Open in Blender there brings it back live here, "
+                      "where it stands. Open in a KiCad already: click Open in Blender there")
+
+    # A row's button sets one of these; SKIP_SAVE: Blender fills the other from the last click otherwise
+    slot: IntProperty(default=0, options={"SKIP_SAVE"})  # a board shown offline, else
+    path: StringProperty(options={"SKIP_SAVE"})  # a board an opened arrangement waits for
+
+    def execute(self, context):
+        path, export = self.path, None
+        if self.slot:
+            path, export = boards[self.slot].board_path, boards[self.slot].export
+        try:
+            kicad_app.open_board(path, export)
+        except kicad_app.AlreadyOpen as exc:
+            self.report({"INFO"}, f"KiLeidoscope: {exc}")
+            return {"FINISHED"}
+        except (FileNotFoundError, OSError) as exc:
+            self.report({"ERROR"}, f"KiLeidoscope: cannot open it in KiCad: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"KiLeidoscope: opening {Path(path).name} in KiCad; then use Open in Blender there")
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_forget_waiting(bpy.types.Operator):
+    bl_idname = "kileido.forget_waiting"
+    bl_label = "Stop waiting"
+    bl_description = "Stop waiting for this board of the opened arrangement (the file keeps it)"
+
+    path: StringProperty()
+    name: StringProperty()
+
+    def execute(self, context):
+        arrangement.forget(self.path, self.name)
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_mated(bpy.types.Operator):
+    bl_idname = "kileido.mated"
+    bl_label = "Mated"
+    bl_description = ("Mated: these two parts are plugged into each other (a connector and its mate), so they "
+                      "and each one in the other's board are no collision. Kept in the file and the arrangement")
+    bl_options = {"REGISTER", "UNDO"}
+
+    pair: StringProperty()  # [board, reference, board, reference] (collisions.board_key)
+    mated: BoolProperty(default=True)
+
+    @classmethod
+    def description(cls, context, properties):
+        return cls.bl_description if properties.mated else "Take the Mated mark off: check these two parts again"
+
+    def execute(self, context):
+        collisions.set_mated(*json.loads(self.pair), self.mated)
+        collisions.run()
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_live_board(bpy.types.Operator):
+    bl_idname = "kileido.live_board"
+    bl_label = "Live board"
+    bl_description = ("Show or hide this board, or remove it: its link to KiCad closes (Open in Blender there "
+                      "brings it back)")
+
+    slot: IntProperty()
+    action: EnumProperty(items=(("TOGGLE", "Show or hide", ""), ("REMOVE", "Remove", "")))
+
+    def invoke(self, context, event):
+        if self.action == "REMOVE":
+            return context.window_manager.invoke_confirm(self, event, title=f"Remove {boards[self.slot].board_name}?",
+                                                         message="Its link to KiCad closes", confirm_text="Remove")
+        return self.execute(context)
+
+    def execute(self, context):
+        if self.action == "REMOVE":
+            slots.remove(self.slot)
+        else:
+            slots.set_hidden(self.slot, not slots.hidden(self.slot))
+        collisions.schedule()
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_board_turn(bpy.types.Operator):
+    bl_idname = "kileido.board_turn"
+    bl_label = "Turn board"
+    bl_description = "Turn the picked board about its centre, or put it back where its KiCad coordinates put it"
+    bl_options = {"REGISTER", "UNDO"}
+
+    turn: EnumProperty(items=(("FLIP", "Flip", "Turn the board over: 180° about X through its centre"),
+                              ("TURN", "Turn 90°", "Turn the board 90° about Z through its centre"),
+                              ("RESET", "Reset", "Put the board back where its KiCad coordinates put it, unturned")))
+
+    @classmethod
+    def description(cls, context, properties):
+        return cls.bl_rna.properties["turn"].enum_items[properties.turn].description
+
+    def execute(self, context):
+        if not board.loaded:
+            return {"CANCELLED"}
+        if self.turn == "RESET":
+            poses.set_shown(offset=(0.0, 0.0, 0.0), angles=(0.0, 0.0, 0.0))
+        else:
+            poses.turn(*((0, math.pi) if self.turn == "FLIP" else (2, math.pi / 2)))
+        collisions.schedule()
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_select_live_board(bpy.types.Operator):
+    bl_idname = "kileido.select_live_board"
+    bl_label = "Select board"
+    bl_description = ("Select this board to move (G) or turn (R) it; its Position numbers follow. "
+                      "What is on it still follows KiCad")
+    bl_options = {"REGISTER", "UNDO"}
+
+    slot: IntProperty()
+
+    def execute(self, context):
+        _pick_board(context.scene, self.slot)
+        root = poses.root()
+        if root is None or slots.hidden(self.slot):
+            self.report({"WARNING"}, "KiLeidoscope: show the board first")
+            return {"CANCELLED"}
+        view_layer = context.view_layer
+        for obj in tuple(view_layer.objects.selected):
+            obj.select_set(False)
+        root.select_set(True)
+        view_layer.objects.active = root
+        self.report({"INFO"}, f"KiLeidoscope: {_short_name(board.board_name)} selected (G moves it, R turns it)")
+        return {"FINISHED"}
+
+
 class KILEIDO_OT_select_board(bpy.types.Operator):
     bl_idname = "kileido.select_board"
     bl_label = "Select board"
-    bl_description = ("Select this view-only board to move (G), rotate (R) or scale (S) it. "
-                      "The live board stays where KiCad puts it")
+    bl_description = "Select this view-only board to move (G), rotate (R) or scale (S) it"
     bl_options = {"REGISTER", "UNDO"}
 
     index: IntProperty()
@@ -1109,6 +1514,7 @@ class _Boards:
 
     def draw(self, context):
         scene = context.scene
+        join.draw(self.layout, context, _several_boards())  # a board from another KiCad asking to join
         self._draw_boards(context)
         index = _layers_board(scene)
         if packages.roots():
@@ -1121,30 +1527,24 @@ class _Boards:
             self._draw_view_only(index)
 
     def _draw_boards(self, context):
-        """The live board alone: its name. With view-only boards: the Boards list
-        (KILEIDO_UL_boards), its rows refreshed by a timer when the boards changed."""
+        """One live board: its name. With more boards: the Boards list (KILEIDO_UL_boards),
+        its rows refreshed by a timer when the boards changed; the Boards column places
+        them, checks them and keeps the arrangement. Then the picked board's export and an
+        import."""
         global _rows_sync_pending
         layout = self.layout
         scene = context.scene
-        if not packages.roots():
+        if not _several_boards():
             if board.collection is not None:
                 _live_board_cells(layout.row(align=True))
         else:
             rows = scene.kileido_board_rows
-            if [(row.value, row.label) for row in rows] != _board_rows_wanted() and not _rows_sync_pending:
+            if ([(row.value, row.label) for row in rows] != _board_rows_wanted() or
+                    _chosen_wanted(scene) != scene.kileido_layers_board) and not _rows_sync_pending:
                 _rows_sync_pending = True
                 bpy.app.timers.register(_sync_board_rows)
             layout.template_list(KILEIDO_UL_boards.bl_idname, "", scene, "kileido_board_rows",
                                  scene, "kileido_board_row", rows=len(rows), maxrows=len(rows))
-        if packages.roots():
-            row = layout.row(align=True)
-            row.prop(context.scene, "kileido_collisions", text="Collision check")
-            text = collisions.status() if context.scene.kileido_collisions else None
-            if text:
-                found = row.row(align=True)
-                found.alignment = "RIGHT"
-                found.alert = text != "No collisions"
-                found.label(text=text, icon="ERROR" if found.alert else "CHECKMARK")
         row = layout.row(align=True)
         row.operator(KILEIDO_OT_export_board.bl_idname, text="Export…", icon="EXPORT")
         row.operator(KILEIDO_OT_import_board.bl_idname, text="Import…", icon="IMPORT")
@@ -1277,6 +1677,7 @@ class _Status:
             self.layout.operator("kileido.reset_cache", icon="TRASH", text="Reset cache")
 
 
+COLLISIONS_LISTED = 6  # collisions named in the Boards section; the rest counted
 LED_COLORS = {"ok": (0.2, 0.85, 0.3), "busy": (1.0, 0.68, 0.1), "down": (0.92, 0.2, 0.18),
               "off": (0.45, 0.45, 0.45)}
 SWATCH_PX = 32
@@ -1329,7 +1730,11 @@ def _swatch(kind, color):
 CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_load_dump, KILEIDO_OT_export_board, KILEIDO_OT_import_board, KILEIDO_OT_view_only_board,
            KILEIDO_OT_view_only_row, KILEIDO_OT_all_boards_row, KILEIDO_OT_select_board, KILEIDO_board_row,
-           KILEIDO_UL_boards, KILEIDO_OT_resync, KILEIDO_OT_reset_cache,
+           KILEIDO_UL_boards, KILEIDO_OT_open_in_kicad, KILEIDO_OT_forget_waiting,
+           KILEIDO_OT_mated, KILEIDO_OT_live_board, KILEIDO_OT_select_live_board, KILEIDO_OT_board_turn,
+           KILEIDO_OT_save_arrangement,
+           KILEIDO_OT_open_arrangement, KILEIDO_OT_resync,
+           KILEIDO_OT_reset_cache,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
            KILEIDO_OT_flex_group, *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, KILEIDO_PT_panel)
@@ -1339,28 +1744,35 @@ LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
 _KEYMAPS = []
 
 
+def _on_every_board(refresh, *args):
+    """A setting every board shares changed: `refresh(*args)` on each live board, each while
+    it is `board`."""
+    for _slot in state.each_loaded():
+        refresh(*args)
+
+
 def _layer_update(layer):
-    def update(scene, _context):
+    def update(scene, _context):  # run with its board in use (boardprops.expand)
         cosmetics.set_layer_visible(layer, getattr(scene, cosmetics.property_name(layer)))
     return update
 
 
 def _row_update(row):
-    def update(_scene, _context):
+    def update(_scene, _context):  # run with its board in use (boardprops.expand)
         layers.refresh(row)
     return update
 
 
 def _show_dnp_update():
-    footprints.refresh_dnp()
+    _on_every_board(footprints.refresh_dnp)
     cut.invalidate()
     collisions.schedule()
 
 
 def _thickness_update(refresh_live):
-    """A Thickness setting changed: the live board, then every view-only board."""
+    """A Thickness setting changed: every live board, then every view-only board."""
     def update(_scene, _context):
-        refresh_live()
+        _on_every_board(refresh_live)
         packages.refresh_thickness()
     return update
 
@@ -1374,8 +1786,8 @@ _switched_off = {}  # mode switched on -> the other mode it turned off, for its 
 def _ims_switched(scene, _context):
     """IMS on or off: Flex goes off when IMS comes on (never both), then the board rebuilds."""
     _switched_off.clear()
-    if scene.kileido_ims and scene.kileido_flex:
-        scene.kileido_flex = False  # removes the folded copies
+    if boardprops.get(scene, "kileido_ims") and boardprops.get(scene, "kileido_flex"):
+        boardprops.put(scene, "kileido_flex", False)  # removes the folded copies
         _switched_off["IMS"] = "Flex"
     _ims_update(scene, _context)
 
@@ -1384,18 +1796,22 @@ def _flex_switched(scene, _context):
     """Flex on or off: IMS goes off when Flex comes on (never both); the folded copies are
     baked again, or removed (fold._plan follows the setting)."""
     _switched_off.clear()
-    if scene.kileido_flex and scene.kileido_ims:
-        scene.kileido_ims = False  # rebuilds the board without its base
+    if boardprops.get(scene, "kileido_flex") and boardprops.get(scene, "kileido_ims"):
+        boardprops.put(scene, "kileido_ims", False)  # rebuilds the board without its base
         _switched_off["FLEX"] = "IMS"
-    if not scene.kileido_flex:
+    if not boardprops.get(scene, "kileido_flex"):
         fold.clear_animation()  # the keys turn handles that are about to go
-        scene.kileido_fold = 0.0  # back on, the handles start flat: so does the slider
+        boardprops.put(scene, "kileido_fold", 0.0)  # back on, the handles start flat: so does the slider
     fold.invalidate()
+
+
+_ims_waiting = set()  # boards (slots) whose IMS setting changed: `_ims_rebuild` sends for them again
 
 
 def _ims_update(_scene, _context):
     """IMS mode or its base changed: every height moves, so the board comes again (from
     KiCad, or the dump file) and apply._shape_ims fits it to the new stack as it arrives."""
+    _ims_waiting.add(board.slot)
     if bpy.app.timers.is_registered(_ims_rebuild):
         bpy.app.timers.unregister(_ims_rebuild)
     bpy.app.timers.register(_ims_rebuild, first_interval=IMS_REBUILD_DELAY_S)
@@ -1407,50 +1823,85 @@ def _ims_source():
 
 
 def _ims_rebuild():
-    if board.collection is None or not ims.eligible(board.heights)[0]:
-        return None
-    source = _ims_source()
-    if source == "live":
-        live.request_resync()
-    elif source == "dump":
-        dump.load_async(dump.last_path)
+    waiting = set(_ims_waiting)
+    _ims_waiting.clear()
+    for slot in state.each_loaded():  # the boards whose setting changed, if IMS mode can apply to them
+        if slot not in waiting or not ims.eligible(board.heights)[0]:
+            continue
+        source = _ims_source()
+        if source == "live":
+            live.request_resync()
+        elif source == "dump":
+            dump.load_async(dump.last_path)
     return None
 
 
 def _mask_opacity_update():
-    """The solder mask opacity changed: recolour the live board, then the view-only ones."""
-    if board.materials:
-        apply.set_color_mode(board.color_mode)
+    """The solder mask opacity changed: recolour the live boards, then the view-only ones."""
+    for _slot in state.each_loaded():
+        if board.materials:
+            apply.set_color_mode(board.color_mode)
     packages.refresh_mask_opacity()
+
+
+def _offset_get(_scene):
+    return tuple(value * 1e3 for value in poses.shown()[0]) if board.loaded else (0.0, 0.0, 0.0)
+
+
+def _offset_set(_scene, value):
+    if board.loaded:
+        poses.set_shown(offset=tuple(v * 1e-3 for v in value))
+        collisions.schedule()
+
+
+def _rotation_get(_scene):
+    return poses.shown()[1] if board.loaded else (0.0, 0.0, 0.0)
+
+
+def _rotation_set(_scene, value):
+    if board.loaded:
+        poses.set_shown(angles=tuple(value))
+        collisions.schedule()
 
 
 def _scene_properties():
     """Every Scene property the add-on registers (and removes again), by attribute name."""
+    with using(1):  # board 1's names: boardprops.expand makes the others
+        return _properties()
+
+
+def _properties():
     properties = {
+        "kileido_board_offset": FloatVectorProperty(
+            name="Offset", size=3, subtype="XYZ", precision=3, step=10, get=_offset_get, set=_offset_set,
+            description="Where the picked board's centre sits from where KiCad's coordinates put it (mm)"),
+        "kileido_board_rotation": FloatVectorProperty(
+            name="Rotation", size=3, subtype="EULER", unit="ROTATION", get=_rotation_get, set=_rotation_set,
+            description="The picked board's turn about its centre: X first, then Y, then Z"),
         "kileido_layers_board": EnumProperty(
             name="Board", description="Whose layers the list below shows and switches",
-            items=_layers_board_items, update=_layers_board_changed),
+            items=_layers_board_items, default=1, update=_layers_board_changed),  # 1: the picked live board
         "kileido_board_rows": CollectionProperty(type=KILEIDO_board_row),
         "kileido_board_row": IntProperty(
             name="Board", description="The highlighted row of the Boards list: whose layers show below",
             update=_board_row_chosen),
         "kileido_collisions": BoolProperty(
             name="Collision check", default=True,
-            description="Mark where the live board and the view-only boards overlap, with a red box",
+            description="Mark where the boards shown overlap, with a red box, and list what collides",
             update=lambda self, context: collisions.schedule()),
         "kileido_color_mode": EnumProperty(
             name="Colors", items=(("FAB", "Board stackup", "Saved mask colors and KiCad 3D copper color"),
                                   ("REALISTIC", "Realistic", "Lit board materials, solder mask and exposed metal"),
                                   ("EDITOR", "PCB Editor", "Active KiCad PCB Editor layer colors")),
-            default="FAB", update=lambda self, context: apply.set_color_mode(self.kileido_color_mode)),
+            default="FAB", update=lambda self, context: _on_every_board(apply.set_color_mode, self.kileido_color_mode)),
         "kileido_shaded": BoolProperty(
             name="Shaded", default=True,
             description="Board stackup and PCB Editor colors lit by the studio lights (and the cut light), "
                         "with shading and shadows, so depth shows. Off: flat colors, as KiCad draws them",
-            update=lambda self, context: apply.set_color_mode(self.kileido_color_mode)),
+            update=lambda self, context: _on_every_board(apply.set_color_mode, self.kileido_color_mode)),
         "kileido_show_board": BoolProperty(
             name="Show board solid", default=True,
-            update=lambda self, context: apply.set_board_visible(self.kileido_show_board)),
+            update=lambda self, context: _on_every_board(apply.set_board_visible, self.kileido_show_board)),
         "kileido_light_power": FloatProperty(
             name="Light strength", default=lighting.SOFTBOX_POWER_W, min=0.0, soft_max=1.0, step=1,
             precision=3, unit="POWER",
@@ -1519,17 +1970,17 @@ def _scene_properties():
             default="RESIN",
             description="What fills the vias KiCad marks filled (or capped). KiCad sets each via's protection "
                         "(select it, E, Protection features); it does not store the fill material",
-            update=lambda self, context: apply.refresh_protection()),
+            update=lambda self, context: _on_every_board(apply.refresh_protection)),
         "kileido_max_tent_mm": FloatProperty(
             name="Max tent hole", default=protection.MAX_TENT_M * 1e3, min=0.05, soft_max=1.0, max=5.0,
             step=1, precision=2,
             description="Largest finished hole (mm; the drill less twice the Via wall) a solder mask tent can span. "
                         "A via KiCad tents or covers over a larger empty hole is shown open, and listed here",
-            update=lambda self, context: apply.refresh_protection()),
+            update=lambda self, context: _on_every_board(apply.refresh_protection)),
         "kileido_via_plating_um": FloatProperty(
             name="Via wall (µm)", default=25.0, min=5.0, max=100.0, step=100, precision=0,
             description="Plating thickness of a via's barrel, in 3D and in the cross section (KiCad stores none)",
-            update=lambda self, context: apply.refresh_plating()),
+            update=lambda self, context: _on_every_board(apply.refresh_plating)),
         "kileido_show_dnp": BoolProperty(
             name="DNP components", default=True,
             description="Show the 3D models of footprints KiCad marks \"Do not populate\". "
@@ -1560,13 +2011,13 @@ def _scene_properties():
         "kileido_ims_metal": EnumProperty(
             name="Base metal", items=tuple((key, name, f"{name} base") for key, name in ims.METALS.items()),
             default="AL", description="The metal of the IMS base (KiCad stores none)",
-            update=lambda self, context: apply.refresh_ims_metal()),
+            update=lambda self, context: _on_every_board(apply.refresh_ims_metal)),
         "kileido_ims_finish": EnumProperty(
             name="Base finish", items=tuple((key, label, f"{label} base (Realistic colours)")
                                             for key, (label, _, _) in ims.FINISHES.items()),
             default="MILL", description="The IMS base's outer faces in Realistic colours; the cut plane always "
                                         "shows a polished section, as a micrograph does",
-            update=lambda self, context: apply.refresh_ims_finish()),
+            update=lambda self, context: _on_every_board(apply.refresh_ims_finish)),
         "kileido_ims_epoxy_um": IntProperty(
             name="Epoxy", default=ims.EPOXY_UM[2], min=ims.EPOXY_UM[0], max=ims.EPOXY_UM[1],
             description="The IMS's thermal dielectric under F.Cu, in µm (the fab's; KiCad's 2-layer stackup "
@@ -1576,7 +2027,7 @@ def _scene_properties():
             name="Fold", default=0.0, min=0.0, max=1.0, step=5, precision=2, subtype="FACTOR",
             description="Fold the flex at its bends: 0 flat, 1 every bend at its angle from KiCad's Bend layer; "
                         "bends numbered #1, #2, ... fold one step after another",
-            update=lambda self, context: fold.set_progress(self.kileido_fold)),
+            update=lambda self, context: fold.set_progress(boardprops.get(self, "kileido_fold"))),
         "kileido_fold_frames": IntProperty(
             name="Frames", default=72, min=2, max=10000,
             description="How many frames the fold animation takes, from flat to folded"),
@@ -1734,7 +2185,7 @@ def _scene_properties():
         "kileido_clip_silkscreen": BoolProperty(
             name="Clip silkscreen to board outline", default=True,
             description="Hide silkscreen outside Edge.Cuts and inside board cutouts",
-            update=lambda self, context: cosmetics.refresh_geometry()),
+            update=lambda self, context: _on_every_board(cosmetics.refresh_geometry)),
     }
     for layer, label, default in cosmetics.LAYERS:
         properties[cosmetics.property_name(layer)] = BoolProperty(
@@ -1745,7 +2196,9 @@ def _scene_properties():
     for row in (*layers.COPPER_LAYERS, "Vias", "Components", "Placeholders"):
         properties[layers.property_name(row)] = BoolProperty(
             name=row, default=True, update=_row_update(row))
-    return properties
+    eyes = {cosmetics.property_name(layer) for layer, _, _ in cosmetics.LAYERS}
+    eyes |= {layers.property_name(row) for row in (*layers.COPPER_LAYERS, "Vias", "Components", "Placeholders")}
+    return boardprops.expand(properties, eyes)  # each board's own settings, once per board
 
 
 @persistent
@@ -1755,10 +2208,18 @@ def _file_loaded(_):
     found again in this one. A finding drawn when the file was saved is gone: it may be stale."""
     findings_draw.purge()
     findings.stop_progress()  # the LLM's progress comes again with the findings
-    board.reset()
+    kept = {slot: each.board_path for slot, each in boards.items() if live.links[slot].enabled}
+    for each in boards.values():
+        each.reset()
+    restored = saved.restore(kept)  # the file's boards back in their slots, as saved copies
+    slots.follow()
     hole_cut.restore()  # a file saved with a hole finding's cut: the user's own cut back
     lighting.refresh_reflections()
-    live.request_resync()
+    for slot in SLOTS:  # every live board
+        with using(slot):
+            live.request_resync()
+    if restored:
+        join.offer()  # Open in Blender in each board's KiCad puts it back live in its slot
 
 
 def register():
@@ -1771,6 +2232,7 @@ def register():
     watcher.sweep_stale()  # scratch folders a crashed Blender left behind
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    join.register()
     for name, prop in _scene_properties().items():
         setattr(bpy.types.Scene, name, prop)
     keyconfig = bpy.context.window_manager.keyconfigs.addon
@@ -1791,16 +2253,21 @@ def register():
     columns.install()
     cut.install()
     fold.install()
+    poses.install()
     studio.install()
     findings_draw.install()
     findings_markers.install()
     solder.install()
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.frame_change_pre.append(phase.on_frame)
+    bpy.types.TOPBAR_MT_file_import.append(_menu_import)
+    bpy.types.TOPBAR_MT_file_export.append(_menu_export)
     bpy.app.handlers.save_pre.append(holes.pack_for_save)
 
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
+    bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     if _file_loaded in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_file_loaded)
     if phase.on_frame in bpy.app.handlers.frame_change_pre:
@@ -1815,22 +2282,27 @@ def unregister():
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
-    live.disconnect()
+    for slot in SLOTS:  # every board's link and exports
+        with using(slot):
+            live.disconnect()
+            models.stop_following()
+            cosmetics.stop_following()
     studio.uninstall()
-    models.stop_following()
     phase.stop_pulses()
-    cosmetics.stop_following()
     render_depth.uninstall()
     collisions.uninstall()
     columns.uninstall()
     cut.uninstall()
     fold.uninstall()
+    poses.uninstall()
     findings_draw.uninstall()
     findings_markers.uninstall()
     solder.uninstall()
     edge_plating.uninstall()
     for name in _scene_properties():
         delattr(bpy.types.Scene, name)
+    state.pick(1)  # registered again, the panel starts on board 1
+    join.unregister()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
     global _icons

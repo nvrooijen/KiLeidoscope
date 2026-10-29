@@ -10,9 +10,9 @@ Only the live board picks: view-only boards are not in KiCad. With the board cut
 
 import numpy as np
 
-from . import cut, fold
-from .objects import OUTLINE, lookup, read_attribute, read_coordinates, read_edges
-from .state import board
+from . import cut, fold, poses
+from .objects import OUTLINE, lookup, read_attribute, read_coordinates, read_edges, role
+from .state import SLOTS, board, boards, using
 
 SKIP_PREFIXES = ("KLS overlay", "KLS footprint highlight")
 TOLERANCE_M = 5e-6
@@ -77,8 +77,8 @@ def _item_on_copy(copy, depsgraph, location, face):
     original = lookup(copy["kls_folded_from"])
     if original is None:
         return None, True  # a stiffener: in the way, but no KiCad item
-    flat = fold.flat_point(copy, depsgraph, location, face)
-    return _item(original, flat) if flat is not None else (None, True)
+    flat = fold.flat_point(copy, depsgraph, location, face)  # in the board root's space
+    return _item(original, poses.to_world() @ flat) if flat is not None else (None, True)
 
 
 def _item(obj, location):
@@ -94,14 +94,14 @@ def _item(obj, location):
         finder = _track_at if kind == "tracks" else _pad_at
         index = finder(obj, _local_xy(obj, location))
         return (ids[index] if index is not None and index < len(ids) else None), index is not None
-    if obj.name == "KLS vias":
+    if role(obj.name) == "KLS vias":
         index = _via_at(obj, _local_xy(obj, location))
         return (ids[index] if index is not None and index < len(ids) else None), index is not None
     if obj.get("kls_model_fp_id") is not None:
         return obj["kls_model_fp_id"], True
     if obj.get("kls_footprint_placeholder") == 1:
         return obj.get("kls_footprint_id"), True
-    if obj.name == OUTLINE:
+    if role(obj.name) == OUTLINE:
         return None, True
     return None, False  # overlays, highlights, solder, drill walls: look further
 
@@ -117,16 +117,34 @@ def describe(item_id):
                 placement = obj.get("kls_copper")
                 if placement:
                     return {"tracks": "a track", "pads": "a pad's component", "zones": "a pour"}.get(placement[1], "an item")
-                if obj.name == "KLS vias":
+                if role(obj.name) == "KLS vias":
                     return "a via"
     return "a component"
 
 
 def item_at(scene, depsgraph, origin, direction, max_hits=32):
-    """The KiCad id under a view ray, or None; a list of ids for a dynamic-phase ribbon
-    (the pair's copper) or marker (its pads, or the track where it runs out of phase)."""
-    collection = board.collection
-    if collection is None:
+    """The KiCad id under a view ray on the board worked on, or None; a list of ids for a
+    dynamic-phase ribbon (the pair's copper) or marker (its pads, or the track where it runs
+    out of phase)."""
+    found = board_at(scene, depsgraph, origin, direction, max_hits, only=board.slot)
+    return found[1] if found is not None else None
+
+
+def _slot_of(obj, slots):
+    """The live board (slot) `obj` belongs to, among `slots`, or None: what it hangs from, at
+    the top, is that board's root Empty (poses.ROOT_TAG); a view-only board's root has no tag."""
+    top = obj
+    while top.parent is not None:
+        top = top.parent
+    slot = top.get(poses.ROOT_TAG)
+    return slot if slot in slots else None
+
+
+def board_at(scene, depsgraph, origin, direction, max_hits=32, only=None):
+    """(slot, KiCad id or None) of the first live board a view ray meets (`only`: that
+    board's), with the item there as `item_at` gives it; None when it meets none."""
+    slots = [slot for slot in SLOTS if boards[slot].loaded and (only is None or slot == only)]
+    if not slots:
         return None
     direction = direction.normalized()
     span = cut.shown_span(scene, origin, direction)
@@ -141,11 +159,14 @@ def item_at(scene, depsgraph, origin, direction, max_hits=32):
         hit, location, _normal, _index, obj, _matrix = scene.ray_cast(depsgraph, origin, direction, distance=reach)
         if not hit:
             return None
-        if obj.name in collection.all_objects and not obj.name.startswith(SKIP_PREFIXES) and "highlight" not in obj.name:
-            item, stop = _item_on_copy(obj, depsgraph, location, _index) if obj.get("kls_folded_from") is not None \
-                else _item(obj, location)
+        slot = _slot_of(obj, slots) if not role(obj.name).startswith(SKIP_PREFIXES) and "highlight" not in obj.name \
+            else None
+        if slot is not None:
+            with using(slot):
+                item, stop = _item_on_copy(obj, depsgraph, location, _index) if obj.get("kls_folded_from") is not None \
+                    else _item(obj, location)
             if item is not None or stop:
-                return item
+                return slot, item
         reach -= (location - origin).length + STEP_M
         origin = location + direction * STEP_M
     return None

@@ -1,4 +1,5 @@
-"""Load a .kls dump without blocking Blender: decode on a worker, apply on a timer."""
+"""Load a .kls dump without blocking Blender: decode on a worker, apply on a timer.
+A dump is always board 1 (slot 1)."""
 
 import queue
 import threading
@@ -8,7 +9,7 @@ import bpy
 
 from . import apply
 from .client import FrameDecoder
-from .state import board
+from .state import board, using
 
 APPLY_BUDGET_S = 0.008  # per timer tick; one frame is the smallest unit
 READ_BYTES = 1 << 20
@@ -29,7 +30,8 @@ def load_async(filepath):
     _generation += 1
     last_path = filepath
     generation = _generation
-    board.status = "Loading dump…"
+    with using(1):
+        board.status = "Loading dump…"
 
     def read():
         decoder = FrameDecoder()
@@ -48,7 +50,12 @@ def load_async(filepath):
 
 
 def drain():
-    """Timer callback: apply decoded frames for at most APPLY_BUDGET_S."""
+    """Timer callback: apply decoded frames for at most APPLY_BUDGET_S, to board 1."""
+    with using(1):
+        return _drain()
+
+
+def _drain():
     deadline = time.perf_counter() + APPLY_BUDGET_S
     while time.perf_counter() < deadline:
         reading = _worker is not None and _worker.is_alive()  # before get: it may finish in between

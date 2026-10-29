@@ -18,8 +18,8 @@ import re
 
 import bpy
 
-from . import cut, edge_plating
-from .objects import hide
+from . import boardprops, cut, edge_plating
+from .objects import hide, role
 from .state import board
 
 _COPPER = re.compile(r"^KLS ((?:F|B|In\d+)\.Cu) (?:tracks|pads|graphics|zone |highlight|milled edge)")
@@ -30,8 +30,9 @@ COPPER_LAYERS = ("F.Cu", *(f"In{number}.Cu" for number in range(1, 31)), "B.Cu")
 
 
 def property_name(row):
-    """The Scene property behind a row (the overlay layers' existing names included)."""
-    return EXTRA.get(row) or "kileido_show_" + row.replace(".", "_")
+    """The current board's Scene property behind a row (the overlay layers' existing names
+    included; boardprops: each board has its own)."""
+    return boardprops.name(EXTRA.get(row) or "kileido_show_" + row.replace(".", "_"))
 
 
 def row_of(obj):
@@ -39,7 +40,7 @@ def row_of(obj):
     layer = obj.get("kls_cosmetic_layer") or obj.get("kls_overlay_walls")
     if layer:
         return layer
-    name = obj.name
+    name = role(obj.name)
     if name.startswith("KLS vias"):
         return "Vias"
     if obj.get("kls_footprint_placeholder") == 1:

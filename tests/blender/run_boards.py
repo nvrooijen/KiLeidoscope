@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cosmetics, highlight, holes, layers, lighting, packages, state  # noqa: E402
+from kileido import apply, cosmetics, highlight, layers, lighting, packages, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -95,9 +95,8 @@ def fresh_session():
     """A new Blender session: empty file, add-on state as after a restart."""
     kileido.unregister()
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    state.board.__init__()
-    holes._sources = {key: value[:0] for key, value in holes._sources.items()}
-    holes._bounds = holes._digest = holes._drawn = None
+    for board_state in state.boards.values():
+        board_state.__init__(board_state.slot)
     kileido.register()
 
 
@@ -149,11 +148,13 @@ def main():
         first = packages.import_board(str(package))
         second = packages.import_board(str(package))
         assert live_objects() == live_before, "the import touched the live board"
-        assert state.board.collection.hide_select, "the live board can be selected (and moved)"
+        assert all(group.hide_select for group in state.board.collection.children), \
+            "the live board can be selected (and moved)"
         assert not packages.collection_of(first[packages.ROOT_TAG]).hide_select, "a view-only board is locked"
         bpy.ops.object.select_all(action="DESELECT")
         bpy.ops.object.select_all(action="SELECT")
-        assert not any(obj.select_get() for obj in state.board.collection.all_objects)
+        assert [obj.name for obj in state.board.collection.all_objects if obj.select_get()] == ["KLS root"], \
+            "more of the live board than its root can be selected"
         assert first.select_get(), "a view-only board's root cannot be selected"
         bpy.ops.object.select_all(action="DESELECT")
         assert {material.name for material in state.board.materials.values()} == live_materials
@@ -170,9 +171,10 @@ def main():
                        for kind in packages.DATA_KINDS for block in getattr(bpy.data, kind)), \
             "a live-board name was taken by imported data"
         assert x_range(state.board.collection)[1] <= x_range(one)[0] < x_range(one)[1] <= x_range(two)[0]
-        remapped = [node for material in packages._owned_data(one)[0] if material.node_tree
-                    for node in material.node_tree.nodes if node.type == "TEX_COORD" and node.object == first]
-        assert remapped, "hole and mask plots still sampled at world XY"
+        spaces = {node.node_tree for material in packages._owned_data(one)[0] if material.node_tree
+                  for node in material.node_tree.nodes if node.name == "KLS board space"}
+        assert spaces and all(group.name == "KV1 KLS board space" and group.nodes["KLS root"].object.parent == first
+                              for group in spaces), "hole and mask plots not sampled in the board's own space"
 
         assert not any("highlight" in obj.name and not obj.hide_get() for obj in one.all_objects),             "KiCad's selection was exported"
 
@@ -241,9 +243,13 @@ def main():
         packages.set_row_everywhere("F.Cu", True)
         assert packages.shown_everywhere("F.Cu") and bpy.context.scene.kileido_show_F_Cu
 
-        # Select: a view-only board moves as one; the live board is locked in place.
+        # Select: a view-only board moves as one; the live board is locked in place, but for its
+        # root (G and R move the whole board, its pose following) which never scales.
         assert all(obj.lock_location[:] == (True,) * 3 and obj.lock_rotation[:] == (True,) * 3 and
-                   obj.lock_scale[:] == (True,) * 3 for obj in state.board.collection.all_objects)
+                   obj.lock_scale[:] == (True,) * 3 for obj in state.board.collection.all_objects
+                   if obj.name != "KLS root")
+        live_root = state.board.collection.objects["KLS root"]
+        assert not any(live_root.lock_location) and not any(live_root.lock_rotation) and all(live_root.lock_scale)
         assert packages.select(index)
         view_layer = bpy.context.view_layer
         assert view_layer.objects.active == first and not any(first.lock_location)

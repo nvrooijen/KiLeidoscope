@@ -45,7 +45,7 @@ def has_board():
 def is_live():
     """A live link to KiCad is on (it may be reconnecting)."""
     from . import live
-    return live.connected()
+    return any(link.enabled for link in live.links.values())  # any board's
 
 
 def board_bounds(parts=True):
@@ -128,7 +128,7 @@ def seconds_since_update():
 def is_settled(quiet_s=SETTLE_S):
     """Nothing is queued to apply and no board update came in the last `quiet_s`."""
     from . import dump, live, solder
-    if live.connected() and (live.link.pending or live.link.receiving_snapshot):
+    if live.busy():  # any board's
         return False
     if solder.pending():  # the reflowed solder follows an update a moment later (pump builds it)
         return False
@@ -139,15 +139,14 @@ def is_settled(quiet_s=SETTLE_S):
 
 
 def pump(seconds=0.05):
-    """Run the live link (and a dump being loaded) by hand for `seconds`. Blender's own
+    """Run the live links (and a dump being loaded) by hand for `seconds`. Blender's own
     timers wait while a script runs, so a script that renders frame by frame calls this
     between frames to keep KiLeidoscope current. Within `held_updates`, frames are
     received but not applied."""
     from . import dump, live, solder
     until = time.monotonic() + seconds
     while True:
-        if live.connected():
-            live.link.tick()
+        live.tick()  # every board's link
         if dump._worker is not None:
             dump.drain()
         solder.flush(now=False)  # its timer waits too

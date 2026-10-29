@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import kileido  # noqa: E402
 import split_board  # noqa: E402
 from kileido import apply, findings, findings_draw, findings_markers, live, state, transform  # noqa: E402
+from kileido.objects import root  # noqa: E402
 from kileido_bridge import findings as bridge_findings, model  # noqa: E402
 from kileido_bridge.board_index import BoardIndex  # noqa: E402
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -96,7 +97,7 @@ def show(title):
     assert draw["ok"], (title, draw["problem"])
     objects = drawn(1, draw["tool"])
     assert objects, (title, draw["tool"])
-    assert any(obj.type == "FONT" and obj.parent is None for obj in objects.values()), sorted(objects)  # labelled
+    assert any(obj.type == "FONT" and obj.parent == root() for obj in objects.values()), sorted(objects)  # labelled
     return found, draw, objects
 
 
@@ -143,7 +144,7 @@ def main():
         found, draw, objects = show("USB off its plane")
         assert draw["measured_nm"] == 40_250_000 and draw["covered_nm"] and draw["spans_nm"]
         assert findings_draw.mark(found) == "unknown" and found["disagree"]  # 10 mm claimed: a "?"
-        label = next(obj for obj in objects.values() if obj.type == "FONT" and obj.parent is None)
+        label = next(obj for obj in objects.values() if obj.type == "FONT" and obj.parent == root())
         assert label.data.body.startswith("Without plane\n40.25 mm"), label.data.body
 
         found, draw, objects = show("GND pieces")

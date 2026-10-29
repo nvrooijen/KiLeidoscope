@@ -70,7 +70,8 @@ def main():
     milliseconds = apply.load_frames(frames_of(snapshot))
     collection = bpy.data.collections["KiLeidoscope: synthetic_rf_geometry.kicad_pcb"]
     assert collection.get("kileido_owned") == 1
-    assert collection.hide_select, "the live board follows KiCad and must not be selectable"
+    assert collection.children and all(group.hide_select for group in collection.children), \
+        "the live board follows KiCad and must not be selectable"  # but its root: G and R move it
     assert not collection.hide_viewport
     assert all(not area.spaces.active.overlay.show_relationship_lines
                for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")
@@ -85,7 +86,7 @@ def main():
     bottom = collection.all_objects["KLS B.Cu tracks"]
     groups = {child["kls_group"]: child for child in collection.children}
     assert [child["kls_group"] for child in collection.children] == [key for key, _ in kileido.objects.GROUPS]
-    assert not collection.objects  # every object sits in a group
+    assert [obj.name for obj in collection.objects] == ["KLS root"]  # every other object sits in a group
     assert top.name in groups["copper"].objects and "KLS outline" in groups["board"].objects
     assert "KLS vias" in groups["vias"].objects
     assert all(components.key_of(obj) for obj in groups["components"].objects)
@@ -149,8 +150,8 @@ def main():
     alpha = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
     mask.pixels.foreach_get(alpha)
     alpha = alpha.reshape(mask.size[1], mask.size[0], 4)[..., 3]
-    xmin, ymin = holes._bounds[:2]
-    pixel = max(holes._bounds[2] - xmin, holes._bounds[3] - ymin) / holes.RESOLUTION
+    xmin, ymin = holes._m().bounds[:2]
+    pixel = max(holes._m().bounds[2] - xmin, holes._m().bounds[3] - ymin) / holes.RESOLUTION
     column, row = int((drill.location.x - xmin) / pixel), int((drill.location.y - ymin) / pixel)
     assert alpha[row, column] > 0.99 and alpha[0, 0] == 0.0
     assert "KLS holes mix" in state.board.materials["copper:F.Cu"].node_tree.nodes
@@ -427,8 +428,8 @@ def main():
             pixels = np.empty(mask.size[0] * mask.size[1] * 4, np.float32)
             mask.pixels.foreach_get(pixels)
             pixels = pixels.reshape(mask.size[1], mask.size[0], 4)[..., 3]
-            xmin, ymin = holes._bounds[:2]
-            pixel = max(holes._bounds[2] - xmin, holes._bounds[3] - ymin) / holes.RESOLUTION
+            xmin, ymin = holes._m().bounds[:2]
+            pixel = max(holes._m().bounds[2] - xmin, holes._m().bounds[3] - ymin) / holes.RESOLUTION
             return pixels[int((via_xy[1] - ymin) / pixel), int((via_xy[0] - xmin) / pixel)]
 
         scene = bpy.context.scene

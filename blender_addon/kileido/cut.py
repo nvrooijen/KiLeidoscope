@@ -23,9 +23,10 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from . import focus, laminate, metal, nodes, section, shading, transform
+from . import focus, laminate, metal, nodes, poses, section, shading, transform
 from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
-from .objects import camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates, read_edges
+from .objects import (camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates,
+                      read_edges, role)
 from .state import board
 
 GROUP = "KLS_Clip_v1"
@@ -42,7 +43,7 @@ FACE_WEAVE = "kls_laminate"  # 1 on laminate, 0 on copper and plugs
 FACE_METAL = "kls_metal"  # 1 on copper and an IMS base: polished metal
 FACE_OWN_METAL = "kls_own_metal"  # 1 on metal that is not copper (an aluminum base): lit in its own colour
 FACE_MILKY = "kls_resin"  # 1 on resin: milky, the barrel behind it shows through
-FACE_MATERIAL_VERSION = 10
+FACE_MATERIAL_VERSION = 11
 RESIN_OPACITY = 0.55  # resin in a via is milky: the barrel behind it shows through, faded
 # Plane rotations (Euler, rad) whose arrow points at the removed side: Y removes the
 # front half (seen in the front view), X the right half (seen from the right).
@@ -57,8 +58,6 @@ CLICK_REACH_PX = 8  # a click this close to one of those lines is a click on the
 REBUILD_DELAY_S = 0.05  # live edits arriving together rebuild the face once
 
 _pushed = None  # (on, origin, normal) the clip group holds now
-_data = None  # the board's geometry for the section (`_gather`), until it changes
-_edges = {}  # stretches along the outline until the board changes: "plated" (`plated_edges`), "milled" (`milled_edges`)
 # How the section's copper is lit (`set_look`): Realistic, its linear colour, metallic, roughness.
 _look = (False, (0.6, 0.3, 0.15), 1.0, 0.25)
 
@@ -267,7 +266,7 @@ def place(axis, centered=False):
     plane.rotation_euler = ORIENTATIONS[axis]
     if centered:
         _, _, thickness, x, y = _extents()
-        plane.location = (x, y, thickness / 2)
+        plane.location = poses.to_world() @ Vector((x, y, thickness / 2))
     plane["kls_board"] = board.board_name
     fit(plane)
     bpy.context.view_layer.update()
@@ -381,9 +380,10 @@ def push(scene=None):
 
 # --- The section face -----------------------------------------------------------------------
 
-def _world_xy(obj):
+def _board_xy(obj):
+    """An object's points in the board root's space, XY."""
     coordinates = read_coordinates(obj.data).astype(np.float64)
-    matrix = np.array(obj.matrix_world)
+    matrix = np.array(poses.in_root(obj))
     return (coordinates @ matrix[:3, :3].T + matrix[:3, 3])[:, :2]
 
 
@@ -414,7 +414,7 @@ def _layers_at(heights):
 
 
 def _gather():
-    """The board's geometry the section crosses, in world XY (metres)."""
+    """The board's geometry the section crosses, in the board root's XY (metres)."""
     copper = {}  # layer -> {"rings": [(a, b, item)], "tracks": [(a, b, radius)]}
     next_item = 0
     outline = None
@@ -426,7 +426,7 @@ def _gather():
         placed = obj.get("kls_copper")
         if placed:
             layer, kind = placed[0], placed[1]
-            xy, edges = _world_xy(obj), read_edges(obj.data)
+            xy, edges = _board_xy(obj), read_edges(obj.data)
             if not len(edges):
                 continue
             shapes = copper.setdefault(layer, {"rings": [], "tracks": []})
@@ -438,13 +438,13 @@ def _gather():
                         else np.zeros(len(xy), np.int32))[edges[:, 0]].astype(np.int64) + next_item
                 next_item = int(item.max()) + 1
                 shapes["rings"].append((xy[edges[:, 0]], xy[edges[:, 1]], item))
-        elif obj.name == "KLS outline":
-            xy, edges = _world_xy(obj), read_edges(obj.data)
+        elif role(obj.name) == "KLS outline":
+            xy, edges = _board_xy(obj), read_edges(obj.data)
             outline = (xy[edges[:, 0]], xy[edges[:, 1]], np.zeros(len(edges), np.int64))
-        elif obj.name == "KLS vias" and board.heights:
+        elif role(obj.name) == "KLS vias" and board.heights:
             mesh = obj.data
             lift = _land_lift()  # a via's z sits this far outside its copper
-            vias = {"xy": _world_xy(obj),
+            vias = {"xy": _board_xy(obj),
                     "diameter": read_attribute(mesh, "diameter", np.float32).astype(np.float64),
                     "drill": read_attribute(mesh, "drill", np.float32).astype(np.float64),
                     "top": _layers_at(read_attribute(mesh, "z_top", np.float32) - lift),
@@ -462,7 +462,7 @@ def _gather():
         elif obj.get("kls_drill"):
             width, height = _modifier_input(obj, "Width"), _modifier_input(obj, "Height")
             plated = _modifier_input(obj, "Material") == board.materials.get("plating")
-            x, y = obj.matrix_world.translation[:2]
+            x, y = poses.in_root(obj).translation[:2]
             drills.append((x, y, width, height, obj.rotation_euler.z, 1.0 if plated else 0.0))
     return {"copper": copper, "outline": outline, "vias": vias, "drills": np.array(drills).reshape(-1, 6)}
 
@@ -486,8 +486,8 @@ def _face_material():
     color = _attribute(tree, FACE_COLOR).outputs["Color"]
     along = _attribute(tree, FACE_ALONG).outputs["Fac"]
     is_metal = _attribute(tree, FACE_METAL).outputs["Fac"]
-    height = tree.nodes.new("ShaderNodeSeparateXYZ")
-    tree.links.new(tree.nodes.new("ShaderNodeNewGeometry").outputs["Position"], height.inputs[0])
+    height = tree.nodes.new("ShaderNodeSeparateXYZ")  # in the board's root space, as the face is drawn
+    tree.links.new(tree.nodes.new("ShaderNodeTexCoord").outputs["Object"], height.inputs[0])
     weave = tree.nodes.new("ShaderNodeGroup")
     weave.node_tree = laminate.group()
     tree.links.new(color, weave.inputs["Base"])
@@ -577,12 +577,28 @@ def _face_object(create):
     return face
 
 
+def _cache():
+    """The board's own, until it changes (`board.cut_cache`): "data", its geometry for the
+    section (`_gather`), and "edges", stretches along its outline: "plated" (`plated_edges`),
+    "milled" (`milled_edges`)."""
+    if board.cut_cache is None:
+        board.cut_cache = {"data": None, "edges": {}}
+    return board.cut_cache
+
+
+def _forget():
+    """The board changed: read it again when asked."""
+    cache = _cache()
+    cache["data"] = None
+    cache["edges"].clear()
+
+
 def shapes():
     """The board's geometry as the section reads it (read once per board change)."""
-    global _data
-    if _data is None:
-        _data = _gather()
-    return _data
+    cache = _cache()
+    if cache["data"] is None:
+        cache["data"] = _gather()
+    return cache["data"]
 
 
 def plated_edges():
@@ -590,12 +606,13 @@ def plated_edges():
     copper on both outer layers reaches the edge; empty when the board has none."""
     if not board.appearance.get("edge_plating") or board.collection is None or board.in_snapshot:
         return []
-    if "plated" not in _edges:
+    edges = _cache()["edges"]
+    if "plated" not in edges:
         data = shapes()
         copper = data["copper"]
-        _edges["plated"] = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
-                            if data["outline"] is not None else [])
-    return _edges["plated"]
+        edges["plated"] = (section.plated_edges(data["outline"], copper.get("F.Cu", {}), copper.get("B.Cu", {}))
+                           if data["outline"] is not None else [])
+    return edges["plated"]
 
 
 def milled_edges():
@@ -603,18 +620,27 @@ def milled_edges():
     back to the edge, leaving a cut copper face there (section.milled_edges)."""
     if board.collection is None or board.in_snapshot:
         return {}
-    if "milled" not in _edges:
+    edges = _cache()["edges"]
+    if "milled" not in edges:
         data = shapes()
-        _edges["milled"] = ({layer: section.milled_edges(data["outline"], data["copper"][layer], data["drills"])
-                             for layer in section.OUTER if layer in data["copper"]} if data["outline"] is not None else {})
-    return _edges["milled"]
+        edges["milled"] = ({layer: section.milled_edges(data["outline"], data["copper"][layer], data["drills"])
+                            for layer in section.OUTER if layer in data["copper"]} if data["outline"] is not None else {})
+    return edges["milled"]
+
+
+def _on_board(state):
+    """The plane's (on, origin, normal) in the board root's space, where the section is worked out."""
+    on, origin, normal = state
+    to_root = poses.to_root()
+    return on, tuple(to_root @ Vector(origin)), tuple((to_root.to_3x3() @ Vector(normal)).normalized())
 
 
 def rectangles(scene=None):
     """(rectangles, (line, normal)): the section's (s0, s1, z0, z1, sRGB) rectangles, the
-    cut as a section.Line and the plane's normal; None when there is no section to draw."""
+    cut as a section.Line and the plane's normal, in the board root's space; None when there
+    is no section to draw."""
     scene = scene or bpy.context.scene
-    on, origin, normal = _state(scene)
+    on, origin, normal = _on_board(_state(scene))
     if not on or abs(normal[2]) >= UPRIGHT or board.collection is None or board.in_snapshot or not board.heights:
         return None
     data = shapes()
@@ -659,6 +685,7 @@ def rebuild(scene=None):
         face.hide_render = True
         return
     rects, (line, normal) = result
+    face.matrix_world = poses.to_world()  # drawn in the board root's space
     face.data.materials[0] = _face_material()  # (re)built when its version changed
     count = len(rects)
     s = np.array([(r[0], r[1], r[1], r[0]) for r in rects], np.float64).reshape(-1)
@@ -689,15 +716,27 @@ def rebuild(scene=None):
 
 def invalidate():
     """The board changed: read it again for the next section (soon, once per burst of edits)."""
-    global _data
-    _data = None
-    _edges.clear()
+    _forget()
     if enabled() and not bpy.app.timers.is_registered(_rebuild_soon):
         bpy.app.timers.register(_rebuild_soon, first_interval=REBUILD_DELAY_S)
 
 
 def _rebuild_soon():
     rebuild()
+    return None
+
+
+def moved():
+    """The picked board moved under the plane (poses): the section, its face and the cut
+    light are drawn again where the board stands now (its geometry is as it was)."""
+    global _pushed
+    _pushed = None  # `push` hands the plane over again, and redoes the section and the light
+    if enabled() and not bpy.app.timers.is_registered(_moved_soon):
+        bpy.app.timers.register(_moved_soon, first_interval=REBUILD_DELAY_S)
+
+
+def _moved_soon():
+    push()
     return None
 
 
@@ -732,7 +771,8 @@ def place_light(scene=None):
     scale = size / lighting.SOFTBOX_SIZE_M
     normal = Vector(normal)
     flat = Vector((normal.x, normal.y, 0.0))
-    centre = Vector((x, y, origin[2]))
+    centre = poses.to_world() @ Vector((x, y, 0.0))
+    centre.z = origin[2]
     if flat.length > 1e-9:  # the point of the cut line nearest the board's middle
         flat.normalize()
         centre -= flat * (centre - Vector(origin)).dot(flat)
@@ -751,9 +791,8 @@ def place_light(scene=None):
 
 def refresh():
     """The tick box, or a whole new board: bring materials, plane and face in line."""
-    global _pushed, _data
-    _data = None  # before ensure_plane: placing a new plane already draws the section
-    _edges.clear()
+    global _pushed
+    _forget()  # before ensure_plane: placing a new plane already draws the section
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)
     if plane is not None:
@@ -778,5 +817,6 @@ def install():
 def uninstall():
     if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
-    if bpy.app.timers.is_registered(_rebuild_soon):
-        bpy.app.timers.unregister(_rebuild_soon)
+    for timer in (_rebuild_soon, _moved_soon):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)

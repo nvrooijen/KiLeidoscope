@@ -1,5 +1,5 @@
 """Bookmark tabs on the KiLeidoscope sidebar's left edge. Each opens its column left of
-the KiLeidoscope panel (Studio, IMS, Flex, DRC, LLM, Diff pairs), one at a time, and the sidebar
+the KiLeidoscope panel (Studio, Multi-board, IMS, Flex, DRC, LLM, Diff pairs), one at a time, and the sidebar
 widens to make room; clicking the open tab again closes it. A mode switched on in its column
 keeps its tab lit (a bright stripe on its outer edge) once the column is closed; one the board
 cannot have is greyed.
@@ -25,6 +25,7 @@ from gpu_extras.batch import batch_for_shader
 
 # (key, label, colour): the order they hang from the top.
 TABS = (("STUDIO", "Studio", (0.36, 0.60, 0.56)),  # a teal, neither board colour
+        ("BOARDS", "Multi-board", (0.52, 0.62, 0.36)),  # a sage green: boards side by side
         ("IMS", "IMS", (0.38, 0.56, 0.78)),  # aluminium blue
         ("FLEX", "Flex", (0.82, 0.52, 0.14)),  # polyimide amber
         ("DRC", "DRC", (0.80, 0.24, 0.24)),  # DRC red
@@ -36,7 +37,7 @@ GREY = (0.42, 0.42, 0.42)  # a tab whose mode this board cannot have
 STATES = {}
 CATEGORY = "KiLeidoscope"  # the sidebar tab the bookmarks belong to
 
-SIZEX_OFFSET = {(5, 1): 198}  # bytes into ARegion; measured by scanning at two UI scales
+SIZEX_OFFSET = {(5, 1): 198, (5, 2): 198}  # bytes into ARegion; measured by scanning at two UI scales
 MIN_SIDEBAR_PX = 200  # unscaled: the narrowest a closing column leaves the sidebar
 MAX_AREA_SHARE = 0.7  # the widened sidebar takes at most this much of the 3D view
 

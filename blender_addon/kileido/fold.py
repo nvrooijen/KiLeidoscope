@@ -21,9 +21,9 @@ import numpy as np
 from mathutils import Matrix, Vector, geometry
 from mathutils.bvhtree import BVHTree
 
-from . import foldmath, materials, nodes
+from . import boardprops, foldmath, materials, nodes, objects, poses
 from . import section as section_module
-from .objects import hide, lookup, read_attribute, read_coordinates
+from .objects import hide, lookup, owned_name, read_attribute, read_coordinates, role
 from .state import board, log
 
 COLLECTION = "KLS folded"
@@ -98,7 +98,7 @@ def refresh():
     try:
         if _state["keyed"] is not None and _state["keyed"] is not plan:  # keyed for a board that has changed since
             clear_animation(refold=False)
-            _turn_grips(plan, bpy.context.scene.kileido_fold)
+            _turn_grips(plan, boardprops.get(bpy.context.scene, "kileido_fold"))
         else:
             _ensure_grips(plan)
         handles = [grip.rotation_euler.z for grip in _grips()]
@@ -196,6 +196,12 @@ def uninstall():
     for handlers, function in _handlers():
         if function in handlers:
             handlers.remove(function)
+    release()
+
+
+def release():
+    """The board as without the fold: no keys, copies or handles, its parts flat (the add-on
+    switched off, or another board picked: the fold works on the picked board)."""
     if bpy.app.timers.is_registered(_settled):
         bpy.app.timers.unregister(_settled)
     for step in (lambda: clear_animation(refold=False), clear, _remove_grips, lambda: _place_parts(None, None)):
@@ -290,7 +296,7 @@ def clear_animation(refold=True):
     grips = _grips()
     for obj in (*grips, *_parts()):
         action = obj.animation_data.action if obj.animation_data else None
-        if action is not None and action.name.startswith(("KLS fold", "KLS sweep")) or obj in grips:
+        if action is not None and role(action.name).startswith(("KLS fold", "KLS sweep")) or obj in grips:
             obj.animation_data_clear()
             if action is not None and action.users == 0:
                 bpy.data.actions.remove(action)
@@ -301,7 +307,7 @@ def clear_animation(refold=True):
          scene.render.use_lock_interface) = _state["render"]
         _state["render"] = None
     if was and refold and _plan() is not None:
-        set_progress(bpy.context.scene.kileido_fold)
+        set_progress(boardprops.get(bpy.context.scene, "kileido_fold"))
 
 
 def _reset_parts():
@@ -312,7 +318,7 @@ def _reset_parts():
     for obj in _parts():
         flat = obj.get("kls_flat_matrix")
         if flat is not None and len(flat) == 16:
-            obj.matrix_world = Matrix(np.reshape(flat, (4, 4)).tolist())
+            poses.set_in_root(obj, Matrix(np.reshape(flat, (4, 4)).tolist()))
         for key in ("kls_flat_matrix", "kls_folded_matrix"):
             if key in obj:
                 del obj[key]
@@ -337,7 +343,7 @@ def _plan():
     """The fold plan for the board's flex report while flex mode is on (the Flex column's
     Enable), made again only when the report or the board's frame changes (each handle
     turn asks for it)."""
-    if board.collection is None or not board.flex or not getattr(bpy.context.scene, "kileido_flex", False):
+    if board.collection is None or not board.flex or not boardprops.get(bpy.context.scene, "kileido_flex", False):
         return None
     key = (tuple(board.origin_nm), tuple(sorted(board.heights.items())), tuple(sorted(board.layer_thickness.items())))
     cached = _planned.get("plan")
@@ -361,7 +367,7 @@ def _originals():
     return [obj for obj in board.collection.all_objects
             if obj.type == "MESH" and obj not in skip and obj.get("kls_model_fp_id") is None
             and obj.get("kls_footprint_placeholder") != 1  # parts: placeholders and boxes fold whole
-            and not obj.name.startswith("KLS footprint ")
+            and not role(obj.name).startswith("KLS footprint ")
             and obj.get("kls_finding") is None  # drawn on the flat board only (findings_draw)
             and not obj.hide_get() and (not obj.hide_viewport or obj.get("kls_hidden_by_fold"))]
 
@@ -381,14 +387,14 @@ def _realize_group():
 
 
 def _realized_mesh(obj):
-    """The object's evaluated geometry, instances realized, as a new mesh in world space."""
+    """The object's evaluated geometry, instances realized, as a new mesh in the board root's space."""
     modifier = obj.modifiers.new("KLS realize", "NODES")
     modifier.node_group = _realize_group()
     try:
         depsgraph = bpy.context.evaluated_depsgraph_get()
         evaluated = obj.evaluated_get(depsgraph)
         mesh = bpy.data.meshes.new_from_object(evaluated, preserve_all_data_layers=True, depsgraph=depsgraph)
-        mesh.transform(obj.matrix_world)  # board objects sit at their layer's height
+        mesh.transform(poses.in_root(obj))  # board objects sit at their layer's height
         return mesh
     finally:
         obj.modifiers.remove(modifier)
@@ -399,7 +405,8 @@ def _body_range():
     if outline is None:
         return 0.0, board.thickness_m
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    zs = [(outline.matrix_world @ Vector(corner)).z for corner in outline.evaluated_get(depsgraph).bound_box]
+    matrix = poses.in_root(outline)
+    zs = [(matrix @ Vector(corner)).z for corner in outline.evaluated_get(depsgraph).bound_box]
     return min(zs), max(zs)
 
 
@@ -410,6 +417,7 @@ def bake(plan):
     collection = bpy.data.collections.new(COLLECTION)
     collection["kls_folded"] = 1
     collection["kls_plan_id"] = _plan_id(plan)
+    collection.hide_select = True  # like the board's own groups (apply.lock_selection)
     board.collection.children.link(collection)
     group = _fold_group(plan)
     planes = foldmath.cut_planes(plan)
@@ -466,7 +474,7 @@ def _bake_object(original, plan, collection):
     coverlay = board.flex.get("coverlay", "AMBER")  # from KiCad: a "Coverlay black" text on the Flex layer
     if original.get("kls_cosmetic_layer") in ("F.Mask", "B.Mask"):
         _on_flex(mesh, plan, lambda mask: materials.coverlay_variant(mask, coverlay))  # it takes the mask's place
-    elif original.name == "KLS outline":
+    elif role(original.name) == "KLS outline":
         _flex_faces(mesh, plan, board.materials["flex"])
     else:
         finished = {board.materials[key].name for key in materials.FINISHED if key in board.materials}
@@ -711,6 +719,7 @@ def _link(collection, group, mesh, name, original):
     modifier = copy.modifiers.new("KLS Fold", "NODES")
     modifier.node_group = group
     collection.objects.link(copy)
+    objects.adopt(copy)  # built in the root's space
     _drive(modifier, group)
     return copy
 
@@ -894,9 +903,14 @@ def _parts():
     """Footprint frames (their models and placeholders ride on them) and highlight boxes:
     each folds as one piece."""
     return [obj for obj in board.collection.all_objects
-            if obj.get("kls_footprint") == 1 or obj.name.startswith("KLS footprint ")
-            or (obj.parent is None and (obj.get("kls_model_fp_id") is not None
-                                        or obj.get("kls_footprint_placeholder") == 1))]
+            if obj.get("kls_footprint") == 1 or role(obj.name).startswith("KLS footprint ")
+            or (_on_root(obj) and (obj.get("kls_model_fp_id") is not None
+                                   or obj.get("kls_footprint_placeholder") == 1))]
+
+
+def _on_root(obj):
+    """Not on a footprint's frame: hangs from the board's root (or nothing)."""
+    return obj.parent is None or obj.parent.get(poses.ROOT_TAG) is not None
 
 
 def _place_parts(plan, angles):
@@ -905,15 +919,16 @@ def _place_parts(plan, angles):
     if board.collection is None or keyed():  # keyed: the animation places them
         return
     placing = []
+    to_world = poses.to_world()
     for obj in _parts():
         flat = obj.get("kls_flat_matrix")
         folded = list(obj.get("kls_folded_matrix", ()))
         if flat is not None and (len(folded) != 16 or not np.allclose(_placed(obj), folded, atol=MOVED_TOLERANCE)):
             flat = None  # placed again since it was folded
-        flat_matrix = Matrix(np.reshape(flat, (4, 4)).tolist()) if flat is not None else obj.matrix_world.copy()
+        flat_matrix = Matrix(np.reshape(flat, (4, 4)).tolist()) if flat is not None else poses.in_root(obj)
         if plan is None:
             if flat is not None:
-                obj.matrix_world = flat_matrix
+                poses.set_in_root(obj, flat_matrix, to_world)
             for key in ("kls_flat_matrix", "kls_folded_matrix"):
                 if key in obj:
                     del obj[key]
@@ -924,7 +939,7 @@ def _place_parts(plan, angles):
     where = np.array([(matrix.translation.x, matrix.translation.y, plan.z_mid) for _, matrix in placing])
     for (obj, flat_matrix), fold_matrix in zip(placing, foldmath.point_matrices(where, angles, plan)):
         obj["kls_flat_matrix"] = _matrix_list(flat_matrix)
-        obj.matrix_world = Matrix(fold_matrix.tolist()) @ flat_matrix
+        poses.set_in_root(obj, Matrix(fold_matrix.tolist()) @ flat_matrix, to_world)
         obj["kls_folded_matrix"] = _placed(obj)
 
 
@@ -942,10 +957,10 @@ def refold_parts():
 
 
 def _placed(obj):
-    """Where a part is, as Blender keeps it: from its location, rotation and scale (what a
-    matrix set on it becomes once evaluated; near gimbal lock that differs from the matrix
-    set by more than a live edit's tolerance would allow), or its world matrix if parented."""
-    return _matrix_list(obj.matrix_basis if obj.parent is None else obj.matrix_world)
+    """Where a part is in the board root's space, as Blender keeps it: from its location,
+    rotation and scale (what a matrix set on it becomes once evaluated; near gimbal lock that
+    differs from the matrix set by more than a live edit's tolerance would allow)."""
+    return _matrix_list(poses.in_root(obj))
 
 
 def _matrix_list(matrix):
@@ -983,10 +998,10 @@ def _ensure_grips(plan):
     collection = _grip_collection(create=True)
     for index, members in enumerate(plan.handles):
         bend = plan.bends[members[len(members) // 2]]  # a dome's: its middle finger
-        frame = bpy.data.objects.new(f"KLS bend {index + 1} frame", None)
+        frame = bpy.data.objects.new(owned_name(f"KLS bend {index + 1} frame"), None)
         frame.empty_display_size = 0.0
         frame.hide_select = True
-        grip = bpy.data.objects.new(f"KLS bend {index + 1}", None)
+        grip = bpy.data.objects.new(owned_name(f"KLS bend {index + 1}"), None)
         grip.empty_display_type = "CIRCLE"
         grip.empty_display_size = max(1e-3, min(bend.length / 3, 4e-3))
         grip.parent = frame
@@ -997,6 +1012,7 @@ def _ensure_grips(plan):
         grip["kls_bend_id"] = _bend_id(plan, index)
         for obj in (frame, grip):
             collection.objects.link(obj)
+        objects.adopt(frame)  # placed in the board root's space
     _place_grips(plan, [0.0] * len(plan.bends))
 
 
@@ -1029,7 +1045,7 @@ def _place_grips(plan, angles):
     for grip, members in zip(_grips(), plan.handles):
         index = members[len(members) // 2]
         parent = foldmath.hinge_matrix(index, angles, plan)
-        grip.parent.matrix_world = Matrix((parent @ _bend_frame(plan.bends[index])).tolist())
+        poses.set_in_root(grip.parent, Matrix((parent @ _bend_frame(plan.bends[index])).tolist()))
 
 
 def _remove_grips():
