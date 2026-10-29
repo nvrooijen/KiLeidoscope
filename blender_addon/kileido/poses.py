@@ -369,7 +369,8 @@ def space_group():
             links.new(dot.outputs["Value"], combine.inputs[axis])
         links.new(combine.outputs["Vector"], out.inputs["Normal"])
     obj = root()
-    _bind(group, obj, root_matrix() if obj is not None and board.pose is not None else np.eye(4))
+    live = obj is not None and obj.get(ROOT_TAG) is not None  # a view-only board's root has no pose: no turn
+    _bind(group, obj, root_matrix() if live and board.pose is not None else np.eye(4))
     return group
 
 

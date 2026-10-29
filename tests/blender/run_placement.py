@@ -10,6 +10,7 @@ blender --background --factory-startup --python tests/blender/run_placement.py
 
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -151,6 +152,19 @@ def check_moved():
         users = [material for material in state.board.materials.values() if material.node_tree is not None
                  and getattr(material.node_tree.nodes.get("KLS board space"), "node_tree", None) == group]
         assert users, "no board-2 material samples its plots in the board's space"
+
+
+def check_view_only_space():
+    """A package imported while the board in use is turned: the view-only board's space group
+    is bound to its own root, unturned (the live board's pose is not its)."""
+    path = Path(tempfile.mkdtemp()) / "second.blend"
+    with state.using(2):
+        packages.export_board(str(path))
+        root = packages.import_board(str(path))  # built with `board` lent board 2, flipped and turned
+    group = bpy.data.node_groups[f"KV{root[packages.ROOT_TAG]} KLS board space"]
+    columns = [tuple(round(v, 6) for v in group.nodes[f"KLS root {axis}"].inputs[1].default_value) for axis in "XYZ"]
+    assert columns == [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], columns
+    packages.remove(root[packages.ROOT_TAG])
 
 
 def kicad_centre(slot):
@@ -297,6 +311,7 @@ def main():
         first_world = check_alone()
         check_joined(first_world)
         check_moved()
+        check_view_only_space()
         check_pick()
         check_fold(scene)
         check_section(scene)
