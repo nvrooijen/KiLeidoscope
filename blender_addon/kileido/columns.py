@@ -37,7 +37,7 @@ GREY = (0.42, 0.42, 0.42)  # a tab whose mode this board cannot have
 STATES = {}
 CATEGORY = "KiLeidoscope"  # the sidebar tab the bookmarks belong to
 
-SIZEX_OFFSET = {(5, 1): 198}  # bytes into ARegion; measured by scanning at two UI scales
+SIZEX_OFFSET = {(5, 1): 198, (5, 2): 198}  # bytes into ARegion; measured by scanning at two UI scales
 MIN_SIDEBAR_PX = 200  # unscaled: the narrowest a closing column leaves the sidebar
 MAX_AREA_SHARE = 0.7  # the widened sidebar takes at most this much of the 3D view
 
