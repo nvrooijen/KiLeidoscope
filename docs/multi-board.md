@@ -1,8 +1,8 @@
 # (New!) Multi-board assemblies (beta)
 
-A product is rarely one board. KiLeidoscope shows up to four boards from four KiCad PCB editors in one Blender window, each following its own KiCad live, and lets you stand them where they go in the product: stacked on headers, folded over each other, side by side in a housing. It marks where they collide, remembers which connectors are plugged into which, and keeps where each board stands in a small arrangement file in an open standard (OpenUSD) that other tools read too.
+Most products are more than one PCB: a main board with a sensor board on a header, a display module, a flex to a connector board. Multi-board mode brings up to four boards from four KiCad PCB editors into one Blender window, each following its own KiCad live over the IPC API, and lets you place them as they sit in the product: stacked, folded over each other or side by side. A collision check marks where boards and components run into each other, connectors can be marked as mated so a plugged pair no longer counts, and the arrangement is saved to a small OpenUSD file that any USD-aware tool can read.
 
-KiCad itself has no notion of an assembly: each PCB editor holds one board. KiLeidoscope works with that rather than against it. The way that works best is to keep **one board live at a time**: the board you are editing follows its KiCad, the others stay in Blender as saved copies where you put them, and swapping which board is live is one click in Blender and one in KiCad. The **Multi-board** column holds the controls.
+KiCad holds one board per PCB editor and has no notion of an assembly. Multi-board mode respects that: the board you are editing is live, the other boards stay in Blender as saved copies, exactly where you placed them, and switching the live board takes one click in Blender and one in KiCad. All controls are in the **Multi-board** column of the KiLeidoscope sidebar.
 
 <p align="center">
 <img src="../assets/collisions.png" width="520" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
