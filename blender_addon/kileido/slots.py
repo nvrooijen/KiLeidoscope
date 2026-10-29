@@ -13,6 +13,7 @@ import bpy
 
 from . import cosmetics, cut, findings_draw, findings_markers, fold, lighting, live, models, packages, phase
 from . import state
+from .objects import redraw_views
 from .state import SLOTS, board, boards, using
 
 
@@ -37,7 +38,7 @@ def pick(slot):
         phase.sync_list()
         if cut.enabled():
             cut.refresh()  # the section through it
-    _redraw()
+    redraw_views()
 
 
 def follow():
@@ -67,7 +68,7 @@ def set_hidden(slot, hide):
         if board.collection is not None and not board.in_snapshot:
             board.collection.hide_viewport = board.collection.hide_render = board.hidden
     lighting.fit_to_boards()
-    _redraw()
+    redraw_views()
 
 
 def remove(slot):
@@ -89,7 +90,7 @@ def remove(slot):
         board.pose, board.pose_of, board.hidden = None, "", False
     follow()
     lighting.fit_to_boards()
-    _redraw()
+    redraw_views()
 
 
 def _delete(collection):
@@ -123,13 +124,3 @@ def _delete(collection):
             for block in [block for block in blocks if block.name.startswith(board.name_prefix + "KLS")]:
                 if block.users == 0 or (block.users == 1 and block.use_fake_user):
                     blocks.remove(block)
-
-
-def _redraw():
-    try:
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type in ("VIEW_3D", "PROPERTIES"):
-                    area.tag_redraw()
-    except (AttributeError, ReferenceError):
-        pass

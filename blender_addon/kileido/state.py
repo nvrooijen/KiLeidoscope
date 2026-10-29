@@ -9,9 +9,20 @@ images carry their slot's prefix ("B2 KLS outline"), as Blender names are global
 Nothing else holds board state.
 """
 
+import os
 from contextlib import contextmanager
 
 SLOTS = (1, 2, 3, 4)
+
+
+def file_key(path):
+    """A board file as the add-on tells files apart: its path, normalised."""
+    return os.path.normcase(os.path.normpath(path))
+
+
+def same_file(a, b):
+    """Two board paths name one file (never when either is unknown)."""
+    return bool(a and b) and file_key(a) == file_key(b)
 
 
 def slot_prefix(slot):

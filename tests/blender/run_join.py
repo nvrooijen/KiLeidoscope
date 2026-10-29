@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 
 import kileido  # noqa: E402
-from kileido import join, live, state  # noqa: E402
+from kileido import join, live, settings, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402
 from kileido_bridge.protocol import FrameDecoder, snapshot_frames  # noqa: E402
 
@@ -73,7 +73,7 @@ def main():
     kileido.register()
     folder = Path(tempfile.mkdtemp(prefix="kileido_join_"))
     join.folder = lambda: folder
-    join._settings_path = lambda: folder / "settings.json"
+    settings.path = lambda: folder / "settings.json"
     names = {47811: "Board 1.kicad_pcb", 47812: "Board 2.kicad_pcb", 47813: "Board 3.kicad_pcb",
              47814: "Board 4.kicad_pcb", 47815: "Board 5.kicad_pcb", 47816: "Board 6.kicad_pcb",
              47822: "Board 2.kicad_pcb"}

@@ -9,13 +9,12 @@ the collections once a file is opened.
 """
 
 import json
-import os
 
 import bpy
 
 from . import materials, nodes, poses
 from .objects import ROOT, lookup, owned_name
-from .state import SLOTS, board, boards, using
+from .state import SLOTS, board, boards, same_file, using
 
 HEADER = "kls_board"  # on a board collection: its board frame, as `remember` keeps it (JSON)
 STACKUP = "kls_board_stackup"  # and its stackup: KiCad's layer names and layers (JSON)
@@ -36,10 +35,6 @@ def remember_stackup():
         board.collection[STACKUP] = json.dumps({"layer_names": board.layer_names, "stackup": board.stackup})
 
 
-def _same_file(a, b):
-    return bool(a and b) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
-
-
 def restore(kept):
     """After a file is opened (the board states reset): each board collection that recorded
     its board is back in its slot as a saved copy. `kept`: slot -> the board path a live link
@@ -52,7 +47,7 @@ def restore(kept):
         if collection.get("kileido_owned") != 1 or slot not in SLOTS or HEADER not in collection:
             continue  # a file saved before boards were recorded: its objects show, as plain objects
         header = json.loads(collection[HEADER])
-        if boards[slot].loaded or (slot in kept and not _same_file(kept[slot], header.get("board_path"))):
+        if boards[slot].loaded or (slot in kept and not same_file(kept[slot], header.get("board_path"))):
             continue
         with using(slot):
             _restore(collection, header)

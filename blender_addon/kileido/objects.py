@@ -28,6 +28,17 @@ def role(name):
     return _BOARD_PREFIX.sub("", name, count=1)
 
 
+def redraw_views(kinds=("VIEW_3D", "PROPERTIES")):
+    """Draw every area of these kinds again (the 3D views and the panel), where there is a window."""
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type in kinds:
+                    area.tag_redraw()
+    except (AttributeError, ReferenceError):
+        pass
+
+
 def set_visible(obj, visible):
     """Viewport and render visibility together. A row switched off in the Layers list
     keeps its objects hidden (and remembers to bring them back)."""

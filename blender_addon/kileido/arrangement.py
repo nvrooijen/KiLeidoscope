@@ -21,14 +21,10 @@ import bpy
 import numpy as np
 
 from . import poses
-from .state import SLOTS, board, boards, using
+from .state import SLOTS, board, boards, same_file, using
 
 KEY = "kls_arrangement"  # on the scene: the file opened and its boards (JSON), see `_entries`
 VERSION = 1
-
-
-def _same_file(a, b):
-    return bool(a and b) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
 # --- Saving ---------------------------------------------------------------------------------
@@ -242,14 +238,14 @@ def _entries():
 def wanted():
     """The current board's place in the opened arrangement (by file, else by name), or None."""
     for entry in _entries():
-        if _same_file(entry["path"], board.board_path) or \
+        if same_file(entry["path"], board.board_path) or \
                 (not (entry["path"] and board.board_path) and entry["name"] and entry["name"] == board.board_name):
             return entry
     return None
 
 
 def _matches(entry, path, name):
-    return _same_file(entry["path"], path) or (not (entry["path"] and path) and bool(entry["name"])
+    return same_file(entry["path"], path) or (not (entry["path"] and path) and bool(entry["name"])
                                                and entry["name"] == name)
 
 

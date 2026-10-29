@@ -18,7 +18,6 @@ softboxes over all boards (lighting.fit_to_boards).
 """
 
 import json
-import os
 
 import bpy
 import numpy as np
@@ -27,7 +26,7 @@ from mathutils import Matrix, Vector
 from . import lighting, packages
 from .objects import OUTLINE, hide, read_coordinates, read_edges, role
 from .placement import PLACEHOLDER_HEIGHT_M
-from .state import boards as live_boards
+from .state import boards as live_boards, file_key
 
 COLLECTION = "KiLeidoscope collisions"
 MATERIAL = "KiLeidoscope collision"
@@ -235,7 +234,7 @@ def _aabb_pairs(a, b):
 
 def board_key(path, name):
     """A board as the marks name it: its file, else its name."""
-    return os.path.normcase(os.path.normpath(path)) if path else f"name:{name}"
+    return file_key(path) if path else f"name:{name}"
 
 
 def boards():
@@ -269,11 +268,10 @@ def mated():
 
 
 def set_mated(key_a, ref_a, key_b, ref_b, on=True):
-    """Mark two parts on two boards Mated (`on`), or not; checked again soon."""
+    """Mark two parts on two boards Mated (`on`), or not (the caller checks again: `run`)."""
     pairs = mated()
     (pairs.add if on else pairs.discard)(_pair(key_a, ref_a, key_b, ref_b))
     bpy.context.scene[MATED_KEY] = json.dumps(sorted([*a, *b] for a, b in pairs))
-    schedule()
 
 
 def mated_shown():

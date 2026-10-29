@@ -8,22 +8,17 @@ bridge sends with each board (and a saved board keeps), the last one seen (setti
 `remember`), or an installed one (kicad_cli.executable).
 """
 
-import json
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from . import kicad_cli
+from . import kicad_cli, settings
 from .state import boards
 
 SETTING = "kicad_cli"  # in settings.json (join.py): the last running KiCad's kicad-cli
 _CHILD_ENVIRONMENT = ("PYTHONHOME", "PYTHONPATH", "KICAD_API_SOCKET", "KICAD_API_TOKEN")  # not for KiCad
-
-
-def _settings_path():
-    return Path(kicad_cli.cache_root()).parent / "settings.json"
 
 
 def remember(export):
@@ -32,26 +27,14 @@ def remember(export):
     cli = (export or {}).get("kicad_cli") or ""
     if not cli or _remembered() == cli:
         return
-    path = _settings_path()
     try:
-        settings = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        settings = {}
-    settings[SETTING] = cli
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(settings), encoding="utf-8")
-        os.replace(temporary, path)  # whole file or nothing: join.py reads it too
+        settings.put(**{SETTING: cli})
     except OSError:
         pass
 
 
 def _remembered():
-    try:
-        return json.loads(_settings_path().read_text(encoding="utf-8")).get(SETTING) or ""
-    except (OSError, ValueError, AttributeError):
-        return ""
+    return settings.read().get(SETTING) or ""
 
 
 def _editor_beside(cli):

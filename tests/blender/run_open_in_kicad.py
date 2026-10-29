@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, arrangement, join, kicad_app, live, poses, slots, state  # noqa: E402
+from kileido import apply, arrangement, join, kicad_app, live, poses, settings, slots, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import FrameDecoder, snapshot_frames  # noqa: E402
 
@@ -88,9 +88,8 @@ def main():
     started, apart = [], []
     kicad_app._start = lambda command, **options: started.append((command, options))
     kicad_app._keep_kicad_connections_apart = lambda: apart.append(True)
-    kicad_app._settings_path = lambda: FOLDER / "settings.json"
+    settings.path = lambda: FOLDER / "settings.json"
     join.folder = lambda: FOLDER
-    join._settings_path = lambda: FOLDER / "settings.json"
     live.SocketClient = lambda host, port, token: FakeClient(DAUGHTER)
     os.environ["KICAD_API_SOCKET"] = "ipc://the-first-kicad"  # as a Blender started by KiCad may have
     kileido.register()

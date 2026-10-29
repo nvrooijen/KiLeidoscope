@@ -24,8 +24,9 @@ from pathlib import Path
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from . import kicad_cli, live
-from .state import SLOTS, boards
+from . import kicad_cli, live, settings
+from .objects import redraw_views
+from .state import SLOTS, boards, same_file
 
 PROTOCOL = 1  # kileido_bridge/launcher.py JOIN_PROTOCOL
 POLL_S = 0.5
@@ -44,28 +45,14 @@ def folder():
     return path
 
 
-def _settings_path():
-    return Path(kicad_cli.cache_root()).parent / "settings.json"
-
-
 def choice():
     """The remembered answer: "ASK" (no answer remembered), "ADD" or "OWN"."""
-    try:
-        value = json.loads(_settings_path().read_text(encoding="utf-8")).get("join", "ASK")
-    except (OSError, ValueError, AttributeError):
-        value = "ASK"
+    value = settings.read().get("join", "ASK")
     return value if value in {key for key, _, _ in CHOICES} else "ASK"
 
 
 def set_choice(value):
-    path = _settings_path()
-    try:
-        settings = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        settings = {}
-    settings["join"] = value
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write(path, settings)
+    settings.put(join=value)
 
 
 def _shown(state, offered):
@@ -75,8 +62,7 @@ def _shown(state, offered):
     if not state.loaded:
         return False
     if state.board_path and offered["board_path"]:
-        same = os.path.normcase(os.path.normpath(state.board_path))
-        return same == os.path.normcase(os.path.normpath(offered["board_path"]))
+        return same_file(state.board_path, offered["board_path"])
     return bool(offered["board_name"]) and state.board_name == offered["board_name"]
 
 
@@ -96,7 +82,7 @@ def offer(force=False):
     if _registered[0] is not None or (bpy.app.background and not force):
         return
     path = folder() / f"viewer-{os.getpid()}.json"
-    _write(path, {"pid": os.getpid(), "protocol": PROTOCOL})
+    settings.write(path, {"pid": os.getpid(), "protocol": PROTOCOL})
     _registered[0] = path
     atexit.register(withdraw)  # Blender does not unregister a script-started add-on on quit
     if not bpy.app.timers.is_registered(poll):
@@ -127,7 +113,7 @@ def poll():
     for entry in expired:
         _pending.remove(entry)
     if expired:
-        _redraw()
+        redraw_views()
     return POLL_S
 
 
@@ -162,7 +148,7 @@ def handle(request):
         return None
     _pending.append({"nonce": nonce, "offer": offered, "since": time.monotonic()})
     _ask()
-    _redraw()
+    redraw_views()
     return None
 
 
@@ -184,7 +170,7 @@ def answer(nonce, add, remember=False):
             _accept(nonce, offered, slot, reason)
     else:
         _reply(nonce, False, None, "own window")
-    _redraw()
+    redraw_views()
     return slot
 
 
@@ -200,17 +186,8 @@ def _accept(nonce, offered, slot, reason):
 
 def _reply(nonce, accepted, slot, reason):
     reply = {"accepted": accepted, "slot": slot, "reason": reason}
-    _write(folder() / f"reply-{nonce}.json", reply)
+    settings.write(folder() / f"reply-{nonce}.json", reply)
     print("KiLeidoscope join: " + json.dumps(reply), flush=True)
-
-
-def _write(path, data):
-    """Whole file or nothing: the other side never reads half a file."""
-    temporary = path.with_suffix(".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(data, stream)
-    os.replace(temporary, path)
 
 
 # --- Asking the user ------------------------------------------------------------------------
@@ -258,13 +235,6 @@ def draw_choice(layout, context):
     """The remembered choice as menu entries: what Open in Blender in another KiCad does."""
     layout.label(text="Open in Blender in another KiCad")
     layout.props_enum(context.window_manager, "kileido_join_choice")
-
-
-def _redraw():
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
 
 
 class KILEIDO_OT_join_answer(bpy.types.Operator):

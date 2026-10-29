@@ -131,8 +131,13 @@ def item_at(scene, depsgraph, origin, direction, max_hits=32):
 
 
 def _slot_of(obj, slots):
-    """The live board (slot) `obj` belongs to, among `slots`, or None."""
-    return next((slot for slot in slots if obj.name in boards[slot].collection.all_objects), None)
+    """The live board (slot) `obj` belongs to, among `slots`, or None: what it hangs from, at
+    the top, is that board's root Empty (poses.ROOT_TAG); a view-only board's root has no tag."""
+    top = obj
+    while top.parent is not None:
+        top = top.parent
+    slot = top.get(poses.ROOT_TAG)
+    return slot if slot in slots else None
 
 
 def board_at(scene, depsgraph, origin, direction, max_hits=32, only=None):
