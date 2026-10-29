@@ -77,6 +77,20 @@ def main():
         assert mask_1.name == "KLS holes" and mask_2.name == "B2 KLS holes"
         assert first.holes is not second.holes
 
+        # Focus and the cut plane reach a board's own overlays, not the other board's.
+        from kileido import cut, focus
+        silk = {slot: bpy.data.materials.new(f"{prefix}KLS overlay F.SilkS material")
+                for slot, prefix in ((1, ""), (2, "B2 "))}
+        for slot in (1, 2):
+            with state.using(slot):
+                found = focus.shown_materials()
+                assert silk[slot] in found and silk[3 - slot] not in found, slot
+                assert all(objects.role(material.name) == material.name for material in cut.materials()) \
+                    if slot == 1 else all(material.name.startswith("B2 ") for material in cut.materials()
+                                          if objects.role(material.name).startswith("KLS ")), slot
+        for material in silk.values():
+            bpy.data.materials.remove(material)
+
         # An edit in board 1's KiCad (a track gone) changes board 1 only.
         before = {obj.name: len(obj.data.vertices) for obj in twos if obj.type == "MESH"}
         tracks_1 = sum(len(obj.data.vertices) for obj in ones if obj.get("kls_copper", ("", ""))[1] == "tracks")

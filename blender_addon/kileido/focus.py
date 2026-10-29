@@ -20,7 +20,7 @@ Unfocused materials go back to dithered, as before.
 
 import bpy
 
-from .objects import role
+from .objects import owned_name
 from .state import board
 
 GROUP = "KLS_Focus_v2"
@@ -104,10 +104,11 @@ def set_render_method(material):
 
 
 def shown_materials():
-    """Every material KiLeidoscope shows except the highlights, including model parts."""
+    """Every material KiLeidoscope shows on this board except the highlights, including model
+    parts; its own overlays (another board's carry that board's prefix, and stay whole)."""
     found = {material for key, material in board.materials.items() if not key.startswith("highlight")}
     found |= {material for material in bpy.data.materials
-              if role(material.name).startswith("KLS overlay") or material.name == CUT_FACE}
+              if material.name.startswith(owned_name("KLS overlay")) or material.name == CUT_FACE}
     if board.collection is not None:
         for obj in tuple(board.collection.all_objects):
             if obj.get("kls_model_fp_id") is not None:
