@@ -21,8 +21,8 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kileido  # noqa: E402
-from kileido import (apply, boardprops, components, cut, fold, foldmath, highlight, models, objects, pick, poses,  # noqa: E402
-                     solder, state)
+from kileido import (apply, boardprops, components, cut, fold, foldmath, highlight, models, objects, packages,  # noqa: E402
+                     pick, poses, slots, solder, state)
 from kileido.objects import read_attribute, read_coordinates  # noqa: E402
 import run_flex  # noqa: E402  (its frames: the fixture with a bend)
 import run_solder  # noqa: E402  (its frames and stand-in parts)
@@ -280,7 +280,14 @@ def check_section(scene):
         face = bpy.data.objects[cut.FACE]
         off = np.abs(np.array(face.matrix_world) - np.array(objects.root().matrix_world)).max()
         assert off < 1e-6, "the face drawn where board 2 stands"
-        scene.kileido_cut = False
+    slots.pick(2)  # the section is the picked board's
+    with state.using(2):
+        poses.set_shown(offset=(0.05, 0.02, 0.02))  # the board moves under the plane, which stays
+        cut._moved_soon()  # the timer the move started
+        off = np.abs(np.array(face.matrix_world) - np.array(objects.root().matrix_world)).max()
+        assert off < 1e-6, "the face stayed where board 2 was"
+    slots.pick(1)
+    scene.kileido_cut = False
 
 
 def main():

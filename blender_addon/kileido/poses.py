@@ -256,8 +256,9 @@ def place_root(obj):
     stored = [*board.pose[0], *board.pose[1]]  # what an undo step puts back with the root (`_undone`)
     if list(obj.get(POSE_KEY, ())) != stored:
         obj[POSE_KEY] = stored
-    if any(abs(a - b) > 1e-9 for row, other in zip(obj.matrix_world, target) for a, b in zip(row, other)):
-        obj.matrix_world = target  # only when it moved: every object of the board follows
+    if any(abs(a - b) > MOVED_M for row, other in zip(obj.matrix_world, target) for a, b in zip(row, other)):
+        obj.matrix_world = target  # only when it moved (matrix_world is float32): every object of the board follows
+        _cut_moved()
     group = bpy.data.node_groups.get(owned_name(SPACE))
     if group is not None:
         _bind(group, obj, matrix)
@@ -283,6 +284,14 @@ def follow_root(obj):
         _bind(group, obj, root_matrix())
     from . import findings_markers  # it imports modules that import this one
     findings_markers.invalidate()
+    _cut_moved()
+
+
+def _cut_moved():
+    """The board moved: the cut section, drawn through the picked board, follows it."""
+    from . import cut, state  # cut imports this module
+    if board.slot == state.picked():
+        cut.moved()
 
 
 @bpy.app.handlers.persistent

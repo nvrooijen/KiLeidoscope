@@ -726,6 +726,20 @@ def _rebuild_soon():
     return None
 
 
+def moved():
+    """The picked board moved under the plane (poses): the section, its face and the cut
+    light are drawn again where the board stands now (its geometry is as it was)."""
+    global _pushed
+    _pushed = None  # `push` hands the plane over again, and redoes the section and the light
+    if enabled() and not bpy.app.timers.is_registered(_moved_soon):
+        bpy.app.timers.register(_moved_soon, first_interval=REBUILD_DELAY_S)
+
+
+def _moved_soon():
+    push()
+    return None
+
+
 # --- The cut light --------------------------------------------------------------------------
 
 def _light_object(create):
@@ -803,5 +817,6 @@ def install():
 def uninstall():
     if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
-    if bpy.app.timers.is_registered(_rebuild_soon):
-        bpy.app.timers.unregister(_rebuild_soon)
+    for timer in (_rebuild_soon, _moved_soon):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
