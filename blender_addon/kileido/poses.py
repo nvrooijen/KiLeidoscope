@@ -374,6 +374,13 @@ def space_group():
     return group
 
 
+def unturned(group):
+    """A space group that came in with a package (packages.import_board), bound with the live
+    board's turn there: the view-only board's normal is the world's, as it stands wherever
+    the user puts it (its Position input still follows its own root)."""
+    _bind(group, None, np.eye(4))
+
+
 def _bind(group, obj, matrix):
     coordinates = group.nodes["KLS root"]
     if obj is not None and coordinates.object != obj:

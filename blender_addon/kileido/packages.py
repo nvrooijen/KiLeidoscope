@@ -16,7 +16,7 @@ import numpy as np
 from mathutils import Vector
 
 from . import (apply, components, cosmetics, cut, findings_draw, highlight, ims, layers, lighting, materials, nodes,
-               render_depth, transform)
+               poses, render_depth, transform)
 from .objects import OUTLINE, find, hide, role, set_modifier, set_node_input, view3d_spaces
 from .placement import BOARD_FACE_CLEARANCE_M, copper_placement, copper_thickness, laminate_faces, stencil_thickness
 from . import boardprops, state
@@ -290,6 +290,9 @@ def import_board(filepath):
             hide(obj, True)
     for material in _owned_data(collection)[0]:
         _world_position_to_root(material, root)
+    space = bpy.data.node_groups.get(f"KV{index} KLS board space")
+    if space is not None:  # it came bound with the live board's turn (poses.space_group)
+        poses.unturned(space)
 
     # What a live board sets up for itself, for a session without one.
     apply.see_through_holes(scene)

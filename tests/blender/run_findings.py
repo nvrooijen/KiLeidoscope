@@ -2057,7 +2057,7 @@ def main():
         index = BoardIndex(snapshot)
         # Without a live link: the tab is greyed, Run DRC off, the list still shown.
         assert columns.tab_state("DRC") == "unavailable"
-        assert [key for key, _, _ in columns.TABS] == ["STUDIO", "IMS", "FLEX", "DRC", "LLM", "HIGH_SPEED"]
+        assert [key for key, _, _ in columns.TABS] == ["STUDIO", "BOARDS", "IMS", "FLEX", "DRC", "LLM", "HIGH_SPEED"]
         # A newer findings frame replaces a queued older one.
         link = live.LiveLink()
         for revision in (1, 2):
