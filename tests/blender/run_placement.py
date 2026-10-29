@@ -161,7 +161,12 @@ def check_view_only_space():
     with state.using(2):
         packages.export_board(str(path))
         root = packages.import_board(str(path))  # built with `board` lent board 2, flipped and turned
-    group = bpy.data.node_groups[f"KV{root[packages.ROOT_TAG]} KLS board space"]
+    imported = root.users_collection[0]
+    prefix = f"KV{root[packages.ROOT_TAG]} "
+    left = [block.name for block in (*imported.all_objects, *imported.children_recursive)
+            if "B2 " in block.name or (block.name.startswith("KLS") and not block.name.startswith(prefix))]
+    assert not left, f"board 2's package came in under its live names: {left[:6]}"
+    group = bpy.data.node_groups[prefix + "KLS board space"]
     columns = [tuple(round(v, 6) for v in group.nodes[f"KLS root {axis}"].inputs[1].default_value) for axis in "XYZ"]
     assert columns == [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], columns
     packages.remove(root[packages.ROOT_TAG])

@@ -26,6 +26,8 @@ ROOT_TAG = "kls_view_only_root"
 OUTLINE_PROBLEM = "Board outline is missing or malformed"  # kileido_bridge.geometry.OUTLINE_PROBLEM
 GAP_M = 0.005  # between boards placed side by side
 PACKAGE_PREFIX = "KiLeidoscope: "  # the live collection's name, as written to a package
+_PACKAGE = re.compile(r"^KiLeidoscope(?: \d+)?: ")  # board 1's "KiLeidoscope: X", board 2's "KiLeidoscope 2: X"
+_SLOT_PREFIX = re.compile(r"^B\d+ ")  # a live board's names in slots 2-4 (state.slot_prefix): not a view-only's
 DATA_KINDS = ("collections", "objects", "meshes", "materials", "images", "node_groups")
 _DUPLICATE = re.compile(r"\.\d{3}$")  # Blender's suffix for a name already taken
 
@@ -247,7 +249,7 @@ def import_board(filepath):
     """Append a board package as a view-only board right of the others; its root Empty."""
     before = {kind: set(getattr(bpy.data, kind)) for kind in DATA_KINDS}
     with bpy.data.libraries.load(filepath, link=False) as (source, target):
-        names = [name for name in source.collections if name.startswith(PACKAGE_PREFIX)]
+        names = [name for name in source.collections if _PACKAGE.match(name)]
         if len(names) != 1:
             raise ValueError("Not a KiLeidoscope board export")
         target.collections = names
@@ -258,12 +260,13 @@ def import_board(filepath):
     index = max((obj[ROOT_TAG] for obj in roots()), default=0) + 1
     for kind in DATA_KINDS:
         for block in set(getattr(bpy.data, kind)) - before[kind]:
-            if block.name.startswith("KLS") or (isinstance(block, bpy.types.Object) and components.key_of(block)):
-                block.name = f"KV{index} {_DUPLICATE.sub('', block.name)}"  # parts: "KV2 R12 · ..."
-    name = collection.get("kls_board_name") or collection.name.removeprefix(PACKAGE_PREFIX)
+            own = _SLOT_PREFIX.sub("", block.name)  # board 2's "B2 KLS outline": "KLS outline"
+            if own.startswith("KLS") or (isinstance(block, bpy.types.Object) and components.key_of(block)):
+                block.name = f"KV{index} {_DUPLICATE.sub('', own)}"  # parts: "KV2 R12 · ..."
+    name = collection.get("kls_board_name") or _PACKAGE.sub("", collection.name)
     collection.name = f"KiLeidoscope view-only: {name}"
-    for group in collection.children:  # "Copper.001" beside the live board's "Copper"
-        group.name = f"{name}: {_DUPLICATE.sub('', group.name)}"
+    for group in collection.children:  # "Copper.001" beside the live board's "Copper" (board 2's "B2 Copper")
+        group.name = f"{name}: {_DUPLICATE.sub('', _SLOT_PREFIX.sub('', group.name))}"
     collection.pop("kileido_owned", None)
     collection.hide_select = False  # exported with the live board's selection lock
     for group in collection.children_recursive:
