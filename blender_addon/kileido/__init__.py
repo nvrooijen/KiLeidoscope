@@ -1344,7 +1344,7 @@ class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
     bl_idname = "kileido.open_in_kicad"
     bl_label = "Open in KiCad"
     bl_description = ("Open this board in KiCad's PCB editor; Open in Blender there brings it back live here, "
-                      "where it stands")
+                      "where it stands. Open in a KiCad already: click Open in Blender there")
 
     # A row's button sets one of these; SKIP_SAVE: Blender fills the other from the last click otherwise
     slot: IntProperty(default=0, options={"SKIP_SAVE"})  # a board shown offline, else
@@ -1356,6 +1356,9 @@ class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
             path, export = boards[self.slot].board_path, boards[self.slot].export
         try:
             kicad_app.open_board(path, export)
+        except kicad_app.AlreadyOpen as exc:
+            self.report({"INFO"}, f"KiLeidoscope: {exc}")
+            return {"FINISHED"}
         except (FileNotFoundError, OSError) as exc:
             self.report({"ERROR"}, f"KiLeidoscope: cannot open it in KiCad: {exc}")
             return {"CANCELLED"}

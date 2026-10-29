@@ -25,7 +25,7 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 <text class="th" x="145" y="60" text-anchor="middle" fill="#FFFFFF">KiCad A: Main</text>
 <text class="ts" x="145" y="78" text-anchor="middle" fill="#D6DDF5">Open in Blender</text>
 <rect x="255" y="40" width="170" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
-<text class="th" x="340" y="60" text-anchor="middle" fill="#FFFFFF">KiCad B: Daughter</text>
+<text class="th" x="340" y="60" text-anchor="middle" fill="#FFFFFF">KiCad B: Sensor</text>
 <text class="ts" x="340" y="78" text-anchor="middle" fill="#D6DDF5">Open in Blender</text>
 <rect x="450" y="40" width="170" height="56" rx="8" stroke="#314CB0" class="later"/>
 <text class="th lbl" x="535" y="60" text-anchor="middle">KiCad C, D</text>
@@ -46,7 +46,7 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 <text class="th" x="135" y="338" text-anchor="middle" fill="#412402">Slot 1: Main</text>
 <text class="ts" x="135" y="356" text-anchor="middle" fill="#633806">root, pose, KLS names</text>
 <rect x="255" y="318" width="170" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
-<text class="th" x="340" y="338" text-anchor="middle" fill="#412402">Slot 2: Daughter</text>
+<text class="th" x="340" y="338" text-anchor="middle" fill="#412402">Slot 2: Sensor</text>
 <text class="ts" x="340" y="356" text-anchor="middle" fill="#633806">root, pose, B2 KLS names</text>
 <rect x="450" y="318" width="170" height="56" rx="8" stroke="#E87D0D" class="later"/>
 <text class="th lbl" x="535" y="338" text-anchor="middle">Slots 3 and 4</text>

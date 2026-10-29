@@ -30,7 +30,7 @@ KiCad itself has no notion of an assembly: each PCB editor holds one board. KiLe
 2. Open the second board in a **second PCB editor window** (open its project in a new KiCad window) and click **Open in Blender** there. Blender asks whether to **Add here** or open the board in its own window. Add it: it comes in at its own KiCad coordinates, a centimetre above the first board, and the **Multi-board** tab on the sidebar's edge lights up.
 3. **Place** the boards: the select arrow in front of a board's row, then **G** and **R** in the 3D view, or the Offset and Rotation numbers, **Flip** and **Turn 90°** in the Multi-board column. **Collision check** shows where they run into each other; mark a connector and its mate **Mated** so they stop counting.
 4. **Save** the arrangement (`.usda`) from the Multi-board column, and the `.blend` if you want the scene back as it is.
-5. **Swap.** Close the first board's PCB editor: its board stays in Blender exactly where it stands, its LED goes red and an **Open in KiCad** button appears on its row. Edit the second board in KiCad, live in Blender. When you want the first board live again, click **Open in KiCad** on its row: its PCB editor opens with its file, and **Open in Blender** there puts the board back live in its slot, in place.
+5. **Swap.** Close the first board's PCB editor: its board stays in Blender exactly where it stands, its LED goes red and an **Open in KiCad** button appears on its row. Edit the second board in KiCad, live in Blender. When you want the first board live again, click **Open in KiCad** on its row: its PCB editor opens with its file, and **Open in Blender** there puts the board back live in its slot, in place. If its editor is open already, the button says so instead of starting a second one: click **Open in Blender** in that editor.
 
 Everything below is detail; the five steps are the feature.
 
@@ -87,7 +87,7 @@ Each board keeps its own **IMS**, **Flex** and **Dynamic phase** settings and it
 
 ## Collisions and Mated parts
 
-The check runs a moment after the boards stop changing, whenever two boards or more are shown. Each part is a box (its 3D model's bounds in the footprint's frame, or the placeholder envelope) and each board a solid of its outline; parts are tested against the other boards' parts and solids, and boards against boards. A pair listed as *J3 (Main) ↔ J1 (Daughter)* can be marked **Mated**; a part against a board solid cannot, as a connector reaching into its mate's board is excused by the mark on the pair. Parts touching within 20 µm are no collision.
+The check runs a moment after the boards stop changing, whenever two boards or more are shown. Each part is a box (its 3D model's bounds in the footprint's frame, or the placeholder envelope) and each board a solid of its outline; parts are tested against the other boards' parts and solids, and boards against boards. A pair listed as *J3 (Main) ↔ J1 (Sensor)* can be marked **Mated**; a part against a board solid cannot, as a connector reaching into its mate's board is excused by the mark on the pair. Parts touching within 20 µm are no collision.
 
 The marks live in the scene (a saved `.blend` keeps them) and in the arrangement file, named by board and reference, so they survive a board being closed and reopened.
 
@@ -133,10 +133,10 @@ def Xform "Boards"
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
     }
 
-    def Xform "Daughter"
+    def Xform "Sensor"
     {
-        asset kileidoscope:board = @Daughter/Daughter.kicad_pcb@
-        string kileidoscope:name = "Daughter.kicad_pcb"
+        asset kileidoscope:board = @Sensor/Sensor.kicad_pcb@
+        string kileidoscope:name = "Sensor.kicad_pcb"
         bool kileidoscope:hidden = 0
         double3 xformOp:translate = (20, -5, 11.6)
         double3 xformOp:rotateXYZ = (180, 0, 30)
@@ -147,7 +147,7 @@ def Xform "Boards"
     {
         def Scope "Mate_1"
         {
-            rel kileidoscope:first = </Boards/Daughter>
+            rel kileidoscope:first = </Boards/Sensor>
             string kileidoscope:firstReference = "J1"
             rel kileidoscope:second = </Boards/Main>
             string kileidoscope:secondReference = "J3"
@@ -169,7 +169,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 
 **One bridge per KiCad.** Every Open in Blender starts a launcher and a bridge of its own, on its own port with its own token, as before. New is what the launcher does first: it looks in KiLeidoscope's per-user cache for Blenders that take requests (each lists itself in `viewers/viewer-<pid>.json`), leaves a request file with its port, token and board, and waits for the reply file. Until Blender takes the request the launcher can withdraw it; once taken, the user may be asked, so the launcher waits up to two minutes. Declined, or with no Blender open, it starts a Blender of its own, as before. A bridge whose board's slot has taken a newer bridge, or whose Blender has closed, stops by itself half a minute later.
 
-**Slots.** The add-on runs one live link per slot, up to four; each KiCad's frames reach that slot's board and nothing else. Board 1 keeps the names KiLeidoscope always used; boards 2 to 4 carry their slot in front of every object, material, image and node group name (`B2 KLS outline`) and live in collections of their own (`KiLeidoscope 2: Daughter.kicad_pcb`), as Blender's names are global. Each board's settings that cannot be shared, IMS, flex, fold, dynamic phase and the layer eyes, are Scene properties of its own.
+**Slots.** The add-on runs one live link per slot, up to four; each KiCad's frames reach that slot's board and nothing else. Board 1 keeps the names KiLeidoscope always used; boards 2 to 4 carry their slot in front of every object, material, image and node group name (`B2 KLS outline`) and live in collections of their own (`KiLeidoscope 2: Sensor.kicad_pcb`), as Blender's names are global. Each board's settings that cannot be shared, IMS, flex, fold, dynamic phase and the layer eyes, are Scene properties of its own.
 
 **Roots and poses.** Everything a board owns hangs from its root Empty, and the add-on places it in the root's space: KiCad nanometres around the board's origin, Z 0 at the bottom face. So a board moves as one, and nothing it draws needs to know where it stands; only what looks at the scene as a whole works in world space: picking, the camera and lights, collisions, the cut plane, the views. A board's pose is kept in KiCad's frame, not around its centre, which moves with an outline edit; the panel's numbers are worked out about the centre each time. A move by hand updates the pose, a KiCad frame places the root from it, and an undo step carries it back with the root.
 
@@ -183,7 +183,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 | --- | --- |
 | Where a board stands | Its pose: the Position numbers, a move with G or R, an opened arrangement, or the default (centred alone; at KiCad's X and Y a centimetre above the others). |
 | Which KiCad a board belongs to | The bridge of the PCB editor whose Open in Blender added it. |
-| Which KiCad Open in KiCad starts | The one the board came from, else the last KiCad seen, else an installed one. |
+| Which KiCad Open in KiCad starts | The one the board came from, else the last KiCad seen, else an installed one. None when KiCad's lock file beside the board (`~<board>.lck`) says it is open already. |
 | Parts and board solids in the collision check | 3D model bounds (or placeholder envelopes) and the board outline, as drawn. |
 | Mated pairs | Your marks; kept in the scene and the arrangement. |
 | Add here or own window | Your answer, remembered in KiLeidoscope's settings beside its cache. |

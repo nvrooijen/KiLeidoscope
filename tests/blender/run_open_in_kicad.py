@@ -113,6 +113,21 @@ def main():
             assert "not there" in str(exc)
         else:
             raise AssertionError("a missing board file was opened")
+        # The board open in a KiCad already (KiCad's lock beside it): no second editor; Open in Blender there.
+        lock = kicad_app.lock_file(str(MAIN))
+        lock.write_text(json.dumps({"hostname": "DESKTOPNVR", "username": "nickv"}), encoding="utf-8")
+        try:
+            assert kicad_app.open_in_kicad(str(MAIN)) == "nickv at DESKTOPNVR"
+            assert bpy.ops.kileido.open_in_kicad(slot=1) == {"FINISHED"} and len(started) == 1, "a second editor"
+            try:
+                kicad_app.open_board(str(MAIN))
+            except kicad_app.AlreadyOpen as exc:
+                assert "Open in Blender" in str(exc) and lock.name in str(exc), str(exc)
+            else:
+                raise AssertionError("the lock was not seen")
+        finally:
+            lock.unlink()
+        assert kicad_app.open_in_kicad(str(MAIN)) == ""
 
         # An arrangement with a board not shown: a row of its own, with Open in KiCad and an X.
         with state.using(2):
