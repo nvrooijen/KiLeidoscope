@@ -215,6 +215,13 @@ def stop_following():
     _board_watcher().stop()
 
 
+def forget(slot):
+    """Board `slot` forgot its bound models (state.BoardState.reset: an undo, a file load).
+    Its board and bridge may be the same as before, so the watch starts over: the next
+    snapshot imports and binds the models again, rather than leaving placeholders."""
+    _watchers[slot].stop()
+
+
 def export_again():
     """After `kicad_cli.clear_cache`: export from scratch (the watch forgets its key)."""
     _board_watcher().restart()

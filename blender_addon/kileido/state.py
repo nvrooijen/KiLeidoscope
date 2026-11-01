@@ -118,6 +118,8 @@ class BoardState:
         """Forget everything: the Blender data it referred to is gone (another file loaded)."""
         if self.model_bound:
             log(f"board {self.slot} state reset; {len(self.model_bound)} bound models forgotten")
+        from . import models  # models imports this module
+        models.forget(self.slot)
         kept = self.pose, self.pose_of, self.hidden  # rebuilt, the board stands where it stood
         self.__init__(self.slot)
         self.pose, self.pose_of, self.hidden = kept
@@ -126,16 +128,31 @@ class BoardState:
     def loaded(self):
         return self.collection is not None
 
+    def _held_data(self):
+        """The Blender data this state holds on to between frames: its collection, materials,
+        node groups and plot images."""
+        yield self.collection
+        yield from self.materials.values()
+        yield from self.groups.values()
+        for images in (self.mask_images, self.relief_images):
+            yield from (image for image, _ in images.values())
+        yield from (silk["image"] for silk in self.silk.values())
+
     def drop_if_freed(self, where, resync=True):
-        """True after a collection freed under us (undo, file load) was forgotten: the board
+        """True after Blender data freed under us (undo, file load) was forgotten: the board
         state starts over and a live bridge sends the board again (`resync`; not needed
-        when a full snapshot is what just arrived)."""
+        when a full snapshot is what just arrived). An undo step reads back only the data
+        that changed since that step, so a collection that outlives its board's materials
+        counts as freed too: a snapshot reusing the dead materials would fail, resync, and
+        fail again."""
         if self.collection is None:
             return False
         try:
-            self.collection.name
+            for datablock in self._held_data():
+                if datablock is not None:
+                    datablock.name
         except ReferenceError:
-            log(f"the board's collection was freed ({where}); state reset"
+            log(f"the board's Blender data was freed ({where}); state reset"
                 f"{', resync requested' if resync else ''} ({len(self.model_bound)} bound models lost)")
             self.reset()
             if resync:

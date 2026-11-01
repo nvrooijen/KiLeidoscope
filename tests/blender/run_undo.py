@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, cut, state  # noqa: E402
+from kileido import apply, cut, models, state  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
 
@@ -78,6 +78,22 @@ def main():
                   "| images:", len(bpy.data.images), "| materials:", len(bpy.data.materials),
                   "| objects:", len(bpy.data.objects), flush=True)
             bpy.ops.ed.undo_push(message=f"recovered {step}")
+
+        # An undo step reads back only what changed since it: a board's material can be freed
+        # while its collection lives on (seen live with two boards). The next snapshot must
+        # start the board over rather than fail on the dead material, resync and fail again.
+        stage("a material freed under a live collection")
+        watch = models._watchers[state.board.slot]
+        generation = watch._generation
+        bpy.data.materials.remove(state.board.materials["board_core"])
+        apply.load_frames(frames)
+        settle()
+        assert state.board.collection.name and state.board.status.startswith("Loaded"), state.board.status
+        assert all(material.name for material in state.board.materials.values())
+        assert len(state.board.collection.all_objects) > 10
+        # Its bound models were forgotten: the model watch starts over, so the same board and
+        # bridge bind them again (it would skip an unchanged board otherwise).
+        assert watch._generation > generation
 
         print("KLS_UNDO_OK", flush=True)
     finally:
