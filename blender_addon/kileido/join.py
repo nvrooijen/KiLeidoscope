@@ -12,6 +12,10 @@ launcher can withdraw it) and answers in `reply-<nonce>.json`:
   (a popup, and a box in the Boards section until answered or the launcher gives up);
 - no slot free (four boards): the launcher opens a window of its own.
 
+The viewer file also lists the boards this Blender shows (live, offline or saved) and the
+ones an opened arrangement waits for: with several KiLeidoscope Blenders open, the launcher
+asks the one that has the board first, so it goes back to its own row.
+
 The add-on keeps its own copy of the file format: it never imports kileido_bridge.
 """
 
@@ -35,6 +39,8 @@ CHOICES = (("ASK", "Ask", "Ask each time a board from another KiCad wants to joi
            ("ADD", "Add here", "Show boards from other KiCads in this window, next to the others"),
            ("OWN", "Own window", "Open boards from other KiCads in Blender windows of their own"))
 _registered = [None]  # this Blender's viewer file, while it takes requests
+_listed = [None]  # the boards that file lists, as last written (`_list_boards`)
+_since = [0.0]  # when this Blender started taking requests: the launcher asks newer ones first
 _pending = []  # questions to the user: {"nonce", "offer", "since"}
 
 
@@ -82,11 +88,30 @@ def offer(force=False):
     if _registered[0] is not None or (bpy.app.background and not force):
         return
     path = folder() / f"viewer-{os.getpid()}.json"
-    settings.write(path, {"pid": os.getpid(), "protocol": PROTOCOL})
     _registered[0] = path
+    _listed[0], _since[0] = None, time.time()
+    _list_boards()
     atexit.register(withdraw)  # Blender does not unregister a script-started add-on on quit
     if not bpy.app.timers.is_registered(poll):
         bpy.app.timers.register(poll, first_interval=POLL_S, persistent=True)
+
+
+def boards_listed():
+    """The boards this Blender has, for the launcher: each shown one's file and name, and the
+    ones an opened arrangement waits for."""
+    from . import arrangement  # it imports modules that import this one
+    shown = [{"path": state.board_path, "name": state.board_name} for state in boards.values() if state.loaded]
+    waiting = [{"path": entry["path"], "name": entry["name"]} for entry in arrangement.waiting_entries()]
+    return shown + waiting
+
+
+def _list_boards():
+    """(Re)write the viewer file when the boards it lists changed."""
+    listed = boards_listed()
+    if _registered[0] is None or listed == _listed[0]:
+        return
+    settings.write(_registered[0], {"pid": os.getpid(), "protocol": PROTOCOL, "since": _since[0], "boards": listed})
+    _listed[0] = listed
 
 
 def withdraw():
@@ -106,6 +131,7 @@ def poll():
     """Timer: take every waiting request; drop questions the launcher has given up on."""
     if _registered[0] is None:
         return None
+    _list_boards()
     for request in sorted(folder().glob(f"join-{os.getpid()}-*.json")):
         handle(request)
     now = time.monotonic()

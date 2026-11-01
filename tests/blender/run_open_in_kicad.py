@@ -129,6 +129,26 @@ def main():
             lock.unlink()
         assert kicad_app.open_in_kicad(str(MAIN)) == ""
 
+        # This user's lock on this machine, left by a KiCad that crashed: opened, unless a KiCad
+        # running here might have the board (a project manager, or an editor with it or no board).
+        import getpass
+        import socket
+        lock.write_text(json.dumps({"hostname": socket.gethostname(), "username": getpass.getuser()}),
+                        encoding="utf-8")
+        running = kicad_app._running_kicads
+        try:
+            for kicads, opens in (([], True), ([("pcbnew", f"/usr/bin/pcbnew {FOLDER / 'Other.kicad_pcb'}")], True),
+                                  ([("pcbnew", f"/usr/bin/pcbnew {MAIN}")], False), ([("pcbnew", "pcbnew")], False),
+                                  ([("kicad", "/usr/bin/kicad")], False), ([("pcbnew", "")], False)):
+                kicad_app._running_kicads = lambda kicads=kicads: kicads
+                count = len(started)
+                assert bpy.ops.kileido.open_in_kicad(slot=1) == {"FINISHED"}
+                assert len(started) == count + opens, (kicads, opens)
+        finally:
+            kicad_app._running_kicads = running
+            lock.unlink()
+        assert ("kicad", "/usr/bin/kicad-cli pcb export glb") not in kicad_app._running_kicads()
+
         # An arrangement with a board not shown: a row of its own, with Open in KiCad and an X.
         with state.using(2):
             apply.load_frames(frames(DAUGHTER))

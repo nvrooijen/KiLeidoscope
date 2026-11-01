@@ -8,8 +8,11 @@ bridge sends with each board (and a saved board keeps), the last one seen (setti
 `remember`), or an installed one (kicad_cli.executable).
 """
 
+import getpass
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -95,16 +98,81 @@ def lock_file(board_path):
     return path.with_name(f"~{path.name}.lck")
 
 
-def open_in_kicad(board_path):
-    """Who has the board open in KiCad, "nickv at DESKTOPNVR", as its lock file says; "" when
-    there is no lock (or it cannot be read)."""
+def _lock(board_path):
+    """The lock file's {"username", "hostname"}, or None (no lock, or unreadable)."""
     try:
         data = json.loads(lock_file(board_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ""
-    if not isinstance(data, dict):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def open_in_kicad(board_path):
+    """Who has the board open in KiCad, "nickv at DESKTOPNVR", as its lock file says; "" when
+    there is no lock (or it cannot be read)."""
+    data = _lock(board_path)
+    if data is None:
         return ""
     return " at ".join(str(data[key]) for key in ("username", "hostname") if data.get(key)) or "someone"
+
+
+_KICADS = {"kicad", "pcbnew"}  # program names (not kicad-cli: our own exports)
+
+
+def _program(path):
+    name = re.split(r"[\\/]", path)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _running_kicads():
+    """(program, command line) of each KiCad running on this machine: "kicad" or "pcbnew",
+    and its command line, "" where unknown (Windows lists none without a slow query)."""
+    found = []
+    try:
+        if sys.platform.startswith("linux"):
+            for folder in Path("/proc").iterdir():
+                if not folder.name.isdigit():
+                    continue
+                try:
+                    arguments = (folder / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+                except OSError:  # ended meanwhile
+                    continue
+                program = _program(arguments[0].decode(errors="replace"))
+                if program in _KICADS:
+                    found.append((program, b" ".join(arguments).decode(errors="replace")))
+        elif sys.platform == "win32":
+            listed = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10,
+                                    creationflags=subprocess.CREATE_NO_WINDOW).stdout
+            found = [(program, "") for program in (_program(line.split(",")[0].strip('"'))
+                                                   for line in listed.splitlines()) if program in _KICADS]
+        else:  # macOS: .../KiCad.app/Contents/MacOS/kicad, .../pcbnew.app/Contents/MacOS/pcbnew
+            listed = subprocess.run(["ps", "-axww", "-o", "pid=,comm="], capture_output=True, text=True,
+                                    timeout=10).stdout
+            for line in listed.splitlines():
+                pid, _, command = line.strip().partition(" ")
+                if _program(command.strip()) in _KICADS:
+                    arguments = subprocess.run(["ps", "-p", pid, "-o", "args="], capture_output=True, text=True,
+                                               timeout=10).stdout.strip()
+                    found.append((_program(command.strip()), arguments))
+    except (OSError, subprocess.SubprocessError):
+        return [("kicad", "")]  # unknown: one KiCad that may have the board
+    return found
+
+
+def left_over(board_path):
+    """The board's lock is a leftover (KiCad crashed, or was ended): it is this user's on this
+    machine, and no KiCad running here can have the board open: none runs, or each is a PCB
+    editor started with another board, as Open in KiCad starts them. A KiCad project manager,
+    or an editor whose board is unknown, might have it. KiCad opens a board over its own
+    user's leftover lock by itself, or asks first while another KiCad runs (10.0.6, measured)."""
+    data = _lock(board_path)
+    if data is None:
+        return False
+    if (str(data.get("username", "")).lower() != getpass.getuser().lower() or
+            str(data.get("hostname", "")).lower() != socket.gethostname().lower()):
+        return False
+    name = Path(board_path).name
+    return all(program == "pcbnew" and ".kicad_pcb" in line and name not in line for program, line in _running_kicads())
 
 
 def open_board(board_path, export=None):
@@ -113,7 +181,7 @@ def open_board(board_path, export=None):
     if not board_path or not Path(board_path).is_file():
         raise FileNotFoundError(f"the board file is not there: {board_path or 'never saved'}")
     holder = open_in_kicad(board_path)
-    if holder:
+    if holder and not left_over(board_path):
         raise AlreadyOpen(f"{Path(board_path).name} is open in KiCad already ({holder}): use Open in Blender there. "
                           f"If no KiCad has it open, delete {lock_file(board_path).name} beside the board")
     found = editor(export)

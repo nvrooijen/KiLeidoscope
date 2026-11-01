@@ -1354,6 +1354,7 @@ class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
         path, export = self.path, None
         if self.slot:
             path, export = boards[self.slot].board_path, boards[self.slot].export
+        leftover = bool(kicad_app.open_in_kicad(path))  # a lock, and open_board finds it left over
         try:
             kicad_app.open_board(path, export)
         except kicad_app.AlreadyOpen as exc:
@@ -1362,7 +1363,8 @@ class KILEIDO_OT_open_in_kicad(bpy.types.Operator):
         except (FileNotFoundError, OSError) as exc:
             self.report({"ERROR"}, f"KiLeidoscope: cannot open it in KiCad: {exc}")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"KiLeidoscope: opening {Path(path).name} in KiCad; then use Open in Blender there")
+        asks = "; KiCad may ask about its lock, left by a KiCad that closed abruptly: open it anyway" if leftover else ""
+        self.report({"INFO"}, f"KiLeidoscope: opening {Path(path).name} in KiCad{asks}; then use Open in Blender there")
         return {"FINISHED"}
 
 

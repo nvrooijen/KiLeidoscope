@@ -70,8 +70,9 @@ def test_one_viewer_per_kicad(monkeypatch, tmp_path):
     monkeypatch.setenv("KICAD_API_SOCKET", "kicad-a")
     monkeypatch.setattr(launcher, "_tell_user", told.append)
     monkeypatch.setattr(launcher, "find_blender", lambda: pytest.fail("looked for Blender"))
+    monkeypatch.setattr(launcher, "FOLLOW_WAIT_S", 0.1)  # the holder here answers no follow request
     assert launcher.launch(tmp_path) == 0
-    assert "already open" in told[0] and "Blender, process" not in told[0]  # none recorded
+    assert "already shows" in told[0] and "Blender, process" not in told[0]  # none recorded
     launcher._viewer_file("kicad-a", ".pid").write_text("4242", encoding="ascii")
     assert launcher.launch(tmp_path) == 0
     assert "Blender, process 4242" in told[1]  # so a viewer whose window is lost can be ended
@@ -105,3 +106,26 @@ def test_tarball_folders_sort_newest_first():
     paths = [Path("/opt/blender-4.5.3-linux-x64/blender"), Path("/opt/blender-5.1.0-linux-x64/blender"),
              Path("/opt/blender/blender")]
     assert sorted(paths, key=launcher._version_key, reverse=True)[0].parent.name == "blender-5.1.0-linux-x64"
+
+
+def test_a_kicad_reopened_on_the_socket_is_followed_by_the_bridge_holding_it(monkeypatch):
+    """Linux: a KiCad reopened after the first one closed gets its socket again, whose lock the
+    board's old bridge holds. Open in Blender there asks that bridge to follow the new KiCad
+    (as Resync with new KiCad does), and says "already shows" only when it has its KiCad."""
+    held = launcher.viewer_lock("kicad-a")
+    followed = []
+    runtime = SimpleNamespace(reader=None)
+    runtime.follow_kicad = lambda: followed.append(1) or runtime.reader is None
+
+    def holder_serves(seconds):  # the holding launcher's serve loop, meanwhile
+        launcher.answer_follow("kicad-a", runtime)
+    assert launcher.ask_to_follow("kicad-a", wait=holder_serves)  # its KiCad was gone: it follows
+    runtime.reader = object()  # a repeated click in the KiCad it has
+    assert not launcher.ask_to_follow("kicad-a", wait=holder_serves)
+    assert followed == [1, 1]
+    assert not launcher._viewer_file("kicad-a", ".follow").exists()
+    assert not launcher._viewer_file("kicad-a", ".followed").exists()
+    monkeypatch.setattr(launcher, "FOLLOW_WAIT_S", 0.1)
+    assert not launcher.ask_to_follow("kicad-a")  # nobody answers: withdrawn
+    assert not launcher._viewer_file("kicad-a", ".follow").exists()
+    held.close()

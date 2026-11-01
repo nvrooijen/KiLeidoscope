@@ -28,6 +28,7 @@ GAP_M = 0.005  # between boards placed side by side
 PACKAGE_PREFIX = "KiLeidoscope: "  # the live collection's name, as written to a package
 _PACKAGE = re.compile(r"^KiLeidoscope(?: \d+)?: ")  # board 1's "KiLeidoscope: X", board 2's "KiLeidoscope 2: X"
 _SLOT_PREFIX = re.compile(r"^B\d+ ")  # a live board's names in slots 2-4 (state.slot_prefix): not a view-only's
+_SLOT_TAG = re.compile(r"^(\S+) B\d+(?= · |$| \(box\)| \d+$)")  # its parts' "R12 B2 · ...": the reference's tag
 DATA_KINDS = ("collections", "objects", "meshes", "materials", "images", "node_groups")
 _DUPLICATE = re.compile(r"\.\d{3}$")  # Blender's suffix for a name already taken
 
@@ -260,9 +261,13 @@ def import_board(filepath):
     index = max((obj[ROOT_TAG] for obj in roots()), default=0) + 1
     for kind in DATA_KINDS:
         for block in set(getattr(bpy.data, kind)) - before[kind]:
+            if isinstance(block, bpy.types.Object) and components.key_of(block):  # a part: "KV2 R12 · ..."
+                own = _SLOT_TAG.sub(r"\1", _DUPLICATE.sub("", block.name))  # board 2's "R12 B2 · ...": "R12 · ..."
+                block.name = f"KV{index} {own}"
+                continue
             own = _SLOT_PREFIX.sub("", block.name)  # board 2's "B2 KLS outline": "KLS outline"
-            if own.startswith("KLS") or (isinstance(block, bpy.types.Object) and components.key_of(block)):
-                block.name = f"KV{index} {_DUPLICATE.sub('', own)}"  # parts: "KV2 R12 · ..."
+            if own.startswith("KLS"):
+                block.name = f"KV{index} {_DUPLICATE.sub('', own)}"
     name = collection.get("kls_board_name") or _PACKAGE.sub("", collection.name)
     collection.name = f"KiLeidoscope view-only: {name}"
     for group in collection.children:  # "Copper.001" beside the live board's "Copper" (board 2's "B2 Copper")

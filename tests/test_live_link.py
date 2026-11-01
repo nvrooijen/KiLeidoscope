@@ -546,6 +546,61 @@ def test_a_slow_kicad_reply_is_not_a_lost_kicad():
         runtime.close()
 
 
+def test_a_closed_kicad_is_said_at_the_first_timeout():
+    """A closed KiCad only times out on the old connection (3 s each): the first timeout asks
+    whether KiCad is gone, and says so at once instead of after MAX_TIMEOUTS and a reconnect.
+    The reconnects after that are refused, and keep saying KiCad was closed, not the setup
+    troubleshooting meant for a KiCad never reached."""
+    from kileido_bridge.kicad_reader import KICAD_CLOSED
+    reader = FakeReader(fixture())
+    gone = {"now": False}
+
+    def connect():
+        if gone["now"]:
+            raise ConnectionError("Failed to connect to KiCad: Connection refused")
+        return reader
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=connect, poll_interval_s=0.0, reconnect_interval_s=0.0,
+                            closed_check=lambda: gone["now"])
+    client = addon_client().SocketClient("127.0.0.1", server.port, "t")
+    try:
+        client.connect()
+        exchange(runtime, client, lambda f: any(h["type"] == "snapshot_end" for h, _ in f))
+        timed_out = ConnectionError("Error receiving reply from KiCad: Timed out")
+        reader.events = [timed_out]
+        runtime.step()  # alive, only slow: kept
+        assert runtime.reader is reader and not runtime.kicad_closed
+        gone["now"] = True
+        reader.events = [timed_out]
+        frames = exchange(runtime, client, lambda f: any(h.get("kicad_closed") for h, _ in f))
+        status = next(h for h, _ in frames if h.get("kicad_closed"))
+        assert runtime.reader is None and status["error"] == KICAD_CLOSED and status["kicad"] == "disconnected"
+        for _ in range(3):  # reconnects, refused
+            runtime.step()
+        assert runtime.kicad_closed and runtime.error == KICAD_CLOSED
+        gone["now"] = False  # Open in KiCad, and it is back
+        runtime.step()
+        assert runtime.reader is reader and not runtime.kicad_closed
+    finally:
+        client.close()
+        runtime.close()
+
+
+def test_kicad_closed_dials_kicads_socket(tmp_path, monkeypatch):
+    """Refused (nothing listens, or no socket file): closed. A listener, however busy: not."""
+    import pytest
+    if sys.platform == "win32":
+        pytest.skip("a Unix socket path; Windows' named pipes are not tried here")
+    import pynng
+    from kileido_bridge.kicad_reader import kicad_closed
+    address = f"ipc://{tmp_path / 'api.sock'}"
+    monkeypatch.setenv("KICAD_API_SOCKET", address)
+    assert kicad_closed()
+    with pynng.Rep0(listen=address):  # never answers: a stalled KiCad
+        assert not kicad_closed()
+    assert kicad_closed()
+
+
 def test_blender_click_highlights_before_a_slow_kicad_answers():
     """KiCad can take seconds to apply a selection (its window hidden behind Blender):
     the click's highlight goes out at once, and reads that time out do not clear it."""
@@ -997,4 +1052,46 @@ def test_dynamic_phase_follows_edits_and_the_panel_settings(tmp_path, monkeypatc
         assert next(h for h, _ in again if h.get("key") == "E_P")["flipped"]
     finally:
         client.close()
+        runtime.close()
+
+
+def test_follow_kicad_follows_only_once_its_kicad_is_gone():
+    """Open in Blender in a KiCad reopened on this bridge's socket (launcher.answer_follow):
+    followed like Resync with new KiCad, unless the bridge still has its own KiCad."""
+    reader = FakeReader(fixture())
+    follows = []
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, follower=lambda: follows.append(1))
+    try:
+        runtime.step()
+        assert runtime.reader is reader and not runtime.follow_kicad() and follows == []
+        runtime._disconnect_reader(error="closed", closed=True)
+        runtime.next_connect_at = float("inf")
+        assert runtime.follow_kicad() and follows == [1] and runtime.next_connect_at == 0.0
+    finally:
+        runtime.close()
+
+
+def test_a_read_hanging_on_a_closed_kicad_is_said_within_a_second():
+    """A closed KiCad's read fails only after its timeouts, connection after connection (6-12 s,
+    measured): while the worker waits in it, serving Blender asks once whether KiCad is gone."""
+    from kileido_bridge.kicad_reader import KICAD_CLOSED
+    now = {"t": 100.0}
+    asked = []
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: FakeReader(fixture()), clock=lambda: now["t"],
+                            closed_check=lambda: asked.append(now["t"]) or True)
+    try:
+        runtime.worker = object()  # the KiCad worker runs elsewhere: step only serves Blender
+        runtime.read_started = 100.0  # and is stuck in a read
+        now["t"] = 100.0 + BridgeRuntime.CLOSED_PROBE_S / 2
+        runtime.step()
+        assert asked == [] and not runtime.kicad_closed  # reads take milliseconds; this one only just began
+        now["t"] = 100.0 + BridgeRuntime.CLOSED_PROBE_S + 0.1
+        runtime.step()
+        runtime.step()
+        assert asked == [now["t"]], "asked once per read"
+        assert runtime.kicad_closed and runtime.status == "disconnected" and runtime.error == KICAD_CLOSED
+    finally:
+        runtime.worker = None
         runtime.close()

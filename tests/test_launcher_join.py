@@ -43,6 +43,44 @@ def test_open_viewers_lists_running_blenders_and_drops_closed_ones(monkeypatch):
     assert not (folder / "viewer-22.json").exists() and (folder / "viewer-44.json").exists()
 
 
+def test_the_blender_that_has_the_board_is_asked_before_newer_ones(monkeypatch):
+    """With several KiLeidoscope Blenders open, a board goes back to the one that shows it
+    (offline, saved) or waits for it (an opened arrangement), not to the newest; the others
+    stay newest first. Same file when both know it, else the same name."""
+    folder = launcher.viewer_folder()
+    boards = {11: [{"path": "/b/A.kicad_pcb", "name": "A.kicad_pcb"}], 22: [], 33: [{"path": "", "name": "C.kicad_pcb"}]}
+    for since, pid in enumerate((11, 22, 33)):
+        (folder / f"viewer-{pid}.json").write_text(json.dumps(
+            {"pid": pid, "protocol": launcher.JOIN_PROTOCOL, "since": 1000.0 + since, "boards": boards[pid]}))
+    monkeypatch.setattr(launcher, "process_alive", lambda pid: True)
+    assert launcher.open_viewers(folder) == [33, 22, 11]
+    assert launcher.open_viewers(folder, {"board_path": "/b/../b/A.kicad_pcb", "board_name": "A.kicad_pcb"}) == [11, 33, 22]
+    assert launcher.open_viewers(folder, {"board_path": "/b/C.kicad_pcb", "board_name": "C.kicad_pcb"}) == [33, 22, 11]
+    assert launcher.open_viewers(folder, {"board_path": "/other/A.kicad_pcb", "board_name": "A.kicad_pcb"}) == [33, 22, 11]
+
+
+def test_launch_brings_a_board_back_to_its_blender_past_a_newer_one_that_declines(monkeypatch, tmp_path):
+    server, runtime = _launch_parts(monkeypatch)
+    folder = launcher.viewer_folder()
+    (folder / "viewer-7001.json").write_text(json.dumps(  # older, shows B offline
+        {"pid": 7001, "protocol": launcher.JOIN_PROTOCOL, "since": 1.0,
+         "boards": [{"path": "/boards/B.kicad_pcb", "name": "B.kicad_pcb"}]}))
+    (folder / "viewer-7002.json").write_text(json.dumps(  # newer, its own window for another board
+        {"pid": 7002, "protocol": launcher.JOIN_PROTOCOL, "since": 2.0, "boards": []}))
+    asked = []
+
+    def ask(folder, pid, offer, wait):
+        asked.append(pid)
+        return {"accepted": True, "slot": 1, "reason": "already shown"} if pid == 7001 else \
+            {"accepted": False, "slot": None, "reason": "own window"}
+    monkeypatch.setattr(launcher, "ask_to_join", ask)
+    alive = {7001: iter((True,) * 3 + (False,)), 7002: iter((True,) * 10)}
+    monkeypatch.setattr(launcher, "process_alive", lambda pid: next(alive[pid]))
+    monkeypatch.setattr(launcher, "find_blender", lambda: pytest.fail("started a Blender of its own"))
+    assert launcher.launch(tmp_path) == 0
+    assert asked == [7001]
+
+
 def test_process_alive_knows_this_process():
     assert launcher.process_alive(os.getpid())
 

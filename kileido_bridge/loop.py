@@ -12,9 +12,9 @@ from . import (findings, findings_watch, flex_checks, hatch, kls_folder, phase_f
                tombstone_findings)
 from .board_specs import appearance_signature, read_appearance, set_kicad_version, settings_dir
 from .board_text import copper_items, variant_dnp, with_variant_dnp
-from .kicad_reader import (KiCadBusy, NewKiCad, PollResult, board_text, connect_reader, explain_connection_error,
-                           follow_new_kicad, kicad_tools, net_classes, saved_board_path, select_in_kicad,
-                           selected_ids)
+from .kicad_reader import (KICAD_CLOSED, KiCadBusy, NewKiCad, PollResult, board_text, connect_reader,
+                           connection_refused, explain_connection_error, follow_new_kicad, kicad_closed,
+                           kicad_tools, net_classes, saved_board_path, select_in_kicad, selected_ids)
 from .live_copy import LiveBoardCopy
 from .phase import PhaseTracker
 from .selection import components, highlight_nets, selected_copper, selected_nets, unconnected
@@ -40,14 +40,18 @@ def _copper_changes(old, tracks, arcs, vias) -> set:
 class BridgeRuntime:
     TEXT_POLL_INTERVAL_S = 0.5  # each read pauses KiCad ~75 ms, also mid-route
     MAX_TIMEOUTS = 3  # consecutive read timeouts before the reader is dropped
+    CLOSED_PROBE_S = 1.0  # a read outstanding this long asks whether KiCad is gone (reads take ms)
     REQUEST_GRACE_S = 10.0  # how long KiCad may take to show a Blender click (measured up to ~9 s)
 
     def __init__(self, server, connector=None, poll_interval_s: float = 0.2,
                  reconnect_interval_s: float = 2.0, clock=time.monotonic,
-                 live_copy: LiveBoardCopy | None = None, follower=follow_new_kicad):
+                 live_copy: LiveBoardCopy | None = None, follower=follow_new_kicad, closed_check=None):
         self.server = server
         self.follower = follower
         self.connector = connector or (lambda: connect_reader(connections=4))
+        # Is KiCad gone (kicad_reader.kicad_closed)? Asked on a read timeout; a stand-in KiCad
+        # (`connector`, the tests) never is, unless it says so.
+        self.closed_check = closed_check or (kicad_closed if connector is None else lambda: False)
         self.poll_interval_s = poll_interval_s
         self.reconnect_interval_s = reconnect_interval_s
         self.clock = clock
@@ -56,6 +60,10 @@ class BridgeRuntime:
         self.status = "disconnected"
         self.error = ""
         self.new_kicad = False  # another KiCad serves the socket; waits for the user's Resync
+        self.kicad_closed = False  # the KiCad this bridge had was closed (KICAD_CLOSED)
+        self.had_kicad = False  # a connection to KiCad succeeded once
+        self.read_started = None  # when the worker's read of KiCad began, while it runs
+        self.probed_read = None  # the read `_probe_slow_read` asked about
         self.outdated_pads = 0  # pads KiCad only answers for with an outdated copy (after an undo)
         self.next_connect_at = 0.0
         self.next_poll_at = 0.0
@@ -106,6 +114,7 @@ class BridgeRuntime:
         self.hatch_error = self.hatcher.error
         return protocol.encode_frame({"type": "status", "kicad": self.status, "revision": self.revision,
                                       **extra, "error": self.error, "new_kicad": self.new_kicad,
+                                      "kicad_closed": self.kicad_closed,
                                       "outdated_pads": self.outdated_pads, "hatch_error": self.hatch_error})
 
     def _status(self, value, last_read_ms=None, error=""):
@@ -119,7 +128,7 @@ class BridgeRuntime:
         with self.lock:
             self.server.send_frames(frames, snapshot=snapshot)
 
-    def _disconnect_reader(self, error=""):
+    def _disconnect_reader(self, error="", closed=False):
         if self.reader is not None:
             self.reader.close()
         with self.lock:  # a resync on the main thread reads these
@@ -137,6 +146,7 @@ class BridgeRuntime:
             self.next_connect_at = self.clock() + self.reconnect_interval_s
             self.sent_from_text = False
             self.outdated_pads = 0
+            self.kicad_closed = closed
             self._status("disconnected", error=error)
 
     def _connect(self):
@@ -145,11 +155,15 @@ class BridgeRuntime:
             self.next_poll_at = self.clock()
             self.timeout_count = 0
             self.new_kicad = False
+            self.kicad_closed = False
+            self.had_kicad = True
         except Exception as exc:
             self.reader = None
             self.next_connect_at = self.clock() + self.reconnect_interval_s
             self.new_kicad = isinstance(exc, NewKiCad)
-            self._status("disconnected", error=str(exc) if self.new_kicad else explain_connection_error(exc))
+            self.kicad_closed = self.had_kicad and connection_refused(exc)
+            self._status("disconnected", error=str(exc) if self.new_kicad else
+                         KICAD_CLOSED if self.kicad_closed else explain_connection_error(exc))
 
     # --- Polling ------------------------------------------------------------------------
 
@@ -163,6 +177,9 @@ class BridgeRuntime:
             return
         except Exception as exc:
             if _is_timeout(exc):
+                if self.kicad_closed or self.closed_check():  # gone, not slow: not MAX_TIMEOUTS more
+                    self._disconnect_reader(error=KICAD_CLOSED, closed=True)
+                    return
                 self.timeout_count += 1
                 if self.timeout_count < self.MAX_TIMEOUTS:
                     return
@@ -615,8 +632,35 @@ class BridgeRuntime:
                 self._send_resync()
         if self.worker is None:
             self._kicad_step()
+        else:
+            self._probe_slow_read()
         with self.lock:
             self.server.pump()
+
+    def _probe_slow_read(self):
+        """A closed KiCad's read fails only after its timeouts, one connection after another
+        (6-12 s, measured): a read outstanding CLOSED_PROBE_S asks once whether KiCad is gone,
+        and Blender is told at once. The read then fails into the same state."""
+        started = self.read_started
+        if (started is None or started == self.probed_read or self.kicad_closed
+                or self.clock() - started < self.CLOSED_PROBE_S):
+            return
+        self.probed_read = started
+        if self.closed_check():
+            with self.lock:
+                self.kicad_closed = True
+                self._status("disconnected", error=KICAD_CLOSED)
+
+    def follow_kicad(self) -> bool:
+        """Open in Blender was clicked in the KiCad now on this bridge's socket (launcher.
+        answer_follow): with its own KiCad gone, follow that one, as Resync with new KiCad
+        does. False while it has its KiCad: the click came from that very KiCad."""
+        with self.lock:
+            if self.reader is not None:
+                return False
+            self.follower()
+            self.next_connect_at = 0.0
+            return True
 
     def wait(self, timeout: float) -> None:
         """Serve Blender for up to `timeout` s, returning early when it sends something."""
@@ -630,7 +674,11 @@ class BridgeRuntime:
             self._connect()
         if self.reader is not None and now >= self.next_poll_at:
             self.next_poll_at = now + self.poll_interval_s
-            self._poll()
+            self.read_started = now
+            try:
+                self._poll()
+            finally:
+                self.read_started = None
         self._tick_findings(now)
 
     def start(self) -> None:

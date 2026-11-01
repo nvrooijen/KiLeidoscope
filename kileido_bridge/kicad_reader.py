@@ -134,6 +134,32 @@ def explain_connection_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+# For a bridge that had KiCad: the troubleshooting above is for a KiCad never reached.
+KICAD_CLOSED = "KiCad was closed. Open in KiCad opens the board again; Open in Blender there makes it live here."
+
+
+def connection_refused(exc: Exception) -> bool:
+    """A new connection was refused: nothing serves KiCad's API socket."""
+    return isinstance(exc, ConnectionRefusedError) or any(
+        text in str(exc) for text in ("Failed to connect", "Connection refused"))
+
+
+def kicad_closed() -> bool:
+    """True when KiCad's API socket refuses a new connection: the KiCad this bridge reads was
+    closed, or crashed. A request on the old connection only times out (3 s each, a few in a
+    row, then a reconnect: KiCad's LED went red 20-25 s after it closed), where a new
+    connection is refused at once (measured, KiCad 10.0.6 on Linux). A KiCad that is only
+    stalled (its window hidden) still takes the connection: its API listener has threads of
+    its own. Only dials; sends nothing."""
+    client = KiCad(timeout_ms=1000)._client
+    try:
+        client._connect()
+    except Exception as exc:
+        return connection_refused(exc)
+    client._conn.close()
+    return False
+
+
 _reached_kicad = False  # this bridge has been let in by the KiCad that launched it
 _follow_new_kicad = False  # the user asked to follow the KiCad now on the socket
 
@@ -170,8 +196,8 @@ def connect_board(timeout_ms: int = 3000):
         kicad = KiCad(timeout_ms=timeout_ms, kicad_token="")
         board = kicad.get_board()
         os.environ["KICAD_API_TOKEN"] = getattr(kicad._client, "_kicad_token", "")  # learned from its reply
-        _follow_new_kicad = False
     _reached_kicad = True
+    _follow_new_kicad = False  # asked for, and connected: a later new KiCad is asked about again
     return board
 
 

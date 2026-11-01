@@ -83,8 +83,10 @@ def main():
         live.connect(47811, "t47811")  # this Blender's own board, from its own KiCad
         settle()
         join.offer(force=True)
-        viewer = json.loads((folder / f"viewer-{os.getpid()}.json").read_text(encoding="utf-8"))
-        assert viewer == {"pid": os.getpid(), "protocol": join.PROTOCOL}
+        viewer_file = folder / f"viewer-{os.getpid()}.json"
+        viewer = json.loads(viewer_file.read_text(encoding="utf-8"))
+        assert viewer["pid"] == os.getpid() and viewer["protocol"] == join.PROTOCOL and viewer["since"] > 0
+        assert [entry["name"] for entry in viewer["boards"]] == ["Board 1.kicad_pcb"]  # the launcher asks it first
         assert join.choice() == "ASK"
 
         # Asked: nothing is answered before the user is.
@@ -96,6 +98,9 @@ def main():
         assert reply(folder, nonce) == {"accepted": True, "slot": 2, "reason": "free"}
         settle()
         assert state.boards[2].board_name == "Board 2.kicad_pcb" and live.links[2].port == 47812
+        join.poll()  # the viewer file follows the boards shown
+        assert [entry["name"] for entry in json.loads(viewer_file.read_text(encoding="utf-8"))["boards"]] == \
+            ["Board 1.kicad_pcb", "Board 2.kicad_pcb"]
 
         # "Open in its own window", remembered: the next board is not asked about.
         nonce = request(folder, 47813, "Board 3.kicad_pcb")

@@ -30,13 +30,13 @@ KiCad holds one board per PCB editor and has no notion of an assembly. Multi-boa
 2. Open the second board in a **second PCB editor window** (open its project in a new KiCad window) and click **Open in Blender** there. Blender asks whether to **Add here** or open the board in its own window. Add it: it comes in at its own KiCad coordinates, a centimetre above the first board, and the **Multi-board** tab on the sidebar's edge lights up.
 3. **Place** the boards: the select arrow in front of a board's row, then **G** and **R** in the 3D view, or the Offset and Rotation numbers, **Flip** and **Turn 90°** in the Multi-board column. **Collision check** shows where they run into each other; mark a connector and its mate **Mated** so they stop counting.
 4. **Save** the arrangement (`.usda`) from the Multi-board column, and the `.blend` if you want the scene back as it is.
-5. **Swap.** Close the first board's PCB editor: its board stays in Blender exactly where it stands, its LED goes red and an **Open in KiCad** button appears on its row. Edit the second board in KiCad, live in Blender. When you want the first board live again, click **Open in KiCad** on its row: its PCB editor opens with its file, and **Open in Blender** there puts the board back live in its slot, in place. If its editor is open already, the button says so instead of starting a second one: click **Open in Blender** in that editor.
+5. **Swap.** Close the first board's PCB editor: its board stays in Blender exactly where it stands, its LED goes red within a few seconds (*KiCad closed*) and an **Open in KiCad** button appears on its row. Edit the second board in KiCad, live in Blender. When you want the first board live again, click **Open in KiCad** on its row: its PCB editor opens with its file, and **Open in Blender** there puts the board back live in its slot, in place. If its editor is open already, the button says so instead of starting a second one: click **Open in Blender** in that editor.
 
 Everything below is detail; the five steps are the feature.
 
 ## A second board joins
 
-**Open in Blender** in a second PCB editor looks for a KiLeidoscope Blender that is open already and asks it to show the board. What happens then:
+**Open in Blender** in a second PCB editor looks for a KiLeidoscope Blender that is open already and asks it to show the board. With several open, the one that shows the board (live, offline or saved) or waits for it in an opened arrangement is asked first, so a board goes back to its own row; else the newest. What happens then:
 
 | Situation | What Blender does |
 | --- | --- |
@@ -48,7 +48,7 @@ Everything below is detail; the five steps are the feature.
 
 The question waits two minutes; unanswered, the board opens in its own window. Up to four live boards share a window.
 
-**Windows.** KiCad on Windows lets every running PCB editor answer on one connection, so a second KiCad window started *before* the first Open in Blender reaches the first KiCad's board. Close and reopen that KiCad: KiLeidoscope leaves a marker that gives every KiCad started afterwards a connection of its own (KiCad issue [23994](https://gitlab.com/kicad/code/kicad/-/work_items/23994)). The marker trick is the one [Kikakuka](https://github.com/buganini/Kikakuka) documents. On Linux each KiCad has its own socket already.
+**Windows.** KiCad on Windows lets every running PCB editor answer on one connection, so a second KiCad window started *before* the first Open in Blender reaches the first KiCad's board. Close and reopen that KiCad: KiLeidoscope leaves a marker that gives every KiCad started afterwards a connection of its own (KiCad issue [23994](https://gitlab.com/kicad/code/kicad/-/work_items/23994)). The marker trick is the one [Kikakuka](https://github.com/buganini/Kikakuka) documents. On Linux each KiCad has its own socket already, but a KiCad started after the first one closed takes that one's socket again: **Open in Blender** there has the board's row follow it, as **Resync with new KiCad** does.
 
 ## The Boards list
 
@@ -169,7 +169,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 
 **One bridge per KiCad.** Every Open in Blender starts a launcher and a bridge of its own, on its own port with its own token, as before. New is what the launcher does first: it looks in KiLeidoscope's per-user cache for Blenders that take requests (each lists itself in `viewers/viewer-<pid>.json`), leaves a request file with its port, token and board, and waits for the reply file. Until Blender takes the request the launcher can withdraw it; once taken, the user may be asked, so the launcher waits up to two minutes. Declined, or with no Blender open, it starts a Blender of its own, as before. A bridge whose board's slot has taken a newer bridge, or whose Blender has closed, stops by itself half a minute later.
 
-**Slots.** The add-on runs one live link per slot, up to four; each KiCad's frames reach that slot's board and nothing else. Board 1 keeps the names KiLeidoscope always used; boards 2 to 4 carry their slot in front of every object, material, image and node group name (`B2 KLS outline`) and live in collections of their own (`KiLeidoscope 2: BoardB.kicad_pcb`), as Blender's names are global. Each board's settings that cannot be shared, IMS, flex, fold, dynamic phase and the layer eyes, are Scene properties of its own.
+**Slots.** The add-on runs one live link per slot, up to four; each KiCad's frames reach that slot's board and nothing else. Board 1 keeps the names KiLeidoscope always used; boards 2 to 4 carry their slot in front of every object, material, image and node group name (`B2 KLS outline`), and behind a part's reference (`R12 B2 · R_0603_1608Metric`), and live in collections of their own (`KiLeidoscope 2: BoardB.kicad_pcb`), as Blender's names are global. Each board's settings that cannot be shared, IMS, flex, fold, dynamic phase and the layer eyes, are Scene properties of its own.
 
 **Roots and poses.** Everything a board owns hangs from its root Empty, and the add-on places it in the root's space: KiCad nanometres around the board's origin, Z 0 at the bottom face. So a board moves as one, and nothing it draws needs to know where it stands; only what looks at the scene as a whole works in world space: picking, the camera and lights, collisions, the cut plane, the views. A board's pose is kept in KiCad's frame, not around its centre, which moves with an outline edit; the panel's numbers are worked out about the centre each time. A move by hand updates the pose, a KiCad frame places the root from it, and an undo step carries it back with the root.
 
@@ -183,7 +183,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 | --- | --- |
 | Where a board stands | Its pose: the Position numbers, a move with G or R, an opened arrangement, or the default (centred alone; at KiCad's X and Y a centimetre above the others). |
 | Which KiCad a board belongs to | The bridge of the PCB editor whose Open in Blender added it. |
-| Which KiCad Open in KiCad starts | The one the board came from, else the last KiCad seen, else an installed one. None when KiCad's lock file beside the board (`~<board>.lck`) says it is open already. |
+| Which KiCad Open in KiCad starts | The one the board came from, else the last KiCad seen, else an installed one. None when KiCad's lock file beside the board (`~<board>.lck`) says it is open already. A lock of yours on this computer is a leftover (KiCad crashed) when no KiCad running here can have the board: none runs, or each is a PCB editor started with another board. KiCad then opens the board over it; with another KiCad running it asks first: open it anyway. |
 | Parts and board solids in the collision check | 3D model bounds (or placeholder envelopes) and the board outline, as drawn. |
 | Mated pairs | Your marks; kept in the scene and the arrangement. |
 | Add here or own window | Your answer, remembered in KiLeidoscope's settings beside its cache. |
@@ -191,7 +191,7 @@ Any USD tool opens this file and shows the prims and their transforms; reference
 
 ## Known limitations
 
-**Beta.** Multi-board is new, and the joining of boards has been exercised live on Windows; Linux and macOS use the same files and are untried live. Please report what you find.
+**Beta.** Multi-board is new, and the joining of boards has been exercised live on Windows and Linux; macOS uses the same files and is untried live. Please report what you find.
 
 - Four live boards per window. A fifth opens in a window of its own.
 - One board per PCB editor window: a second board needs a second KiCad window. Opening another board in the same editor replaces the board in that slot, as it always did.

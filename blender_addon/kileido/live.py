@@ -39,6 +39,7 @@ class LiveLink:
         self.bridge_status = "disconnected"  # KiCad side: "connected", "editing" or "disconnected"
         self.bridge_error = ""
         self.new_kicad = False  # the bridge waits for the user to follow another KiCad
+        self.kicad_closed = False  # the board's KiCad was closed (the bridge's KICAD_CLOSED)
         self.outdated_pads = 0  # pads KiCad only had an outdated shape for (after an undo)
         self.last_update_at = None
         self.last_apply_ms = None
@@ -63,6 +64,7 @@ class LiveLink:
         self.bridge_status = "disconnected"
         self.bridge_error = ""
         self.new_kicad = False
+        self.kicad_closed = False
         self.outdated_pads = 0
         if bpy.app.timers.is_registered(self._timer):
             bpy.app.timers.unregister(self._timer)
@@ -76,7 +78,9 @@ class LiveLink:
         if self.client is None or self.client.state != "connected":
             return "Stale: bridge disconnected"
         if self.bridge_error:  # the panel shows the whole message (error_text)
-            return "No connection to KiCad" if self.bridge_status == "disconnected" else "KiCad read failed"
+            if self.bridge_status != "disconnected":
+                return "KiCad read failed"
+            return "KiCad closed" if self.kicad_closed else "No connection to KiCad"
         if self.bridge_status != "connected":
             return "Editing in KiCad…" if self.bridge_status == "editing" else "Stale: KiCad disconnected"
         if self.last_update_at is None:
@@ -187,6 +191,7 @@ class LiveLink:
             self.bridge_status = header.get("kicad", "disconnected")
             self.bridge_error = header.get("error", "")
             self.new_kicad = bool(header.get("new_kicad", False))
+            self.kicad_closed = bool(header.get("kicad_closed", False))
             self.outdated_pads = int(header.get("outdated_pads", 0))
         elif kind in UPDATE_FRAMES:
             self.last_update_at = time.monotonic()

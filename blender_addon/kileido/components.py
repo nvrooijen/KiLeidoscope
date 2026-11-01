@@ -2,8 +2,10 @@
 
 A footprint's objects are named after what KiCad shows: its frame Empty "R12", its
 placeholder box "R12 · R_0603_1608Metric (box)" and its model parts "R12 ·
-R_0603_1608Metric", "R12 · R_0603_1608Metric 2". The names follow a changed
-reference, so code finds the objects by the ids they carry, never by name.
+R_0603_1608Metric", "R12 · R_0603_1608Metric 2". Boards 2 to 4 carry their slot behind the
+reference, "R12 B2 · R_0603_1608Metric", as two boards share references and Blender names are
+global. The names follow a changed reference, so code finds the objects by the ids they
+carry, never by name.
 """
 
 import re
@@ -13,7 +15,7 @@ import bpy
 from mathutils import Matrix
 
 from .objects import lookup
-from .state import board
+from .state import board, slot_prefix
 
 NAME_BYTES = 63  # Blender's longest object name
 _SUFFIX = re.compile(r"\.\d{3,}$")  # Blender's ".001" on a taken name
@@ -23,15 +25,21 @@ PLACEHOLDER = "placeholder"
 MODEL = "model"
 
 
+def _tagged(reference):
+    """"R12", board 2's "R12 B2" (not a view-only board's, renamed when imported)."""
+    prefix = slot_prefix(board.slot)
+    return (reference or "?") + (f" {prefix.strip()}" if prefix and board.name_prefix == prefix else "")
+
+
 def label(reference, model_paths):
     """"R12 · R_0603_1608Metric": the reference and the first 3D model's file name."""
     stem = next((PureWindowsPath(path).stem for path in model_paths if path), "")
-    reference = reference or "?"
+    reference = _tagged(reference)
     return f"{reference} · {stem}" if stem else reference
 
 
 def frame_name(reference):
-    return _fit(reference or "?")
+    return _fit(_tagged(reference))
 
 
 def placeholder_name(reference, model_paths):

@@ -26,6 +26,7 @@ IDENTITY_WAIT_S = 5.0  # to read which board this KiCad has open, for the join r
 REPLY_WAIT_S = 10.0  # until the open Blender takes the request (it may be busy a few seconds)
 ANSWER_WAIT_S = 120.0  # once taken: the user may be asked "Add here / Open in its own window"
 LOG_KEEP_S = 7 * 24 * 3600  # numbered Blender logs (blender-<pid>.log) older than this are removed
+FOLLOW_WAIT_S = 3.0  # for the bridge holding this KiCad's socket to answer a follow request
 
 
 def cache_root() -> Path:
@@ -125,8 +126,8 @@ def viewer_pid(socket: str) -> int | None:
 def already_open_message(socket: str) -> str:
     pid = viewer_pid(socket)
     where = f" (Blender, process {pid})" if pid else ""
-    message = (f"KiLeidoscope is already open for this KiCad{where}. Close that Blender window to open "
-               "a new one. If you cannot find the window, end that process.")
+    message = (f"KiLeidoscope already shows this KiCad's board{where}. If you cannot find that window, "
+               "end that process.")
     if sys.platform == "win32":
         message += (" If this is another KiCad window, close and reopen that KiCad: it shares the first "
                     "KiCad's connection, and a KiCad started now gets its own.")
@@ -181,28 +182,52 @@ def process_alive(pid: int) -> bool:
     return True
 
 
-def open_viewers(folder: Path) -> list[int]:
-    """Process ids of open KiLeidoscope Blenders that take join requests, newest first;
-    the files of closed ones are removed."""
+def open_viewers(folder: Path, board: dict | None = None) -> list[int]:
+    """Process ids of open KiLeidoscope Blenders that take join requests, newest first; with
+    `board` ({"board_path", "board_name"}), those that show it or wait for it before the rest.
+    The files of closed ones are removed."""
     viewers = []
-    for path in sorted(folder.glob("viewer-*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in folder.glob("viewer-*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             pid = int(data["pid"])
             if data.get("protocol") != JOIN_PROTOCOL:
                 continue
+            since = float(data.get("since") or path.stat().st_mtime)  # its file is rewritten as boards come
         except (OSError, ValueError, KeyError, TypeError):
             continue
         if process_alive(pid):
-            viewers.append(pid)
+            viewers.append((not _lists(data.get("boards"), board), -since, pid))
         else:
             path.unlink(missing_ok=True)
-    return viewers
+    return [pid for *_, pid in sorted(viewers)]
+
+
+def _file_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _lists(listed, board: dict | None) -> bool:
+    """`listed` (a viewer file's "boards") has `board`: the same file when both know theirs,
+    else the same name (blender_addon/kileido/arrangement.py matches boards the same way)."""
+    if not board or not isinstance(listed, list):
+        return False
+    path, name = board.get("board_path") or "", board.get("board_name") or ""
+    for entry in listed:
+        if not isinstance(entry, dict):
+            continue
+        other_path, other_name = entry.get("path") or "", entry.get("name") or ""
+        if path and other_path:
+            if _file_key(path) == _file_key(other_path):
+                return True
+        elif name and other_name == name:
+            return True
+    return False
 
 
 def _write(path: Path, data: dict) -> None:
     """Whole file or nothing: the other side never reads half a file."""
-    temporary = path.with_suffix(".tmp")
+    temporary = path.with_name(path.name + ".tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(data, stream)
@@ -281,9 +306,13 @@ class Abandoned:
 
 def _join(viewers: list[int], runtime, server, wait) -> int | None:
     """The process id of an open Blender that took this board, or None (no answer, the
-    user chose its own window, or that Blender shows four boards already)."""
+    user chose its own window, or that Blender shows four boards already). A Blender that
+    shows the board or waits for it is asked first (`open_viewers`)."""
     folder = viewer_folder()
-    offer = {"port": server.port, "token": server.token, **board_identity(runtime, wait)}
+    identity = board_identity(runtime, wait)
+    offer = {"port": server.port, "token": server.token, **identity}
+    listed = open_viewers(folder, identity)
+    viewers = [pid for pid in listed if pid in viewers] or viewers
     for pid in viewers:
         answer = ask_to_join(folder, pid, offer, wait)
         if answer and answer.get("accepted"):
@@ -333,6 +362,43 @@ def viewer_lock(socket: str):
     return handle
 
 
+# --- Another KiCad on this socket ------------------------------------------------------------
+# On Linux and macOS a KiCad started after the first one closed takes the first one's socket
+# again (api.sock), so Open in Blender there finds this KiCad's viewer lock held: by the bridge
+# of the board's row in Blender, which lost its KiCad and refuses the new one's token until
+# the user presses "Resync with new KiCad". The click in KiCad says the same: the new launcher
+# asks that bridge to follow, through two files beside the lock.
+
+def ask_to_follow(socket: str, wait=time.sleep, clock=time.monotonic) -> bool:
+    """True when the bridge holding `socket` follows the KiCad now on it (its own KiCad had
+    gone); False when that bridge has its KiCad (a repeated click) or did not answer."""
+    request, reply = _viewer_file(socket, ".follow"), _viewer_file(socket, ".followed")
+    reply.unlink(missing_ok=True)
+    _write(request, {"pid": os.getpid()})
+    deadline = clock() + FOLLOW_WAIT_S
+    while clock() < deadline:
+        if reply.exists():
+            try:
+                return json.loads(reply.read_text(encoding="utf-8")).get("answer") == "following"
+            except (OSError, ValueError):
+                return False
+            finally:
+                reply.unlink(missing_ok=True)
+        wait(0.05)
+    request.unlink(missing_ok=True)
+    return False
+
+
+def answer_follow(socket: str, runtime) -> None:
+    """The lock holder's side, each serve step: a follow request, answered."""
+    request = _viewer_file(socket, ".follow")
+    if not request.exists():
+        return
+    request.unlink(missing_ok=True)
+    following = runtime.follow_kicad()
+    _write(_viewer_file(socket, ".followed"), {"answer": "following" if following else "shown"})
+
+
 def _stop_on_signals():
     """KiCad or the session ending sends SIGTERM/SIGHUP: leave through `finally`, so the
     bridge's temporary board copy is removed."""
@@ -353,8 +419,11 @@ def launch(root=None) -> int:
         keep_kicad_connections_apart()
         lock = viewer_lock(socket)
         if lock is None:  # a repeated click must not start another Blender
-            _tell_user(already_open_message(socket))
+            if not ask_to_follow(socket):  # (a KiCad reopened on this socket: its board's bridge follows)
+                _tell_user(already_open_message(socket))
             return 0
+        for leftover in (".follow", ".followed"):  # a crashed launcher's
+            _viewer_file(socket, leftover).unlink(missing_ok=True)
     except RuntimeError as exc:
         _tell_user(str(exc))
         raise
@@ -366,6 +435,7 @@ def launch(root=None) -> int:
 
     def serve(seconds):
         runtime.step()
+        answer_follow(socket, runtime)
         runtime.wait(seconds)
 
     try:

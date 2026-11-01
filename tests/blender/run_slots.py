@@ -68,6 +68,16 @@ def main():
         assert all(material.name.startswith("B2 KLS ") for key, material in second.materials.items()
                    if objects.role(material.name).startswith("KLS ")), "board 2 shares a material with board 1"
         assert not set(first.materials.values()) & set(second.materials.values())
+        # One board twice: every reference clashes. Board 2's parts carry their board behind the
+        # reference ("J1 B2 · model"), so neither board's parts get Blender's ".001".
+        from kileido import components
+        parts = {slot: [obj for obj in owned_by(slot) if components.key_of(obj)] for slot in (1, 2)}
+        assert parts[1] and len(parts[1]) == len(parts[2])
+        assert not [obj.name for slot in (1, 2) for obj in parts[slot] if obj.name[-4:-3] == "."], "a part got .001"
+        assert all(obj.name.split(" ")[1] == "B2" for obj in parts[2]), [obj.name for obj in parts[2]][:6]
+        assert not [obj.name for obj in parts[1] if " B2" in obj.name]
+        frame = next(obj for obj in parts[2] if obj.get("kls_footprint") == 1)
+        assert frame.name == f"{frame['kls_reference']} B2", frame.name
 
         with state.using(1):
             outline_1, mask_1 = objects.lookup(objects.OUTLINE), holes.mask_image()
