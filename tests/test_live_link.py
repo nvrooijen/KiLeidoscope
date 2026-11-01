@@ -198,7 +198,8 @@ def test_kicad_busy_disconnect_and_restart_preserve_blender_connection():
         assert any(h.get("kicad") == "editing" for h, _ in statuses)
         restarted = exchange(runtime, client,
                              lambda frames: any(h["type"] == "snapshot_end" for h, _ in frames))
-        assert any(h.get("kicad") == "disconnected" for h, _ in restarted)
+        # The disconnect is one step after "editing": a fast loop reads both in one exchange.
+        assert any(h.get("kicad") == "disconnected" for h, _ in statuses + restarted)
         assert first.closed and client.state == "connected"
         assert runtime.reader is second
     finally:
@@ -586,19 +587,25 @@ def test_a_closed_kicad_is_said_at_the_first_timeout():
         runtime.close()
 
 
-def test_kicad_closed_dials_kicads_socket(tmp_path, monkeypatch):
+def test_kicad_closed_dials_kicads_socket(monkeypatch):
     """Refused (nothing listens, or no socket file): closed. A listener, however busy: not."""
+    import shutil
+    import tempfile
     import pytest
     if sys.platform == "win32":
         pytest.skip("a Unix socket path; Windows' named pipes are not tried here")
     import pynng
     from kileido_bridge.kicad_reader import kicad_closed
-    address = f"ipc://{tmp_path / 'api.sock'}"
-    monkeypatch.setenv("KICAD_API_SOCKET", address)
-    assert kicad_closed()
-    with pynng.Rep0(listen=address):  # never answers: a stalled KiCad
-        assert not kicad_closed()
-    assert kicad_closed()
+    folder = tempfile.mkdtemp(prefix="kls", dir="/tmp")  # macOS takes Unix socket paths of 104 bytes at most
+    try:
+        address = f"ipc://{folder}/api.sock"
+        monkeypatch.setenv("KICAD_API_SOCKET", address)
+        assert kicad_closed()
+        with pynng.Rep0(listen=address):  # never answers: a stalled KiCad
+            assert not kicad_closed()
+        assert kicad_closed()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def test_blender_click_highlights_before_a_slow_kicad_answers():
