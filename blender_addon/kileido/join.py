@@ -32,7 +32,7 @@ from . import kicad_cli, live, settings
 from .objects import redraw_views
 from .state import SLOTS, boards, same_file
 
-PROTOCOL = 1  # kileido_bridge/launcher.py JOIN_PROTOCOL
+PROTOCOL = 2  # kileido_bridge/launcher.py JOIN_PROTOCOL (2: the welcome handshake)
 POLL_S = 0.5
 ANSWER_S = 110.0  # a question unanswered this long is dropped: the launcher gives up at 120 s
 CHOICES = (("ASK", "Ask", "Ask each time a board from another KiCad wants to join"),

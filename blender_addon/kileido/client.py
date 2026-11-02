@@ -5,7 +5,11 @@ and one non-blocking socket."""
 from __future__ import annotations
 
 import errno
+import hashlib
+import hmac
 import json
+import math
+import secrets
 import select
 import socket
 import struct
@@ -43,16 +47,35 @@ def encode_frame(header: dict, arrays: dict[str, np.ndarray] | None = None) -> b
     return _LENGTH.pack(len(body)) + body
 
 
+def proof(token: str, side: str, nonce: str) -> str:
+    """HMAC-SHA256 of "<side>:<nonce>" under the token (the bridge's protocol.proof)."""
+    return hmac.new(token.encode("utf-8"), f"{side}:{nonce}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _shape(shape) -> bool:
+    return (isinstance(shape, list) and len(shape) <= 8 and
+            all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape))
+
+
 def decode_frame(body: bytes) -> tuple[dict, dict[str, np.ndarray]]:
-    (head_length,) = _LENGTH.unpack_from(body, 0)
-    header = json.loads(body[4:4 + head_length].decode("utf-8"))
+    """One frame body; anything malformed raises ValueError (the bridge's decode_frame)."""
+    try:
+        (head_length,) = _LENGTH.unpack_from(body, 0)
+        header = json.loads(body[4:4 + head_length].decode("utf-8"))
+    except (struct.error, RecursionError) as exc:
+        raise ValueError(f"malformed frame header: {exc}") from None
+    specs = header.pop("arrays", None) if isinstance(header, dict) else None
+    if not isinstance(specs, list):
+        raise ValueError("frame header is not an object with an array table")
     offset = 4 + head_length
     arrays = {}
-    for spec in header.pop("arrays"):
-        if spec["dtype"] not in DTYPES:
-            raise ValueError(f"unsupported dtype {spec['dtype']}")
+    for spec in specs:
+        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str) or not _shape(spec.get("shape")):
+            raise ValueError("malformed array table entry")
+        if not isinstance(spec.get("dtype"), str) or spec["dtype"] not in DTYPES:
+            raise ValueError(f"unsupported dtype {spec.get('dtype')}")
         dtype = np.dtype(spec["dtype"])
-        count = int(np.prod(spec["shape"], dtype=np.int64))
+        count = math.prod(spec["shape"])
         size = count * dtype.itemsize
         if offset + size > len(body):
             raise ValueError("frame shorter than its array table")
@@ -92,6 +115,8 @@ class SocketClient:
         self.outgoing = bytearray()
         self.state = "disconnected"
         self.last_error = ""
+        self.nonce = ""
+        self.verified = False  # the bridge's welcome proved the token; nothing is applied before
 
     def connect(self):
         self.close()
@@ -109,7 +134,21 @@ class SocketClient:
 
     def _connected(self):
         self.state = "connected"
-        self.outgoing.extend(encode_frame({"type": "hello", "token": self.token}))
+        self.nonce, self.verified = secrets.token_hex(16), False
+        self.outgoing.extend(encode_frame({"type": "hello", "nonce": self.nonce,
+                                           "proof": proof(self.token, "viewer", self.nonce)}))
+
+    def _welcomed(self, frames):
+        """The frames after the bridge's welcome, which comes first and proves the token:
+        another program on this port is refused before anything of it is applied."""
+        header = frames[0][0]
+        given = header.get("proof")
+        expected = proof(self.token, "bridge", self.nonce)
+        if (header.get("type") != "welcome" or not isinstance(given, str)
+                or not hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))):
+            raise ConnectionError("the program on the bridge's port is not this board's bridge")
+        self.verified = True
+        return frames[1:]
 
     def request_resync(self, adopt=False):
         """Ask for the whole board again; `adopt` (the user's Resync button) also lets the
@@ -177,15 +216,31 @@ class SocketClient:
                 if not chunk:
                     raise ConnectionError("bridge closed the connection")
                 received.extend(self.decoder.feed(chunk))
+            if received and not self.verified:
+                received = self._welcomed(received)
         except Exception as exc:  # socket errors and malformed frames alike end this connection
             self.last_error = str(exc)
+            if not self.verified:
+                received = []  # nothing from a peer that never proved the token
             self.close()
         return received
+
+    def leave(self):
+        """Tell the bridge this Blender is done with it (the board's X), then close: the
+        bridge stops at once, not when it finds the viewer away for half a minute."""
+        if self.socket is not None and self.state == "connected" and self.verified:
+            self.outgoing.extend(encode_frame({"type": "bye"}))
+            try:
+                self.socket.send(self.outgoing, _NO_SIGNAL)  # one try: unsent, the bridge stops later
+            except OSError:
+                pass
+        self.close()
 
     def close(self):
         if self.socket is not None:
             self.socket.close()
             self.socket = None
         self.state = "disconnected"
+        self.verified = False
         self.decoder = FrameDecoder()
         self.outgoing.clear()

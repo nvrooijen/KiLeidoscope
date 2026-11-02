@@ -145,7 +145,10 @@ def test_unauthenticated_connection_cannot_disconnect_the_viewer():
         intruders.append(socket.create_connection(("127.0.0.1", server.port)))  # never says hello
         settle()
         intruders.append(socket.create_connection(("127.0.0.1", server.port)))
-        intruders[-1].sendall(encode_frame({"type": "hello", "token": "guess"}))
+        intruders[-1].sendall(encode_frame({"type": "hello", "nonce": "0" * 32, "proof": "guess"}))
+        settle()
+        intruders.append(socket.create_connection(("127.0.0.1", server.port)))
+        intruders[-1].sendall(encode_frame({"type": "hello", "token": "secret"}))  # the token itself proves nothing
         settle()
         intruders.append(socket.create_connection(("127.0.0.1", server.port)))
         intruders[-1].sendall((10 * 1024 * 1024).to_bytes(4, "big"))  # announces a 10 MB frame before any hello
@@ -157,6 +160,114 @@ def test_unauthenticated_connection_cannot_disconnect_the_viewer():
             connection.close()
         viewer.close()
         server.close()
+
+
+def test_malformed_frames_before_the_hello_leave_the_bridge_serving():
+    """Any local process may connect: what it sends before a hello is refused, whatever it is,
+    and never escapes the bridge's loop (it used to: a header of the wrong kind ended it)."""
+    import socket
+    import struct
+
+    def frame(raw: bytes) -> bytes:
+        body = struct.pack(">I", len(raw)) + raw
+        return struct.pack(">I", len(body)) + body
+    server = BridgeServer(port=0, token="secret")
+    viewer = addon_client().SocketClient("127.0.0.1", server.port, "secret")
+    try:
+        viewer.connect()
+        for _ in range(100):
+            viewer.poll_io()
+            server.pump()
+            if server.authenticated:
+                break
+            time.sleep(0.001)
+        viewer_socket = server.client
+        for raw in (b'{"arrays":5}', b"[]", b'{"arrays":[{"name":1}]}', b'{"arrays":[{"name":"a","dtype":[1],'
+                    b'"shape":[1]}]}', b'{"arrays":[{"name":"a","dtype":"<i4","shape":[4611686018427387904,4]}]}',
+                    b"[" * 5000 + b"]" * 5000, b"\xff\xfe", b'{"type":"hello","nonce":5,"proof":[]}'):
+            intruder = socket.create_connection(("127.0.0.1", server.port))
+            intruder.sendall(frame(raw))
+            for _ in range(20):
+                server.pump()  # raised TypeError for the first two
+                time.sleep(0.001)
+            intruder.close()
+            assert server.client is viewer_socket and server.candidate is None, raw[:40]
+    finally:
+        viewer.close()
+        server.close()
+
+
+def test_leaving_tells_the_bridge_it_is_done():
+    """The board's X: the viewer's goodbye reaches the bridge before the link closes."""
+    server = BridgeServer(port=0, token="secret")
+    client = addon_client().SocketClient("127.0.0.1", server.port, "secret")
+    try:
+        client.connect()
+        for _ in range(100):
+            client.poll_io()
+            server.pump()
+            if client.verified:
+                break
+            time.sleep(0.001)
+        assert client.verified and not server.left
+        client.leave()
+        for _ in range(100):
+            server.pump()
+            if server.left:
+                break
+            time.sleep(0.001)
+        assert server.left and client.state == "disconnected"
+    finally:
+        client.close()
+        server.close()
+
+
+def test_blender_applies_nothing_from_a_bridge_that_cannot_prove_the_token():
+    """Another program that took the bridge's port (the bridge gone) gets Blender's hello, which
+    does not carry the token, and is refused at its first frame: nothing of it is applied."""
+    import socket
+    from kileido_bridge.protocol import encode_frame, proof
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    client = addon_client().SocketClient("127.0.0.1", listener.getsockname()[1], "secret")
+    try:
+        client.connect()
+        peer, _ = listener.accept()
+        peer.settimeout(2)
+        client.poll_io()  # sends the hello
+        hello = peer.recv(65536)
+        assert b"secret" not in hello and b'"nonce"' in hello
+        nonce = json.loads(hello[8:].decode("utf-8"))["nonce"]
+        for welcome in ({"type": "board", "name": "fake"}, {"type": "welcome", "proof": proof("guess", "bridge", nonce)}):
+            peer.sendall(encode_frame(welcome) + encode_frame({"type": "export", "kicad_cli": "C:/evil.exe"}))
+            received = []
+            for _ in range(100):
+                received += client.poll_io()
+                if client.state == "disconnected":
+                    break
+                time.sleep(0.001)
+            assert received == [] and client.state == "disconnected" and "not this board's bridge" in client.last_error
+            peer.close()
+            client.connect()
+            peer, _ = listener.accept()
+            peer.settimeout(2)
+            client.poll_io()
+            hello = peer.recv(65536)
+            nonce = json.loads(hello[8:].decode("utf-8"))["nonce"]
+        peer.sendall(encode_frame({"type": "welcome", "proof": proof("secret", "bridge", nonce)}) +
+                     encode_frame({"type": "export", "kicad_cli": "kicad-cli"}))
+        received = []
+        for _ in range(100):
+            received += client.poll_io()
+            if received:
+                break
+            time.sleep(0.001)
+        assert client.verified and [header["type"] for header, _ in received] == ["export"]
+        peer.close()
+    finally:
+        client.close()
+        listener.close()
 
 
 def test_board_switch_is_a_complete_snapshot_and_reuses_server_connection():
@@ -1099,6 +1210,39 @@ def test_a_read_hanging_on_a_closed_kicad_is_said_within_a_second():
         runtime.step()
         assert asked == [now["t"]], "asked once per read"
         assert runtime.kicad_closed and runtime.status == "disconnected" and runtime.error == KICAD_CLOSED
+    finally:
+        runtime.worker = None
+        runtime.close()
+
+
+def test_a_kicad_that_answers_after_the_probe_is_live_again():
+    """The probe dials while a read is slow; when KiCad then answers after all, it was not
+    closed: the row is live again, and a later timeout counts as one of MAX_TIMEOUTS again
+    instead of dropping the link at once."""
+    from kileido_bridge.kicad_reader import KICAD_CLOSED
+    reader = FakeReader(fixture())
+    probe = {"closed": True}
+    now = {"t": 100.0}
+    server = BridgeServer(port=0, token="t")
+    runtime = BridgeRuntime(server, connector=lambda: reader, poll_interval_s=0.0, clock=lambda: now["t"],
+                            closed_check=lambda: probe["closed"])
+    try:
+        runtime.step()
+        assert runtime.reader is reader and runtime.status == "connected"
+        for answer in (None, KiCadBusy("editing")):  # a snapshot, or busy: both are answers
+            runtime.worker = object()  # the worker is stuck in a read
+            runtime.read_started = now["t"]
+            now["t"] += BridgeRuntime.CLOSED_PROBE_S + 0.1
+            runtime.step()
+            assert runtime.kicad_closed and runtime.error == KICAD_CLOSED
+            runtime.worker = runtime.read_started = None
+            reader.events = [answer] if answer else []
+            runtime.step()  # the read answers
+            assert not runtime.kicad_closed and runtime.status in ("connected", "editing") and not runtime.error
+        probe["closed"] = False
+        reader.events = [ConnectionError("Error receiving reply from KiCad: Timed out")]
+        runtime.step()
+        assert runtime.reader is reader and not runtime.kicad_closed
     finally:
         runtime.worker = None
         runtime.close()

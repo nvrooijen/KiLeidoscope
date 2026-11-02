@@ -13,7 +13,10 @@ vendors a copy of `FrameDecoder` and `decode_frame` (blender_addon/kileido/clien
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import math
 import struct
 
 import numpy as np
@@ -28,6 +31,7 @@ MAX_FRAME_BYTES = 64 * 1024 * 1024
 DTYPES = {"<i4", "|u1", "<f4"}  # "|" = single byte, no byte order
 DEFAULT_THICKNESS_NM = 1_600_000  # board thickness when the stackup cannot give one
 # Every frame type the bridge sends (here and in loop.py); the add-on's client.py lists the same ones.
+# (Not the server's "welcome": the handshake, which the add-on's client.py takes itself.)
 MESSAGE_TYPES = ("snapshot_begin", "board", "layer_data", "footprints", "stackup", "flex", "snapshot_end",
                  "appearance", "selection", "status", "export", "findings", "phase_list", "phase_pair")
 _LENGTH = struct.Struct(">I")
@@ -50,17 +54,37 @@ def encode_frame(header: dict, arrays: dict[str, np.ndarray] | None = None) -> b
     return _LENGTH.pack(len(body)) + body
 
 
+def proof(token: str, side: str, nonce: str) -> str:
+    """HMAC-SHA256 of "<side>:<nonce>" under the token: each end shows it knows the token
+    without sending it, "viewer" in Blender's hello and "bridge" in the bridge's welcome."""
+    return hmac.new(token.encode("utf-8"), f"{side}:{nonce}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _shape(shape) -> bool:
+    return (isinstance(shape, list) and len(shape) <= 8 and
+            all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape))
+
+
 def decode_frame(body: bytes) -> tuple[dict, dict[str, np.ndarray]]:
-    """Decode one frame body (without its leading frame_length)."""
-    (head_length,) = _LENGTH.unpack_from(body, 0)
-    header = json.loads(body[4:4 + head_length].decode("utf-8"))
+    """Decode one frame body (without its leading frame_length). Anything malformed raises
+    ValueError: before its hello, the peer may be any local process."""
+    try:
+        (head_length,) = _LENGTH.unpack_from(body, 0)
+        header = json.loads(body[4:4 + head_length].decode("utf-8"))
+    except (struct.error, RecursionError) as exc:
+        raise ValueError(f"malformed frame header: {exc}") from None
+    specs = header.pop("arrays", None) if isinstance(header, dict) else None
+    if not isinstance(specs, list):
+        raise ValueError("frame header is not an object with an array table")
     offset = 4 + head_length
     arrays = {}
-    for spec in header.pop("arrays"):
-        if spec["dtype"] not in DTYPES:
-            raise ValueError(f"unsupported dtype {spec['dtype']}")
+    for spec in specs:
+        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str) or not _shape(spec.get("shape")):
+            raise ValueError("malformed array table entry")
+        if not isinstance(spec.get("dtype"), str) or spec["dtype"] not in DTYPES:
+            raise ValueError(f"unsupported dtype {spec.get('dtype')}")
         dtype = np.dtype(spec["dtype"])
-        count = int(np.prod(spec["shape"], dtype=np.int64))
+        count = math.prod(spec["shape"])  # exact: a numpy product could wrap past the size check
         size = count * dtype.itemsize
         if offset + size > len(body):
             raise ValueError("frame shorter than its array table")

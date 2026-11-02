@@ -4,6 +4,11 @@ Any local process can open a connection, so a new connection waits in its own
 slot until its first frame proves the token. Only then does it replace the
 current viewer. An unauthenticated connection can therefore never disconnect
 the working viewer, and its frames are capped at a few kilobytes.
+
+Neither end sends the token: the hello carries a nonce and an HMAC of it under the
+token, and the bridge's first frame, the welcome, answers with its own HMAC of that
+nonce. Blender applies nothing before that welcome, so another program that took
+this port (the bridge gone) cannot feed it a board.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from typing import NamedTuple
 
 from . import findings_watch
 from .kls_folder import SOURCES as FINDINGS_SOURCES
-from .protocol import FrameDecoder
+from .protocol import FrameDecoder, encode_frame, proof
 
 DEFAULT_PORT = 47811
 MAX_PENDING_BYTES = 16 * 1024 * 1024
@@ -64,6 +69,7 @@ class BridgeServer:
         self.phase_settings = None  # the viewer's last `phase_settings` request, not yet taken
         self.findings_requests = []
         self.adopt_requested = False  # the user pressed Resync in Blender
+        self.left = False  # the viewer said goodbye: the board's X in Blender (launcher.Abandoned)
         self.outgoing = bytearray()
         self.snapshot_bytes = 0  # of `outgoing`: the latest snapshot, exempt from the backlog cap
 
@@ -102,19 +108,25 @@ class BridgeServer:
             self.candidate_decoder = FrameDecoder(HELLO_MAX_BYTES)  # decoder state belongs to this TCP connection
             self.candidate_deadline = time.monotonic() + HELLO_TIMEOUT_S
 
-    def _valid_hello(self, header: dict) -> bool:
-        token = header.get("token")
-        return (header.get("type") == "hello" and isinstance(token, str) and
-                hmac.compare_digest(token.encode(), self.token.encode()))
+    def _hello_nonce(self, header: dict) -> str | None:
+        """The nonce of a hello that proves the token, else None."""
+        nonce, given = header.get("nonce"), header.get("proof")
+        if (header.get("type") != "hello" or not isinstance(nonce, str) or not 16 <= len(nonce) <= 128
+                or not isinstance(given, str)):
+            return None
+        expected = proof(self.token, "viewer", nonce)
+        return nonce if hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8")) else None
 
     def _read_candidate(self):
-        """A valid hello promotes the candidate to viewer, replacing the previous one."""
+        """A valid hello promotes the candidate to viewer, replacing the previous one; the
+        welcome, sent before anything else, proves the token back."""
         try:
             data = self.candidate.recv(RECV_BYTES)
             frames = self.candidate_decoder.feed(data) if data else None
-        except (OSError, ValueError, KeyError):
-            frames = None
-        if frames is None or (frames and not self._valid_hello(frames[0][0])):
+            nonce = self._hello_nonce(frames[0][0]) if frames else None
+        except Exception:  # any local process may have sent anything
+            frames = nonce = None
+        if frames is None or (frames and nonce is None):
             self._drop_candidate()
             return
         if not frames:
@@ -122,6 +134,7 @@ class BridgeServer:
         decoder = self.candidate_decoder
         decoder.max_frame_bytes = VIEWER_MAX_BYTES
         self._drop_client()
+        self.outgoing.extend(encode_frame({"type": "welcome", "proof": proof(self.token, "bridge", nonce)}))
         self.client, self.decoder = self.candidate, decoder
         self.candidate, self.candidate_decoder = None, None
         self.needs_snapshot = True
@@ -138,6 +151,8 @@ class BridgeServer:
             self.select_requests.append((ids, extend, center, bool(header.get("exact", False))))
         elif header.get("type") == "phase_settings":  # the panel's dynamic-phase settings; the latest wins
             self.phase_settings = header
+        elif header.get("type") == "bye":  # the board was removed in Blender: this bridge is done
+            self.left = True
         elif header.get("type") == "findings":  # confirm/dismiss a finding, Run DRC, Copy prompt, ...
             action, key, source = header.get("action"), header.get("key", ""), header.get("source", "drc")
             checks = header.get("checks", [])  # a prompt's check ids; unknown ones are dropped later
@@ -188,7 +203,7 @@ class BridgeServer:
                     return
                 for header, _ in self.decoder.feed(data):
                     self._handle(header)
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, TypeError):  # TypeError: a field of the wrong kind
                 self._drop_client()
                 return
         if client is self.client and client in ready_write:

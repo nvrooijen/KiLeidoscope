@@ -145,6 +145,16 @@ def test_abandoned_after_the_viewer_left_or_never_came():
     assert never()
 
 
+def test_abandoned_at_once_when_the_viewer_said_goodbye():
+    """The board's X in Blender: the bridge frees its KiCad now, so Open in Blender there works
+    again at once (it said the board was shown already for the next half minute)."""
+    server = SimpleNamespace(authenticated=True, left=False)
+    abandoned = launcher.Abandoned(server, Clock())
+    assert not abandoned()
+    server.left, server.authenticated = True, False
+    assert abandoned()
+
+
 def _launch_parts(monkeypatch, authenticated=True):
     monkeypatch.setenv("KICAD_API_SOCKET", "pipe-b")
     server = SimpleNamespace(port=2345, token="tok", authenticated=authenticated)

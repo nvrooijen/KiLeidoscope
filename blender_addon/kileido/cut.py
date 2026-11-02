@@ -27,7 +27,7 @@ from . import focus, laminate, metal, nodes, poses, section, shading, transform
 from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
 from .objects import (camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates,
                       read_edges, role)
-from .state import board
+from .state import board, picked
 
 GROUP = "KLS_Clip_v1"
 NODE = focus.CUT_NODE
@@ -790,8 +790,11 @@ def place_light(scene=None):
 # --- Switching ------------------------------------------------------------------------------
 
 def refresh():
-    """The tick box, or a whole new board: bring materials, plane and face in line."""
+    """The tick box, or a whole new board: bring materials, plane and face in line. Only for
+    the picked board: another board's snapshot would move the plane to its own middle."""
     global _pushed
+    if board.slot != picked():
+        return
     _forget()  # before ensure_plane: placing a new plane already draws the section
     on = enabled()
     plane = ensure_plane() if on else bpy.data.objects.get(PLANE)

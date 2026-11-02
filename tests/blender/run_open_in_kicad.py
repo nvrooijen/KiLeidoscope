@@ -170,7 +170,7 @@ def main():
         assert join.choice() == "ASK"
         nonce = "n47900"
         (FOLDER / f"join-{os.getpid()}-{nonce}.json").write_text(json.dumps(
-            {"port": 47900, "token": "t", "board_name": DAUGHTER.name, "board_path": str(DAUGHTER), "protocol": 1}),
+            {"port": 47900, "token": "t", "board_name": DAUGHTER.name, "board_path": str(DAUGHTER), "protocol": join.PROTOCOL}),
             encoding="utf-8")
         join.offer(force=True)
         join.poll()

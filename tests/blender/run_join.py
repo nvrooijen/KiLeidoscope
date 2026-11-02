@@ -51,7 +51,7 @@ def request(folder, port, name, path=""):
     """What the launcher leaves: join-<this pid>-<nonce>.json."""
     nonce = f"n{port}"
     (folder / f"join-{os.getpid()}-{nonce}.json").write_text(json.dumps(
-        {"port": port, "token": f"t{port}", "board_name": name, "board_path": path, "protocol": 1}),
+        {"port": port, "token": f"t{port}", "board_name": name, "board_path": path, "protocol": join.PROTOCOL}),
         encoding="utf-8")
     return nonce
 

@@ -7,9 +7,11 @@ Another add-on reaches it without knowing how KiLeidoscope was loaded:
     if studio is not None and studio.API_VERSION >= 1:
         low, high = studio.board_bounds()
 
-Everything in this module is public and kept stable across KiLeidoscope versions;
-a change that would break a caller raises API_VERSION. Nothing else in the add-on
-is meant for other add-ons. See docs/studio-hook.md.
+The calls docs/studio-hook.md lists are public and kept stable across KiLeidoscope
+versions; install, uninstall, note_frame and updates_held are the add-on's own.
+API_VERSION counts additions (a caller needing a later call checks for its version);
+a change that would break callers would come under a new module alias, never this
+one. Nothing else in the add-on is meant for other add-ons. See docs/studio-hook.md.
 """
 
 import sys

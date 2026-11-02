@@ -21,7 +21,7 @@ from .server import BridgeServer
 
 MINIMUM_BLENDER = (5, 1)
 _VERSION = re.compile(rb"Blender (\d+)\.(\d+)")
-JOIN_PROTOCOL = 1  # blender_addon/kileido/join.py reads and writes the same files
+JOIN_PROTOCOL = 2  # blender_addon/kileido/join.py reads and writes the same files (2: the welcome handshake)
 IDENTITY_WAIT_S = 5.0  # to read which board this KiCad has open, for the join request
 REPLY_WAIT_S = 10.0  # until the open Blender takes the request (it may be busy a few seconds)
 ANSWER_WAIT_S = 120.0  # once taken: the user may be asked "Add here / Open in its own window"
@@ -283,8 +283,10 @@ class Abandoned:
     A viewer reconnects every 2 s while it wants the board (live.RETRY_S). It stays away
     when the board's slot took a newer bridge (Open in Blender clicked again, e.g. after
     KiCad crashed and came back) or was closed: then this bridge only loads KiCad, so it
-    stops. Before the first connection the viewer gets START_S (Blender starting, a user
-    asked whether to add the board)."""
+    stops. A viewer that said goodbye (the board's X) is gone at once: the bridge frees
+    this KiCad's lock, so Open in Blender there works again right away. Before the first
+    connection the viewer gets START_S (Blender starting, a user asked whether to add the
+    board)."""
 
     START_S = 120.0
     ABANDON_S = 30.0
@@ -296,6 +298,8 @@ class Abandoned:
 
     def __call__(self) -> bool:
         now = self.clock()
+        if getattr(self.server, "left", False):
+            return True
         if getattr(self.server, "authenticated", True):
             self.seen = now
             return False
