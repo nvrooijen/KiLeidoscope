@@ -72,6 +72,7 @@ class BridgeServer:
         self.left = False  # the viewer said goodbye: the board's X in Blender (launcher.Abandoned)
         self.outgoing = bytearray()
         self.snapshot_bytes = 0  # of `outgoing`: the latest snapshot, exempt from the backlog cap
+        self.welcome_bytes = 0  # of `outgoing`, at its start: the welcome not yet sent, never cleared
 
     @property
     def authenticated(self) -> bool:
@@ -85,7 +86,7 @@ class BridgeServer:
                 self.client = None
         self.decoder = None
         self.needs_snapshot = False
-        self.snapshot_bytes = 0
+        self.snapshot_bytes = self.welcome_bytes = 0
         self.outgoing.clear()
 
     def _drop_candidate(self):
@@ -135,6 +136,7 @@ class BridgeServer:
         decoder.max_frame_bytes = VIEWER_MAX_BYTES
         self._drop_client()
         self.outgoing.extend(encode_frame({"type": "welcome", "proof": proof(self.token, "bridge", nonce)}))
+        self.welcome_bytes = len(self.outgoing)
         self.client, self.decoder = self.candidate, decoder
         self.candidate, self.candidate_decoder = None, None
         self.needs_snapshot = True
@@ -210,7 +212,9 @@ class BridgeServer:
             try:
                 count = client.send(self.outgoing)
                 del self.outgoing[:count]
-                self.snapshot_bytes = max(0, self.snapshot_bytes - count)
+                welcome = min(count, self.welcome_bytes)
+                self.welcome_bytes -= welcome
+                self.snapshot_bytes = max(0, self.snapshot_bytes - (count - welcome))
             except (BlockingIOError, InterruptedError):
                 pass  # send buffer full; the rest goes on the next pump
             except OSError:
@@ -237,7 +241,7 @@ class BridgeServer:
         if not self.authenticated or not self.needs_snapshot:
             return False
         self.needs_snapshot = False
-        self.outgoing.clear()  # a full snapshot replaces any queued older updates
+        del self.outgoing[self.welcome_bytes:]  # a full snapshot replaces any queued older updates
         self.snapshot_bytes = 0
         return True
 

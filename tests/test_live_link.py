@@ -270,6 +270,38 @@ def test_blender_applies_nothing_from_a_bridge_that_cannot_prove_the_token():
         listener.close()
 
 
+def test_the_welcome_survives_a_snapshot_queued_before_it_went_out():
+    """The hello can land in the pump that starts a runtime step, and that step's resync then
+    queues the first snapshot before the welcome was sent (seen on macOS): the welcome still
+    goes first, or Blender refuses its own bridge."""
+    from kileido_bridge.protocol import encode_frame
+    server = BridgeServer(port=0, token="secret")
+    client = addon_client().SocketClient("127.0.0.1", server.port, "secret")
+    try:
+        client.connect()
+        for _ in range(200):
+            client.poll_io()
+            server.pump()
+            if server.authenticated:
+                break
+            time.sleep(0.001)
+        assert server.authenticated
+        assert server.take_resync()  # what the runtime does next, in the same step
+        server.send_frames([encode_frame({"type": "snapshot_end"})], snapshot=True)
+        received = []
+        for _ in range(200):
+            server.pump()
+            received += client.poll_io()
+            if received or client.state == "disconnected":
+                break
+            time.sleep(0.001)
+        assert client.verified, client.last_error
+        assert [h["type"] for h, _ in received] == ["snapshot_end"]
+    finally:
+        client.close()
+        server.close()
+
+
 def test_board_switch_is_a_complete_snapshot_and_reuses_server_connection():
     snapshot = fixture()
     reader = FakeReader(snapshot)
