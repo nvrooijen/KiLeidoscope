@@ -45,21 +45,35 @@ def metadata(plugin: dict) -> dict:
         "$schema": "https://go.kicad.org/pcm/schemas/v2",
         "name": plugin["name"],
         "description": plugin["description"],
-        "description_full": (
-            "Opens the board in the PCB Editor in Blender 5.1 and keeps it current as you edit, "
-            "unsaved changes included. Read-only: the only thing it changes in KiCad is the "
-            "selection, when you click an item in Blender.\n\n"
-            "Needs Blender 5.1 or newer (found on PATH or in its default install places, or set "
-            "KILEIDO_BLENDER) and KiCad's API enabled: Preferences > Plugins > Enable KiCad API."),
+        "description_full": (  # the author's own words (KiCad's tool-generated content policy)
+            "KiLeidoscope provides a new, interactive way to visualize and analyze your KiCad PCBs "
+            "in Blender. A real-time bridge automatically updates your board in Blender while you "
+            "make edits in KiCad.\n\n"
+            "A set of analysis and visualization tools is added to help the PCB designer, including:\n"
+            "- Cross-sectional viewer\n"
+            "- X-ray visualizer\n"
+            "- Multi-board assembly mode\n"
+            "- IMS Boards\n"
+            "- Rigid-flex and flex PCBs\n"
+            "- KiCad DRC and LLM review visualizer\n"
+            "- Dynamic phase analysis for differential pairs\n"
+            "- Board outline error identifier\n\n"
+            "Above all, the plugin works plug and play, with the user only having to press a single "
+            "button to get the KiCad board into Blender.\n\n"
+            "Read-only: it never changes the board; a click in Blender selects the item in KiCad.\n\n"
+            "Requirements:\n"
+            "- Blender 5.1 or newer\n"
+            "- Preferences > Plugins: Enable KiCad API, and Python interpreter set to KiCad 10's own "
+            "(Windows) or /usr/bin/python3 (Linux)"),
         "identifier": plugin["identifier"],
         "type": "plugin",
         "author": {"name": "nvrooijen", "contact": {"web": HOMEPAGE}},
-        "license": "GPL-3.0-or-later",
+        "license": "GPL-3.0",  # the PCM schema v1 lists no -or-later; the project is GPL-3.0-or-later
         "resources": {"Homepage": HOMEPAGE},
         "tags": ["blender", "viewer", "live-view"],
         "versions": [{
             "version": version(),
-            "status": "development",
+            "status": "stable",
             "kicad_version": "10.0",
             "runtime": "ipc",
             "platforms": ["windows", "linux", "macos"],
