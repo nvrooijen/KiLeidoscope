@@ -88,7 +88,7 @@ from . import components, focus, fold, highlight, hole_cut, label_place, layers,
 from .objects import (VIEW_CLIP_START_M, camera_rays_only, hide, link_owned, lookup, outline_bounds, owned_name,
                       set_visible, shown_views, view3d_spaces)
 from .placement import outward
-from .state import board
+from .state import board, picked
 
 TAG = "kls_finding"
 EYE = "KLS finding eye"
@@ -367,8 +367,10 @@ def finding_side(finding, sides=None):
 
 
 def refresh():
-    """Draw the shown finding again from scratch, or nothing; its highlight and X-ray follow."""
-    if board.collection is None or board.in_snapshot:
+    """Draw the shown finding again from scratch, or nothing; its highlight and X-ray follow.
+    Only for the picked board: another board's snapshot or findings frame leaves the drawing,
+    its labels and lifted parts alone (slots.pick draws a board's finding when it is picked)."""
+    if board.collection is None or board.in_snapshot or board.slot != picked():
         return
     from . import findings_markers  # it imports this module
     findings_markers.invalidate()  # the board's markers placed again on the board as drawn now

@@ -3,7 +3,11 @@
 Other Blender add-ons can build on KiLeidoscope: turntables, camera rigs,
 lighting setups, render scripts. They use one module, `kileido.studio`, and
 nothing else in the add-on. That module is kept stable across KiLeidoscope
-versions. A change that would break a caller raises `API_VERSION`.
+versions: nothing listed here changes in a way that breaks a caller.
+`API_VERSION` counts additions. It rises when a call is added, so a caller that
+needs a later call checks for that version. A change that would break callers
+would come under a new module name, never as this one: a caller written for
+this hook then finds `None`, not a hook it misreads.
 
 ## Finding it
 

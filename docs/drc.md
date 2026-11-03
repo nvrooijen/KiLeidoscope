@@ -191,7 +191,7 @@ Deleting the folder is safe: you lose the marks and the old runs, nothing else.
 
 The list can show a second source: a findings file written by your own script or checker into `.kileidoscope/<board>.kls-findings.json`. KiLeidoscope watches for it, lists it under its own header and draws its findings the same way as DRC's. A file that cannot be read keeps its last good list, with the reason shown.
 
-> **Preliminary.** The format is `kls-findings 1` and may still change before it is documented in full.
+> **Not part of the 1.0 promise yet.** The format is `kls-findings 1` and may still change in a 1.x release. This page shows the main parts of it; every drawing tool, with an example of each, is in the `request.md` a prompt run writes (see the [LLM review guide](llm-review.md)).
 
 A minimal file:
 

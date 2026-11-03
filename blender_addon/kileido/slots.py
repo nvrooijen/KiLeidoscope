@@ -77,7 +77,7 @@ def remove(slot):
     with using(slot):
         if slot == state.picked():
             _release()
-        live.links[slot].disconnect()
+        live.links[slot].disconnect(leave=True)  # its bridge stops now: Open in Blender works again at once
         models.stop_following()
         cosmetics.stop_following()
         collection = board.collection

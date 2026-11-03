@@ -50,6 +50,7 @@ from .board_index import BoardIndex, Gap, _bbox_gap, _inside, centre, copper_ran
 from .board_index import gap as shapes_gap
 from .board_index import top_layer, union
 from .geometry import sample_arc
+from .kls_folder import OWN
 from .selection import diff_pair_partner
 from .targets import MAX_MM, SNAP_NM, Resolved, copper_layer, point_problem, resolve
 from .targets import kind as kind_of
@@ -519,13 +520,35 @@ def _fields(tool: str, raw: dict, problems: list) -> dict:
     raise _Bad(f"unknown tool {_show(tool)}")
 
 
+class _Read(dict):
+    """A draw's fields, noting each one its tool looks at: the rest were not used."""
+
+    def __init__(self, raw: dict):
+        super().__init__(raw)
+        self.read = {"tool"}
+
+    def __getitem__(self, key):
+        self.read.add(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self.read.add(key)
+        return super().__contains__(key)
+
+    def get(self, key, default=None):
+        self.read.add(key)
+        return super().get(key, default)
+
+
 def _draw(raw, number: int, problems: list) -> Draw | None:
-    """One draw, or None with the reason in `problems` (the finding stays)."""
+    """One draw, or None with the reason in `problems` (the finding stays). A field the
+    tool does not use (a misspelt `required_mm`, a track's `width` on a via) is said."""
     tool = raw.get("tool") if isinstance(raw, dict) else None
     what = f"draw {number}" + (f" ({_show(tool)})" if isinstance(tool, str) else "")
     if not isinstance(tool, str):
         problems.append(f"{what} skipped: no tool")
         return None
+    raw = _Read(raw)
     notes = []
     try:
         fields = _fields(tool, raw, notes)
@@ -542,6 +565,10 @@ def _draw(raw, number: int, problems: list) -> Draw | None:
     if emphasis not in ("normal", "strong"):
         notes.append("emphasis is not normal or strong")
         emphasis = "normal"
+    unused = [name for name in raw if name not in raw.read]
+    if unused:
+        names = ", ".join(_show(str(name)) for name in unused[:5]) + (", …" if len(unused) > 5 else "")
+        notes.append(f"ignored {names}: not a field of this drawing")
     problems.extend(f"{what}: {note}" for note in notes)
     return Draw(tool, fields, label, emphasis)
 
@@ -2273,9 +2300,10 @@ def _from_text(index: BoardIndex | None, finding: Finding) -> tuple[Draw, ...]:
 
 def handshake(found: FindingsFile, context: Context) -> str:
     """Where the file came from: "known" (a run this bridge made, with that run's stamp;
-    or our own DRC file), "other_run" (it names a run or stamp, but not one of ours: an
-    older or foreign run) or "outside" (no run: another tool or script wrote it)."""
-    if found.stamp and (context.runs.get(found.run) == found.stamp or context.source == "drc"):
+    or a file the bridge writes itself: DRC, dynamic phase, tombstone), "other_run" (it
+    names a run or stamp, but not one of ours: an older or foreign run) or "outside" (no
+    run: another tool or script wrote it)."""
+    if found.stamp and (context.runs.get(found.run) == found.stamp or context.source in OWN):
         return "known"
     if found.run or found.stamp:
         return "other_run"

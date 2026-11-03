@@ -55,10 +55,15 @@ class LiveLink:
         if not bpy.app.timers.is_registered(self._timer):
             bpy.app.timers.register(self._timer, first_interval=TICK_S, persistent=True)
 
-    def disconnect(self):
+    def disconnect(self, leave=False):
+        """Close the link; `leave` (the board's X) also tells the bridge it is done, so it
+        frees its KiCad for Open in Blender at once."""
         self.enabled = False
         if self.client is not None:
-            self.client.close()
+            if leave:
+                self.client.leave()
+            else:
+                self.client.close()
             self.client = None
         self._drop_pending()
         self.bridge_status = "disconnected"

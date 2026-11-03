@@ -370,6 +370,28 @@ def test_changed_when_the_live_stamp_differs(index):
     assert not payload(index, item, ctx=context(live=""))["changed"]
 
 
+# fields a drawing does not use
+
+def test_a_field_the_drawing_does_not_use_is_said():
+    """A misspelt limit was dropped without a word: the drawing then showed no limit at all."""
+    problems = []
+    draw = findings._draw({"tool": "clearance", "a": "U1", "b": "U2", "required_mm": 0.2}, 1, problems)
+    assert draw is not None and draw.fields["required"] is None
+    assert problems == ["draw 1 (clearance): ignored required_mm: not a field of this drawing"]
+    problems = []
+    findings._draw({"tool": "ghost", "kind": "via", "at": "pt:1,2@F.Cu", "width": 0.2}, 2, problems)
+    assert problems == ["draw 2 (ghost): ignored width: not a field of this drawing"], problems  # a track's
+
+
+def test_the_prompts_examples_use_every_field_they_give():
+    from kileido_bridge.prompt import _TOOLS
+    for tool, spec in _TOOLS.items():
+        for example in [spec[-1]] if isinstance(spec[-1], str) else spec[-1]:  # one, or several
+            problems = []
+            assert findings._draw(json.loads(example), 1, problems) is not None, tool
+            assert problems == [], (tool, problems)
+
+
 # handshake
 
 def test_handshake_known_changed(index):
@@ -381,6 +403,9 @@ def test_handshake_known_changed(index):
     assert changed["handshake"] == "known" and changed["changed"]
     drc = payload(index, item, ctx=context(source="drc", runs={}, live="00000000"))
     assert drc["handshake"] == "known" and drc["changed"]
+    for source in ("phase", "tombstone"):  # also the bridge's own files: a stamp, no run
+        own = payload(index, item, ctx=context(source=source, runs={}), run=None)
+        assert own["handshake"] == "known", source  # was "other_run": "not one this board's KiLeidoscope made"
 
 
 @pytest.mark.parametrize("ctx, top", [

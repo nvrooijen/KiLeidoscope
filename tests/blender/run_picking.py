@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kileido  # noqa: E402
-from kileido import apply, boardprops, columns, fold, layers, objects, packages, pick, poses, slots, state  # noqa: E402
+from kileido import apply, boardprops, columns, cut, findings_draw, fold, layers, objects, packages, pick, poses, slots, state  # noqa: E402,E501
 import run_flex  # noqa: E402  (its frames: the fixture with a bend)
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -227,6 +227,24 @@ def check_fold_handover(scene):
     fold._settled()
 
 
+def check_other_board_leaves_picked_tools(scene):
+    """Board 2's resync leaves the picked board 1's cut plane and finding drawing alone: the
+    plane used to jump to board 2's middle and draw its section there."""
+    slots.pick(1)
+    scene.kileido_cut = True
+    plane = bpy.data.objects.get(cut.PLANE)
+    placed = plane.get("kls_board"), tuple(plane.matrix_world.translation)
+    assert placed[0] == "First board.kicad_pcb", placed
+    findings_draw._state["labels"] = ["board 1's"]
+    with state.using(2):
+        apply.load_frames(second_frames())
+        findings_draw.refresh()  # as board 2's findings frame does
+    assert (plane.get("kls_board"), tuple(plane.matrix_world.translation)) == placed, "the plane moved to board 2"
+    assert findings_draw._state["labels"] == ["board 1's"], "board 2 redrew the picked board's finding"
+    scene.kileido_cut = False
+    slots.pick(2)
+
+
 def check_eye():
     """Board 2's eye hides the whole board, through a resync too; board 1 stays."""
     assert bpy.ops.kileido.live_board(slot=2, action="TOGGLE") == {"FINISHED"}
@@ -321,6 +339,7 @@ def main():
         check_undo()
         check_click()
         check_fold_handover(scene)
+        check_other_board_leaves_picked_tools(scene)
         check_eye()
         check_join_while_hidden()
         check_shared(scene)

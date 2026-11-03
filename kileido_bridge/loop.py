@@ -172,6 +172,7 @@ class BridgeRuntime:
             result = self.reader.poll(full=self.snapshot is None)
         except KiCadBusy:
             self.busy_seen = True  # e.g. the interactive router: item reads answer busy
+            self.kicad_closed = False  # it answered: a slow read's probe was wrong
             self._status("editing")
             self._poll_board_text()
             return
@@ -186,6 +187,7 @@ class BridgeRuntime:
             self._disconnect_reader(error=f"{type(exc).__name__}: {exc}")
             return
         self.timeout_count = 0
+        self.kicad_closed = False  # it answered: a slow read's probe was wrong
         result = self._with_hatches(result)
         snapshot = result.snapshot
         board_changed = self.snapshot is None or snapshot.board_name != self.snapshot.board_name

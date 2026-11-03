@@ -29,7 +29,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import findings_draw, fold, hole_cut
 from .findings_draw import figure
 from .objects import shown_view_areas
-from .state import board
+from .state import board, picked
 
 SOURCES = (("drc", "KiCad DRC"), ("phase", "Dynamic phase"), ("tombstone", "Tombstone"), ("file", "LLM"))
 TABS = {"drc": "DRC", "phase": "DRC", "tombstone": "DRC", "file": "LLM"}  # source -> the bookmark tab (columns.TABS)
@@ -127,7 +127,8 @@ def apply_findings(header):
         findings_draw.refresh()  # the board's markers placed again too; the lifted parts as listed now
     else:
         findings_markers.invalidate()
-    hole_cut.follow(shown)  # a hole finding gone: the user's cut back
+    if board.slot == picked():  # another board's list leaves the picked board's hole cut alone
+        hole_cut.follow(shown)  # a hole finding gone: the user's cut back
     _take_prompt()
     _follow_progress()
 
