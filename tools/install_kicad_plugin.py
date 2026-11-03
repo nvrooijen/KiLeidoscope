@@ -5,13 +5,14 @@ from pathlib import Path
 import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
+IDENTIFIERS = ("com.github.nvrooijen.kileidoscope", "org.kileido.core")  # the second: before 1.0
 
 
 def install(destination):
     destination = Path(destination)
     manifest = destination / "plugin.json"
     if destination.exists() and (not manifest.is_file() or
-            json.loads(manifest.read_text())["identifier"] != "org.kileido.core"):
+            json.loads(manifest.read_text())["identifier"] not in IDENTIFIERS):
         raise RuntimeError("Destination exists and is not our KiLeidoscope plugin")
     destination.mkdir(parents=True, exist_ok=True)
     for name in ("plugin.json", "launch.py", "requirements.txt", "icon_24.png", "icon_48.png"):

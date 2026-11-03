@@ -1,8 +1,8 @@
 {
   "$schema": "https://go.kicad.org/api/schemas/v1",
-  "identifier": "org.kileido.core",
+  "identifier": "com.github.nvrooijen.kileidoscope",
   "name": "KiLeidoscope",
-  "description": "View the current PCB live in Blender, read-only.",
+  "description": "A real-time bridge automatically updates your board in Blender while you make edits in KiCad.",
   "runtime": {
     "type": "python",
     "min_version": "3.9"
