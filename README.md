@@ -117,7 +117,7 @@ A finished track edit reaches the Blender viewport in about 0.2 s. Most of that 
 KiLeidoscope needs KiCad 10 and Blender 5.1 or newer (tested with 5.1 and 5.2). It installs as one KiCad package that holds the toolbar action, the bridge and the Blender add-on:
 
 1. Download `kileidoscope-<version>.zip` from [Releases](https://github.com/nvrooijen/KiLeidoscope/releases), or build it yourself: `python3 tools/build_native.py` (the C overlay library for your platform, optional but about 8× faster) and then `python3 tools/build_package.py` (`python` on Windows), which writes `dist/kileidoscope-<version>.zip`.
-2. In KiCad, under Preferences > Plugins, turn on **Enable KiCad API** and set **Python interpreter** to KiCad 10's own: `C:\Program Files\KiCad\10.0\bin\pythonw.exe` on Windows, the system `/usr/bin/python3` on Linux.
+2. In KiCad, under Preferences > Plugins, turn on **Enable KiCad API** and set **Python interpreter** to KiCad 10's own: `C:\Program Files\KiCad\10.0\bin\pythonw.exe` on Windows, `/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3` on macOS, the system `/usr/bin/python3` on Linux.
 3. Open the **Plugin and Content Manager**, choose **Install from File…** and pick the zip.
 4. Restart KiCad. On its first start the plugin gets its own Python environment, and KiCad installs `kicad-python` and `numpy` into it (internet needed once). **Open in Blender** then appears on the PCB Editor toolbar.
 
@@ -134,7 +134,7 @@ sudo apt install kicad python3-venv
 
 
 ### macOS
-Untested, looking for contributors as I have no macOS available.
+Tested on macOS. Blender is found in `/Applications`; set `KILEIDO_BLENDER` if yours is somewhere else.
 
 ## Usage
 
@@ -165,7 +165,6 @@ Components without a model file show an envelope of KiCad's footprint bounds, th
 
 - **KiCad API**: KiLeidoscope only works with **Enable KiCad API** turned on (Preferences > Plugins).
 - **One KiCad on Windows**: only one KiCad instance at a time can serve plugins ([KiCad issue #20880](https://gitlab.com/kicad/code/kicad/-/issues/20880)).
-- **macOS**: untested.
 - **Overlays on other platforms**: the release zip carries the fast overlay library for Windows and Linux on x86-64. Elsewhere (macOS, ARM) the add-on draws mask and silkscreen with its numpy fallback (same images, slower) unless you build the library with `python3 tools/build_native.py`.
 - **Multi-board editing**: only the live board follows KiCad; other boards are view-only packages.
 
