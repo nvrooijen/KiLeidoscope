@@ -155,6 +155,10 @@ The **KiLeidoscope** tab of the 3D View sidebar (**N**) holds everything:
 
 A click on a track, via, pad or component selects it in KiCad (Shift+click adds to the selection); a click on bare board clears KiCad's selection. KiCad's selection shows in Blender: the selected net in red-orange, its differential-pair partner in blue, selected components boxed. Double tapping 'a' will deselect everything as standard in Blender. 
 
+A clicked component is selected in Blender too: the Outliner unfolds to it, Properties shows its materials, and Blender's view keys work on it (**View > Frame Selected**, Numpad . or the ` pie; **/** for Local View). Parts stay where KiCad puts them: move, rotate and scale leave them alone, and Blender's keys that delete, copy, join or re-parent (**X**, **Delete**, **Shift D**, **Ctrl J**, **Ctrl P**, ...) do nothing on the live board (change parts in KiCad). Clicks select in KiCad in Object Mode only.
+
+Hotkeys in the 3D View: **Alt X** switches X-ray mode, **Alt C** the cut plane, **Shift Alt C** the side it removes. Change them under Preferences, Keymap, 3D View.
+
 Components without a model file show an envelope of KiCad's footprint bounds, this can be turned off. Colours and layer heights are display approximations, not measured optical or physical properties.
 
 ### Multi-board assemblies
