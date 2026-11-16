@@ -383,9 +383,10 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             _share = 0.5
             column(left, context.scene)
         self._draw_main(context, layout)
-        for idname, title, section in (("KILEIDO_boards", "Boards", _Boards),
-                                       ("KILEIDO_status", "Status", _Status)):
-            header, body = layout.panel(idname, default_closed=False)
+        for idname, title, section, closed in (("KILEIDO_boards", "Boards", _Boards, False),
+                                               ("KILEIDO_status", "Status", _Status, False),
+                                               ("KILEIDO_hotkeys", "Hotkeys", hotkeys.Section, True)):
+            header, body = layout.panel(idname, default_closed=closed)
             header.label(text=title)
             if body is not None:
                 section(body).draw(context)

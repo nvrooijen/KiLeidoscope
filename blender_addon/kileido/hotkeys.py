@@ -80,6 +80,36 @@ class KILEIDO_OT_keep_live_board(bpy.types.Operator):
 CLASSES = (KILEIDO_OT_toggle, KILEIDO_OT_keep_live_board)
 
 
+def bound(setting, keyconfigs):
+    """The key that switches `setting` now, as Blender names it on this computer ("Alt X";
+    Option on a Mac), or None when it is switched off or removed in Preferences, Keymap."""
+    keymap = keyconfigs.user.keymaps.get("3D View") if keyconfigs.user is not None else None
+    for item in keymap.keymap_items if keymap is not None else ():
+        if item.idname == KILEIDO_OT_toggle.bl_idname and item.properties.setting == setting:
+            return item.to_string() if item.active else None
+    return None
+
+
+class Section:
+    """The panel's Hotkeys section, below Status (closed at first): each key as it is bound
+    now, so a key changed in Preferences shows changed. The keys the live board stops are not
+    listed: pressing one says why in the status bar."""
+
+    def __init__(self, layout):
+        self.layout = layout
+
+    def draw(self, context):
+        keyconfigs = context.window_manager.keyconfigs
+        column = self.layout.column(align=True)
+        rows = [("Click", "Select here and in KiCad")]
+        rows += [(bound(setting, keyconfigs) or "Off", label) for setting, (_, label) in TOGGLES.items()]
+        for key, action in rows:
+            split = column.split(factor=0.35)
+            split.label(text=key)
+            split.label(text=action)
+        self.layout.operator("screen.userpref_show", text="Change keys", icon="PREFERENCES").section = "KEYMAP"
+
+
 def install(keyconfig):
     """Add the hotkeys to the add-on keyconfig (None in background mode: nothing to add)."""
     if keyconfig is None:

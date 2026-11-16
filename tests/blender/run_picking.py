@@ -230,6 +230,11 @@ def check_part_selected():
     assert bpy.ops.kileido.toggle(setting="XRAY") == {"FINISHED"} and scene.kileido_focus != was
     assert bpy.ops.kileido.toggle(setting="XRAY") == {"FINISHED"} and scene.kileido_focus == was
     assert not scene.kileido_cut and bpy.ops.kileido.toggle(setting="CUT_FLIP") == {"CANCELLED"}
+    layout = Layout()  # the Hotkeys section; no keys in background mode (no add-on keyconfig): "Off"
+    hotkeys.Section(layout).draw(bpy.context)
+    assert ("label", "Click") in layout.drawn and ("label", "X-ray mode") in layout.drawn, layout.drawn
+    assert ("operator", "screen.userpref_show") in layout.drawn, layout.drawn
+    assert "KEYMAP" in bpy.ops.screen.userpref_show.get_rna_type().properties["section"].enum_items.keys()
 
 
 def check_fold_handover(scene):
