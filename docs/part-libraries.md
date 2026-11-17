@@ -23,7 +23,7 @@ The **Parts** tab on the sidebar's left edge opens the Parts column.
 - **Transparent cases** turns every part's case see-through at once, without X-ray mode or a selection, so the insides show. It acts on the objects a part marks as its case (see [Roles](#roles)).
 - **Libraries** lists My parts and the libraries you added, in the order they are tried. The first library with a part for a footprint wins. Untick a library to leave it out. **Add library…** takes a `.blend` file or, with no file picked, the folder shown. The cross takes a library you added off the list; its file stays where it is.
 - A library another add-on offers has its own box below, with its tick, its name and the switches the add-on gives it. These are tried after the libraries in the list.
-- With one footprint selected in KiCad, the column says where its model comes from (My parts, a library by name, or KiCad), and **Save to my parts** saves it.
+- With one footprint selected in KiCad, the column says where its model comes from (My parts, a library by name, or KiCad), and **Save to my parts** saves it. A part from an add-on's library that keeps its parts up to date with KiCad (an LED's colour from its field, say) is not saved: My parts come first, and the copy would no longer be kept up to date.
 
 ## My parts
 
@@ -103,26 +103,35 @@ def offer():
 | `has_library(name)` | True while a library added under this name is offered |
 | `remove_library(name)` | Takes it back; its parts give way to the next library's, or to KiCad's models |
 | `place_again(name)` | Places the library's parts again, calling `place` for each: for when something `place` reads has changed |
-| `refresh_all()` | Matches every board's footprints again |
+| `refresh_all()` | Matches every board's footprints again, and tries parts that failed to place again |
+| `cut_plane(scene=None)` | `None` while the cut plane is off; else (a point on it, its unit normal towards the side cut away), world-space `(x, y, z)` tuples. Compare it from a handler to follow the plane |
+| `STAGE_PREFIX` | `"KLS "`: KiLeidoscope's own stages in a part's materials are group nodes named so, last before the output. A stage of your own goes in front of them |
 | `API_VERSION` | Counts additions: a caller needing a later call checks for its version |
 
-These are kept stable across KiLeidoscope versions; nothing else in the add-on is meant for other add-ons. An add-on that registers before KiLeidoscope finds `None`: it calls `offer` again later (a timer, checking `has_library` first, or when it is first used).
+These, the keys of `place`'s arguments and the object properties below are kept stable across KiLeidoscope versions. Versions only add: what is listed here stays. Nothing else in the add-on is meant for other add-ons. An add-on that registers before KiLeidoscope finds `None`: it calls `offer` again later (a timer, checking `has_library` first, or when it is first used).
 
-Every placed object carries `kls_library_part` = 1, `kls_part_library` (the library's name) and `kls_part_name` (the part's), so an add-on finds the objects placed from its own library.
+Every placed object carries `kls_library_part` = 1, `kls_part_library` (the library's name), `kls_part_name` (the part's) and `kls_model_fp_id` (its footprint's `id`), so an add-on finds the objects placed from its own library and tells which footprint each is on.
 
 `place(objects, footprint, part)`, if given, is called each time one of the library's parts is placed, and again when the footprint's value, fields, pins or reference change.
 
 - `objects`: the placed objects, copies of the part's.
-- `footprint`: the footprint as KiCad has it, `{"reference", "library_id", "value", "fields", "pins"}`. `fields` holds the footprint's own fields by name (an LED's `Color`); `pins` maps each pad number to its schematic pin's `(name, electrical type)`, the type as the board file spells it (`power_in`).
+- `footprint`: the footprint as KiCad has it, `{"id", "label", "reference", "library_id", "value", "fields", "pins"}`. `id` is KiCad's id for the footprint; `label` is its reference as KiLeidoscope shows it (`D7`, or `D7 B2` on a second board). `fields` holds the footprint's own fields by name (an LED's `Color`); `pins` maps each pad number to its schematic pin's `(name, electrical type)`, the type as the board file spells it (`power_in`).
 - `part`: the part's index entry (`{"part": name}` without an index), with the library's own keys.
 
 `draw(layout, context)`, if given, draws the library's own switches in its box, under its tick and name, while the library is ticked. It is a panel's draw: it shows properties and operators the add-on registered itself, and changes nothing. A switch that changes what `place` does calls `place_again` from its update.
 
 A part's objects keep their own drivers and animation when placed (a driver on a custom property counting time from the frame, say), so a part can move or change by itself.
 
-Set custom properties on the objects for their materials to read (an Attribute node set to Object), within Eevee's limit above. For more than a few values, change the geometry: give the object its own copy first (`obj.data = obj.data.copy()`) and mark the copy with a custom property `kls_dressed`, and KiLeidoscope removes it when the part is taken off. An error in `place` is logged and the part stays as placed.
+Set custom properties on the objects for their materials to read (an Attribute node set to Object), within Eevee's limit above. For more than a few values, change the geometry: give the object its own copy first (`obj.data = obj.data.copy()`) and mark the copy with a custom property `kls_dressed`, and KiLeidoscope removes it when the part is taken off. An error in `place` is logged and the part stays as placed. A library that cannot be used for a footprint (an index KiLeidoscope cannot follow, a part that fails to place) leaves that footprint KiCad's model and says so beside its name in the Parts column; it never stops the board. A part that failed is tried again on the next `place_again` or `refresh_all`.
 
 ## How it works
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/part-libraries-dark.svg">
+  <img src="../assets/part-libraries-light.svg" width="680" alt="KiCad's live API gives each footprint's name, value, fields and pins; the bridge reads them and sends them in its frames. The Blender add-on matches each footprint against My parts, the libraries the user added and the libraries other add-ons offer through the kileidoscope_parts hook, by name, the KiLeidoscope Model field or a library's kls_index; the Parts tab ticks the libraries and saves parts to My parts. A matched part is placed as copies that are the footprint's model objects, an add-on's place is called for its own parts, and X-ray, the cut plane, reflowed solder and folding treat them as KiCad's models.">
+</picture>
+</p>
 
 A placed part is a set of copies of the part's objects, children of the footprint's frame in the board's collection. Their meshes and materials are shared with the part, which is appended into the file once from its library. The copies are listed as the footprint's model objects in place of KiCad's, so moving, hiding, X-ray, the cut plane, solder and folding treat them as they treat KiCad's models. When KiCad's models are exported and bound again (after a model change in KiCad), the parts keep their place.
 

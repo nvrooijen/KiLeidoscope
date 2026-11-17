@@ -31,6 +31,11 @@ def _tagged(reference):
     return (reference or "?") + (f" {prefix.strip()}" if prefix and board.name_prefix == prefix else "")
 
 
+def tagged(reference):
+    """The reference as KiLeidoscope shows it: "R12", board 2's "R12 B2"."""
+    return _tagged(reference)
+
+
 def label(reference, model_paths):
     """"R12 · R_0603_1608Metric": the reference and the first 3D model's file name."""
     stem = next((PureWindowsPath(path).stem for path in model_paths if path), "")

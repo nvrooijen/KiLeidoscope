@@ -25,22 +25,32 @@ Another add-on reaches this module without knowing how KiLeidoscope was loaded:
     if parts is not None and parts.API_VERSION >= 1:
         parts.add_library("My library", "C:/.../my_library.blend", place=place)
 
-`add_library`, `has_library`, `remove_library`, `place_again`, `refresh_all` and API_VERSION are public and
-kept stable;
-nothing else here is meant for other add-ons. `place(objects, footprint, part)`, optional,
-is called after one of that library's parts is placed: `objects` are the placed objects,
-`footprint` is {"reference", "library_id", "value", "fields", "pins"} as KiCad has them
-(`pins`: pad number -> (pin name, pin type)), `part` is the part's index entry
-({"part": name} without an index). What it makes for a placed object (a mesh of its own)
-it marks with a custom property kls_dressed, and KiLeidoscope removes that with the part.
+For other add-ons, public and kept stable: `add_library`, `has_library`, `remove_library`,
+`place_again`, `refresh_all`, `cut_plane`, STAGE_PREFIX and API_VERSION, the keys of
+`place`'s arguments below, and the properties PLACED_PROPERTIES on each placed object.
+Versions only add: what is here stays, and API_VERSION counts what was added. Nothing
+else in KiLeidoscope is meant for other add-ons.
+
+`place(objects, footprint, part)`, optional, is called after one of that library's parts
+is placed: `objects` are the placed objects, `footprint` is {"id", "label", "reference",
+"library_id", "value", "fields", "pins"} (`id`: KiCad's id for the footprint, also each
+placed object's kls_model_fp_id; `label`: the reference as KiLeidoscope shows it, "D7 B2"
+on a second board; `pins`: pad number -> (pin name, pin type)), `part` is the part's
+index entry ({"part": name} without an index). What it makes for a placed object (a mesh
+of its own) it marks with a custom property kls_dressed, and KiLeidoscope removes that
+with the part. A `place` that raises is logged; the part stays as placed.
 
 A placed part is KiLeidoscope model objects: copies of the part's objects (their meshes
 and materials shared), children of the footprint's frame, listed in
 board.model_objects_by_fp in place of KiCad's models. So they follow the footprint, hide
 with KiCad's model visibility, fade in X-ray, cut open and fold as KiCad's models do. A
 footprint without a KiCad model gets its part too. Objects may carry a role, kls_role:
-"case" fades when X-ray opens the selected part, "contacts" take solder, "field" shows
-only with Field lines; any other stays as it is.
+"case" fades when X-ray opens the selected part, "contacts" take solder, "field" is placed
+hidden; any other stays as it is.
+
+A library that cannot be used for a footprint (an index KiLeidoscope cannot follow, a
+part that fails to place) leaves that footprint KiCad's model and says so in the Parts
+tab; it never stops the board.
 """
 
 import json
@@ -60,6 +70,8 @@ from .state import board
 
 API_VERSION = 1
 MODULE_ALIAS = "kileidoscope_parts"  # the name other add-ons look this module up by
+STAGE_PREFIX = "KLS "  # KiLeidoscope's own stages in a part's materials: group nodes named so, last before the output
+PLACED_PROPERTIES = ("kls_library_part", "kls_part_library", "kls_part_name", "kls_model_fp_id")
 INDEX = "kls_index"  # a library .blend's index: a text datablock of JSON
 MODEL_FIELD = "kileidoscope model"  # a footprint field naming its part, compared casefolded
 FIELD = "field"  # field lines' role: placed, shown only with Field lines (models.model_is_visible)
@@ -72,7 +84,10 @@ _FILE_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _added = {}  # name -> {"name", "blend", "place"}: the libraries add-ons gave, in order
 _blends = {}  # .blend path -> (modified, collection names, index)
 _problems = {}  # library key -> what is wrong with it, for the Parts tab
+_failed = {}  # (footprint id, part key) -> library key: a part that failed to place, not tried again each frame
 _stale = []  # meshes and materials of parts dropped in this refresh (_drop_source, _purge)
+BROKEN_INDEX = "Index not usable"
+NOT_PLACED = "A part could not be placed"
 
 
 # --- For other add-ons --------------------------------------------------------------------
@@ -90,6 +105,7 @@ def add_library(name, blend, place=None, draw=None):
 def place_again(name):
     """Place this library's parts again: something its `place` reads has changed (one of
     its own switches)."""
+    _failed.clear()  # asked for: parts that failed are tried again
     for _slot in state.each_loaded():
         for swapped in board.swapped.values():
             if swapped.get("library") == str(name):
@@ -111,8 +127,16 @@ def remove_library(name):
 
 def refresh_all():
     """Match every board's footprints again (a library's file changed)."""
+    _failed.clear()  # asked for: parts that failed are tried again
     for _slot in state.each_loaded():
         refresh()
+
+
+def cut_plane(scene=None):
+    """None while KiLeidoscope's cut plane is off; else (a point on it, its unit normal
+    towards the side cut away), both world-space (x, y, z) tuples."""
+    on, origin, normal = cut.plane_state(scene)
+    return (origin, normal) if on else None
 
 
 def install():
@@ -232,8 +256,8 @@ def _entries(raw):
     for item in raw if isinstance(raw, list) else [raw]:
         if isinstance(item, str):
             item = {"part": item}
-        if isinstance(item, dict) and item.get("part"):
-            entries.append(item)
+        if isinstance(item, dict) and isinstance(item.get("part"), str) and item["part"]:
+            entries.append(item)  # anything else in the index is not a part: passed over
     return entries
 
 
@@ -243,7 +267,7 @@ def _by_reference(entries, reference):
     best, length = None, 0
     for entry in entries:
         prefixes = entry.get("reference_prefixes", ())
-        for prefix in [prefixes] if isinstance(prefixes, str) else prefixes:
+        for prefix in prefixes if isinstance(prefixes, (list, tuple)) else [prefixes]:
             if isinstance(prefix, str) and prefix and reference.startswith(prefix) and len(prefix) > length:
                 best, length = entry, len(prefix)
     return best
@@ -257,8 +281,11 @@ class _Library:
         self.key, self.name, self.place = row["key"], row["name"], row["place"]
         self.files = {}  # a folder: file stem -> .blend
         self.blend, self.names, self.index = None, frozenset(), {}
+        self.broken = False  # its index failed this refresh: not asked again
         path = Path(row["path"])
         _problems.pop(self.key, None)
+        if self.key in _failed.values():
+            _problems[self.key] = NOT_PLACED
         try:
             if path.is_dir():
                 self.files = {entry.name[:-6]: entry.path for entry in os.scandir(path)
@@ -333,7 +360,9 @@ def match_name(footprint):
 
 def described(footprint):
     """The footprint as a library's `place` gets it."""
-    return {"reference": footprint.get("kls_reference", ""),
+    return {"id": footprint.get("kls_id", ""),
+            "label": components.tagged(footprint.get("kls_reference", "")),
+            "reference": footprint.get("kls_reference", ""),
             "library_id": footprint.get("kls_library_id", ""),
             "value": footprint.get("kls_value", ""),
             "fields": dict(footprint.get("kls_fields", {})),
@@ -348,7 +377,15 @@ def _choose(libraries, footprint):
     if not name:
         return None
     for library in libraries:
-        found = library.find(name, footprint.get("kls_reference", ""), named is not None)
+        if library.broken:
+            continue
+        try:
+            found = library.find(name, footprint.get("kls_reference", ""), named is not None)
+        except Exception as error:  # an index KiLeidoscope cannot follow: that library is passed over
+            library.broken = True
+            _problems[library.key] = BROKEN_INDEX
+            state.log(f"part library {library.name}: matching {footprint.get('kls_reference')} failed: {error!r}")
+            continue
         if found is not None:
             return (library, *found)
     return None
@@ -395,8 +432,9 @@ def refresh(rebind=False, settle=True):
         choice = _choose(libraries, footprint) if libraries else None
         if choice is not None:
             library, blend, collection, entry = choice
-            wanted[footprint_id] = (library, blend, collection, entry,
-                                    _key(library, blend, collection, footprint, stamps))
+            key = _key(library, blend, collection, footprint, stamps)
+            if (footprint_id, key) not in _failed:  # failed before: KiCad's model until asked again
+                wanted[footprint_id] = (library, blend, collection, entry, key)
     changed = [footprint_id for footprint_id in sorted(set(board.swapped) | set(wanted))
                if board.swapped.get(footprint_id, {}).get("key") != (wanted[footprint_id][4]
                                                                     if footprint_id in wanted else None)]
@@ -414,8 +452,15 @@ def refresh(rebind=False, settle=True):
         if footprint_id in wanted and footprint_id in footprints:
             library, blend, collection, entry, key = wanted[footprint_id]
             source = sources.get((blend, collection))
-            if source is not None:
+            if source is None:
+                continue
+            try:
                 _put_on(footprints[footprint_id], source, key, library, entry)
+            except Exception as error:  # the footprint keeps KiCad's model; the board goes on
+                _failed[(footprint_id, key)] = library.key
+                _problems[library.key] = NOT_PLACED
+                state.log(f"part library {library.name}: placing "
+                          f"{footprints[footprint_id].get('kls_reference')} failed: {error!r}")
     _drop_unused()
     _purge()
     solder.invalidate()  # reflowed solder flows up the parts' contacts
@@ -565,44 +610,59 @@ def _kicad_models(footprint_id):
 
 
 def _put_on(footprint, source, key, library, entry):
+    """Place the part on the footprint, hiding KiCad's models. Raises when it cannot,
+    with what it placed removed and KiCad's models shown again."""
     footprint_id = footprint["kls_id"]
     kicad = _kicad_models(footprint_id)
-    for name in kicad:
-        set_visible(lookup(name), False)
-    turn = json.loads(key)[3]
-    turned = Matrix.Rotation(math.radians(turn), 4, "Z")  # the field's @: about the footprint's origin
     placed = []
-    for index, obj in enumerate(sorted(source.all_objects, key=lambda obj: obj.name)):
-        part = PART_BASE + index
-        stale = components.find(components.MODEL, footprint_id, part)
-        if stale is not None:
-            _remove(stale)
-        clone = obj.copy()  # its mesh, materials, modifiers and drivers shared or copied as Blender does
-        clone.name = components.part_name(footprint.get("kls_reference", ""), entry["part"], index)
-        clone.hide_viewport = False  # (a part's field lines may come disabled) set_visible shows and hides it
-        local = turned @ _part_matrix(obj)
-        clone["kileido_owned"] = 1
-        clone["kls_model_fp_id"] = footprint_id
-        clone[PART] = 1
-        clone["kls_part_library"] = library.name
-        clone["kls_part_name"] = entry["part"]
-        clone["kls_part_key"] = key
-        clone["kls_side"] = footprint.get("kls_side", "")
-        clone["kls_model_index"] = 0
-        clone["kls_model_count"] = 1
-        clone["kls_model_part"] = part
-        clone["kls_model_local_matrix"] = [local[row][col] for row in range(4) for col in range(4)]
-        link_owned(clone, "components")
-        components.attach(clone, footprint, local)
-        components.remember(clone)
-        set_visible(clone, models.model_is_visible(footprint, clone))
-        placed.append(clone)
+    try:
+        for name in kicad:
+            set_visible(lookup(name), False)
+        turn = json.loads(key)[3]
+        turned = Matrix.Rotation(math.radians(turn), 4, "Z")  # the field's @: about the footprint's origin
+        for index, obj in enumerate(sorted(source.all_objects, key=lambda obj: obj.name)):
+            part = PART_BASE + index
+            stale = components.find(components.MODEL, footprint_id, part)
+            if stale is not None:
+                _remove(stale)
+            clone = obj.copy()  # its mesh, materials, modifiers and drivers shared or copied as Blender does
+            placed.append(clone)
+            clone.name = components.part_name(footprint.get("kls_reference", ""), entry["part"], index)
+            clone.hide_viewport = False  # (a part's field lines may come disabled) set_visible shows and hides it
+            local = turned @ _part_matrix(obj)
+            clone["kileido_owned"] = 1
+            clone["kls_model_fp_id"] = footprint_id
+            clone[PART] = 1
+            clone["kls_part_library"] = library.name
+            clone["kls_part_name"] = entry["part"]
+            clone["kls_part_key"] = key
+            clone["kls_side"] = footprint.get("kls_side", "")
+            clone["kls_model_index"] = 0
+            clone["kls_model_count"] = 1
+            clone["kls_model_part"] = part
+            clone["kls_model_local_matrix"] = [local[row][col] for row in range(4) for col in range(4)]
+            link_owned(clone, "components")
+            components.attach(clone, footprint, local)
+            components.remember(clone)
+            set_visible(clone, models.model_is_visible(footprint, clone))
+    except Exception:
+        for clone in placed:
+            try:
+                _remove(clone)
+            except ReferenceError:  # removed already
+                pass
+        for name in kicad:
+            obj = lookup(name)
+            if obj is not None:
+                set_visible(obj, models.model_is_visible(footprint, obj))
+        raise
+    names = [clone.name for clone in placed]  # before `place`, which may remove one
     if library.place is not None:
         try:
             library.place(placed, described(footprint), dict(entry))
         except Exception as error:  # a broken library must not break the board
-            state.log(f"part library {library.name}: placing {footprint.get('kls_reference')} failed: {error}")
-    names = [clone.name for clone in placed]
+            state.log(f"part library {library.name}: placing {footprint.get('kls_reference')} failed: {error!r}")
+    names = [name for name in names if lookup(name) is not None]
     board.swapped[footprint_id] = {"key": key, "names": names, "kicad": kicad, "library": library.name}
     board.model_objects_by_fp[footprint_id] = list(names)
     board.model_bound.add(footprint_id)
@@ -714,6 +774,16 @@ def source_of(footprint):
     return "KiCad" if board.model_objects_by_fp.get(footprint_id) else ""
 
 
+def kept_up_by(footprint):
+    """The name of the add-on library whose `place` keeps this footprint's part up to date
+    with KiCad (its value, fields, pins), or "". Such a part is not saved to My parts: My
+    parts come first, and the copy would no longer be kept up to date."""
+    swapped = board.swapped.get(footprint.get("kls_id"))
+    name = swapped.get("library", "") if swapped is not None else ""
+    offer = _added.get(name)
+    return name if offer is not None and offer["place"] is not None else ""
+
+
 # --- Save to my parts ----------------------------------------------------------------------
 
 _OWN = ("kileido_owned", "kls_model_fp_id", PART, "kls_part_library", "kls_part_name", "kls_part_key", "kls_side",
@@ -731,6 +801,9 @@ def save_to_my_parts(footprint):
     name = match_name(footprint)
     if not name:
         raise ValueError("KiCad gave this footprint no name to save a part under")
+    keeper = kept_up_by(footprint)
+    if keeper:
+        raise ValueError(f"{keeper} keeps this part up to date with KiCad; a copy in My parts would not be")
     footprint_id = footprint["kls_id"]
     shown = [obj for obj in (lookup(found) for found in board.model_objects_by_fp.get(footprint_id, ()))
              if obj is not None and not obj.hide_render and obj.get("kls_role") != FIELD]

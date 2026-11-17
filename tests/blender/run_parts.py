@@ -28,6 +28,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "synthetic_rf_geometry.kicad_dump.json"
 MM = 0.001
 LIBRARY = "Test library"
 placed_with = []  # what the test library's `place` was handed: (reference, pins, part)
+told_footprint = {}  # reference -> the last `footprint` the test library's `place` was handed
 
 
 def make_library(folder):
@@ -75,6 +76,7 @@ def place(objects, footprint, part):
     """The test library's `place`: every object carries the value and the part's own index
     data, and the insides get their own mesh."""
     placed_with.append((footprint["reference"], footprint["pins"], part))
+    told_footprint[footprint["reference"]] = footprint
     for obj in objects:
         obj["kls_test_value"] = footprint["value"]
         obj["kls_test_family"] = part.get("family", "")
@@ -188,6 +190,9 @@ def main():
     check(told[1] == {"1": ("A", "passive"), "2": ("K", "passive")}, f"and J1's pins: {told[1]}")
     check(told[2] == {"part": "Test_R_0603", "family": "R_CHIP"}, f"and the index entry: {told[2]}")
     check(dict(footprint["kls_fields"]) == {"Color": "Red"}, "J1's fields")
+    check(told_footprint["J1"]["id"] == footprint["kls_id"] == placed[0]["kls_model_fp_id"]
+          and told_footprint["J1"]["label"] == "J1", f"place is told J1's id and label: {told_footprint['J1']}")
+    check(all(key in obj for obj in placed for key in parts.PLACED_PROPERTIES), "placed objects carry what is promised")
     check(not part.hide_get() and not part.hide_render, "J1's part is shown")
     centre = part.matrix_world.translation
     check((centre.xy - footprint.matrix_world.translation.xy).length < 1e-9, "J1's part on its footprint")
@@ -235,7 +240,15 @@ def main():
     drawn = column()
     check(("label", "J1: R_0603_1608Metric") in drawn and ("label", f"Model from {LIBRARY}") in drawn,
           f"the column says where J1's model comes from: {drawn}")
-    check(kileido.KILEIDO_OT_save_part.poll(bpy.context), "and it can be saved")
+    # its part comes from a library whose `place` keeps it up to date: not saved to My parts
+    check(parts.kept_up_by(footprint) == LIBRARY and not kileido.KILEIDO_OT_save_part.poll(bpy.context),
+          "an add-on's kept-up part cannot be saved")
+    try:
+        parts.save_to_my_parts(footprint)
+        check(False, "an add-on's kept-up part was saved")
+    except ValueError as error:
+        check(LIBRARY in str(error), f"and says why: {error}")
+    check(not parts.my_parts_folder().exists() or not any(parts.my_parts_folder().iterdir()), "nothing written")
     check(core.get(focus.KEEP) == 1.0 and not part.get(focus.KEEP) and not under.get(focus.KEEP),
           "X-ray opens the selected part only")
     check(tuple(core[focus.FOCUS]) == (1.0, 0.0, 0.0) and tuple(part[focus.FOCUS]) == (0.0, 0.0, 0.0),
@@ -254,8 +267,21 @@ def main():
     check(tuple(part[focus.FOCUS]) == (0.0, 1.0, 0.0), "and in the steady stage's attribute")
     stage = part.material_slots[0].material.node_tree.nodes[focus.STEADY_NODE]
     check(stage.node_tree.name == focus.STEADY_GROUP, "the part's material has the current steady stage")
+    check(all(node.name.startswith(parts.STAGE_PREFIX) for node in part.material_slots[0].material.node_tree.nodes
+              if node.type == "GROUP" and node.node_tree.name.startswith("KLS")),
+          "KiLeidoscope's stages are named as STAGE_PREFIX promises")
     bpy.context.scene.kileido_see_through = False
     check(not part.get(focus.SEE_THROUGH), "transparent cases off")
+
+    # the cut plane, as an add-on follows it
+    check(parts.cut_plane() is None, "cut plane off: None")
+    bpy.context.scene.kileido_cut = True
+    bpy.context.view_layer.update()
+    plane = parts.cut_plane()
+    check(plane is not None and abs(Vector(plane[1]).length - 1.0) < 1e-9 and len(plane[0]) == 3,
+          f"cut plane on: a point and a unit normal: {plane}")
+    bpy.context.scene.kileido_cut = False
+    check(parts.cut_plane() is None, "and off again")
 
     # Field lines: they show, and hide again
     bpy.context.scene.kileido_show_fields = True
@@ -310,7 +336,11 @@ def main():
     shiny.metallic, shiny.roughness = 1.0, 0.2
     highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": [footprint["kls_id"]]})
     told = len(placed_with)
+    parts.add_user_library(library)  # the same file as a library of the user's own: no `place`, so it can be saved
+    check(parts.source_of(objects_of("J1")[0]) == "test_library" and not parts.kept_up_by(objects_of("J1")[0])
+          and kileido.KILEIDO_OT_save_part.poll(bpy.context), "a part from the user's own library can be saved")
     saved = parts.save_to_my_parts(parts.selected())
+    parts.remove_user_library(library)
     check(saved == parts.my_parts_folder() / "R_0603_1608Metric.blend" and saved.is_file(), f"saved: {saved}")
     check(str(parts.my_parts_folder()).startswith(str(folder)), "in the test's own folder")
     with bpy.data.libraries.load(str(saved)) as (inside, _):
@@ -322,7 +352,7 @@ def main():
     mine, other = case_of("J1"), case_of("J2")
     check(parts.source_of(objects_of("J1")[0]) == "My parts" and parts.source_of(objects_of("J2")[0]) == "My parts",
           "every footprint of that name now takes My parts'")
-    check(len(placed_with) == told, "My parts have no code: placed, and that is all")
+    check(not any(row[0] in ("J1", "J2") for row in placed_with[told:]), "My parts have no code: placed, and that is all")
     material = mine.material_slots[0].material
     check(material != shiny and abs(material.roughness - 0.2) < 1e-6 and material.metallic == 1.0,
           "the saved part keeps the materials as they were set")
@@ -375,6 +405,67 @@ def main():
     board.model_objects_by_fp.clear()
     parts.refresh(rebind=True, settle=False)
     check(board.model_objects_by_fp == names, "rebound: the parts are the footprints' models again")
+
+    # a library that cannot be used never stops the board
+    check(parts._entries([{"part": ["x"]}, {"part": 5}, {"part": "y"}]) == [{"part": "y"}],
+          "index entries that are not parts are passed over")
+    check(parts._by_reference([{"part": "x", "reference_prefixes": 5}, {"part": "z", "reference_prefixes": None}],
+                              "FB1") is None, "and prefixes that are not text")
+
+    def problem():
+        return next(row for row in parts.listing() if row["name"] == LIBRARY)["problem"]
+
+    fb3 = objects_of("FB3")[0]
+    real_find = parts._Library.find
+
+    def failing_find(self, *args):
+        if self.name == LIBRARY:
+            raise TypeError("an index KiLeidoscope cannot follow")
+        return real_find(self, *args)
+
+    parts._Library.find = failing_find
+    try:
+        apply.load_frames(footprints_message(renamed, 5))  # a live edit while the library cannot be read
+    finally:
+        parts._Library.find = real_find
+    check(problem() == parts.BROKEN_INDEX and parts.source_of(fb3) == ""
+          and parts.source_of(objects_of("J1")[0]) == "My parts",
+          "an index that fails: that library is passed over, the others place, the edit goes through")
+    parts.refresh_all()
+    check(problem() == "" and parts.source_of(fb3) == LIBRARY, "readable again: its parts come back")
+
+    real_attach = parts.components.attach
+
+    def failing_attach(obj, footprint, local):
+        if obj.get("kls_part_library") == LIBRARY:
+            raise RuntimeError("a part that cannot be placed")
+        return real_attach(obj, footprint, local)
+
+    parts.components.attach = failing_attach
+    try:
+        parts.place_again(LIBRARY)
+    finally:
+        parts.components.attach = real_attach
+    check(problem() == parts.NOT_PLACED and parts.source_of(fb3) == ""
+          and not any(obj.get("kls_model_fp_id") == fb3["kls_id"] for obj in part_objects()),
+          "a part that fails to place: nothing of it left, KiCad's model back")
+    told = len(placed_with)
+    apply.load_frames(footprints_message(renamed, 6))
+    check(problem() == parts.NOT_PLACED and len(placed_with) == told, "and it is not tried again on every edit")
+    parts.place_again(LIBRARY)
+    check(problem() == "" and parts.source_of(fb3) == LIBRARY, "asked again: placed")
+
+    def dropping(objects, footprint, part):
+        place(objects, footprint, part)
+        bpy.data.objects.remove(objects[-1])  # a `place` that removes one of its objects
+
+    parts.add_library(LIBRARY, str(library), place=dropping, draw=draw)
+    parts.place_again(LIBRARY)
+    names = board.model_objects_by_fp[fb3["kls_id"]]
+    check(len(names) == 2 and all(name in bpy.data.objects for name in names),
+          f"a place that removes an object: the rest stay the footprint's: {names}")
+    parts.add_library(LIBRARY, str(library), place=place, draw=draw)
+    parts.place_again(LIBRARY)
 
     # the add-on takes its library back: only My parts' stay
     parts.remove_library(LIBRARY)

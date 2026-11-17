@@ -320,6 +320,11 @@ def select(extend=False):
     bpy.context.view_layer.objects.active = plane
 
 
+def plane_state(scene=None):
+    """(on, origin, unit normal towards the removed side), world-space tuples."""
+    return _state(scene or bpy.context.scene)
+
+
 def _state(scene):
     """(on, origin, unit normal towards the removed side)."""
     plane = bpy.data.objects.get(PLANE)

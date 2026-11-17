@@ -303,8 +303,13 @@ class KILEIDO_OT_save_part(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        if parts.selected() is None:
+        footprint = parts.selected()
+        if footprint is None:
             cls.poll_message_set("Select one footprint in KiCad")
+            return False
+        keeper = parts.kept_up_by(footprint)
+        if keeper:
+            cls.poll_message_set(f"{keeper} keeps this part up to date with KiCad; a copy in My parts would not be")
             return False
         return True
 
