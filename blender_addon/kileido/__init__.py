@@ -26,7 +26,7 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
-               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, ims, join, kicad_cli,
+               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, hotkeys, ims, join, kicad_cli,
                kicad_app, layers, lighting, live, models, packages, phase, pick, poses, protection, render_depth,
                saved, slots, solder, studio, watcher)
 from . import arrangement, boardprops
@@ -191,7 +191,8 @@ class KILEIDO_OT_reset_cache(bpy.types.Operator):
 class KILEIDO_OT_pick(bpy.types.Operator):
     bl_idname = "kileido.pick"
     bl_label = "Select in KiCad"
-    bl_description = "Select the track, via, pad's component or component under the mouse in KiCad"
+    bl_description = "Select the track, via, pad's component or component under the mouse in KiCad; a component is " \
+                     "selected in Blender too"
 
     extend: BoolProperty(name="Extend", default=False)
 
@@ -199,6 +200,9 @@ class KILEIDO_OT_pick(bpy.types.Operator):
     def poll(cls, context):
         if not live.any_linked():  # the click falls through to Blender's own selection
             cls.poll_message_set("Not connected to KiCad")
+            return False
+        if context.mode != "OBJECT":  # editing a mesh of one's own: the click is Blender's
+            cls.poll_message_set("Only in Object Mode")
             return False
         return context.area is not None and context.area.type == "VIEW_3D"
 
@@ -224,23 +228,31 @@ class KILEIDO_OT_pick(bpy.types.Operator):
             fold.select(grip, self.extend)
             self.report({"INFO"}, f"KiLeidoscope: {grip.name} selected (R turns it, folding the board)")
             return {"FINISHED"}
-        found = pick.board_at(context.scene, context.evaluated_depsgraph_get(), origin, direction)
-        item = None
+        found = pick.board_at(context.scene, context.evaluated_depsgraph_get(), origin, direction,
+                              space=context.space_data)
+        item = part = None
         if found is not None:  # a board's own: picked, and its KiCad selects
-            slot, item = found
+            slot, item, hit = found
             _pick_board(context.scene, slot)
+            with using(slot):  # a part is selected in Blender too: the Outliner and view keys find it
+                part = pick.select_part(context, item, hit, self.extend)
             if not live.linked():
-                self.report({"INFO"}, "KiLeidoscope: this board is not connected to KiCad")
+                self.report({"INFO"}, f"KiLeidoscope: {part['kls_reference']} selected; this board is not connected "
+                                      "to KiCad" if part is not None else
+                                      "KiLeidoscope: this board is not connected to KiCad")
                 return {"FINISHED"}
-        elif not live.linked():  # a miss, and the picked board has no KiCad whose selection to clear
-            self.report({"INFO"}, "KiLeidoscope: nothing to select here")
-            return {"FINISHED"}
+        else:
+            pick.select_part(context, None, extend=self.extend)  # a miss clears Blender's selection, as its click does
+            if not live.linked():  # and the picked board has no KiCad whose selection to clear
+                self.report({"INFO"}, "KiLeidoscope: nothing to select here")
+                return {"FINISHED"}
         # Say what happened in the status bar: a click with no visible result is otherwise
         # impossible to tell apart from one that never arrived.
         if item is not None:
             live.request_select(item if isinstance(item, list) else [item], self.extend,
                                 context.scene.kileido_center_in_kicad)
-            self.report({"INFO"}, f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
+            self.report({"INFO"}, f"KiLeidoscope: {part['kls_reference']} selected here and in KiCad"
+                                  if part is not None else f"KiLeidoscope: selecting {pick.describe(item)} in KiCad")
         elif not self.extend:
             live.request_select([], False)  # clicking bare board clears KiCad's selection
             if findings.hide_shown():  # and hides the shown finding, as KiCad's DRC marker goes
@@ -371,9 +383,10 @@ class KILEIDO_PT_panel(bpy.types.Panel):
             _share = 0.5
             column(left, context.scene)
         self._draw_main(context, layout)
-        for idname, title, section in (("KILEIDO_boards", "Boards", _Boards),
-                                       ("KILEIDO_status", "Status", _Status)):
-            header, body = layout.panel(idname, default_closed=False)
+        for idname, title, section, closed in (("KILEIDO_boards", "Boards", _Boards, False),
+                                               ("KILEIDO_status", "Status", _Status, False),
+                                               ("KILEIDO_hotkeys", "Hotkeys", hotkeys.Section, True)):
+            header, body = layout.panel(idname, default_closed=closed)
             header.label(text=title)
             if body is not None:
                 section(body).draw(context)
@@ -1739,7 +1752,8 @@ CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_reset_cache,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
-           KILEIDO_OT_flex_group, *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, KILEIDO_PT_panel)
+           KILEIDO_OT_flex_group, *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, *hotkeys.CLASSES,
+           KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -2251,6 +2265,7 @@ def register():
             entry = keymap.keymap_items.new(KILEIDO_OT_pick.bl_idname, "LEFTMOUSE", "CLICK", shift=shift)
             entry.properties.extend = shift
             _KEYMAPS.append((keymap, entry))
+    hotkeys.install(keyconfig)
     collisions.install()
     columns.install()
     cut.install()
@@ -2284,6 +2299,7 @@ def unregister():
     for keymap, entry in _KEYMAPS:
         keymap.keymap_items.remove(entry)
     _KEYMAPS.clear()
+    hotkeys.uninstall()
     for slot in SLOTS:  # every board's link and exports
         with using(slot):
             live.disconnect()

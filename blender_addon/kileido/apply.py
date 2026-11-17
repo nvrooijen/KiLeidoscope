@@ -261,14 +261,17 @@ def _shape_ims():
 
 
 def lock_selection(collection):
-    """The live board follows KiCad, so nothing in it can be selected (and so moved) in
-    Blender: each of its groups is locked, and what they hold. Its root Empty alone, at the
+    """The live board follows KiCad, so its copper, board and overlays cannot be selected in
+    Blender: each of those groups is locked, and what they hold. Its root Empty, at the
     collection's top, can be selected: G and R then move and turn the whole board
-    (poses.follow_root). Clicks still pick KiCad items (pick.py casts its own ray).
-    Exported, then imported boards are selectable again (packages.import_board)."""
+    (poses.follow_root). Components can be selected too, so Blender's Outliner, Properties
+    and view keys (Frame Selected, Local View, Hide) work on a part; they stay in place, as
+    every board object is locked in place (objects.lock_in_place), and hotkeys.py stops a
+    delete. Clicks still pick KiCad items (pick.py casts its own ray). Exported, then
+    imported boards are selectable again (packages.import_board)."""
     collection.hide_select = False
     for child in collection.children:
-        child.hide_select = True
+        child.hide_select = child.get("kls_group") != "components"
 
 
 def see_through_holes(scene):

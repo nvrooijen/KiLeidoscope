@@ -148,13 +148,17 @@ def main():
         first = packages.import_board(str(package))
         second = packages.import_board(str(package))
         assert live_objects() == live_before, "the import touched the live board"
-        assert all(group.hide_select for group in state.board.collection.children), \
-            "the live board can be selected (and moved)"
+        assert all(group.hide_select != (group["kls_group"] == "components")
+                   for group in state.board.collection.children), "the live board's copper can be selected"
         assert not packages.collection_of(first[packages.ROOT_TAG]).hide_select, "a view-only board is locked"
         bpy.ops.object.select_all(action="DESELECT")
         bpy.ops.object.select_all(action="SELECT")
-        assert [obj.name for obj in state.board.collection.all_objects if obj.select_get()] == ["KLS root"], \
-            "more of the live board than its root can be selected"
+        chosen = [obj for obj in state.board.collection.all_objects if obj.select_get()]
+        assert [obj.name for obj in chosen if obj.users_collection[0] == state.board.collection] == ["KLS root"] and \
+            all(obj.users_collection[0]["kls_group"] == "components" for obj in chosen if obj.name != "KLS root"), \
+            "more of the live board than its root and parts can be selected"
+        assert all(tuple(obj.lock_location) == (True,) * 3 for obj in chosen if obj.name != "KLS root"), \
+            "a part of the live board can be moved"
         assert first.select_get(), "a view-only board's root cannot be selected"
         bpy.ops.object.select_all(action="DESELECT")
         assert {material.name for material in state.board.materials.values()} == live_materials

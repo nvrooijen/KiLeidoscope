@@ -70,8 +70,12 @@ def main():
     milliseconds = apply.load_frames(frames_of(snapshot))
     collection = bpy.data.collections["KiLeidoscope: synthetic_rf_geometry.kicad_pcb"]
     assert collection.get("kileido_owned") == 1
-    assert collection.children and all(group.hide_select for group in collection.children), \
-        "the live board follows KiCad and must not be selectable"  # but its root: G and R move it
+    assert collection.children and all(group.hide_select != (group["kls_group"] == "components")
+                                       for group in collection.children), \
+        "the live board follows KiCad and must not be selectable"  # but its root (G and R move it) and parts
+    parts = next(group for group in collection.children if group["kls_group"] == "components").all_objects
+    assert all(tuple(obj.lock_location) == tuple(obj.lock_rotation) == tuple(obj.lock_scale) == (True,) * 3
+               for obj in parts), "a selected part could be moved"
     assert not collection.hide_viewport
     assert all(not area.spaces.active.overlay.show_relationship_lines
                for screen in bpy.data.screens for area in screen.areas if area.type == "VIEW_3D")

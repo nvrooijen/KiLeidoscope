@@ -8,6 +8,7 @@ Only the live board picks: view-only boards are not in KiCad. With the board cut
 (cut.py), the ray only counts where it runs through the side that is shown.
 """
 
+import bpy
 import numpy as np
 
 from . import cut, fold, poses
@@ -140,9 +141,65 @@ def _slot_of(obj, slots):
     return slot if slot in slots else None
 
 
-def board_at(scene, depsgraph, origin, direction, max_hits=32, only=None):
-    """(slot, KiCad id or None) of the first live board a view ray meets (`only`: that
-    board's), with the item there as `item_at` gives it; None when it meets none."""
+def live_slot(obj):
+    """The live board `obj` belongs to, or None (a view-only board's, the studio's, the user's)."""
+    return _slot_of(obj, [slot for slot in SLOTS if boards[slot].loaded])
+
+
+def footprint_frame(item_id):
+    """The footprint Empty of KiCad id `item_id` on the board in use (`using`), or None: a
+    track, a via, a pour, a pad (its id is the pad's own)."""
+    if not isinstance(item_id, str) or board.collection is None:
+        return None
+    group = next((child for child in board.collection.children if child.get("kls_group") == "components"), None)
+    if group is None:
+        return None
+    return next((obj for obj in group.objects if obj.get("kls_footprint") == 1 and obj.get("kls_id") == item_id),
+                None)
+
+
+def select_part(context, item_id, hit=None, extend=False):
+    """Select in Blender too the part KiCad id `item_id` names, on the board in use: its
+    footprint Empty and what hangs from it, the clicked object (`hit`) active, so the
+    Outliner shows it, Properties its materials, and Frame Selected, Local View and Hide work
+    on it. Without `extend`, Blender's selection is cleared first, as Blender's own click
+    does. Returns the Empty, or None when the item is no part."""
+    view_layer = context.view_layer
+    if not extend:
+        for obj in tuple(context.selected_objects):
+            obj.select_set(False)
+    frame = footprint_frame(item_id)
+    if frame is None:
+        return None
+    chosen = [obj for obj in (frame, *frame.children_recursive) if obj.visible_get(view_layer=view_layer)]
+    if not chosen:
+        return None
+    for obj in chosen:
+        obj.select_set(True)
+    view_layer.objects.active = hit if hit in chosen else chosen[0]
+    _show_in_outliners(context)
+    return frame
+
+
+def _show_in_outliners(context):
+    """Unfold every shown Outliner to the active object and scroll it into view."""
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            region = next((region for region in area.regions if region.type == "WINDOW"), None) \
+                if area.type == "OUTLINER" else None
+            if region is not None:
+                try:  # a convenience: the click's KiCad selection must still go out
+                    with context.temp_override(window=window, area=area, region=region):
+                        bpy.ops.outliner.show_active()
+                except RuntimeError:
+                    pass
+
+
+def board_at(scene, depsgraph, origin, direction, max_hits=32, only=None, space=None):
+    """(slot, KiCad id or None, object hit) of the first live board a view ray meets
+    (`only`: that board's), with the item there as `item_at` gives it; None when it meets
+    none. With `space` (the clicked 3D View), the ray passes what that view does not show:
+    objects outside its Local View, or hidden with H (the scene's ray sees them all)."""
     slots = [slot for slot in SLOTS if boards[slot].loaded and (only is None or slot == only)]
     if not slots:
         return None
@@ -159,14 +216,15 @@ def board_at(scene, depsgraph, origin, direction, max_hits=32, only=None):
         hit, location, _normal, _index, obj, _matrix = scene.ray_cast(depsgraph, origin, direction, distance=reach)
         if not hit:
             return None
-        slot = _slot_of(obj, slots) if not role(obj.name).startswith(SKIP_PREFIXES) and "highlight" not in obj.name \
-            else None
+        shown = space is None or obj.visible_get(viewport=space)
+        slot = _slot_of(obj, slots) if shown and not role(obj.name).startswith(SKIP_PREFIXES) \
+            and "highlight" not in obj.name else None
         if slot is not None:
             with using(slot):
                 item, stop = _item_on_copy(obj, depsgraph, location, _index) if obj.get("kls_folded_from") is not None \
                     else _item(obj, location)
             if item is not None or stop:
-                return slot, item
+                return slot, item, obj
         reach -= (location - origin).length + STEP_M
         origin = location + direction * STEP_M
     return None

@@ -879,7 +879,12 @@ def test_every_click_is_highlighted_at_once_while_kicad_calls_stall():
                 highlighted = any(h["type"] == "selection" and track.id in h["selected"] for h, _ in client.poll_io())
             took = time.perf_counter() - started
             assert highlighted and took < 0.3, f"click {tracks.index(track) + 1}: highlighted after {took:.2f} s"
-        assert StallingBoard.calls  # the worker was talking to (stalled) KiCad meanwhile
+        # The worker talks to (stalled) KiCad meanwhile. On a fast runner all three clicks can
+        # be highlighted before the worker thread gets its first turn, so give it a moment.
+        deadline = time.perf_counter() + 1.0
+        while not StallingBoard.calls and time.perf_counter() < deadline:
+            time.sleep(0.005)
+        assert StallingBoard.calls
     finally:
         client.close()
         runtime.close()

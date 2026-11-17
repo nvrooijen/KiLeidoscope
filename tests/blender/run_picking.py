@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kileido  # noqa: E402
-from kileido import apply, boardprops, columns, cut, findings_draw, fold, layers, objects, packages, pick, poses, slots, state  # noqa: E402,E501
+from kileido import apply, boardprops, columns, cut, findings_draw, fold, hotkeys, layers, objects, packages, pick, poses, slots, state  # noqa: E402,E501
 import run_flex  # noqa: E402  (its frames: the fixture with a bend)
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -202,6 +202,41 @@ def check_click():
     assert below is not None and below[0] == 1, below
 
 
+def check_part_selected():
+    """A click on a part selects it in Blender too: its footprint Empty and what hangs from it,
+    the clicked object active; Shift adds the next, a miss clears. X and Delete leave the live
+    board alone; the hotkeys switch X-ray mode and the cut plane."""
+    view_layer = bpy.context.view_layer
+    with state.using(1):
+        group = next(child for child in state.board.collection.children if child["kls_group"] == "components")
+        frames_ = [obj for obj in group.objects if obj.get("kls_footprint") == 1]
+        assert len(frames_) >= 2, "the fixture has too few footprints"
+        first, second = frames_[:2]
+        assert pick.footprint_frame(first["kls_id"]) == first and pick.footprint_frame("no such id") is None
+        assert pick.select_part(bpy.context, first["kls_id"]) == first
+        shown = [obj for obj in (first, *first.children) if obj.visible_get()]
+        assert set(bpy.context.selected_objects) == set(shown) and view_layer.objects.active == first
+        hit = next((obj for obj in first.children if obj.visible_get()), None)
+        if hit is not None:
+            pick.select_part(bpy.context, first["kls_id"], hit)
+            assert view_layer.objects.active == hit, "the clicked object is not the active one"
+        pick.select_part(bpy.context, second["kls_id"], extend=True)
+        assert first.select_get() and second.select_get() and view_layer.objects.active == second
+        assert hotkeys.holds_live_board(bpy.context.selected_objects), "X would delete a live part"
+        assert pick.select_part(bpy.context, None) is None and not bpy.context.selected_objects
+        assert not hotkeys.holds_live_board([bpy.data.objects.new("not the board's", None)])
+    scene = bpy.context.scene
+    was = scene.kileido_focus  # the cut plane's switch is the panel's own property, as this one
+    assert bpy.ops.kileido.toggle(setting="XRAY") == {"FINISHED"} and scene.kileido_focus != was
+    assert bpy.ops.kileido.toggle(setting="XRAY") == {"FINISHED"} and scene.kileido_focus == was
+    assert not scene.kileido_cut and bpy.ops.kileido.toggle(setting="CUT_FLIP") == {"CANCELLED"}
+    layout = Layout()  # the Hotkeys section; no keys in background mode (no add-on keyconfig): "Off"
+    hotkeys.Section(layout).draw(bpy.context)
+    assert ("label", "Click") in layout.drawn and ("label", "X-ray mode") in layout.drawn, layout.drawn
+    assert ("operator", "screen.userpref_show") in layout.drawn, layout.drawn
+    assert "KEYMAP" in bpy.ops.screen.userpref_show.get_rna_type().properties["section"].enum_items.keys()
+
+
 def check_fold_handover(scene):
     """The fold works on the picked board: picking board 1 leaves board 2 flat, picking board 2
     folds it again."""
@@ -338,6 +373,7 @@ def main():
         check_select_and_move(scene)
         check_undo()
         check_click()
+        check_part_selected()
         check_fold_handover(scene)
         check_other_board_leaves_picked_tools(scene)
         check_eye()
