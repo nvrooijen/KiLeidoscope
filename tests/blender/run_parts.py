@@ -278,7 +278,7 @@ def main():
     bpy.context.scene.kileido_cut = True
     bpy.context.view_layer.update()
     plane = parts.cut_plane()
-    check(plane is not None and abs(Vector(plane[1]).length - 1.0) < 1e-9 and len(plane[0]) == 3,
+    check(plane is not None and abs(Vector(plane[1]).length - 1.0) < 1e-6 and len(plane[0]) == 3,  # 32-bit
           f"cut plane on: a point and a unit normal: {plane}")
     bpy.context.scene.kileido_cut = False
     check(parts.cut_plane() is None, "and off again")
