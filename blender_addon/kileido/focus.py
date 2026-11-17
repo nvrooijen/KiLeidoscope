@@ -271,7 +271,7 @@ def opened(footprint_id):
 
 def _open_selected_parts():
     """A selected footprint's library part: everything but its case stays unfaded. With
-    Transparent cases on, every library part's case fades."""
+    Transparent cases on, every library part's case and clear cover fade."""
     if board.collection is None:
         return
     chosen = board.highlight_components.get("footprints", set())
@@ -280,7 +280,7 @@ def _open_selected_parts():
         if obj.get("kls_library_part") != 1:
             continue
         keep = float(_active and obj.get("kls_model_fp_id") in chosen and obj.get("kls_role") in OPENED)
-        see = float(see_through and obj.get("kls_role") == "case")
+        see = float(see_through and obj.get("kls_role") in ("case", "cover"))  # a lens renders frosted: it fades too
         if obj.get(KEEP, 0.0) != keep or obj.get(SEE_THROUGH, 0.0) != see or FOCUS not in obj:
             obj[KEEP], obj[SEE_THROUGH] = keep, see
             obj[FOCUS] = (keep, see, 0.0)

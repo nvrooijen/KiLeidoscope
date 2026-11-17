@@ -810,7 +810,6 @@ def _draw_parts(layout, scene):
     looks = box.column()
     looks.active = scene.kileido_library_parts
     looks.prop(scene, "kileido_see_through", text="Transparent cases")
-    looks.prop(scene, "kileido_show_fields", text="Field lines")
     status = parts.status()
     if status:
         box.label(text=status)
@@ -819,6 +818,8 @@ def _draw_parts(layout, scene):
     rows = box.column(align=True)
     rows.active = scene.kileido_library_parts
     for library in parts.listing():
+        if library["kind"] == "addon":  # an add-on's library: its own box below, not a row here
+            continue
         row = rows.row(align=True)
         toggle = row.operator(KILEIDO_OT_part_library_toggle.bl_idname, text="", emboss=False,
                               icon="CHECKBOX_HLT" if library["on"] else "CHECKBOX_DEHLT")
@@ -831,12 +832,19 @@ def _draw_parts(layout, scene):
             row.operator(KILEIDO_OT_part_library_remove.bl_idname, text="", icon="X",
                          emboss=False).key = library["key"]
     box.operator(KILEIDO_OT_part_library_add.bl_idname, text="Add library\u2026", icon="ADD")
-    for library in parts.listing():  # a library's own switches, as its add-on draws them
-        if library["draw"] is None or not library["on"]:
+    for library in parts.listing():  # an add-on's library: its tick and name, then its own switches
+        if library["kind"] != "addon":
             continue
         box = layout.box()
         box.active = scene.kileido_library_parts
-        box.label(text=library["name"])
+        row = box.row(align=True)
+        toggle = row.operator(KILEIDO_OT_part_library_toggle.bl_idname, text="", emboss=False,
+                              icon="CHECKBOX_HLT" if library["on"] else "CHECKBOX_DEHLT")
+        toggle.key, toggle.on = library["key"], not library["on"]
+        row.label(text=library["name"] + (f" ({library['problem']})" if library["problem"] else ""),
+                  icon="ERROR" if library["problem"] else "NONE")
+        if library["draw"] is None or not library["on"]:
+            continue
         try:
             library["draw"](box, bpy.context)
         except Exception as error:  # a broken library must not break the panel

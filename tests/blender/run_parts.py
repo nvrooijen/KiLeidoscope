@@ -219,8 +219,12 @@ def main():
     drawn = column()
     check(("prop", "kileido_library_parts") in drawn and ("label", "My parts") in drawn and ("label", LIBRARY) in drawn
           and ("label", "Library parts: 3 placed") in drawn, f"the Parts column: {drawn}")
-    check(drawn.count(("label", LIBRARY)) == 2 and ("label", "Test switch") in drawn,
-          f"the library's own switches, in a box under its name: {drawn}")
+    # an add-on's library is not a row in the list: its own box below, its tick, its name, its switches
+    name = drawn.index(("label", LIBRARY)) if ("label", LIBRARY) in drawn else -1
+    check(drawn.count(("label", LIBRARY)) == 1 and name > drawn.index(("operator", "kileido.part_library_add"))
+          and drawn[name - 1] == ("operator", "kileido.part_library_toggle")
+          and drawn[name + 1] == ("label", "Test switch"),
+          f"the library's own box, with its tick, its name and its switches: {drawn}")
     check(not any(text.startswith("Model from") for kind, text in drawn if kind == "label"), "no footprint selected")
     check(not kileido.KILEIDO_OT_save_part.poll(bpy.context), "nothing to save yet")
 

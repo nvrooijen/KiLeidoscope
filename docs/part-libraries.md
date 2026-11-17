@@ -21,8 +21,8 @@ The **Parts** tab on the sidebar's left edge opens the Parts column.
 
 - **Library parts** switches the parts on or off. Off, every footprint shows KiCad's model.
 - **Transparent cases** turns every part's case see-through at once, without X-ray mode or a selection, so the insides show. It acts on the objects a part marks as its case (see [Roles](#roles)).
-- **Field lines** shows the objects a part marks as field lines.
-- **Libraries** lists the libraries in the order they are tried: My parts first, then the ones you added, then the ones other add-ons added. The first library with a part for a footprint wins. Untick a library to leave it out. **Add library…** takes a `.blend` file or, with no file picked, the folder shown. The cross takes a library you added off the list; its file stays where it is.
+- **Libraries** lists My parts and the libraries you added, in the order they are tried. The first library with a part for a footprint wins. Untick a library to leave it out. **Add library…** takes a `.blend` file or, with no file picked, the folder shown. The cross takes a library you added off the list; its file stays where it is.
+- A library another add-on offers has its own box below, with its tick, its name and the switches the add-on gives it. These are tried after the libraries in the list.
 - With one footprint selected in KiCad, the column says where its model comes from (My parts, a library by name, or KiCad), and **Save to my parts** saves it.
 
 ## My parts
@@ -78,11 +78,11 @@ Each object of a part can carry a custom property `kls_role`. A part without rol
 | Role | What KiLeidoscope does with it |
 |---|---|
 | `case` | With the part selected in X-ray mode it fades with the rest of the board, so the insides show. **Transparent cases** fades every case at once |
-| `insides`, `cover`, `light` | Stay as they are when X-ray opens the part (`cover`: a clear outside you see in through) |
+| `insides`, `cover`, `light` | Stay as they are when X-ray opens the part (`cover`: a clear outside you see in through; Transparent cases fades it with the case) |
 | `contacts` | Stay as well, and reflowed solder climbs them |
-| `field` | Field lines: placed hidden, shown with **Field lines**. Collision checks and selection boxes leave them out. Make them light: a Curves object, one strand per line, rather than tube meshes |
+| `field` | Placed hidden. Collision checks and selection boxes leave them out |
 
-KiLeidoscope sets `kls_focus_keep` to 1 on the objects that stay, and `kls_see_through` to 1 on the cases while Transparent cases is on. Its own material stage reads both from `kls_focus`, the vector (`kls_focus_keep`, `kls_see_through`, 0). Eevee reads at most eight Object attributes per material and, past that, none of them; `kls_focus` is one, so a part's own material may read seven.
+KiLeidoscope sets `kls_focus_keep` to 1 on the objects that stay, and `kls_see_through` to 1 on the cases and covers while Transparent cases is on. Its own material stage reads both from `kls_focus`, the vector (`kls_focus_keep`, `kls_see_through`, 0). Eevee reads at most eight Object attributes per material and, past that, none of them; `kls_focus` is one, so a part's own material may read seven.
 
 ## A library from another add-on
 
@@ -99,7 +99,7 @@ def offer():
 
 | Call | Does |
 |---|---|
-| `add_library(name, blend, place=None, draw=None)` | Offers the `.blend` (or folder) under `name` in the Libraries list, after My parts and the libraries the user added. Calling it again with the same name replaces it |
+| `add_library(name, blend, place=None, draw=None)` | Offers the `.blend` (or folder) under `name`, in its own box in the Parts column, tried after My parts and the libraries the user added. Calling it again with the same name replaces it |
 | `has_library(name)` | True while a library added under this name is offered |
 | `remove_library(name)` | Takes it back; its parts give way to the next library's, or to KiCad's models |
 | `place_again(name)` | Places the library's parts again, calling `place` for each: for when something `place` reads has changed |
@@ -116,7 +116,7 @@ Every placed object carries `kls_library_part` = 1, `kls_part_library` (the libr
 - `footprint`: the footprint as KiCad has it, `{"reference", "library_id", "value", "fields", "pins"}`. `fields` holds the footprint's own fields by name (an LED's `Color`); `pins` maps each pad number to its schematic pin's `(name, electrical type)`, the type as the board file spells it (`power_in`).
 - `part`: the part's index entry (`{"part": name}` without an index), with the library's own keys.
 
-`draw(layout, context)`, if given, draws the library's own switches in the Parts column, in a box under the library's name, while the library is ticked. It is a panel's draw: it shows properties and operators the add-on registered itself, and changes nothing. A switch that changes what `place` does calls `place_again` from its update.
+`draw(layout, context)`, if given, draws the library's own switches in its box, under its tick and name, while the library is ticked. It is a panel's draw: it shows properties and operators the add-on registered itself, and changes nothing. A switch that changes what `place` does calls `place_again` from its update.
 
 A part's objects keep their own drivers and animation when placed (a driver on a custom property counting time from the frame, say), so a part can move or change by itself.
 
