@@ -45,6 +45,7 @@ Right: flex mode: a flex LED ring, flat in KiCad with its marks on the Bend laye
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
 - LLM review on the 3D board: paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the [LLM guide](docs/llm-review.md).
 - Dynamic phase: how far a differential pair's P and N are apart in time at every point along the pair, live as you route, from the pair's tuning profile in KiCad. See the [dynamic phase guide](docs/dynamic-phase.md).
+- Part libraries: parts made in Blender in place of KiCad's 3D models, matched by footprint name. Give a model the materials you want, save it to My parts, and every board uses it. See the [part libraries guide](docs/part-libraries.md).
 
 <p align="center">
   <img src="assets/llm-return-vias-crop.png" width="430" align="middle" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC).">

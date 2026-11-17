@@ -183,8 +183,9 @@ def _usable(material):
 
 
 def add_to(material):
-    """Insert the clip stage before the output (after X-ray mode's)."""
-    if not _usable(material) or material.node_tree.nodes.get(NODE) is not None:
+    """Insert the clip stage before the output (after X-ray mode's). A steady material
+    (library parts) clips in its own stage (focus.steady_group)."""
+    if not _usable(material) or material.get(focus.STEADY) or material.node_tree.nodes.get(NODE) is not None:
         return
     tree_nodes, links = material.node_tree.nodes, material.node_tree.links
     output = next((node for node in tree_nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None)
@@ -200,7 +201,7 @@ def add_to(material):
 
 
 def remove_from(material):
-    if not _usable(material):
+    if not _usable(material) or material.get(focus.STEADY):
         return
     tree_nodes, links = material.node_tree.nodes, material.node_tree.links
     stage = tree_nodes.get(NODE)
@@ -364,9 +365,10 @@ def push(scene=None):
     if state == _pushed:
         return
     _pushed = state
-    group = bpy.data.node_groups.get(GROUP)
-    if group is not None:
-        on, origin, normal = state
+    on, origin, normal = state
+    for group in (bpy.data.node_groups.get(GROUP), bpy.data.node_groups.get(focus.STEADY_GROUP)):
+        if group is None:
+            continue
         group.nodes["Enabled"].outputs[0].default_value = 1.0 if on else 0.0
         inside = bpy.data.node_groups.get(SECTION_INSIDE_GROUP)
         if inside is not None:
@@ -802,7 +804,10 @@ def refresh():
         hide(plane, not on)
         fit(plane)  # the board may have grown since the plane was placed
     for material in materials():
-        (add_to if on else remove_from)(material)
+        if on:
+            add_to(material)
+        else:  # a steady material keeps its own stage, switched off by value (remove_from skips it)
+            remove_from(material)
     _pushed = None
     push()
 

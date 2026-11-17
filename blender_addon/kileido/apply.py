@@ -14,8 +14,8 @@ import numpy as np
 from mathutils import Vector
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, saved,
-               solder, studio, transform)
+               laminate, layers, lighting, materials, models, nodes, parts, phase, poses, protection, render_depth,
+               saved, solder, studio, transform)
 from . import kicad_app
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
@@ -57,6 +57,8 @@ def apply_frame(header, arrays):
         refresh_protection()  # the board's via rules come with it
     elif message_type == "footprints":
         footprints.apply(header)
+        if not board.in_snapshot:  # a snapshot's footprints get their library parts at its end
+            parts.refresh()
         highlight.refresh_components()
         findings_draw.rehide_lifted()  # a part drawn lifted stays hidden under its copy
         solder.invalidate()  # parts moved: the solder flows to where their leads are
@@ -163,6 +165,7 @@ def _end_snapshot():
             layers.refresh(row)
     lighting.ensure_studio_lights()
     refresh_ims_warnings()
+    parts.refresh(settle=False)  # library parts for the footprints; X-ray and the cut below take them in
     focus.refresh()
     cut.refresh()
     fold.invalidate()

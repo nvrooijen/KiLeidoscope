@@ -297,7 +297,10 @@ def clear_animation(refold=True):
     for obj in (*grips, *_parts()):
         action = obj.animation_data.action if obj.animation_data else None
         if action is not None and role(action.name).startswith(("KLS fold", "KLS sweep")) or obj in grips:
-            obj.animation_data_clear()
+            if obj not in grips and len(obj.animation_data.drivers):
+                obj.animation_data.action = None  # a library part's own drivers stay (parts.py)
+            else:
+                obj.animation_data_clear()
             if action is not None and action.users == 0:
                 bpy.data.actions.remove(action)
     _reset_parts()

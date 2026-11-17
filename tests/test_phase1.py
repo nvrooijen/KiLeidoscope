@@ -489,3 +489,44 @@ def test_selected_assembly_variant_is_read_every_poll():
     older = to_jsonable(snapshot)
     del older["variant"]  # a dump from before variants
     assert snapshot_from_jsonable(older).variant == ""
+
+
+def test_footprint_fields_and_pins_for_part_libraries():
+    """The footprint's own fields and its pads' schematic pins, beside its library id
+    and value: what part libraries match and read (the add-on's parts.py)."""
+    from kipy.board_types import Field
+    from kipy.proto.board import board_types_pb2
+    from kipy.proto.common.types.base_types_pb2 import ElectricalPinType
+
+    from kileido_bridge.kicad_reader import _convert_footprint
+    color = Field()
+    color.name = "Color"
+    color.text.value = "Red"
+    anode, cathode, twin, bare = board_types_pb2.Pad(), board_types_pb2.Pad(), board_types_pb2.Pad(), NS()
+    anode.symbol_pin.name, anode.symbol_pin.type = "A", ElectricalPinType.EPT_PASSIVE
+    cathode.symbol_pin.name, cathode.symbol_pin.type = "K", ElectricalPinType.EPT_PASSIVE
+    twin.symbol_pin.name = "K again"  # a second pad numbered 1: the first one's pin stands
+    pads = [NS(id=item_id(uid), number=number, _proto=proto) for uid, number, proto in (
+        ("p2", "2", anode), ("p1", "1", cathode), ("p1b", "1", twin), ("p3", "3", board_types_pb2.Pad()))]
+    item = footprint(pads=pads + [NS(id=item_id("p4"))])  # the last: an older double, no number or proto
+    item.definition.id = NS(library="LED_SMD", name="LED_0603_1608Metric")
+    item.definition.items = [color, NS(name="not a field")]
+    item.value_field = NS(text=NS(value="Red LED"))
+    record, pad_ids = _convert_footprint(item)
+    assert (record.lib_id, record.value, record.fields) == ("LED_SMD:LED_0603_1608Metric", "Red LED",
+                                                             (("Color", "Red"),))
+    assert record.pins == (("1", "K", "passive"), ("2", "A", "passive"))  # pad 3 carries no pin
+    assert pad_ids == tuple(pad.id.value for pad in item.definition.pads)
+    plain, _ = _convert_footprint(footprint())  # what older doubles and boards give
+    assert (plain.fields, plain.pins) == ((), ())
+    snapshot = read_snapshot(FakeBoard())
+    snapshot = type(snapshot)(**{**snapshot.__dict__, "footprints": (record,)})
+    (header, _), = FrameDecoder().feed(footprints_message(snapshot, 1))
+    sent = header["footprints"][0]
+    assert (sent["lib_id"], sent["value"]) == ("LED_SMD:LED_0603_1608Metric", "Red LED")
+    assert sent["fields"] == [["Color", "Red"]] and sent["pins"] == [["1", "K", "passive"], ["2", "A", "passive"]]
+    data = to_jsonable(snapshot)
+    assert snapshot_from_jsonable(data).footprints[0] == record  # through a dump and back
+    del data["footprints"][0]["fields"], data["footprints"][0]["pins"]  # a dump from before part libraries
+    older = snapshot_from_jsonable(data).footprints[0]
+    assert (older.fields, older.pins) == ((), ())

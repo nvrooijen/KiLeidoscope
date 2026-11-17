@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from kipy import KiCad
 from kipy import board as kipy_board
 from kipy import board_types as kipy_board_types
-from kipy.board_types import BoardItem
+from kipy.board_types import BoardItem, Field
 from kipy.proto.board.board_pb2 import BoardStackupLayerType
 from kipy.proto.board.board_types_pb2 import BoardLayer, DrillShape, PadStackShape, PadStackType
 from kipy.proto.common import ApiStatusCode, commands
@@ -669,15 +669,27 @@ def _convert_via(item) -> model.Via:
 
 def _convert_footprint(item) -> tuple[model.Footprint, tuple[str, ...]]:
     """The footprint record plus the ids of its pads."""
+    definition = item.definition
+    # What part libraries match and read (the add-on's parts.py): the footprint's own
+    # fields beside reference and value (an LED's "Color"), and each pad number's pin.
+    fields = tuple((child.name, child.text.value) for child in getattr(definition, "items", ())
+                   if isinstance(child, Field) and child.name)
+    pins = {}
+    for child in definition.pads:
+        name, kind = _symbol_pin(child)
+        number = str(getattr(child, "number", ""))
+        if number and (name or kind) and number not in pins:  # pads sharing a number share its pin
+            pins[number] = (number, name, kind)
+    pins = sorted(pins.values())
     return model.Footprint(
         item.id.value, item.reference_field.text.value, _point(item.position),
         float(item.orientation.to_radians()),
         "bottom" if item.layer == BoardLayer.BL_B_Cu else "top",
-        tuple(model_item.filename for model_item in item.definition.models),
-        model_visible=tuple(bool(model_item.visible) for model_item in item.definition.models),
+        tuple(model_item.filename for model_item in definition.models),
+        model_visible=tuple(bool(model_item.visible) for model_item in definition.models),
         dnp=bool(item.attributes.do_not_populate),
-        value=item.value_field.text.value, lib_id=_lib_id(item.definition.id),
-    ), tuple(child.id.value for child in item.definition.pads)
+        value=item.value_field.text.value, lib_id=_lib_id(definition.id), fields=fields, pins=tuple(pins),
+    ), tuple(child.id.value for child in definition.pads)
 
 
 def _lib_id(identifier) -> str:

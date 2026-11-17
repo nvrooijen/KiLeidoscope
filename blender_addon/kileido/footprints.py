@@ -5,6 +5,8 @@ bound 3D model show a KiCad-bounds envelope; it and the bound model parts are
 the Empty's children, so they follow it and the Outliner shows them inside it.
 """
 
+import hashlib
+import json
 import math
 
 from mathutils import Matrix
@@ -61,7 +63,7 @@ def _apply_record(record):
             list(existing.get("kls_model_paths", ())) != paths):
         _unbind_models(footprint_id)  # new model definitions: the next export rebinds
     signature = (record["x"], record["y"], record["rot"], record["side"],
-                 record["ref"], tuple(paths), tuple(model_visible), dnp,
+                 record["ref"], tuple(paths), tuple(model_visible), dnp, _identity(record),
                  tuple(bbox) if bbox is not None else None,
                  tuple(board.origin_nm), board.thickness_m)
     if board.footprint_state.get(footprint_id) == signature and _unchanged(existing, bbox, box):
@@ -74,6 +76,19 @@ def _apply_record(record):
     if board.in_snapshot:
         board.touched.update(board.model_objects_by_fp.get(footprint_id, ()))
     board.footprint_state[footprint_id] = signature
+
+
+def _identity(record):
+    """What part libraries match a footprint by and tell a library's `place` (parts.py):
+    library id, value, fields and each pad number's pin. Frames from bridges before part
+    libraries have none of them."""
+    return (record.get("lib_id", ""), record.get("value", ""),
+            tuple(tuple(field) for field in record.get("fields", ())),
+            tuple(tuple(pin) for pin in record.get("pins", ())))
+
+
+def _short(name):
+    return name.encode("utf-8")[:63].decode("utf-8", errors="ignore")
 
 
 def _unchanged(existing, bbox, box):
@@ -93,6 +108,12 @@ def _keep(footprint, box, footprint_id):
 
 def _unbind_models(footprint_id):
     state.log(f"models unbound from footprint {footprint_id}: its model definitions changed")
+    swapped = board.swapped.get(footprint_id)
+    if swapped is not None:
+        # A library part stands in (parts.py): it stays. KiCad's models, already hidden, are
+        # the old ones now and are not given back if the part comes off; the export rebinds.
+        swapped["kicad"] = []
+        return
     board.model_bound.discard(footprint_id)
     for model_name in board.model_objects_by_fp.pop(footprint_id, ()):
         model_obj = lookup(model_name)
@@ -122,6 +143,13 @@ def _place_footprint(obj, record, paths, model_visible, dnp):
     obj["kls_model_paths"] = paths
     obj["kls_model_visible"] = model_visible
     obj["kls_dnp"] = int(dnp)
+    library_id, value, fields, pins = identity = _identity(record)
+    obj["kls_library_id"] = library_id
+    obj["kls_value"] = value
+    # Blender's custom property names end at 63 bytes: a longer field name or pad number is cut
+    obj["kls_fields"] = {_short(name): text for name, text in fields if name}
+    obj["kls_pins"] = {_short(number): [name, kind] for number, name, kind in pins if number}
+    obj["kls_identity"] = hashlib.sha1(json.dumps(identity).encode("utf-8")).hexdigest()[:16]
     obj["kls_footprint"] = 1
     obj["kls_active"] = 1
     # An Empty's default 1 m axes dwarf a millimetre-scale PCB and appear
@@ -169,8 +197,13 @@ def _move_models(footprint_id, footprint, world):
         model_obj = lookup(model_name)
         if model_obj is None:
             continue
-        components.rename(model_obj, components.model_name(
-            footprint["kls_reference"], footprint["kls_model_paths"], model_obj.get("kls_model_part", index)))
+        if model_obj.get("kls_library_part") == 1:  # a library part (parts.py): named after its part
+            name = components.part_name(footprint["kls_reference"], model_obj.get("kls_part_name", ""),
+                                        int(model_obj.get("kls_model_part", 0)) % 1000)
+        else:
+            name = components.model_name(footprint["kls_reference"], footprint["kls_model_paths"],
+                                         model_obj.get("kls_model_part", index))
+        components.rename(model_obj, name)
         names[index] = model_obj.name
         values = model_obj.get("kls_model_local_matrix")
         if values is not None and len(values) == 16:
