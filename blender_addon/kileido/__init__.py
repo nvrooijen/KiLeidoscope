@@ -814,7 +814,11 @@ def _draw_parts(layout, scene):
     box.prop(scene, "kileido_library_parts", text="Library parts")
     looks = box.column()
     looks.active = scene.kileido_library_parts
-    looks.prop(scene, "kileido_see_through", text="Transparent cases")
+    row = looks.row(align=True)
+    row.prop(scene, "kileido_see_through", text="Transparent cases")
+    amount = row.row(align=True)
+    amount.active = scene.kileido_see_through
+    amount.prop(scene, "kileido_see_through_amount", text="", slider=True)
     status = parts.status()
     if status:
         box.label(text=status)
@@ -2157,6 +2161,11 @@ def _properties():
             name="Transparent cases", default=False,
             description="Every library part's case turns see-through, so its insides show (objects with the role "
                         "\"case\"), with or without X-ray mode",
+            update=lambda self, context: _see_through_update()),
+        "kileido_see_through_amount": FloatProperty(
+            name="Transparency", default=0.85, min=0.0, max=1.0, subtype="FACTOR",
+            description="How far Transparent cases fades the cases: 1 leaves a faint outline, lower keeps more "
+                        "of the case",
             update=lambda self, context: _see_through_update()),
         "kileido_cut": BoolProperty(
             name="Cut plane", default=False,

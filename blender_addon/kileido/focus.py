@@ -31,7 +31,8 @@ KEEP on their objects, so they stay as they are while its case fades with the re
 
 Transparent cases (the Parts tab's switch) fade every library part's case at
 once, with nothing selected and the rest of the board as it is: SEE_THROUGH on the case
-objects, and the steady stage fades by the larger of the two.
+objects (its slider, Transparency, how far: 1 to a faint outline), and the steady stage
+fades by the larger of the two.
 """
 
 import bpy
@@ -276,11 +277,12 @@ def _open_selected_parts():
         return
     chosen = board.highlight_components.get("footprints", set())
     see_through = bool(getattr(bpy.context.scene, "kileido_see_through", False))
+    amount = float(getattr(bpy.context.scene, "kileido_see_through_amount", 1.0)) if see_through else 0.0
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_library_part") != 1:
             continue
         keep = float(_active and obj.get("kls_model_fp_id") in chosen and obj.get("kls_role") in OPENED)
-        see = float(see_through and obj.get("kls_role") in ("case", "cover"))  # a lens renders frosted: it fades too
+        see = amount if obj.get("kls_role") in ("case", "cover") else 0.0  # a lens renders frosted: it fades too
         if obj.get(KEEP, 0.0) != keep or obj.get(SEE_THROUGH, 0.0) != see or FOCUS not in obj:
             obj[KEEP], obj[SEE_THROUGH] = keep, see
             obj[FOCUS] = (keep, see, 0.0)
