@@ -86,7 +86,7 @@ Each object of a part can carry a custom property `kls_role`. A part without rol
 
 Without `contacts`, reflowed solder climbs the faces whose material KiCad's palette calls metal (`PIN-01`, `PIN-02`, `MET-*`). A material KiLeidoscope recognised keeps that name in its custom property `kls_kicad_material`, also in a part saved to My parts, so its pins stay metal for the solder after you change their colour. Set it on a material of your own (`PIN-01`) for the same.
 
-KiLeidoscope sets `kls_focus_keep` to 1 on the objects that stay, and `kls_see_through` to 1 on the cases and covers while Transparent cases is on. Its own material stage reads both from `kls_focus`, the vector (`kls_focus_keep`, `kls_see_through`, 0). Eevee reads at most eight Object attributes per material and, past that, none of them; `kls_focus` is one, so a part's own material may read seven.
+KiLeidoscope sets `kls_focus_keep` to 1 on the objects that stay, and `kls_see_through` to 1 on the cases and covers while Transparent cases is on. Its own material stage reads both from `kls_focus`, the vector (`kls_focus_keep`, `kls_see_through`, 0), and how far cases fade (the Transparency slider) from the scene, so a keyframed slider animates in the viewport and in renders. Eevee reads at most eight Object attributes per material and, past that, none of them; `kls_focus` is one, so a part's own material may read seven.
 
 ## A library from another add-on
 

@@ -267,6 +267,13 @@ def main():
     check(tuple(part[focus.FOCUS]) == (0.0, 1.0, 0.0), "and in the steady stage's attribute")
     stage = part.material_slots[0].material.node_tree.nodes[focus.STEADY_NODE]
     check(stage.node_tree.name == focus.STEADY_GROUP, "the part's material has the current steady stage")
+    # The Transparency slider is read by the stage from the scene, not copied onto objects: keyframed,
+    # it animates in the viewport and in renders with nothing run per frame
+    slider = [node for node in stage.node_tree.nodes if node.type == "ATTRIBUTE" and node.attribute_type == "VIEW_LAYER"]
+    check([node.attribute_name for node in slider] == [focus.SEE_THROUGH_AMOUNT], "the stage reads the slider")
+    bpy.context.scene.kileido_see_through_amount = 0.3
+    check(part.get(focus.SEE_THROUGH) == 1.0, "moving the slider leaves the objects as they are")
+    bpy.context.scene.kileido_see_through_amount = 0.85
     check(all(node.name.startswith(parts.STAGE_PREFIX) for node in part.material_slots[0].material.node_tree.nodes
               if node.type == "GROUP" and node.node_tree.name.startswith("KLS")),
           "KiLeidoscope's stages are named as STAGE_PREFIX promises")

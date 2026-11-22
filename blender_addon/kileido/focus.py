@@ -31,8 +31,10 @@ KEEP on their objects, so they stay as they are while its case fades with the re
 
 Transparent cases (the Parts tab's switch) fade every library part's case at
 once, with nothing selected and the rest of the board as it is: SEE_THROUGH on the case
-objects (its slider, Transparency, how far: 1 to a faint outline), and the steady stage
-fades by the larger of the two.
+objects, and the steady stage fades by the larger of the two. How far the cases fade is
+the switch's slider, Transparency (1: to a faint outline), which the stage reads from the
+scene itself (a View Layer attribute): keyframed, it animates in the viewport and in
+renders with no Python running per frame.
 """
 
 import bpy
@@ -47,13 +49,14 @@ CUT_FACE = "KLS cut face"  # the cut plane's section (cut.py): it fades with the
 GREY = (0.5, 0.5, 0.5, 1.0)  # unlit colour of everything that is not highlighted
 VISIBLE = 0.05  # opacity of everything that is not highlighted (0.15 looked too hazy)
 STEADY = "kls_steady_shader"  # on a material: its shader never changes with a switch (library parts)
-STEADY_GROUP = "KLS_Steady_v3"  # v2: SEE_THROUGH; v3: both read from FOCUS
+STEADY_GROUP = "KLS_Steady_v4"  # v2: SEE_THROUGH; v3: both read from FOCUS; v4: the slider from the scene
 STEADY_NODE = "KLS steady"
 KEEP = "kls_focus_keep"  # on an object: 1 keeps it unfaded (a selected library part's insides)
 SEE_THROUGH = "kls_see_through"  # on an object: 1 fades it whatever X-ray does (library parts' cases)
 FOCUS = "kls_focus"  # on an object: (KEEP, SEE_THROUGH, 0), what the steady stage reads: one
 # object attribute, not two, as Eevee reads at most eight per material and a part's own may need most
 OPENED = ("insides", "contacts", "cover", "light", "field")  # what of a selected library part stays: all but its case
+SEE_THROUGH_AMOUNT = "kileido_see_through_amount"  # the Scene property: how far cases fade
 _active = False
 
 
@@ -125,7 +128,10 @@ def steady_group():
     focus.attribute_type, focus.attribute_name = "INSTANCER", FOCUS  # the object's own, unless instanced
     split = nodes.new("ShaderNodeSeparateXYZ")
     links.new(focus.outputs["Vector"], split.inputs[0])
-    keep, see = split.outputs["X"], split.outputs["Y"]
+    keep, flagged = split.outputs["X"], split.outputs["Y"]
+    amount = nodes.new("ShaderNodeAttribute")  # the slider, read from the scene: keyframes animate it
+    amount.attribute_type, amount.attribute_name = "VIEW_LAYER", SEE_THROUGH_AMOUNT
+    see = math("MULTIPLY", flagged, amount.outputs["Fac"])
     fade = math("MAXIMUM", math("MULTIPLY", value("Amount"), math("SUBTRACT", 1.0, keep)), see)
     offset = nodes.new("ShaderNodeVectorMath")
     offset.operation = "SUBTRACT"
@@ -277,12 +283,11 @@ def _open_selected_parts():
         return
     chosen = board.highlight_components.get("footprints", set())
     see_through = bool(getattr(bpy.context.scene, "kileido_see_through", False))
-    amount = float(getattr(bpy.context.scene, "kileido_see_through_amount", 1.0)) if see_through else 0.0
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_library_part") != 1:
             continue
         keep = float(_active and obj.get("kls_model_fp_id") in chosen and obj.get("kls_role") in OPENED)
-        see = amount if obj.get("kls_role") in ("case", "cover") else 0.0  # a lens renders frosted: it fades too
+        see = float(see_through and obj.get("kls_role") in ("case", "cover"))  # a lens renders frosted: it fades too
         if obj.get(KEEP, 0.0) != keep or obj.get(SEE_THROUGH, 0.0) != see or FOCUS not in obj:
             obj[KEEP], obj[SEE_THROUGH] = keep, see
             obj[FOCUS] = (keep, see, 0.0)
