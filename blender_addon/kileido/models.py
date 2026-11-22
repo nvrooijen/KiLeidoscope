@@ -21,7 +21,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import components, cut, focus, fold, highlight, kicad_cli, parts, poses, solder
+from . import components, cut, focus, fold, highlight, kicad_cli, palette, parts, poses, solder
 from .objects import link_owned, lookup, set_visible
 from . import state
 from .state import SLOTS, board
@@ -419,6 +419,7 @@ def bind_root(root, asset_hash, saved_positions=None):
         raise ValueError("Load or connect a board before loading models")
     fold.unfold_parts()  # models match and sit on the footprints' flat places; folded again below
     bpy.context.view_layer.update()
+    palette.apply(palette.materials_of(root.children_recursive))  # KiCad's materials, known by colour
     matches = _matches(root, saved_positions)
     active = set()
     mesh_cache = {}

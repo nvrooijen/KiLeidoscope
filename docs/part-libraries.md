@@ -2,7 +2,9 @@
 
 A part library holds parts made in Blender that take the place of KiCad's 3D models on the board, matched by footprint name. Where a library has a part for a footprint, KiLeidoscope puts that part on it instead of KiCad's model, and it behaves as KiCad's models do: it follows the footprint when you move it in KiCad, hides with KiCad's model visibility, fades in X-ray mode, opens up in the cut plane, takes reflowed solder on its contacts and folds with a flex board. Footprints with no 3D model in KiCad get their part too.
 
-The reason to make a part in Blender is its materials. KiCad's models reach Blender through `kicad-cli`'s GLB export, which keeps each material's colour and nothing else: a VRML model's specular and shininess are dropped, and every material arrives fully metallic and fully rough. A part made in Blender keeps the materials you gave it and never goes through that export.
+KiCad's models reach Blender through `kicad-cli`'s GLB export, which keeps each material's colour and nothing else: names, specular and shininess are dropped, and every material arrives fully metallic and fully rough. KiCad's own library paints its models from one palette of named materials (`PIN-01` for tinned leads, `IC-BODY-EPOXY-04`, `GLASS-13`, ...), so KiLeidoscope knows each of those colours and gives it its look back: leads and pins come out as metal, bodies as plastic or ceramic, glass diodes as glass. A colour outside that palette, as on most makers' models, stays as it arrives.
+
+A part made in Blender keeps the materials you gave it and never goes through that export. Make one for a model whose colours KiCad's palette doesn't know, for a clear LED lens (KiCad's LED red is the same colour as its red plastic, so the palette can't tell them apart), for insides that X-ray opens up, or for more detail than KiCad's model has.
 
 ## Contents
 
@@ -82,6 +84,8 @@ Each object of a part can carry a custom property `kls_role`. A part without rol
 | `contacts` | Stay as well, and reflowed solder climbs them |
 | `field` | Placed hidden. Collision checks and selection boxes leave them out |
 
+Without `contacts`, reflowed solder climbs the faces whose material KiCad's palette calls metal (`PIN-01`, `PIN-02`, `MET-*`). A material KiLeidoscope recognised keeps that name in its custom property `kls_kicad_material`, also in a part saved to My parts, so its pins stay metal for the solder after you change their colour. Set it on a material of your own (`PIN-01`) for the same.
+
 KiLeidoscope sets `kls_focus_keep` to 1 on the objects that stay, and `kls_see_through` to 1 on the cases and covers while Transparent cases is on. Its own material stage reads both from `kls_focus`, the vector (`kls_focus_keep`, `kls_see_through`, 0). Eevee reads at most eight Object attributes per material and, past that, none of them; `kls_focus` is one, so a part's own material may read seven.
 
 ## A library from another add-on
@@ -137,4 +141,4 @@ A placed part is a set of copies of the part's objects, children of the footprin
 
 A part's materials get one extra stage when they are appended, for X-ray's fade and the cut plane's clip together, and keep it. Switching X-ray or the cut plane then changes only values in it, so detailed parts' shaders are not compiled again for a switch.
 
-The bridge sends each footprint's library id, value, fields and its pads' schematic pins (`kileido_bridge/kicad_reader.py`, `_convert_footprint`); the pins come from KiCad's API, so a symbol changed in the schematic shows after the board is updated from it. The add-on matches and places the parts (`blender_addon/kileido/parts.py`). `tests/blender/run_parts.py` checks it on the test board with a small library it builds.
+The bridge sends each footprint's library id, value, fields and its pads' schematic pins (`kileido_bridge/kicad_reader.py`, `_convert_footprint`); the pins come from KiCad's API, so a symbol changed in the schematic shows after the board is updated from it. The add-on matches and places the parts (`blender_addon/kileido/parts.py`); KiCad's palette and the looks it gives are in `blender_addon/kileido/palette.py`. `tests/blender/run_parts.py` checks it on the test board with a small library it builds.

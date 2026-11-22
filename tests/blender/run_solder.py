@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, shading, solder, state  # noqa: E402
+from kileido import apply, palette, shading, solder, state  # noqa: E402
 from kileido.objects import link_owned  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -139,7 +139,7 @@ def main():
 
     # Metal: the library's metal colours; a parts pack's roles first
     tin, epoxy = material("stand-in tin", PIN_01), material("stand-in epoxy", BLACK)
-    assert solder.is_metal(tin) and not solder.is_metal(epoxy)
+    assert palette.is_metal(tin) and not palette.is_metal(epoxy)
 
     # Off: nothing is built
     solder.refresh()
@@ -482,7 +482,7 @@ def main():
     assert drill["kls_fp_id"] == J1 and drill["kls_pad_number"] == "1"  # (the bridge says whose pad it is)
     state.board.model_objects_by_fp[J1].remove(objects["J1 leg"].name)
     grey = material("stand-in vendor grey", (0.8, 0.8, 0.8))
-    assert not solder.is_metal(grey)
+    assert not palette.is_metal(grey)
     vendor = part("J1 vendor pin", J1, "top", (x - 0.3e-3, y - 0.3e-3, z_bottom - 2e-3), (x + 0.3e-3, y + 0.3e-3, z_top + 4e-3),
                   grey, sides=24)
     bpy.context.view_layer.update()

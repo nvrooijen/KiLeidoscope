@@ -25,12 +25,10 @@ the barrel filled, a concave fillet up the pin on the solder side, a thinner one
 part's side (`build_through_hole`).
 
 What counts as metal, best first:
-- a parts-pack object marked `kls_role` "contacts" (any other role: none of it);
-- faces of a KiCad library model in one of the library's metal colours. kicad-cli's GLB
-  keeps a model's colours but neither its material names (they come in as mat_0, mat_1,
-  ...) nor a metal flag (every material imports as metallic): measured 2026-10-19 on
-  KiCad 10.0.6 exports in Blender 4.5 and 5.2. Vendor models use their own colours, so
-  their metal is not known;
+- a library part's object marked `kls_role` "contacts" (any other role: none of it);
+- faces whose material KiCad's palette calls metal (`palette.is_metal`: PIN-01, PIN-02,
+  MET-*), by the material's palette tag or else its colour. Vendor models use their own
+  colours, so their metal is not known;
 - in a numbered pad's plated hole where no such metal is found: any face of that pad's own
   footprint's model (without a role): only its pin goes through there, whatever its colour.
 """
@@ -45,22 +43,11 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import delaunay_2d_cdt
 
-from . import components, fold, models, poses, transform
+from . import components, fold, models, palette, poses, transform
 from .objects import owned_name, owned_object, read_attribute, set_visible
 from .placement import stencil_thickness
 from .state import board, boards, each_loaded, using
 
-# The KiCad library's metal materials (VRML names; sRGB as its .wrl files give them).
-METAL_SRGB = (
-    (0.824, 0.820, 0.781),  # PIN-01: tinned leads, terminations and pins
-    (0.859, 0.738, 0.496),  # PIN-02: gold
-    (0.298, 0.298, 0.298),  # MET-01
-    (0.508, 0.508, 0.508),  # MET-SILVER
-    (0.704, 0.270, 0.083),  # MET-COPPER
-    (0.372, 0.372, 0.373),  # MET-ALUMINUM
-    (0.714, 0.428, 0.181),  # MET-BRONZE
-)
-COLOUR_TOLERANCE = 0.004  # sRGB: the GLB's colours match the library's to 3 decimals
 CONTACTS = "contacts"  # a parts pack's terminations and leads (kls_role)
 MAX_GAP_M = 0.3e-3  # metal further out than this is not wetted (a toroid's winding, a shield can)
 RAY_START_M = 20e-6  # rays start this far under the paste's plane (3 um over the copper), inside the
@@ -481,30 +468,6 @@ def _note(side, **numbers):
 
 # --- Metal --------------------------------------------------------------------------------
 
-def _to_srgb(c):
-    return 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
-
-
-def _base_colour(material):
-    if material is None:
-        return None
-    if not material.use_nodes or material.node_tree is None:
-        return tuple(material.diffuse_color[:3])
-    principled = next((node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
-    if principled is None or principled.inputs["Base Color"].is_linked:  # a texture: colour unknown
-        return None
-    return tuple(principled.inputs["Base Color"].default_value[:3])
-
-
-def is_metal(material):
-    """True for a material in one of the KiCad library's metal colours."""
-    colour = _base_colour(material)
-    if colour is None:
-        return False
-    srgb = [_to_srgb(c) for c in colour]
-    return any(all(abs(a - b) <= COLOUR_TOLERANCE for a, b in zip(srgb, metal)) for metal in METAL_SRGB)
-
-
 Pieces = namedtuple("Pieces", "face low high triangles")  # `_pieces`
 
 
@@ -593,7 +556,7 @@ def _body_faces(obj):
     if role == CONTACTS:
         return None
     mesh = obj.data
-    flags = (False,) if role is not None else tuple(is_metal(slot.material) for slot in obj.material_slots)
+    flags = (False,) if role is not None else tuple(palette.is_metal(slot.material) for slot in obj.material_slots)
     key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags)
     if key not in _faces:
         mesh.calc_loop_triangles()
@@ -624,7 +587,7 @@ def _metal_tree(obj, whole=False):
         return None, None, None
     mesh = obj.data
     every = whole or role == CONTACTS
-    flags = (True,) if every else tuple(is_metal(slot.material) for slot in obj.material_slots)
+    flags = (True,) if every else tuple(palette.is_metal(slot.material) for slot in obj.material_slots)
     key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags, whole)
     if key in _trees:
         return (*_trees[key], key)
