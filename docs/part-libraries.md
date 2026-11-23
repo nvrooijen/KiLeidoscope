@@ -1,6 +1,6 @@
 # Part libraries
 
-A part library holds parts made in Blender that take the place of KiCad's 3D models on the board, matched by footprint name. Where a library has a part for a footprint, KiLeidoscope puts that part on it instead of KiCad's model, and it behaves as KiCad's models do: it follows the footprint when you move it in KiCad, hides with KiCad's model visibility, fades in X-ray mode, opens up in the cut plane, takes reflowed solder on its contacts and folds with a flex board. Footprints with no 3D model in KiCad get their part too.
+A part library holds parts made in Blender that can take the place of KiCad's 3D models on the board, matched by footprint name. KiCad's models are the default: a footprint takes a library's part where you pick that library for it, or where you make the library the Default. A placed part behaves as KiCad's models do: it follows the footprint when you move it in KiCad, hides with KiCad's model visibility, fades in X-ray mode, opens up in the cut plane, takes reflowed solder on its contacts and folds with a flex board. Footprints with no 3D model in KiCad get their part too.
 
 KiCad's models reach Blender through `kicad-cli`'s GLB export, which keeps each material's colour and nothing else: names, specular and shininess are dropped, and every material arrives fully metallic and fully rough. KiCad's own library paints its models from one palette of named materials (`PIN-01` for tinned leads, `IC-BODY-EPOXY-04`, `GLASS-13`, ...), so KiLeidoscope knows each of those colours and gives it its look back: leads and pins come out as metal, bodies as plastic or ceramic, glass diodes as glass. A colour outside that palette, as on most makers' models, stays as it arrives.
 
@@ -21,11 +21,12 @@ A part made in Blender keeps the materials you gave it and never goes through th
 
 The **Parts** tab on the sidebar's left edge opens the Parts column.
 
-- **Library parts** switches the parts on or off. Off, every footprint shows KiCad's model.
-- **Transparent cases** turns every part's case see-through at once, without X-ray mode or a selection, so the insides show. It acts on the objects a part marks as its case (see [Roles](#roles)).
-- **Libraries** lists My parts and the libraries you added, in the order they are tried. The first library with a part for a footprint wins. Untick a library to leave it out. **Add library…** takes a `.blend` file or, with no file picked, the folder shown. The cross takes a library you added off the list; its file stays where it is.
-- A library another add-on offers has its own box below, with its tick, its name and the switches the add-on gives it. These are tried after the libraries in the list.
-- With one footprint selected in KiCad, the column says where its model comes from (My parts, a library by name, or KiCad), and **Save to my parts** saves it. A part from an add-on's library that keeps its parts up to date with KiCad (an LED's colour from its field, say) is not saved: My parts come first, and the copy would no longer be kept up to date.
+- **Default library** is where footprints take their model from: **KiCad** to start with, or any library in the list. A library gives its part where it has one for the footprint; a footprint it has none for keeps KiCad's model. The line below it counts the footprints that use a library's part.
+- **Libraries** lists My parts and the libraries you added. **Add library…** takes a `.blend` file or, with no file picked, the folder shown. The cross takes a library you added off the list; its file stays where it is (if it was the Default, KiCad is again).
+- With one footprint selected in KiCad, **Model from** says where its model comes from and picks it: **KiCad**, any library that has a part for it, or **Default** to follow the Default library again. The pick is for every footprint of that name, on every board, whatever the Default is.
+- **Save to my parts** saves the selected footprint's model, and picks My parts for its name. A part from an add-on's library that keeps its parts up to date with KiCad (an LED's colour from its field, say) is not saved: the copy would no longer be kept up to date. The bin beside it, **Remove from my parts**, deletes My parts' file for the footprint's name, after asking; its footprints go back to the Default library or KiCad's model.
+- **Transparent cases** turns every part's case see-through at once, without X-ray mode or a selection, so the insides show; the slider beside it sets how far. It acts on the objects a part marks as its case (see [Roles](#roles)), so it shows only while a placed part has one: KiCad's models have none.
+- A library another add-on offers has its own box last, with its name and the switches the add-on gives it, greyed while none of its parts is placed.
 
 ## My parts
 
@@ -37,7 +38,7 @@ To give a KiCad model better materials:
 2. In Blender, change its materials in the Shader editor: roughness, metallic, anything else.
 3. Press **Save to my parts**.
 
-The model as it is in the scene, with the materials it has now, is written to `<footprint name>.blend` in the folder: a collection of that name at the footprint's origin and orientation, with its own copies of the meshes and materials. From then on every footprint of that name, on every board, uses it. Saving again replaces that one file. To share a part, copy its file.
+The model as it is in the scene, with the materials it has now, is written to `<footprint name>.blend` in the folder: a collection of that name at the footprint's origin and orientation, with its own copies of the meshes and materials. My parts is picked for that name, so from then on every footprint of that name, on every board, uses it; Model from switches it back. Saving again replaces that one file. To share a part, copy its file.
 
 This works for a model of your own too (a VRML or STEP file you set as the footprint's model in KiCad): KiLeidoscope shows it as KiCad exports it, you set its materials, then save it.
 
@@ -103,7 +104,7 @@ def offer():
 
 | Call | Does |
 |---|---|
-| `add_library(name, blend, place=None, draw=None)` | Offers the `.blend` (or folder) under `name`, in its own box in the Parts column, tried after My parts and the libraries the user added. Calling it again with the same name replaces it |
+| `add_library(name, blend, place=None, draw=None)` | Offers the `.blend` (or folder) under `name`, in its own box in the Parts column. Its parts are used where the user makes it the Default library or picks it for a footprint. Calling it again with the same name replaces it |
 | `has_library(name)` | True while a library added under this name is offered |
 | `remove_library(name)` | Takes it back; its parts give way to the next library's, or to KiCad's models |
 | `place_again(name)` | Places the library's parts again, calling `place` for each: for when something `place` reads has changed |
@@ -122,7 +123,7 @@ Every placed object carries `kls_library_part` = 1, `kls_part_library` (the libr
 - `footprint`: the footprint as KiCad has it, `{"id", "label", "reference", "library_id", "value", "fields", "pins"}`. `id` is KiCad's id for the footprint; `label` is its reference as KiLeidoscope shows it (`D7`, or `D7 B2` on a second board). `fields` holds the footprint's own fields by name (an LED's `Color`); `pins` maps each pad number to its schematic pin's `(name, electrical type)`, the type as the board file spells it (`power_in`).
 - `part`: the part's index entry (`{"part": name}` without an index), with the library's own keys.
 
-`draw(layout, context)`, if given, draws the library's own switches in its box, under its tick and name, while the library is ticked. It is a panel's draw: it shows properties and operators the add-on registered itself, and changes nothing. A switch that changes what `place` does calls `place_again` from its update.
+`draw(layout, context)`, if given, draws the library's own switches in its box, under its name, whether or not it is the Default (its parts may be picked for single footprints). It is a panel's draw: it shows properties and operators the add-on registered itself, and changes nothing. A switch that changes what `place` does calls `place_again` from its update.
 
 A part's objects keep their own drivers and animation when placed (a driver on a custom property counting time from the frame, say), so a part can move or change by itself.
 
@@ -133,7 +134,7 @@ Set custom properties on the objects for their materials to read (an Attribute n
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/part-libraries-dark.svg">
-  <img src="../assets/part-libraries-light.svg" width="680" alt="KiCad's live API gives each footprint's name, value, fields and pins; the bridge reads them and sends them in its frames. The Blender add-on matches each footprint against My parts, the libraries the user added and the libraries other add-ons offer through the kileidoscope_parts hook, by name, the KiLeidoscope Model field or a library's kls_index; the Parts tab ticks the libraries and saves parts to My parts. A matched part is placed as copies that are the footprint's model objects, an add-on's place is called for its own parts, and X-ray, the cut plane, reflowed solder and folding treat them as KiCad's models.">
+  <img src="../assets/part-libraries-light.svg" width="680" alt="KiCad's live API gives each footprint's name, value, fields and pins; the bridge reads them and sends them in its frames. The Blender add-on matches each footprint against My parts, the libraries the user added and the libraries other add-ons offer through the kileidoscope_parts hook, by name, the KiLeidoscope Model field or a library's kls_index; the Parts tab sets the Default library and each footprint's Model from, and saves parts to My parts. A matched part is placed as copies that are the footprint's model objects, an add-on's place is called for its own parts, and X-ray, the cut plane, reflowed solder and folding treat them as KiCad's models.">
 </picture>
 </p>
 

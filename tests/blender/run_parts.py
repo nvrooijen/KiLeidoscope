@@ -1,6 +1,7 @@
-"""Headless checks of part libraries (parts.py): a library's parts take the place of
-KiCad's models on the footprints they match, follow them, are told the footprint, and
-come off; a model saved to My parts comes first on every footprint of its name.
+"""Headless checks of part libraries (parts.py): KiCad's models by default; a library
+made the Default puts its parts on the footprints they match, where they follow, are told
+the footprint, and come off; a footprint name's Model from picks a library or KiCad; a model
+saved to My parts is picked for every footprint of its name, and can be removed again.
 
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_parts.py
 """
@@ -147,6 +148,9 @@ class Layout:
         self.drawn.append(("operator", idname))
         return type("Properties", (), {})()
 
+    def menu(self, menu, text="", icon="NONE"):
+        self.drawn.append(("menu", text))
+
 
 def column():
     layout = Layout()
@@ -173,9 +177,15 @@ def main():
     sys.modules[parts.MODULE_ALIAS].add_library(LIBRARY, str(library), place=place, draw=draw)  # as an add-on does
     check(parts.has_library(LIBRARY), "offered")
     check([(row["name"], row["kind"], row["on"]) for row in parts.listing()] ==
-          [("My parts", "my", True), (LIBRARY, "addon", True)], f"the libraries: {parts.listing()}")
+          [("My parts", "my", False), (LIBRARY, "addon", False)], f"the libraries, none the Default: {parts.listing()}")
     first = snapshot()
     apply.load_frames(b"".join(snapshot_frames(first)))
+    bpy.context.view_layer.update()
+    check(not board.swapped and not part_objects(), "KiCad's models by default: no library part placed")
+    check([key for key, _ in parts.options(objects_of("J1")[0])] == [f"addon:{LIBRARY}"],
+          "but Model from offers the library that has J1's part")
+    check(parts.default() == parts.KICAD, "KiCad is the Default to start with")
+    parts.set_default(f"addon:{LIBRARY}")
     bpy.context.view_layer.update()
 
     # J1 and J2 carry the resistor, nothing else; its field lines placed, hidden
@@ -217,20 +227,22 @@ def main():
     long_axis = named[0].matrix_world.to_3x3() @ Vector((1.0, 0.0, 0.0))
     across = j4.matrix_world.to_3x3() @ Vector((0.0, 1.0, 0.0))
     check(abs(abs(long_axis.normalized().dot(across.normalized())) - 1.0) < 1e-6, "J4's part turned 90 degrees")
-    check(parts.status() == "Library parts: 3 placed", parts.status())
+    check(parts.status() == "3 footprints use a library's part", parts.status())
     check(parts.source_of(footprint) == LIBRARY and parts.source_of(objects_of("J3")[0]) == "", "where models come from")
 
-    # the Parts column: the switches, the libraries, and nothing to save without a selection
+    # the Parts column: the Default and the libraries, the selected footprint, Transparent cases
+    # (J1's part has a case), then the add-on's library's own box; nothing to save without a selection
     drawn = column()
-    check(("prop", "kileido_library_parts") in drawn and ("label", "My parts") in drawn and ("label", LIBRARY) in drawn
-          and ("label", "Library parts: 3 placed") in drawn, f"the Parts column: {drawn}")
-    # an add-on's library is not a row in the list: its own box below, its tick, its name, its switches
+    check(drawn[1:3] == [("label", "Default library"), ("menu", LIBRARY)] and ("label", "My parts") in drawn and ("label", LIBRARY) in drawn
+          and ("label", "3 footprints use a library's part") in drawn, f"the Parts column: {drawn}")
+    # an add-on's library is not a row in the list: its own box below, its name, its switches
     name = drawn.index(("label", LIBRARY)) if ("label", LIBRARY) in drawn else -1
-    check(drawn.count(("label", LIBRARY)) == 1 and name > drawn.index(("operator", "kileido.part_library_add"))
-          and drawn[name - 1] == ("operator", "kileido.part_library_toggle")
+    adding, saving = drawn.index(("operator", "kileido.part_library_add")), drawn.index(("operator", "kileido.save_part"))
+    check(drawn.count(("label", LIBRARY)) == 1 and adding < saving < drawn.index(("prop", "kileido_see_through")) < name
           and drawn[name + 1] == ("label", "Test switch"),
-          f"the library's own box, with its tick, its name and its switches: {drawn}")
-    check(not any(text.startswith("Model from") for kind, text in drawn if kind == "label"), "no footprint selected")
+          f"the Default menu names it; the footprint, Transparent cases, then its own box: {drawn}")
+    check(LIBRARY in parts.libraries_in_use() and parts.has_cases(), "its parts placed, with cases")
+    check([kind for kind, text in drawn].count("menu") == 1, "no footprint selected: the Default menu only, no Model from")
     check(not kileido.KILEIDO_OT_save_part.poll(bpy.context), "nothing to save yet")
 
     # X-ray with J1 selected: its insides stay, its case fades with the rest, no box over it
@@ -238,7 +250,7 @@ def main():
     highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": [footprint["kls_id"]]})
     check(parts.selected() == footprint, "the Parts tab's footprint is KiCad's selection")
     drawn = column()
-    check(("label", "J1: R_0603_1608Metric") in drawn and ("label", f"Model from {LIBRARY}") in drawn,
+    check(("label", "J1: R_0603_1608Metric") in drawn and ("menu", LIBRARY) in drawn,
           f"the column says where J1's model comes from: {drawn}")
     # its part comes from a library whose `place` keeps it up to date: not saved to My parts
     check(parts.kept_up_by(footprint) == LIBRARY and not kileido.KILEIDO_OT_save_part.poll(bpy.context),
@@ -344,10 +356,13 @@ def main():
     highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": [footprint["kls_id"]]})
     told = len(placed_with)
     parts.add_user_library(library)  # the same file as a library of the user's own: no `place`, so it can be saved
+    parts.set_default(f"user:{library}")
     check(parts.source_of(objects_of("J1")[0]) == "test_library" and not parts.kept_up_by(objects_of("J1")[0])
           and kileido.KILEIDO_OT_save_part.poll(bpy.context), "a part from the user's own library can be saved")
     saved = parts.save_to_my_parts(parts.selected())
     parts.remove_user_library(library)
+    check(parts.default() == parts.KICAD, "the Default taken off the list: KiCad is the Default again")
+    parts.set_default(f"addon:{LIBRARY}")
     check(saved == parts.my_parts_folder() / "R_0603_1608Metric.blend" and saved.is_file(), f"saved: {saved}")
     check(str(parts.my_parts_folder()).startswith(str(folder)), "in the test's own folder")
     with bpy.data.libraries.load(str(saved)) as (inside, _):
@@ -367,6 +382,7 @@ def main():
           "and sits where the model sat")
     check(abs(other.matrix_world.translation.z + 0.225 * MM) < 1e-9, "under the board too")
     check(parts.source_of(objects_of("FB3")[0]) == LIBRARY, "other footprints keep their library's part")
+    check(parts.choices() == {"R_0603_1608Metric": parts.MY_KEY}, f"saved: picked for its name: {parts.choices()}")
 
     # saved again: the file is replaced, and the board takes the new one
     material.roughness = 0.6
@@ -374,38 +390,52 @@ def main():
     check(abs(case_of("J1").material_slots[0].material.roughness - 0.6) < 1e-6, "saved again: the new part is placed")
     highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": []})
 
-    # a library the user adds: a folder, one .blend per part, tried before an add-on's
+    # a library the user adds: a folder, one .blend per part, used once it is the Default
     shelf = folder / "shelf"
     shelf.mkdir()
     shutil.copy(saved, shelf / "L_0603_1608Metric.blend")  # the file's name is the footprint's
     parts.add_user_library(shelf)
-    check([row["kind"] for row in parts.listing()] == ["my", "user", "addon"], "the order they are tried")
-    check(parts.source_of(objects_of("FB3")[0]) == "shelf", "the user's library comes before an add-on's")
-    parts.set_on(f"user:{shelf}", False)
-    check(parts.source_of(objects_of("FB3")[0]) == LIBRARY, "switched off: the next library's part")
-    parts.set_on(f"user:{shelf}", True)
+    check(parts.source_of(objects_of("FB3")[0]) == LIBRARY, "added, not the Default: not used")
+    parts.set_default(f"user:{shelf}")
+    check([row["kind"] for row in parts.listing()] == ["my", "user", "addon"], "the order they are listed")
+    check(parts.source_of(objects_of("FB3")[0]) == "shelf" and parts.source_of(objects_of("J4")[0]) == "",
+          "the Default: its part where it has one, KiCad's model where it has none")
+    parts.set_default(f"addon:{LIBRARY}")
+    check(parts.source_of(objects_of("FB3")[0]) == LIBRARY, "another Default: its part")
     parts.remove_user_library(shelf)
     check(parts.source_of(objects_of("FB3")[0]) == LIBRARY and len(parts.listing()) == 2, "taken off the list")
     check(settings.path().is_file() and str(settings.path()).startswith(str(folder)), "kept in the test's settings")
 
-    # a library switched off: its own switches go from the column
-    parts.set_on(f"addon:{LIBRARY}", False)
-    check(("label", "Test switch") not in column(), "switched off: its switches are not drawn")
-    parts.set_on(f"addon:{LIBRARY}", True)
+    # an add-on's library not the Default: its own switches stay in the column (its parts may still be picked)
+    parts.set_default(parts.KICAD)
+    check(("label", "Test switch") in column(), "KiCad the Default: the library's switches are still drawn")
+    parts.set_default(f"addon:{LIBRARY}")
 
-    # My parts switched off: the library's part again
-    parts.set_on(parts.MY_KEY, False)
+    # Model from: the Default again, KiCad's model, then My parts picked again
+    check([key for key, _ in parts.options(objects_of("J1")[0])] == [parts.MY_KEY, f"addon:{LIBRARY}"],
+          f"Model from offers the libraries with J1's part: {parts.options(objects_of('J1')[0])}")
+    parts.set_choice("R_0603_1608Metric", None)
     check(parts.source_of(objects_of("J1")[0]) == LIBRARY and case_of("J1")["kls_test_value"] == "1k",
-          "My parts off: the library's part, told its value again")
-    parts.set_on(parts.MY_KEY, True)
-    check(parts.source_of(objects_of("J1")[0]) == "My parts", "and on again")
+          "the Default: the library's part, told its value again")
+    parts.set_choice("R_0603_1608Metric", parts.KICAD)
+    check(parts.source_of(objects_of("J1")[0]) == "" and parts.source_of(objects_of("J2")[0]) == ""
+          and parts.source_of(objects_of("FB3")[0]) == LIBRARY,
+          "KiCad picked: KiCad's model for that name only, whatever the Default (J1 and J2 have none)")
+    parts.set_choice("R_0603_1608Metric", parts.MY_KEY)
+    check(parts.source_of(objects_of("J1")[0]) == "My parts", "My parts picked again")
 
-    # switched off: the parts come off, and come back
-    bpy.context.scene.kileido_library_parts = False
-    check(not board.swapped and not part_objects(), "switched off: no library parts")
+    # KiCad's models everywhere: the parts come off, and come back
+    parts.set_default(parts.KICAD)
+    parts.set_choice("R_0603_1608Metric", None)
+    check(not board.swapped and not part_objects(), "KiCad the Default, nothing picked: no library parts")
     check(not dressed_meshes(), f"and none of the meshes place made: {dressed_meshes()}")
-    bpy.context.scene.kileido_library_parts = True
-    check(len(board.swapped) == 4, f"switched on again: {len(board.swapped)}")
+    drawn = column()
+    check(("prop", "kileido_see_through") not in drawn and parts.status() == "" and not parts.libraries_in_use()
+          and ("label", "Test switch") in drawn,
+          f"no case to fade: no Transparent cases; the library's box stays, greyed: {drawn}")
+    parts.set_default(f"addon:{LIBRARY}")
+    parts.set_choice("R_0603_1608Metric", parts.MY_KEY)
+    check(len(board.swapped) == 4, f"back again: {len(board.swapped)}")
 
     # KiCad's models bound again (an export arrived): the parts stay in their place
     names = {footprint_id: list(names) for footprint_id, names in board.model_objects_by_fp.items()}
@@ -478,6 +508,16 @@ def main():
     parts.remove_library(LIBRARY)
     check(sorted(board.swapped) == sorted(obj["kls_id"] for obj in (objects_of("J1")[0], objects_of("J2")[0])),
           "no add-on library: My parts' only")
+
+    # Remove from my parts: the file goes, and so does the choice; KiCad's models again
+    highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": [objects_of("J1")[0]["kls_id"]]})
+    check(kileido.KILEIDO_OT_remove_part.poll(bpy.context) and ("operator", "kileido.remove_part") in column(),
+          "My parts holds J1's part: it can be removed")
+    removed = parts.remove_from_my_parts(parts.selected())
+    check(not removed.exists() and "R_0603_1608Metric" not in parts.choices() and not board.swapped,
+          "removed: no file, no choice, KiCad's models again")
+    check(not kileido.KILEIDO_OT_remove_part.poll(bpy.context), "and nothing left to remove")
+    highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": []})
     kileido.unregister()
     check(parts.MODULE_ALIAS not in sys.modules, "unregistered: the module's alias is gone")
     shutil.rmtree(folder, ignore_errors=True)

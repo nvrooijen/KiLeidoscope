@@ -3,10 +3,15 @@ by footprint. See docs/part-libraries.md.
 
 A part is a collection named after its footprint ("LED_0603_1608Metric"), or after the
 footprint's "KiLeidoscope Model" field. A library is a .blend of such collections, or a
-folder of .blend files, each named after the footprint whose part it holds. They are tried
-in order: My parts (the user's own folder, where Save to my parts writes), the libraries
-added in the Parts tab, then the libraries other add-ons added. A footprint no library has
-a part for keeps KiCad's model.
+folder of .blend files, each named after the footprint whose part it holds. The libraries
+are My parts (the user's own folder, where Save to my parts writes), the libraries added in
+the Parts tab, then the libraries other add-ons added.
+
+A footprint takes the part of the library the user picked for its name (the Parts tab's
+"Model from", kept in the settings as part_choices, for every board), or else of the
+Default library (the Parts tab's "Default", settings part_default: KiCad to start with)
+when that has a part for it, or else keeps KiCad's model. Picking KiCad keeps KiCad's model
+whatever the default is.
 
 A .blend library may hold an index, a text datablock "kls_index" of JSON:
 
@@ -79,6 +84,7 @@ PART = "kls_library_part"  # on a placed object: 1
 PART_BASE = 1000  # a placed part's objects count from here (kls_model_part): clear of KiCad's model parts
 MY_PARTS = "My parts"
 MY_KEY = "my"
+KICAD = "kicad"  # a choice or the Default: KiCad's model
 _FILE_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 _added = {}  # name -> {"name", "blend", "place"}: the libraries add-ons gave, in order
@@ -95,8 +101,7 @@ NOT_PLACED = "A part could not be placed"
 def add_library(name, blend, place=None, draw=None):
     """Offer a library: a .blend of parts (or a folder of them), under `name` in the Parts
     tab. `place`, optional: see the module's docstring. `draw(layout, context)`, optional:
-    draws the library's own switches in the Parts tab, in a box under its name, while the
-    library is on. Adding a name again replaces it."""
+    draws the library's own switches in the Parts tab, in a box under its name. Adding a name again replaces it."""
     _added[str(name)] = {"name": str(name), "blend": str(blend), "place": place if callable(place) else None,
                          "draw": draw if callable(draw) else None}
     refresh_all()
@@ -182,40 +187,91 @@ def add_user_library(path):
 
 
 def remove_user_library(path):
-    settings.put(part_libraries=[row for row in _user_libraries() if not state.same_file(row["path"], path)])
+    gone = [f"user:{row['path']}" for row in _user_libraries() if state.same_file(row["path"], path)]
+    values = {"part_libraries": [row for row in _user_libraries() if not state.same_file(row["path"], path)]}
+    if default() in gone:
+        values["part_default"] = KICAD  # the Default went with it: KiCad's models again
+    settings.put(**values)
     refresh_all()
 
 
-def set_on(key, on):
-    """Switch one library of `listing` on or off (kept between sessions)."""
-    stored = settings.read()
-    if key.startswith("user:"):
-        path = key[5:]
-        settings.put(part_libraries=[{**row, "on": bool(on)} if row["path"] == path else row
-                                     for row in _user_libraries()])
+def default():
+    """The Default library's key, or KICAD (the start): where a footprint no choice names
+    takes its part from, when that library has one for it."""
+    found = settings.read().get("part_default", KICAD)
+    return found if isinstance(found, str) and found else KICAD
+
+
+def set_default(key):
+    """Make a library of `listing` (its key) the Default, or KICAD (kept between sessions)."""
+    settings.put(part_default=key or KICAD)
+    refresh_all()
+
+
+def choices():
+    """{footprint name: library key or KICAD}: what the user picked per footprint name."""
+    found = settings.read().get("part_choices", {})
+    return {name: key for name, key in found.items() if isinstance(name, str) and isinstance(key, str)} \
+        if isinstance(found, dict) else {}
+
+
+def set_choice(name, key):
+    """Pick where every footprint called `name` takes its model from, on every board: a
+    library's key, KICAD, or None to follow the Default again."""
+    picked = choices()
+    if key is None:
+        picked.pop(name, None)
     else:
-        off = {name for name in stored.get("part_libraries_off", []) if isinstance(name, str)}
-        (off.discard if on else off.add)(key)
-        settings.put(part_libraries_off=sorted(off))
+        picked[name] = key
+    settings.put(part_choices=picked)
     refresh_all()
+
+
+def options(footprint):
+    """[(key, name)] of the libraries with a part for this footprint (as of the last
+    refresh), for the Parts tab's "Model from"."""
+    keys = board.part_options.get(footprint.get("kls_id"), ())
+    names = {row["key"]: row["name"] for row in listing()}
+    return [(key, names[key]) for key in keys if key in names]
+
+
+def in_my_parts(footprint):
+    """The file My parts holds for this footprint's name, or None."""
+    name = match_name(footprint)
+    file = my_parts_folder() / f"{file_stem(name)}.blend" if name else None
+    return file if file is not None and file.is_file() else None
+
+
+def remove_from_my_parts(footprint):
+    """Delete My parts' file for this footprint's name: every footprint of that name gives
+    way to the Default library's part, or to KiCad's model. Returns the file removed."""
+    file = in_my_parts(footprint)
+    if file is None:
+        raise ValueError("My parts holds no part for this footprint")
+    file.unlink()
+    name = match_name(footprint)
+    if choices().get(name) == MY_KEY:
+        set_choice(name, None)  # refreshes
+    else:
+        refresh_all()
+    state.log(f"part removed from My parts: {file}")
+    return file
 
 
 def listing():
-    """The libraries in the order they are tried, for the Parts tab and for matching:
-    [{"key", "name", "path", "kind": "my" | "user" | "addon", "on", "place", "draw"}]. Reads
-    no library file (the panel calls it on every draw)."""
-    stored = settings.read()
-    off = stored.get("part_libraries_off", [])
-    off = set(off) if isinstance(off, list) else set()
+    """The libraries, My parts first, for the Parts tab and for matching:
+    [{"key", "name", "path", "kind": "my" | "user" | "addon", "on", "place", "draw"}], "on":
+    the Default library. Reads no library file (the panel calls it on every draw)."""
+    used = {default()}
     rows = [{"key": MY_KEY, "name": MY_PARTS, "path": str(my_parts_folder()), "kind": "my",
-             "on": MY_KEY not in off, "place": None, "draw": None}]
+             "on": MY_KEY in used, "place": None, "draw": None}]
     for row in _user_libraries():
         path = str(row["path"])
         rows.append({"key": f"user:{path}", "name": Path(path).stem or path, "path": path, "kind": "user",
-                     "on": bool(row.get("on", True)), "place": None, "draw": None})
+                     "on": f"user:{path}" in used, "place": None, "draw": None})
     for name, offer in _added.items():
         rows.append({"key": f"addon:{name}", "name": name, "path": offer["blend"], "kind": "addon",
-                     "on": f"addon:{name}" not in off, "place": offer["place"], "draw": offer.get("draw")})
+                     "on": f"addon:{name}" in used, "place": offer["place"], "draw": offer.get("draw")})
     for row in rows:
         row["problem"] = _problems.get(row["key"], "")
     return rows
@@ -369,26 +425,34 @@ def described(footprint):
             "pins": {number: tuple(pin) for number, pin in dict(footprint.get("kls_pins", {})).items()}}
 
 
-def _choose(libraries, footprint):
-    """(library, blend, collection, entry) for a footprint frame, or None: the first
-    library, in order, with a part for it."""
+def _choose(libraries, footprint, picked, fallback):
+    """((library, blend, collection, entry) or None, [keys of the libraries with a part])
+    for a footprint frame: the library picked for its name, else the Default (`fallback`)
+    when it has a part for it, else None (KiCad's model). `picked`: `choices()`."""
     named = model_field(footprint)
     name = named[0] if named else footprint_name(footprint.get("kls_library_id", ""))
     if not name:
-        return None
+        return None, []
+    found = {}
     for library in libraries:
         if library.broken:
             continue
         try:
-            found = library.find(name, footprint.get("kls_reference", ""), named is not None)
+            part = library.find(name, footprint.get("kls_reference", ""), named is not None)
         except Exception as error:  # an index KiLeidoscope cannot follow: that library is passed over
             library.broken = True
             _problems[library.key] = BROKEN_INDEX
             state.log(f"part library {library.name}: matching {footprint.get('kls_reference')} failed: {error!r}")
             continue
-        if found is not None:
-            return (library, *found)
-    return None
+        if part is not None:
+            found[library.key] = (library, *part)
+    keys = [library.key for library in libraries if library.key in found]
+    choice = picked.get(name)
+    if choice == KICAD:
+        return None, keys
+    if choice in found:
+        return found[choice], keys
+    return found.get(fallback), keys
 
 
 def _key(library, blend, collection, footprint, stamps):
@@ -410,10 +474,6 @@ def _key(library, blend, collection, footprint, stamps):
 
 # --- Placing -------------------------------------------------------------------------------
 
-def enabled():
-    return bool(getattr(bpy.context.scene, "kileido_library_parts", True))
-
-
 def refresh(rebind=False, settle=True):
     """Put library parts on the footprints they match and take them off the others.
 
@@ -426,10 +486,12 @@ def refresh(rebind=False, settle=True):
                   if obj.get("kls_footprint") == 1 and obj.get("kls_active") == 1}
     if not board.swapped:
         _adopt()
-    libraries = [_Library(row) for row in listing() if row["on"]] if enabled() else []
+    libraries = [_Library(row) for row in listing()]
+    picked, fallback = choices(), default()
     wanted, stamps = {}, {}
+    board.part_options = {}
     for footprint_id, footprint in footprints.items():
-        choice = _choose(libraries, footprint) if libraries else None
+        choice, board.part_options[footprint_id] = _choose(libraries, footprint, picked, fallback) if libraries else (None, [])
         if choice is not None:
             library, blend, collection, entry = choice
             key = _key(library, blend, collection, footprint, stamps)
@@ -552,7 +614,7 @@ def _drop_source(collection):
 
 def _drop_unused():
     """Parts appended into this file that no placed object, on any board, comes from any
-    more (Library parts off, a library taken away, footprints matched elsewhere) go."""
+    more (KiCad's models picked, a library taken away, footprints matched elsewhere) go."""
     used = set()
     for obj in bpy.data.objects:
         if obj.get(PART) == 1:
@@ -754,7 +816,22 @@ def show_fields():
 
 def status():
     """The panel's line: how many footprints carry a library part."""
-    return f"Library parts: {len(board.swapped)} placed" if board.swapped else ""
+    count = len(board.swapped)
+    if not count:
+        return ""
+    return "1 footprint uses a library's part" if count == 1 else f"{count} footprints use a library's part"
+
+
+def has_cases():
+    """True while a placed part has a case or a clear cover: Transparent cases has
+    something to fade (KiCad's models have neither)."""
+    return any(obj is not None and obj.get("kls_role") in ("case", "cover")
+               for row in board.swapped.values() for obj in map(lookup, row["names"]))
+
+
+def libraries_in_use():
+    """The names of the libraries placed parts come from."""
+    return {row.get("library", "") for row in board.swapped.values()}
 
 
 def selected():
@@ -816,6 +893,7 @@ def save_to_my_parts(footprint):
     folder = my_parts_folder()
     folder.mkdir(parents=True, exist_ok=True)
     file = folder / f"{file_stem(name)}.blend"
+    saved = False
     collection = bpy.data.collections.new(name)
     made, materials = [collection], {}
     try:
@@ -841,6 +919,7 @@ def save_to_my_parts(footprint):
                 slot.material = materials[slot.material]
             collection.objects.link(copy)
         bpy.data.libraries.write(str(file), {collection}, fake_user=True)
+        saved = True
     finally:
         for block in made:
             owner = {"COLLECTION": bpy.data.collections, "OBJECT": bpy.data.objects, "MESH": bpy.data.meshes,
@@ -849,7 +928,8 @@ def save_to_my_parts(footprint):
             if owner is not None:
                 owner.remove(block)
     state.log(f"part saved to My parts: {file}")
-    refresh_all()
+    if saved:
+        set_choice(name, MY_KEY)  # what was just saved is what that footprint shows; refreshes
     return file
 
 
