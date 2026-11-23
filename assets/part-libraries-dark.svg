@@ -38,7 +38,7 @@ text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; do
 <text class="ts" x="540" y="300" text-anchor="middle" fill="#633806">kileidoscope_parts</text>
 <rect x="45" y="348" width="130" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
 <text class="th" x="110" y="368" text-anchor="middle" fill="#412402">Parts tab</text>
-<text class="ts" x="110" y="386" text-anchor="middle" fill="#633806">Default, Save</text>
+<text class="ts" x="110" y="386" text-anchor="middle" fill="#633806">Default, Model from</text>
 <rect x="200" y="348" width="280" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
 <text class="th" x="340" y="368" text-anchor="middle" fill="#412402">Matching</text>
 <text class="ts" x="340" y="386" text-anchor="middle" fill="#633806">by name, Model field, kls_index</text>
