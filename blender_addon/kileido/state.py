@@ -80,6 +80,7 @@ class BoardState:
         self.appearance = {}  # colours and finish from the bridge (board_specs.read_appearance)
         self.export = {}  # the bridge's live board copy for kicad-cli (see protocol.board_message)
         self.mask_images = {}  # "F"/"B" -> (saved-board mask plot image, world XY bounds)
+        self.mask_open = {}  # "F"/"B" -> (its image's key, bools: where that plot is open), apply._mask_open
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
         self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole

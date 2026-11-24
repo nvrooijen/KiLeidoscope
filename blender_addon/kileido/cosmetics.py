@@ -730,6 +730,9 @@ def _apply(plots, board_path):
             set_visible(obj, False)
         elif obj.get("kls_overlay_walls") and obj.get("kls_overlay_walls") not in loaded:
             set_visible(obj, False)
+    if any(layer.endswith(".Mask") for layer in loaded):
+        from . import apply  # apply imports this module
+        apply.refresh_protection()  # no tent over a via in a pad's mask opening
     recolor()
     focus.refresh()  # new overlay materials fade in focus mode too
     cut.add_materials()  # and are cut open with the board

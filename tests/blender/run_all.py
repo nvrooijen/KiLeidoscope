@@ -437,6 +437,15 @@ def main():
             return pixels[int((via_xy[1] - ymin) / pixel), int((via_xy[0] - xmin) / pixel)]
 
         scene = bpy.context.scene
+        plot_area = (*(via_xy - 0.01), *(via_xy + 0.01))
+        plots = {}
+        for name, alpha in (("closed", 0.0), ("open", 1.0)):  # KiCad's mask plot: alpha 1 where open
+            plots[name] = bpy.data.images.new(f"KLS test mask {name}", 2, 2, alpha=True)
+            plots[name].pixels.foreach_set(np.tile(np.float32((0, 0, 0, alpha)), 4))
+            plots[name].use_fake_user = True
+        for side in "FB":
+            materials.set_mask_image(side, plots["closed"], plot_area)
+        apply.refresh_protection()
         assert "via_rules" not in state.board.appearance  # KiCad's defaults: tented both sides
         tents = via_obj.data.attributes["tent_top"]
         assert via_alpha() > 0.99 and tents.data[0].value == 1.0  # a hole, the tent closing it
@@ -456,6 +465,16 @@ def main():
         del state.board.appearance["via_rules"]
         scene.kileido_max_tent_mm = 0.3
         apply.refresh_protection()
+        assert tents.data[0].value == 1.0
+        # In a pad's mask opening (KiCad's plot open over the via) no tent: the fab's mask has none
+        # there (user report: a mask disc inside a pad).
+        materials.set_mask_image("F", plots["open"], plot_area)
+        apply.refresh_protection()
+        assert tents.data[0].value == 0.0 and via_obj.data.attributes["tent_bottom"].data[0].value == 1.0
+        assert via_alpha() > 0.99 and state.board.via_too_big == 0  # a hole, open on top
+        materials.set_mask_image("F", plots["closed"], plot_area)
+        apply.refresh_protection()
+        assert tents.data[0].value == 1.0
 
         # KiCad selection: selected track red, diff-pair partner blue, over the copper.
         f_tracks = collection.all_objects["KLS F.Cu tracks"]
