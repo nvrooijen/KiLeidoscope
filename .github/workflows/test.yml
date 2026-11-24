@@ -1,7 +1,11 @@
 name: Bridge tests
 
 on:
+  # A pull request's commits run once, as the pull request; a push runs only on main and
+  # tags (a push to a PR's branch ran everything twice, two macOS runners per commit).
   push:
+    branches: [main]
+    tags: ['*']
   pull_request:
 
 jobs:
