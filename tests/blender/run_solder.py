@@ -15,6 +15,7 @@ from pathlib import Path
 
 import bpy
 import numpy as np
+from mathutils import Matrix
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
@@ -51,9 +52,21 @@ def material(name, srgb):
     return made
 
 
-def part(name, footprint_id, side, low, high, made, role=None, sides=0):
+def box(low, high):
+    """A box's vertices and faces, from `low` to `high`."""
+    (x0, y0, z0), (x1, y1, z1) = low, high
+    vertices = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+                (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
+    return vertices, [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
+
+
+def part(name, footprint_id, side, low, high, made, role=None, sides=0, more=(), open_top=False, lean=None):
     """A stand-in model part of a footprint: a box from `low` to `high` (world metres), or a
-    prism with `sides` sides about the box's vertical axis (a pin)."""
+    prism with `sides` sides about the box's vertical axis (a pin); `more`: further boxes
+    (low, high) or (low, high, material) in the same mesh (a lid over a termination, a
+    ceramic body). `open_top`: the box without its top face (fused into a body on it, as
+    KiCad's STEP models come out). `lean`: the box's bottom moved this far (x, y) from its
+    top (a snap-in leg slanting through a hole)."""
     if sides:
         centre = (np.asarray(low) + np.asarray(high)) / 2
         radius = (high[0] - low[0]) / 2
@@ -63,13 +76,25 @@ def part(name, footprint_id, side, low, high, made, role=None, sides=0):
         faces = [list(range(sides))[::-1], list(range(sides, 2 * sides))]
         faces += [[k, (k + 1) % sides, sides + (k + 1) % sides, sides + k] for k in range(sides)]
     else:
-        (x0, y0, z0), (x1, y1, z1) = low, high
-        vertices = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
-                    (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
-        faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
+        vertices, faces = box(low, high)
+        if open_top:
+            faces = faces[:1] + faces[2:]
+        if lean is not None:
+            vertices = [(x + lean[0], y + lean[1], z) if index < 4 else (x, y, z)
+                        for index, (x, y, z) in enumerate(vertices)]
+    materials, slots = [made], [0] * len(faces)
+    for more_low, more_high, *other in more:
+        more_vertices, more_faces = box(more_low, more_high)
+        faces = [*faces, *[[len(vertices) + index for index in face] for face in more_faces]]
+        vertices = [*vertices, *more_vertices]
+        if other and other[0] not in materials:
+            materials.append(other[0])
+        slots += [materials.index(other[0]) if other else 0] * len(more_faces)
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(vertices, [], faces)
-    mesh.materials.append(made)
+    for material_ in materials:
+        mesh.materials.append(material_)
+    mesh.polygons.foreach_set("material_index", slots)
     obj = bpy.data.objects.new(name, mesh)
     link_owned(obj, "components")
     obj["kls_model_fp_id"] = footprint_id
@@ -213,6 +238,146 @@ def main():
     bpy.context.view_layer.update()
     assert build(bottom)[1]["wetted"] == 1
 
+    # A crystal's termination (0.1 mm high, over the pad's left 30 %) under a metal lid over
+    # the whole pad, in one mesh: the solder climbs the termination, not to the lid
+    state.board.model_objects_by_fp[J3].remove(end.name)
+    pad = coordinates(top)[:, :2]
+    low, high = pad.min(axis=0), pad.max(axis=0)
+    seat = top.location.z - 3e-6
+    edge = low[0] + 0.3 * (high[0] - low[0])
+    termination = 0.1e-3
+    crystal = part("J3 crystal", J3, "top", (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (edge, high[1] + 0.1e-3, seat + termination),
+                   tin, more=[((low[0] - 0.3e-3, low[1] - 0.3e-3, seat + 0.4e-3), (high[0] + 0.3e-3, high[1] + 0.3e-3, seat + 0.45e-3))])
+    bpy.context.view_layer.update()
+    _, stats = build(top)
+    rise = coordinates(flowed_top)[:, 2] - top.location.z
+    assert stats["wetted"] == 1 and 0.5 * termination < rise.max() <= termination + 1e-6, (stats, rise.max())
+    # A lower lid (0.25 mm up, in MAX_GAP_M's reach) on a ceramic body over the termination,
+    # joined to it round the outside by a metal post (one piece of metal, as a crystal's
+    # castellation joins pad and seal ring): out of the solder's reach through the ceramic
+    state.board.model_objects_by_fp[J3].remove(crystal.name)
+    wide = (low[0] - 0.3e-3, low[1] - 0.3e-3), (high[0] + 0.3e-3, high[1] + 0.3e-3)
+    lid = [((*wide[0], seat + 0.25e-3), (*wide[1], seat + 0.3e-3)),
+           ((*wide[0], seat), (low[0] - 0.2e-3, low[1] - 0.1e-3, seat + 0.25e-3))]  # the post: corners on both
+    crystal = part("J3 crystal", J3, "top", (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (edge, high[1] + 0.1e-3, seat + termination),
+                   tin, more=[*lid, ((*wide[0], seat + termination), (*wide[1], seat + 0.25e-3), epoxy)])
+    bpy.context.view_layer.update()
+    _, stats = build(top)
+    rise = coordinates(flowed_top)[:, 2] - top.location.z
+    assert stats["wetted"] == 1 and 0.5 * termination < rise.max() <= termination + 1e-6, (stats, rise.max())
+    # The termination's top fused into the body on it (no face there, as KiCad's STEP models
+    # come out): it still reaches the top of that piece of metal
+    state.board.model_objects_by_fp[J3].remove(crystal.name)
+    crystal = part("J3 crystal", J3, "top", (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (edge, high[1] + 0.1e-3, seat + termination),
+                   tin, more=[((*wide[0], seat + termination), (*wide[1], seat + 0.25e-3), epoxy)], open_top=True)
+    bpy.context.view_layer.update()
+    _, stats = build(top)
+    rise = coordinates(flowed_top)[:, 2] - top.location.z
+    assert stats["wetted"] == 1 and 0.5 * termination < rise.max() <= termination + 1e-6, (stats, rise.max())
+    # The same, its metal running on past the pad in one piece up to 0.4 mm (a crystal's pads,
+    # castellations and seal ring; a QFN's lead frame): the termination's own walls are its
+    # height there, not that piece's tallest part
+    state.board.model_objects_by_fp[J3].remove(crystal.name)
+    corner = (low[0] - 0.2e-3, low[1] - 0.1e-3, seat + termination)  # the termination's top corner: one piece
+    crystal = part("J3 crystal", J3, "top", (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (edge, high[1] + 0.1e-3, seat + termination),
+                   tin, more=[(corner, (high[0] + 1e-3, low[1] - 0.05e-3, seat + 0.4e-3))], open_top=True)
+    bpy.context.view_layer.update()
+    _, stats = build(top)
+    rise = coordinates(flowed_top)[:, 2] - top.location.z
+    assert stats["wetted"] == 1 and 0.5 * termination < rise.max() <= termination + 1e-6, (stats, rise.max())
+    # A termination over all but the pad's last 0.04 mm: the solder in front barely climbs
+    # it, no wall (under the termination it is hidden)
+    state.board.model_objects_by_fp[J3].remove(crystal.name)
+    crystal = part("J3 crystal", J3, "top", (low[0] - 0.2e-3, low[1] - 0.1e-3, seat),
+                   (high[0] - 0.04e-3, high[1] + 0.1e-3, seat + termination), tin)
+    bpy.context.view_layer.update()
+    _, stats = build(top)
+    co = coordinates(flowed_top)
+    rise = (co[:, 2] - top.location.z)[co[:, 0] > high[0] - 0.04e-3 + 1e-6]
+    assert stats["wetted"] == 1 and 0 < rise.max() <= solder.MAX_SLOPE * 0.04e-3 + 1e-6, (stats, rise.max())
+    # A QFN's short, thin lead (0.05 mm high, over the pad's left 20 %): what a fillet up to
+    # it cannot hold goes under the part, never bulging past the lead
+    state.board.model_objects_by_fp[J3].remove(crystal.name)
+    edge = low[0] + 0.2 * (high[0] - low[0])
+    lead = 0.05e-3
+    thin = part("J3 lead", J3, "top", (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (edge, high[1] + 0.1e-3, seat + lead), tin)
+    bpy.context.view_layer.update()
+    _, stats = build(top)
+    rise = coordinates(flowed_top)[:, 2] - top.location.z
+    assert stats["wetted"] == 1 and 0.5 * lead < rise.max() <= lead + 1e-6, (stats, rise.max())
+    state.board.model_objects_by_fp[J3].remove(thin.name)
+
+    def rise_with(*made):
+        bpy.context.view_layer.update()
+        solder.forget()
+        stats = build(top)[1]
+        co = coordinates(flowed_top)
+        for obj in made:
+            state.board.model_objects_by_fp[J3].remove(obj.name)
+        assert np.isfinite(co).all() and stats["wetted"] == 1, stats
+        return (co[:, 2] - top.location.z).max()
+
+    edge = low[0] + 0.3 * (high[0] - low[0])
+    termination_box = (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (edge, high[1] + 0.1e-3, seat + termination)
+    # A fused termination 0.5 mm high (a terminal block), its mesh turned so its own up is y (a
+    # model rotated in its footprint, or drawn y-up): the same fillet as unturned
+    tall = 0.5e-3
+    rises = []
+    for turn in (None, Matrix.Rotation(math.pi / 2, 4, "X")):
+        block = part("J3 block", J3, "top", termination_box[0], (edge, high[1] + 0.1e-3, seat + tall), tin,
+                     more=[((*wide[0], seat + tall), (*wide[1], seat + 0.7e-3), epoxy)], open_top=True)
+        if turn is not None:
+            block.data.transform(turn.inverted())
+            block.matrix_world = turn
+        rises.append(rise_with(block))
+    assert rises[0] > 0.1e-3 and abs(rises[1] - rises[0]) < 0.02 * rises[0], rises
+    # A big board's coarse grid (few points per aperture): the fused termination's top still found
+    budget, solder.POINT_BUDGET = solder.POINT_BUDGET, 1
+    rise = rise_with(part("J3 crystal", J3, "top", *termination_box, tin,
+                          more=[((*wide[0], seat + termination), (*wide[1], seat + 0.25e-3), epoxy)], open_top=True))
+    solder.POINT_BUDGET = budget
+    assert 0.25 * termination < rise <= termination + 1e-6, rise  # (a coarse grid: the first points out lower)
+    # The lower lid's ceramic body a separate object of the footprint (a model in several
+    # objects): still out of the solder's reach
+    rise = rise_with(part("J3 crystal", J3, "top", *termination_box, tin, more=lid),
+                     part("J3 body", J3, "top", (*wide[0], seat + termination), (*wide[1], seat + 0.25e-3), epoxy))
+    assert 0.5 * termination < rise <= termination + 1e-6, rise
+    # A ceramic body running 0.04 mm into a closed termination 0.3 mm high (unfused solids): the
+    # termination's own top still counts, as without the body
+    cap = (low[0] - 0.2e-3, low[1] - 0.1e-3, seat), (middle, high[1] + 0.1e-3, seat + height)
+    bare = rise_with(part("J3 cap", J3, "top", *cap, tin))
+    ceramic = ((low[0] - 1.0e-3, low[1] - 0.08e-3, seat + 0.04e-3), (middle - 0.02e-3, high[1] + 0.08e-3, seat + height - 0.04e-3),
+               epoxy)
+    rise = rise_with(part("J3 cap", J3, "top", *cap, tin, more=[ceramic]))
+    assert rise > 0.9 * bare, (rise, bare)
+    # One pad with two paste windows, the termination over the first: solder in both, finite
+    pad_id, ring, _ = solder._rings(top)[0]
+    span = np.ptp(ring[:, 0])
+
+    def window(start, end):
+        x0, x1 = ring[:, 0].min() + start * span, ring[:, 0].min() + end * span
+        return np.array(((x0, ring[:, 1].min()), (x1, ring[:, 1].min()), (x1, ring[:, 1].max()), (x0, ring[:, 1].max()))), False
+
+    cover = part("J3 cap", J3, "top", *cap, tin)
+    bpy.context.view_layer.update()
+    made = solder._aperture([window(0.0, 0.4), window(0.6, 1.0)], 1.0, np.array(solder.poses.in_root(top), dtype=np.float64),
+                            solder._parts(), solder.stencil_thickness() * solder.SOLDER_FRACTION, 400)
+    state.board.model_objects_by_fp[J3].remove(cover.name)
+    assert made is not None and made[3] and np.isfinite(made[0]).all()
+    # Along a metal's edge a tall piece beside a thin plate (a crystal's corner piece on its
+    # bottom plate): the height the fillet climbs to ramps up from the plate no steeper than
+    # MAX_SLOPE, no step (no spike in the notch between them)
+    along = np.column_stack((np.arange(41) * 10e-6, np.zeros(41)))
+    climbs = solder._local_heights(along, np.where(along[:, 0] < 0.2e-3, 0.05e-3, 0.3e-3), np.ones(41, bool),
+                                   np.ones(41, bool), 0.1e-3)
+    assert np.abs(np.diff(climbs)).max() <= solder.MAX_SLOPE * 10e-6 + 1e-9 and climbs[-1] > 0.2e-3, climbs
+    # How far in from the pad's edge a fillet may rise (`_soft_edge`): beside one long edge the
+    # plain distance, across a narrow pad a smooth arch (no ridge, no tent down its middle)
+    strip = np.array(((0.0, 0.0), (4e-3, 0.0), (4e-3, 0.3e-3), (0.0, 0.3e-3)))
+    across = np.column_stack((np.full(31, 2e-3), np.linspace(0.0, 0.3e-3, 31)))
+    soft = solder._soft_edge(across, strip, np.roll(strip, -1, axis=0))
+    assert abs(soft[1] - 0.01e-3) < 0.1e-6 and np.abs(np.diff(np.diff(soft) / 0.01e-3)).max() < 0.5, soft
+
     # Through-hole: J1's plated hole (2 x 1 mm slot) with a pin from its part on top: the
     # barrel filled, a fillet under the board up the pin, a thinner one on top
     drill = next(obj for obj in objects if obj.get("kls_drill") and obj.get("kls_id", "").startswith("5555"))
@@ -248,6 +413,16 @@ def main():
     bpy.context.view_layer.update()
     solder.refresh()
     assert solder.last_build()["joints"] == 0
+    # A blade (1.7 x 0.4 mm) on that pad: its fillet an even band round it, the corners rounded
+    # (not its outline blown up from the middle, the corners reaching further)
+    band = part("J1 band", J1, "top", (x - 0.85e-3, y - 0.2e-3, z_bottom - 2e-3), (x + 0.85e-3, y + 0.2e-3, z_top + 4e-3), tin)
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    outer = coordinates(objects[joint]).reshape(solder.THT_ANGLES, -1, 3)[:, 3, :2] - (x, y)  # the fillet's edge
+    away = np.hypot(np.maximum(np.abs(outer[:, 0]) - 0.85e-3, 0.0), np.maximum(np.abs(outer[:, 1]) - 0.2e-3, 0.0))
+    assert np.ptp(away) < 0.05 * away.max(), (away.min(), away.max())  # (the pin found at THT_ANGLES points)
+    state.board.model_objects_by_fp[J1].remove(band.name)
 
     # A blade pin (1.7 x 0.4 mm) in the slot on a narrow pad (2.4 x 1.2 mm): it reaches past
     # the pad's narrowest (0.6 mm), and the fillet still runs in towards it, never back out
@@ -264,13 +439,42 @@ def main():
         co[ring, :2] = np.array(corners)[:len(ring)] + (x, y)
         pads.data.vertices.foreach_set("co", co.ravel())
         pads.data.update()
-    part("J1 blade", J1, "top", (x - 0.85e-3, y - 0.2e-3, z_bottom - 2e-3), (x + 0.85e-3, y + 0.2e-3, z_top + 4e-3), tin)
+    blade = part("J1 blade", J1, "top", (x - 0.85e-3, y - 0.2e-3, z_bottom - 2e-3), (x + 0.85e-3, y + 0.2e-3, z_top + 4e-3), tin)
     bpy.context.view_layer.update()
     solder.refresh()
     assert solder.last_build()["joints"] == 1
     profiles = coordinates(objects[joint]).reshape(solder.THT_ANGLES, -1, 3)
     out = np.hypot(profiles[..., 0] - x, profiles[..., 1] - y)[:, 3:4 + solder.THT_STEPS]  # its fillet, edge to pin
     assert (np.diff(out, axis=1) <= 1e-9).all(), np.diff(out, axis=1).max()
+    assert signed_volume(objects[joint]) > 0
+    # The blade beside the hole's centre (a shield tab, a bent leg: 0.05 mm off it): still a
+    # joint, its inner wall on the blade
+    blade.location.y += 0.25e-3
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    inner = coordinates(objects[joint]).reshape(solder.THT_ANGLES, -1, 3)[:, 3 + solder.THT_STEPS:5 + solder.THT_STEPS, :2]
+    assert (np.abs(inner[..., 0] - x) <= 0.85e-3 + 1e-6).all(), np.abs(inner[..., 0] - x).max()
+    assert ((inner[..., 1] - y >= 0.05e-3 - 1e-6) & (inner[..., 1] - y <= 0.45e-3 + 1e-6)).all(), np.ptp(inner[..., 1])
+    assert signed_volume(objects[joint]) > 0
+    # A blade slanting through the hole (a snap-in leg: 0.35 mm across its length, 0.06 mm
+    # through the board): each fillet hugs it where it leaves that face, and the solder
+    # side's climbs it
+    state.board.model_objects_by_fp[J1].remove(blade.name)
+    reach = 1.5e-3
+    part("J1 leg", J1, "top", (x - 0.85e-3, y - 0.2e-3, z_bottom - reach), (x + 0.85e-3, y + 0.2e-3, z_top + reach), tin,
+         lean=(0.0, 0.35e-3))
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    profiles = coordinates(objects[joint]).reshape(solder.THT_ANGLES, -1, 3)
+    shift = 0.35e-3 * (z_top + reach - z_bottom) / (z_top - z_bottom + 2 * reach)  # the leg's, at the solder side
+    inner = profiles[:, 3 + solder.THT_STEPS, 1] - y  # the bottom fillet's inner edge, on the leg
+    assert ((inner >= shift - 0.2e-3 - 1e-5) & (inner <= shift + 0.2e-3 + 1e-5)).all(), (inner.min(), inner.max(), shift)
+    shift = 0.35e-3 * reach / (z_top - z_bottom + 2 * reach)  # the leg's, at the part's side
+    inner = profiles[:, 4 + solder.THT_STEPS, 1] - y  # the part-side fillet's inner edge, on the leg too
+    assert ((inner >= shift - 0.2e-3 - 1e-5) & (inner <= shift + 0.2e-3 + 1e-5)).all(), (inner.min(), inner.max(), shift)
+    assert z_bottom - profiles[..., 2].min() > 0.05e-3, z_bottom - profiles[..., 2].min()  # a fillet, not a film
     assert signed_volume(objects[joint]) > 0
 
     # No timers run in background mode: a switch builds the solder at once, and a script

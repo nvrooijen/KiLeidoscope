@@ -3,17 +3,24 @@
 One rule for every SMD package: the solder on a pad is a height map. A grid of points
 over the aperture (KiCad's F.Paste/B.Paste pad shape) looks straight out from the copper:
 
-- metal within MAX_GAP_M: the point is under a lead or termination; solder fills up to it.
-- otherwise the height falls off with the flat distance r to that metal and d to the
-  aperture's edge, h = climb * (d / (r + d))^2: `climb` against the lead, 0 at the edge,
-  and never higher than the metal it climbs (what is left over bulges on the pad).
+- metal within MAX_GAP_M: the point is under a lead or termination; solder fills a
+  standoff up to it (GAP_FILL_M).
+- otherwise one smooth meniscus: h = share * climb * u^2, u the smoothest surface
+  (harmonic) from 1 at the metal to 0 where the pad ends far ahead of it (`_far_edge`),
+  `climb` how high the metal typically stands along its edge (the median, a little under
+  its top): falling off away from it, round its corners too; and up from the pad's edge no
+  steeper than MAX_SLOPE.
 
-`climb` is set per aperture so the fillet holds the solder the stencil prints there:
-aperture area x stencil thickness x SOLDER_FRACTION. An aperture with no known metal over
-it (no part, an excluded DNP part, a model whose metal is not marked) gets a dome holding
-the same solder. Apertures alike under the same model, placed alike, share one solder.
+`share` (0..1) is set per aperture so the fillet holds the solder the stencil prints there
+(aperture area x stencil thickness x SOLDER_FRACTION); what it cannot hold goes under the
+part (hidden), as the part floats on it. A metal's top is that piece's own (`_pieces`: not a
+lid or seal ring over it), not behind the footprint's body (`_Body`), and where it is fused
+into the body as high as that piece stands right round it (`_local_top`). An aperture with
+no known metal over it (no part, an excluded DNP part, a model whose metal is not marked)
+gets a dome holding the same solder. Apertures alike under the same model, placed alike,
+share one solder.
 
-A plated hole with a pin in it gets a through-hole joint from the board instead (no paste):
+A plated hole with a pin in it (anywhere in it) gets a through-hole joint from the board instead (no paste):
 the barrel filled, a concave fillet up the pin on the solder side, a thinner one on the
 part's side (`build_through_hole`).
 
@@ -28,6 +35,7 @@ What counts as metal, best first:
 
 import contextlib
 import time
+from collections import namedtuple
 
 import bpy
 import numpy as np
@@ -65,13 +73,27 @@ TARGET_STEP = 8  # the target in steps: a pad more or less seldom changes it
 KEY_RESOLUTION_M = 1e-7  # apertures and parts placed alike to this share one solder
 ROW_CLEARANCE = 0.9  # grid points nearer the aperture's edge than this many spacings give way to a
                      # row of points along the edge, half a spacing in
-CAP_REACH = 3  # a fillet climbs as high as the metal this many spacings past its nearest point
 SMOOTH_ROUNDS = 6  # of the finished surface
-TOP_INSET_M = 20e-6  # under a lead, the surface stays this far under the metal's top (hidden)
+TOP_INSET_M = 5e-6  # the solder stays this far under its metal's top: never level with its face
 SOLDER_FRACTION = 0.5  # of the printed paste's volume, solder after reflow (SAC paste: ~88 % metal
                        # by weight, about half by volume; the flux leaves)
 MAX_CLIMB_M = 0.6e-3
 MAX_DOME_M = 0.35e-3
+MAX_SLOPE = 1.0  # a fillet rises from the pad's edge no steeper than this (45 degrees)
+HARMONIC_ROUNDS = 200  # conjugate-gradient steps at most, for a meniscus's shape
+HARMONIC_TOLERANCE = 1e-3  # done when what is left over is this share of the start
+OUTLINE_HALVINGS = 5  # finding where the metal ends between a point under it and a free one
+EDGE_ROUNDS = 3  # smoothing the metal's height along its edge (a chamfer, a grazing ray)
+GAP_FILL_M = 0.05e-3  # under a lead, solder fills a gap (a standoff) up to this; metal further up stays clear
+LOCAL_REACH_M = 0.1e-3  # how far along the metal's edge its typical height is taken
+FAR_EDGE = 0.5  # of the farthest edge vertex's distance from the metal: from there on the meniscus ends
+SOFT_MIN = 4  # the rounding of a soft minimum (higher: sharper)
+WELD = 1e-6  # of a part's size: corners nearer than this are one (a model's faces each have their own)
+MAX_LAYERS = 16  # pieces of other metal (a lid, a seal ring) passed coming down to a lead's top
+NUDGE_M = 1e-7  # past a face, before a ray goes on
+BODY_SLACK_M = 25e-6  # a part's body face this near a lead's face is level with it (a QFN's flush leads)
+SAME_FACE_M = 1e-6  # coming down, a face this near where the ray came in is that face
+LOCAL_TOP_M = 0.05e-3  # a fused termination's top: the highest of its metal this near
 SETTLE_S = 0.4  # after a change, before the solder is built again
 NAME = "KLS {layer} solder reflowed"
 THT_NAME = "KLS THT solder reflowed"
@@ -84,6 +106,10 @@ PIN_HITS = 0.75  # of the rays across a hole that must meet metal for a pin to b
 PIN_SLACK_M = 0.05e-3  # past the hole's wall, a ray may still meet the pin (a model's pin a bit large)
 PIN_REACH_M = 10e-3  # how far along a pin its end is looked for
 PIN_INSET_M = 20e-6
+FOLLOW_STEPS = 8  # from mid-board to a face, following a slanting pin (a step well under its width)
+FACE_PROBE_M = 50e-6  # each face's fillet hugs the pin where it is this far inside the board
+FACE_HITS = 0.25  # of the rays from inside a pin near a face (boxed in by it: `_pin_middle`) that must meet it;
+                  # the others meet the drill's wall first (a leg pressed into it)
 WALL_GAP_M = 10e-6  # the barrel's solder stops this far inside the drill (the plated wall's face)
 WET_FILM_M = 15e-6  # solder on a through-hole pad's corners, past the round fillet
 
@@ -92,8 +118,11 @@ MIN_FILLET_M = 0.05e-3  # a through-hole fillet starts at least this far out fro
 
 # Keyed by Blender pointers (and names): `forget` drops them whenever Blender may have
 # freed and reused those addresses (a file loaded, an undo, new model meshes imported).
-_trees = {}  # (mesh pointer and name, sizes, metal faces) -> BVHTree of a model part's metal, or None
+_trees = {}  # (mesh pointer and name, sizes, metal faces) -> (BVHTree of a model part's metal, or None,
+             # its pieces, its body or None)
 _waiting = set()  # boards (slots) whose build the `_settled` timer runs
+_seen_along = {}  # (a piece's triangles, piece, up) -> them seen along `up` (`_local_top`)
+_faces = {}  # a model part's mesh, sizes and materials -> its faces that are not metal, or None
 
 
 class _Builds:
@@ -106,6 +135,7 @@ class _Builds:
         self.generation = 0
         self.sides = {}  # side (outward) or THT -> its last build: per pad its solder, and the mesh's layout
         self.stats = {}  # side ("F", "B") or THT -> its last build's numbers; "latest": which built last
+        self.bodies = {}  # footprint -> its body (`_Body`), while its objects stay as they are
         self.due = None  # when a change asked for a build (time.monotonic()), or None
 
 
@@ -183,6 +213,8 @@ def forget(*_args):
     """Blender freed IDs (a file loaded, an undo or redo, new model meshes imported): drop
     everything kept by their addresses; the next build starts over."""
     _trees.clear()
+    _seen_along.clear()
+    _faces.clear()
     for state in boards.values():
         if state.solder is not None:
             due = state.solder.due
@@ -426,8 +458,8 @@ def _key(rings, frame, over, settings):
                               / KEY_RESOLUTION_M).astype(np.int64).tobytes() + bytes([hole]) for points, hole in rings)
     if over:
         first = min(over, key=lambda part: (part[5][0], part[5][1]))
-        placed = tuple(sorted((part[5][0], np.round((first[2] @ part[1]) / KEY_RESOLUTION_M).astype(np.int64)
-                               .tobytes()) for part in over))
+        placed = tuple(sorted((part[5][0], part[5][2], np.round((first[2] @ part[1]) / KEY_RESOLUTION_M)
+                               .astype(np.int64).tobytes()) for part in over))
     else:
         placed = ()
     return shape, placed, settings
@@ -471,18 +503,128 @@ def is_metal(material):
     return any(all(abs(a - b) <= COLOUR_TOLERANCE for a, b in zip(srgb, metal)) for metal in METAL_SRGB)
 
 
+Pieces = namedtuple("Pieces", "face low high triangles")  # `_pieces`
+
+
+def _pieces(co, corners):
+    """Per triangle, which piece of metal it is part of, numbered from 0 (`face`): triangles
+    meeting at a corner are one piece. A model's faces each have their own vertices, so
+    corners at the same point count as one (to WELD of the part's size). With each piece's
+    box (`low`, `high` corners) and the triangles' corners (`triangles`), in the mesh's
+    coordinates."""
+    if not len(corners):
+        return Pieces(np.zeros(0, np.int64), np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3, 3)))
+    used = np.unique(corners)
+    extent = max(float(np.ptp(co[used], axis=0).max()), 1e-12)
+    cells = np.round(co[used] / (extent * WELD)).astype(np.int64)
+    cells -= cells.min(axis=0)
+    _, welded = np.unique(np.ravel_multi_index(cells.T, cells.max(axis=0) + 1), return_inverse=True)
+    welded = welded.ravel()[np.searchsorted(used, corners)]
+    parent = np.arange(int(welded.max()) + 1)
+    a, b = np.concatenate((welded[:, 0], welded[:, 1])), np.concatenate((welded[:, 1], welded[:, 2]))
+    while True:  # each piece's corners point at its lowest one
+        root_a, root_b = parent[a], parent[b]
+        if np.array_equal(root_a, root_b):
+            break
+        lowest = np.minimum(root_a, root_b)
+        np.minimum.at(parent, root_a, lowest)
+        np.minimum.at(parent, root_b, lowest)
+        while True:
+            jumped = parent[parent]
+            if np.array_equal(jumped, parent):
+                break
+            parent = jumped
+    _, piece = np.unique(parent[welded[:, 0]], return_inverse=True)
+    piece = piece.ravel()
+    points = co[corners]
+    lows, highs = np.full((piece.max() + 1, 3), np.inf), np.full((piece.max() + 1, 3), -np.inf)
+    np.minimum.at(lows, piece, points.min(axis=1))
+    np.maximum.at(highs, piece, points.max(axis=1))
+    return Pieces(piece, lows, highs, points)
+
+
+class _Body:
+    """A footprint's faces that are not metal, of all its model's objects (an assembly comes
+    as several: "Body", "PinK", ...), in the board root's space: metal behind them is out of
+    the solder's reach. Their BVH is built when first cast at. `signature`: what it was made
+    from (`_parts`)."""
+
+    def __init__(self, members, signature):
+        self._members = members  # [(vertices, faces that are not metal, matrix into the root)]
+        self._tree = None
+        self.signature = signature
+
+    def ray_cast(self, origin, direction, distance):
+        """Where a ray from `origin` along `direction` (board root's space) first meets the body
+        within `distance`: BVHTree.ray_cast's (location, normal, index, distance)."""
+        if self._tree is None:
+            vertices, faces, offset = [], [], 0
+            for co, corners, matrix in self._members:
+                vertices.append(co @ matrix[:3, :3].T + matrix[:3, 3])
+                faces.append(corners + offset)
+                offset += len(co)
+            self._tree = BVHTree.FromPolygons(np.concatenate(vertices).tolist(), np.concatenate(faces).tolist(),
+                                              all_triangles=True)
+            self._members = None
+        return self._tree.ray_cast(origin, direction, distance)
+
+
+class _BodyView:
+    """A footprint's body (`_Body`) seen from one of its parts: rays in that part's own
+    coordinates (`matrix`: from them into the root's)."""
+
+    def __init__(self, body, matrix):
+        self.body, self.matrix = body, matrix
+
+    def ray_cast(self, origin, direction, distance):
+        along = self.matrix[:3, :3] @ np.array(direction)
+        stretch = float(np.linalg.norm(along))
+        hit = self.body.ray_cast(Vector(self.matrix[:3, :3] @ np.array(origin) + self.matrix[:3, 3]),
+                                 Vector(along / stretch), distance * stretch)
+        return hit if hit[0] is None else (hit[0], hit[1], hit[2], hit[3] / stretch)
+
+
+def _body_faces(obj):
+    """One model part's faces that are not metal, in its mesh's own coordinates: (vertices,
+    triangles), or None. A parts pack's case is all body, its contacts none."""
+    role = obj.get("kls_role")
+    if role == CONTACTS:
+        return None
+    mesh = obj.data
+    flags = (False,) if role is not None else tuple(is_metal(slot.material) for slot in obj.material_slots)
+    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags)
+    if key not in _faces:
+        mesh.calc_loop_triangles()
+        count = len(mesh.loop_triangles)
+        corners = np.empty(count * 3, np.int32)
+        mesh.loop_triangles.foreach_get("vertices", corners)
+        corners = corners.reshape(-1, 3)
+        if role is None and flags:
+            slots = np.empty(count, np.int32)
+            mesh.loop_triangles.foreach_get("material_index", slots)
+            corners = corners[~np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
+        found = None
+        if len(corners):
+            co = np.empty(len(mesh.vertices) * 3, np.float64)
+            mesh.vertices.foreach_get("co", co)
+            found = (co.reshape(-1, 3), corners)
+        _faces[key] = found
+    return _faces[key]
+
+
 def _metal_tree(obj):
     """A BVH of one model part's metal faces, in its mesh's own coordinates (None without
-    any), and its cache key. Parts sharing a mesh and materials share it."""
+    any), the piece of metal each of its faces is part of (`_pieces`) and their cache key.
+    Parts sharing a mesh and materials share them."""
     role = obj.get("kls_role")
     if role is not None and role != CONTACTS:
-        return None, None
+        return None, None, None
     mesh = obj.data
     flags = (True,) if role == CONTACTS else tuple(is_metal(slot.material) for slot in obj.material_slots)
     key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags)
     if key in _trees:
-        return _trees[key], key
-    tree = None
+        return (*_trees[key], key)
+    tree = pieces = None
     if any(flags):
         mesh.calc_loop_triangles()
         count = len(mesh.loop_triangles)
@@ -492,25 +634,30 @@ def _metal_tree(obj):
         if role != CONTACTS:
             slots = np.empty(count, np.int32)
             mesh.loop_triangles.foreach_get("material_index", slots)
-            metal = np.array(flags, bool)
-            corners = corners[metal[np.clip(slots, 0, len(metal) - 1)]] if len(metal) else corners[:0]
+            corners = corners[np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
         if len(corners):
             co = np.empty(len(mesh.vertices) * 3, np.float64)
             mesh.vertices.foreach_get("co", co)
-            tree = BVHTree.FromPolygons(co.reshape(-1, 3).tolist(), corners.tolist(), all_triangles=True)
-    _trees[key] = tree
-    return tree, key
+            co = co.reshape(-1, 3)
+            tree = BVHTree.FromPolygons(co.tolist(), corners.tolist(), all_triangles=True)
+            pieces = _pieces(co, corners)
+    _trees[key] = (tree, pieces)
+    return tree, pieces, key
 
 
 def _parts(objects=None):
     """Model parts on the board (shown by KiCad, not an excluded DNP part) that have metal:
-    (tree, matrix, its inverse, box min, max, what an aperture's solder depends on: the tree
-    and where it is, the board side the part is on), in the board root's space: wherever the
-    board stands, its solder is the same. `objects`: the board's, if already at hand.
+    (tree, matrix, its inverse, box min, max, what an aperture's solder depends on: the tree,
+    where it is and its footprint's body, its pieces of metal (`_pieces`), its footprint's
+    body (`_BodyView`, or None), the board side the part is on), in the board root's space:
+    wherever the board stands, its solder is the same. `objects`: the board's, if already at
+    hand.
 
     Each part is looked at again only when it changed (moved, shown or hidden, other mesh or
-    materials); the boxes where parts changed, appeared or went are logged in `_s().moves`."""
+    materials); the boxes where parts changed, appeared or went are logged in `_s().moves`,
+    those of a footprint's parts without metal too (its body)."""
     found, changed, seen = [], [], set()
+    members = {}  # footprint -> [(what each shown object of its model is now, the object)]
     # Bound now: a part left behind (its footprint gone, its model changed, waiting for the
     # next export) stays in the scene, hidden, and must not hold solder meanwhile
     bound = {name for names in board.model_objects_by_fp.values() for name in names}
@@ -528,31 +675,57 @@ def _parts(objects=None):
         now = (obj.name in bound and models.model_is_visible(frame, obj), obj.data.as_pointer(), matrix.tobytes(),
                tuple(slot.material.as_pointer() if slot.material else 0 for slot in obj.material_slots),
                obj.get("kls_role"))
+        if now[0]:
+            members.setdefault(footprint_id, []).append((now, obj, matrix))
         known = _s().known.get(pointer)
         if known is not None and known[0] == now:
             if known[1] is not None:
-                found.append(known[1])
+                found.append((footprint_id, known[1]))
             continue
-        part = None
+        part = box = None
         if now[0]:
-            tree, key = _metal_tree(obj)
+            corners = np.array([tuple(corner) for corner in obj.bound_box], dtype=np.float64)
+            world = corners @ matrix[:3, :3].T + matrix[:3, 3]
+            box = (world.min(axis=0), world.max(axis=0))
+            tree, pieces, key = _metal_tree(obj)
             if tree is not None:
-                corners = np.array([tuple(corner) for corner in obj.bound_box], dtype=np.float64)
-                world = corners @ matrix[:3, :3].T + matrix[:3, 3]
-                part = (tree, matrix, np.linalg.inv(matrix), world.min(axis=0), world.max(axis=0),
-                        (key, matrix.round(9).tobytes()), obj.get("kls_side", "top"))
-        changed += [(entry[3], entry[4]) for entry in (known[1] if known else None, part) if entry is not None]
-        _s().known[pointer] = (now, part)
+                part = (tree, matrix, np.linalg.inv(matrix), box[0], box[1], (key, matrix.round(9).tobytes()), pieces,
+                        None, obj.get("kls_side", "top"))
+        changed += [entry for entry in (known[2] if known else None, box) if entry is not None]
+        _s().known[pointer] = (now, part, box)
         if part is not None:
-            found.append(part)
+            found.append((footprint_id, part))
     for pointer in [pointer for pointer in _s().known if pointer not in seen]:
-        gone = _s().known.pop(pointer)[1]
+        gone = _s().known.pop(pointer)[2]
         if gone is not None:
-            changed.append((gone[3], gone[4]))
+            changed.append(gone)
     if changed:
         _s().generation += 1
         _s().moves.extend((_s().generation, low, high) for low, high in changed)
-    return found
+    bodies = {}
+    for footprint_id, shown in members.items():
+        signature = hash(tuple(now for now, _, _ in shown))
+        last = _s().bodies.get(footprint_id)
+        if last is None or last.signature != signature:
+            made = [(*faces, matrix) for faces, matrix in ((_body_faces(obj), matrix) for _, obj, matrix in shown)
+                    if faces is not None]
+            last = _Body(made, signature)
+            last.empty = not made
+            # what an aperture's solder depends on: the body's objects as placed against its
+            # first, not where the footprint stands (moved, it keeps its solder)
+            first = np.linalg.inv(shown[0][2])
+            last.shape = hash(tuple((now[1], now[3], now[4], np.round((first @ matrix) / KEY_RESOLUTION_M)
+                                     .astype(np.int64).tobytes()) for now, _, matrix in shown))
+            _s().bodies[footprint_id] = last
+        bodies[footprint_id] = last
+    for footprint_id in [footprint_id for footprint_id in _s().bodies if footprint_id not in members]:
+        del _s().bodies[footprint_id]
+    parts = []
+    for footprint_id, part in found:
+        body = bodies.get(footprint_id)
+        view = None if body is None or body.empty else _BodyView(body, part[1])
+        parts.append((*part[:5], (*part[5][:2], body.shape if body is not None else 0), part[6], view, part[8]))
+    return parts
 
 
 def _moved(consumer):
@@ -615,6 +788,45 @@ def _inside(points, starts, ends):
     return np.count_nonzero(crosses & (x < at), axis=1) % 2 == 1
 
 
+def _harmonic(count, triangles, fixed, values, rounds=HARMONIC_ROUNDS):
+    """Per vertex of a mesh (`count` of them, `triangles`), `values` where `fixed`, and
+    between them the smoothest blend: each other vertex the mean of its neighbours (a
+    membrane pinned at the fixed ones), solved by conjugate gradients. A stretch reaching no
+    fixed vertex stays 0."""
+    pairs = np.sort(np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]])), axis=1)
+    edges = np.unique(pairs[:, 0] * count + pairs[:, 1])
+    a, b = edges // count, edges % count
+    loose = ~fixed
+    degree = (np.bincount(a, minlength=count) + np.bincount(b, minlength=count)).astype(float)
+    scale = np.where(loose & (degree > 0), 1.0 / np.maximum(degree, 1.0), 0.0)  # Jacobi
+
+    def neighbours(x):
+        return np.bincount(a, weights=x[b], minlength=count) + np.bincount(b, weights=x[a], minlength=count)
+
+    residual = np.where(loose, neighbours(np.where(fixed, values, 0.0)), 0.0)  # x = 0 to start
+    x = np.zeros(count)
+    tilted = scale * residual
+    direction = tilted.copy()
+    size = float(residual @ tilted)
+    enough = size * HARMONIC_TOLERANCE ** 2
+    for _ in range(rounds):
+        if size <= enough or size <= 0:
+            break
+        product = np.where(loose, degree * direction - neighbours(direction), 0.0)
+        step = size / float(direction @ product)
+        x += step * direction
+        residual -= step * product
+        tilted = scale * residual
+        previous, size = size, float(residual @ tilted)
+        direction = tilted + (size / previous) * direction
+    if fixed.any():
+        x = np.clip(x, values[fixed].min(), values[fixed].max())
+    return np.where(fixed, values, x)
+
+
+
+
+
 def _edge_distance(points, starts, ends):
     """Distance from each point to the aperture's edge."""
     d = ends - starts
@@ -623,6 +835,26 @@ def _edge_distance(points, starts, ends):
     t = np.clip((rel * d[None]).sum(axis=2) / length2, 0.0, 1.0)
     nearest = starts[None] + t[..., None] * d[None]
     return np.sqrt(((points[:, None, :] - nearest) ** 2).sum(axis=2)).min(axis=1)
+
+
+def _soft_edge(points, starts, ends):
+    """Distance from each point to the aperture's edge, rounded where two stretches of edge
+    are about as near (no ridge down a narrow pad's middle, no crease into a corner): every
+    bit of the edge counts, the nearer the more (the inverse fourth power, integrated along
+    each segment), scaled to the plain distance beside one long straight edge."""
+    d = ends - starts
+    length = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-30)
+    unit = d / length[:, None]
+    rel = points[:, None, :] - starts[None, :, :]
+    s = (rel * unit[None]).sum(axis=2)  # the foot of the perpendicular, along the segment
+    h = np.maximum(np.abs(rel[..., 0] * unit[None, :, 1] - rel[..., 1] * unit[None, :, 0]), 1e-12)
+
+    def part(t):  # h³ times the integral of (h² + t²)^-2 up to t
+        return 0.5 * (t * h / (h * h + t * t) + np.arctan(t / h))
+
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        total = np.maximum((part(length[None] - s) - part(-s)) / h ** 3, 0.0).sum(axis=1)
+        return np.nan_to_num((2.0 / np.pi * total) ** (-1.0 / 3.0), posinf=0.0)
 
 
 def _area(points):
@@ -665,11 +897,14 @@ def _grid(rings, area, starts, ends, target):
     return np.concatenate((grid, row[good])), np.concatenate((edge, row_edge[good])), spacing
 
 
-def _metal(grid, outward, matrix, parts):
+def _metal(grid, outward, matrix, parts, heights=True, spacing=0.0):
     """Per point, how far out from the copper the nearest metal is (inf: none within
     MAX_GAP_M), and how high that metal reaches (its top, looking back from MAX_CLIMB_M
-    further out): solder climbs a lead no higher than the lead. `parts`: those over the
-    aperture (`_over`)."""
+    further out): solder climbs a lead no higher than the lead. Only the same piece of metal
+    counts (`_pieces`): a crystal's lid or seal ring over its terminations is not their top.
+    Metal behind the part's body (`_Body`: a crystal's lid over its ceramic) is out of reach,
+    for both. `parts`: those over the aperture (`_over`); `heights` False: the gaps alone
+    (the tops all 0); `spacing`: the grid's (how far round a fused top `_local_top` looks)."""
     gaps = np.full(len(grid), np.inf)
     tops = np.zeros(len(grid))
     if not len(grid) or not parts:
@@ -680,26 +915,32 @@ def _metal(grid, outward, matrix, parts):
     direction /= np.linalg.norm(direction)
     reach = RAY_START_M + MAX_GAP_M
     above = reach + MAX_CLIMB_M
-    for tree, part_matrix, inverse, *_ in parts:
+    radius = max(LOCAL_TOP_M, 1.5 * spacing)
+    for tree, part_matrix, inverse, *_, pieces, body, _side in parts:
         part_origins = origins @ inverse[:3, :3].T + inverse[:3, 3]
         part_direction = inverse[:3, :3] @ direction
         scale = np.linalg.norm(part_direction)
         part_direction /= scale
         up, down = Vector(part_direction), Vector(-part_direction)
         cast = tree.ray_cast
-        hits = [(index, cast(Vector(origin), up, reach * scale)[0])
-                for index, origin in enumerate(part_origins.tolist())]
-        hits = [(index, tuple(hit)) for index, hit in hits if hit is not None]
+        hits = [(index, cast(Vector(origin), up, reach * scale)) for index, origin in enumerate(part_origins.tolist())]
+        hits = [(index, hit[0], hit[2], hit[3] / scale) for index, hit in hits if hit[0] is not None]
+        if body is not None:  # nor through it
+            hits = [row for row in hits if not _behind(body, Vector(part_origins[row[0]]), up, row[3], scale)]
         if not hits:
             continue
         index = np.array([row[0] for row in hits])
-        world = np.array([row[1] for row in hits]) @ part_matrix[:3, :3].T + part_matrix[:3, 3]
-        gap = np.maximum((world - origins[index]) @ direction - RAY_START_M, 0.0)
+        piece = pieces.face[np.array([row[2] for row in hits])]
+        gap = np.maximum(np.array([row[3] for row in hits]) - RAY_START_M, 0.0)
         nearer = gap < gaps[index]
-        index, gap = index[nearer], gap[nearer]
+        index, gap, piece = index[nearer], gap[nearer], piece[nearer]
+        met = [row[1] for row, near in zip(hits, nearer) if near]
         gaps[index] = gap
         starts = part_origins[index] + part_direction * (above * scale)
-        found = [cast(Vector(start), down, above * scale)[0] for start in starts.tolist()]
+        if not heights:
+            continue
+        found = [_down_to(cast, Vector(start), down, above * scale, scale, pieces, which, body, below, radius * scale)
+                 for start, which, below in zip(starts.tolist(), piece.tolist(), met)]
         top = gap.copy()
         hit = np.array([value is not None for value in found], bool)
         if hit.any():
@@ -708,6 +949,89 @@ def _metal(grid, outward, matrix, parts):
             top[hit] = np.maximum((world - origins[index[hit]]) @ direction - RAY_START_M, gap[hit])
         tops[index] = top
     return gaps, tops
+
+
+def _behind(body, start, up, distance, scale, tree=None):
+    """True when the part's body lies between `start` and the metal `distance` (metres) up
+    from it, its faces level with either end (within BODY_SLACK_M) not counted. `tree`: the
+    metal's, when `start` is where the ray came into it: a body face inside the metal (a
+    ceramic box running into an end cap) does not count either. In the part's coordinates,
+    `scale` of them to a metre."""
+    travelled, end = BODY_SLACK_M, distance - BODY_SLACK_M
+    for _ in range(MAX_LAYERS):
+        if travelled >= end:
+            return False
+        hit = body.ray_cast(start + up * (travelled * scale), up, (end - travelled) * scale)
+        if hit[0] is None:
+            return False
+        at = travelled + hit[3] / scale
+        if tree is None or not _in_metal(tree, start, up, at, scale):
+            return True
+        travelled = at + NUDGE_M
+    return True
+
+
+def _in_metal(tree, start, up, at, scale):
+    """True when the point `at` (metres) up from `start`, where the ray came into the metal,
+    is still inside it: an even number of its faces crossed on the way."""
+    crossed, travelled = 0, NUDGE_M
+    while travelled < at and crossed <= MAX_LAYERS:
+        hit = tree.ray_cast(start + up * (travelled * scale), up, (at - travelled) * scale)
+        if hit[0] is None:
+            break
+        crossed += 1
+        travelled += hit[3] / scale + NUDGE_M
+    return crossed % 2 == 0
+
+
+def _down_to(cast, start, down, distance, scale, pieces, piece, body, below, radius):
+    """Coming down from `start`, where the ray first meets a face of the metal `piece` with
+    no body between it and `below` (where the ray up met that metal), past MAX_LAYERS other
+    faces at most (a lid, a seal ring, an end cap's inside over its ceramic), or None. When
+    that is the face the ray came in by (no face above it: a termination's top fused into
+    the part's body): as high as that piece stands within `radius` (`_local_top`: an
+    inductor's terminal block its walls, a QFN's lead frame the lead's end, a crystal's thin
+    pad plate its own thickness, not the corner piece it is one with), unless the body lies
+    between (a seal ring over a crystal's ceramic): then that face. In the part's
+    coordinates, `scale` of them to a metre."""
+    nudge = NUDGE_M * scale
+    for _ in range(MAX_LAYERS):
+        location, _, face, travelled = cast(start, down, distance)
+        if location is None:
+            return None
+        if pieces.face[face] == piece:
+            if (location - below).length < SAME_FACE_M * scale:
+                top = _local_top(pieces, piece, below, -down, radius)
+                if body is not None and _behind(body, below, -down, (top - below).length / scale, scale, cast.__self__):
+                    return location
+                return top
+            if body is None or not _behind(body, below, -down, (location - below).length / scale, scale,
+                                           cast.__self__):
+                return location
+        start = location + down * nudge
+        distance -= travelled + nudge
+        if distance <= 0:
+            return None
+    return None
+
+
+def _local_top(pieces, piece, below, up, radius):
+    """Straight `up` from `below`, as high as the metal `piece` reaches within `radius` of
+    that line: its triangles whose box, seen along `up`, comes that near."""
+    up = np.array(up)
+    key = (id(pieces.triangles), piece, tuple(np.round(up, 6)))
+    if key not in _seen_along:
+        triangles = pieces.triangles[pieces.face == piece]
+        across = np.linalg.svd(up[None, :])[2][1:]  # two directions square to `up`
+        flat = triangles @ across.T  # (triangles, 3, 2)
+        _seen_along[key] = (across, flat.min(axis=1), flat.max(axis=1), (triangles @ up).max(axis=1), pieces.triangles)
+    across, low, high, tops, _kept = _seen_along[key]
+    at = np.array(below) @ across.T
+    near = np.all((low - radius <= at) & (high + radius >= at), axis=1)
+    if not near.any():
+        return below
+    rise = float(tops[near].max() - np.dot(below, up))
+    return below + Vector(up) * max(rise, 0.0)
 
 
 def _smooth(values, triangles, free, valid, rounds=3):
@@ -768,6 +1092,80 @@ def _triangulate(rings, grid, spacing):
     return xy, triangles, source, bottom
 
 
+def _outline(grid, edge, gaps, tops, under, spacing, starts, ends, outward, matrix, parts):
+    """The grid with points added on the metal's real outline, between each point under the
+    metal at its edge and the free point nearest it (OUTLINE_HALVINGS): the solder meets the
+    metal along that line, not along the grid's staircase round it. (grid, edge, gaps, tops,
+    under), the new points under the metal, with their inside neighbour's top."""
+    free = ~under
+    distance = np.sqrt(((grid[free][:, None, :] - grid[under][None, :, :]) ** 2).sum(axis=2))
+    rim = distance.min(axis=0) <= 1.5 * spacing  # of the points under the metal
+    if not rim.any():
+        return grid, edge, gaps, tops, under
+    inside = grid[under][rim]
+    outside = grid[free][distance[:, rim].argmin(axis=0)]
+    low, high = np.zeros(len(inside)), np.ones(len(inside))
+    met = gaps[under][rim].copy()
+    for _ in range(OUTLINE_HALVINGS):
+        middle = 0.5 * (low + high)
+        probe = _metal(inside + (outside - inside) * middle[:, None], outward, matrix, parts, False)[0]
+        metal = probe <= MAX_GAP_M
+        low, high = np.where(metal, middle, low), np.where(metal, high, middle)
+        met = np.where(metal, probe, met)
+    outline = inside + (outside - inside) * low[:, None]
+    keep = (np.sqrt(((outline[:, None, :] - grid[None, :, :]) ** 2).sum(axis=2)).min(axis=1) > 0.3 * spacing) \
+        & _inside(outline, starts, ends)
+    for index in range(len(outline)):  # one point per spot
+        if keep[index]:
+            keep[index + 1:] &= np.hypot(*(outline[index + 1:] - outline[index]).T) >= 0.3 * spacing
+    if not keep.any():
+        return grid, edge, gaps, tops, under
+    outline = outline[keep]
+    return (np.concatenate((grid, outline)), np.concatenate((edge, _edge_distance(outline, starts, ends))),
+            np.concatenate((gaps, met[keep])), np.concatenate((tops, tops[under][rim][keep])),
+            np.concatenate((under, np.ones(len(outline), bool))))
+
+
+def _local_heights(xy, heights, metal, edge, reach):
+    """`heights` under the metal, each along its edge (`edge`) set to the median of the edge's
+    within `reach` of it (a grazing ray's too high a top does not count), no higher than its
+    own, and rising along the edge from a lower one no steeper than MAX_SLOPE (beside a
+    crystal's thin bottom plate, in its tall corner piece's notch: the fillet ramps up from
+    it, no step and no spike); each further in to that of the edge point nearest it."""
+    found = heights.copy()
+    rim = np.flatnonzero(edge)
+    if not len(rim):
+        return found
+    apart = np.sqrt(((xy[rim][:, None, :] - xy[rim][None, :, :]) ** 2).sum(axis=2))
+    typical = np.minimum([np.median(heights[rim][row]) for row in apart <= reach], heights[rim])
+    found[rim] = (typical[None, :] + MAX_SLOPE * apart).min(axis=1)
+    inner = np.flatnonzero(metal & ~edge)
+    if len(inner):
+        nearest = np.einsum("ijk,ijk->ij", *(2 * [xy[inner][:, None, :] - xy[rim][None, :, :]])).argmin(axis=1)
+        found[inner] = found[rim][nearest]
+    return found
+
+
+def _far_edge(xy, edge, metal, fall):
+    """Of the aperture's edge vertices (`edge`), those where the pad ends far ahead of the
+    metal: at least FAR_EDGE of the farthest any is from it, or further than the fillet
+    there falls (`fall` per vertex: a gull-wing's heel, the pad running on past the bend).
+    Along the sides near the metal the meniscus runs on instead."""
+    found = np.zeros(len(xy), bool)
+    if not edge.any() or not metal.any():
+        return found
+    apart = xy[edge][:, None, :] - xy[metal][None, :, :]
+    distance = np.sqrt(np.einsum("ijk,ijk->ij", apart, apart).min(axis=1))
+    found[np.flatnonzero(edge)] = (distance >= FAR_EDGE * distance.max()) | (distance >= fall[edge])
+    return found
+
+
+def _soft_min(a, b):
+    """The smaller of `a` and `b` (>= 0), rounded where they meet."""
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        return np.nan_to_num((np.maximum(a, 1e-30) ** -SOFT_MIN + np.maximum(b, 1e-30) ** -SOFT_MIN) ** (-1.0 / SOFT_MIN))
+
+
 def _aperture(rings, outward, matrix, parts, volume_per_area, target):
     """One aperture's solder: (vertices (n, 3), triangles, smooth flag per triangle, metal
     found, grid points), or None for an empty aperture. `target`: grid points to aim for."""
@@ -776,26 +1174,12 @@ def _aperture(rings, outward, matrix, parts, volume_per_area, target):
         return None
     starts, ends = _segments(rings)
     grid, edge, spacing = _grid(rings, area, starts, ends, target)
-    gaps, tops = _metal(grid, outward, matrix, parts)
+    gaps, tops = _metal(grid, outward, matrix, parts, spacing=spacing)
     under = gaps <= MAX_GAP_M
     wetted = bool(under.any())
-    shape = np.zeros(len(grid))  # the fillet's shape, 0..1 (the dome's without metal)
-    cap = np.full(len(grid), MAX_DOME_M)  # no higher than the metal it climbs
-    if wetted:
-        free = ~under
-        if free.any():
-            distance = np.sqrt(((grid[free][:, None, :] - grid[under][None, :, :]) ** 2).sum(axis=2))
-            near = distance.min(axis=1)
-            reach = np.maximum(near - spacing / 2, 0.0)
-            shape[free] = (edge[free] / (reach + edge[free])) ** 2
-            # the highest metal close to the nearest: a lead's rounded or chamfered edge
-            # does not notch the fillet in front of it
-            close = distance <= near[:, None] + CAP_REACH * spacing
-            cap[free] = np.minimum(np.where(close, tops[under][None, :], 0.0).max(axis=1), MAX_CLIMB_M)
-        shape[under] = 1.0  # at the metal, for smoothing; its height is its gap
-        cap[under] = tops[under]
-    elif len(grid):
-        shape = 1.0 - (1.0 - edge / edge.max()) ** 2
+    if wetted and not under.all():
+        grid, edge, gaps, tops, under = _outline(grid, edge, gaps, tops, under, spacing, starts, ends, outward,
+                                                 matrix, parts)
     xy, triangles, source, flat = _triangulate(rings, grid, spacing)
     if not len(triangles):
         return None
@@ -807,9 +1191,10 @@ def _aperture(rings, outward, matrix, parts, volume_per_area, target):
 
     under_v = per_vertex(under, False)
     free_v = inner & ~under_v
-    held = per_vertex(np.where(under, gaps, 0.0), 0.0)  # under a lead: solder up to it
-    shape_v = np.where(under_v, 0.0, _smooth(per_vertex(shape, 0.0), triangles, free_v, np.ones(len(xy), bool)))
-    cap_v = _smooth(per_vertex(cap, 0.0), triangles, free_v, inner)
+    pairs = np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]))
+    pairs = np.vstack((pairs, pairs[:, ::-1]))
+    edge_v = np.zeros(len(xy), bool)  # the metal's edge: under it, next to the free pad
+    edge_v[pairs[under_v[pairs[:, 0]] & free_v[pairs[:, 1]], 0]] = True
     corners = xy[triangles]
     signed = 0.5 * ((corners[:, 1, 0] - corners[:, 0, 0]) * (corners[:, 2, 1] - corners[:, 0, 1]) -
                     (corners[:, 2, 0] - corners[:, 0, 0]) * (corners[:, 1, 1] - corners[:, 0, 1]))
@@ -820,40 +1205,70 @@ def _aperture(rings, outward, matrix, parts, volume_per_area, target):
 
     target = area * volume_per_area
     if wetted:
-        def fillet(climb):
-            return held + np.minimum(climb * shape_v, cap_v)
+        # under a lead: solder up to it across a standoff, not a column up to metal far over the pad
+        held = per_vertex(np.where(under, np.minimum(gaps, GAP_FILL_M), 0.0), 0.0)
+        # How high the metal stands along its edge, a little under its top (TOP_INSET_M:
+        # the metal hides where they meet): round each point there the typical height (the
+        # median within LOCAL_REACH_M: a thin wall or a grazing ray alone does not count, a
+        # QFN lead's high outer end and low inner end both do), and over the pad the
+        # smoothest blend of that. The fillet climbs no higher.
+        seated = per_vertex(np.where(under, gaps, np.inf), np.inf) <= GAP_FILL_M
+        # (beside metal further up, a gull-wing's heel, only the standoff's solder: no sheet
+        # standing up beside it, no fold where it meets the solder under it)
+        stands = np.where(seated, per_vertex(tops, 0.0) - TOP_INSET_M, held)
+        stands = np.clip(stands, WET_FILM_M, MAX_CLIMB_M)
+        climbs = _local_heights(xy, stands, under_v, edge_v, max(LOCAL_REACH_M, 3 * spacing))
+        climbs = _harmonic(len(xy), triangles, under_v, climbs)
+        # one smooth meniscus, sagging (squared): from the metal (1) to where the pad ends
+        # far ahead of it or further than the fillet falls at MAX_SLOPE (0, `_far_edge`);
+        # along a pad's sides it runs on (a QFN's narrow toe all the way out, a chip's fillet
+        # the same across its width), rounded off there
+        pinned = under_v | (~inner & _far_edge(xy, ~inner, under_v, climbs / MAX_SLOPE))
+        shape_v = np.where(free_v, climbs * _harmonic(len(xy), triangles, pinned, under_v.astype(float)) ** 2, 0.0)
+        # and up from the pad's edge no steeper than MAX_SLOPE, rounded (a soft minimum, no
+        # ridge where the two meet; `_soft_edge`, none down a narrow pad's middle or into a
+        # corner): where the pad barely shows past a part, or beside a termination, a low
+        # fillet, no wall, fold or point
+        cap_v = np.where(free_v, MAX_SLOPE * _soft_edge(xy, starts, ends), np.inf)
 
-        low, high = 0.0, 8 * MAX_CLIMB_M
+        def fillet(share):
+            return held + _soft_min(share * shape_v, cap_v)
+
+        low, high = 0.0, 1.0
         if volume(fillet(high)) > target:
             for _ in range(30):
                 middle = 0.5 * (low + high)
                 low, high = (middle, high) if volume(fillet(middle)) < target else (low, middle)
+        # As high as the metal and solder still left (a QFN's short, thin lead on a long
+        # pad): it goes under the part, which floats on it, hidden. It never bulges.
         height = fillet(high)
-        rest = target - volume(height)  # every fillet as high as its metal: the rest bulges on the pad
-        if rest > 0 and free_v.any():
-            edge_v = per_vertex(edge, 0.0)
-            bulge = np.where(free_v, 1.0 - (1.0 - edge_v / max(edge_v[free_v].max(), 1e-12)) ** 2, 0.0)
-            per_unit = volume(bulge)
-            if per_unit > 0:
-                height = height + min(rest / per_unit, MAX_DOME_M) * bulge
+        # Along the edge of metal sitting on the pad, as high as the solder beside it (no step
+        # along the grid's staircase round it) and no higher than the metal (no sheet out of a
+        # thin wall). Further in, and under metal further up (a gull-wing's heel), only the
+        # standoff's solder, hidden under the metal: none stands up in a slot or hole in it.
+        beside = pairs[edge_v[pairs[:, 0]] & free_v[pairs[:, 1]]]
+        level = np.bincount(beside[:, 0], weights=height[beside[:, 1]], minlength=len(xy)) / \
+            np.maximum(np.bincount(beside[:, 0], minlength=len(xy)), 1)
+        top = np.maximum(held, np.minimum(high * climbs, per_vertex(tops, 0.0) - TOP_INSET_M))
+        height = np.where(edge_v & seated, np.clip(level, held, top), np.where(under_v, held, height))
     else:
+        held = np.zeros(len(xy))
+        dome = 1.0 - (1.0 - edge / edge.max()) ** 2 if len(grid) else np.zeros(0)
+        shape_v = _smooth(per_vertex(dome, 0.0), triangles, free_v, np.ones(len(xy), bool))
+        cap_v = np.full(len(xy), MAX_DOME_M)
         per_unit = volume(shape_v)
         height = min(target / per_unit, MAX_DOME_M) * shape_v if per_unit > 0 else np.zeros(len(xy))
     # The grid's steps (distances to the nearest metal point) show on a shiny surface:
-    # smooth the free surface, then give back the solder smoothing moved.
+    # smooth the free surface, then give back the solder smoothing moved, no higher than
+    # allowed. The metal's edge rides along too (no step along the grid's staircase beside a
+    # termination), never higher than it was set (under its metal) nor under its gap; the
+    # hidden solder further under the metal does not pull it down.
     free_before = volume(np.where(free_v, height, 0.0))
-    smoothed = _smooth(height, triangles, free_v, ~under_v, SMOOTH_ROUNDS)
+    smoothed = _smooth(height, triangles, free_v | edge_v, ~under_v | edge_v, SMOOTH_ROUNDS)
     free_after = volume(np.where(free_v, smoothed, 0.0))
     scale = free_before / free_after if free_after > 0 else 1.0
-    height = np.where(free_v, smoothed * scale, held)
-    # Along a lead's edge the surface runs on level into the metal (hidden there) instead of
-    # dropping to its underside in a steep wall (the volume counted solder to the underside).
-    pairs = np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]))
-    pairs = np.vstack((pairs, pairs[:, ::-1]))
-    pairs = pairs[under_v[pairs[:, 0]] & free_v[pairs[:, 1]]]
-    level = held.copy()
-    np.maximum.at(level, pairs[:, 0], height[pairs[:, 1]])
-    height = np.where(under_v, np.maximum(held, np.minimum(level, per_vertex(tops, 0.0) - TOP_INSET_M)), height)
+    height = np.where(free_v, np.minimum(smoothed * scale, cap_v),
+                      np.where(edge_v, np.clip(smoothed, held, height), height))
     # Top faces turn outward, the flat bottom on the copper (the edge vertices, height 0) inward.
     top = np.where(((signed < 0) != (outward < 0))[:, None], triangles[:, ::-1], triangles)
     corners = xy[flat]
@@ -922,33 +1337,68 @@ def _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs):
     """One plated hole's joint (vertices, triangles, smooth flags), or None without a pin."""
     angles = np.linspace(0.0, 2 * np.pi, THT_ANGLES, endpoint=False)
     unit = np.column_stack((np.cos(angles), np.sin(angles)))
-    wall = _radial(centre, _drill_outline(centre, *drill["kls_drill_size"], drill.rotation_euler.z,
-                                          drill.get("kls_drill_oval", False)), unit) - WALL_GAP_M
-    if not np.all(np.isfinite(wall)):
-        return None
+    outline = _drill_outline(centre, *drill["kls_drill_size"], drill.rotation_euler.z,
+                             drill.get("kls_drill_oval", False))
     mid = 0.5 * (z_top + z_bottom)
-    column = (centre[0], centre[1], mid)
-    near = np.flatnonzero(np.all(highs >= column, axis=1) & np.all(lows <= column, axis=1))
-    pin = _pin(np.array(column), unit, wall, [parts[index] for index in near])
+    half = 0.5 * max(drill["kls_drill_size"])  # parts reaching into the hole at mid-board
+    near = np.flatnonzero(np.all(highs[:, :2] >= centre - half, axis=1) & np.all(lows[:, :2] <= centre + half, axis=1)
+                          & (highs[:, 2] >= mid) & (lows[:, 2] <= mid))
+    pin = _pin(np.array((centre[0], centre[1], mid)), outline, unit, [parts[index] for index in near])
     if pin is None:
         return None
-    radius, up, down, side = pin
-    # the solder's inner wall a little inside the pin: on its face, the two flickered
-    radius = np.clip(radius - PIN_INSET_M, 1e-6, wall - 1e-6)
-    pads = {"top": _radial(centre, rings[0], unit), "bottom": _radial(centre, rings[1], unit)}
-    reach = {"top": up - (z_top - mid), "bottom": down - (mid - z_bottom)}  # pin past each face
-    climbs, rounds = {}, {}
+    middle, wall, radius, up, down, side, (tree, matrix, inverse) = pin
+    limit = 0.5 * float(np.ptp(outline, axis=0).max())
+    # Each face's fillet about the pin where it leaves that face (a snap-in leg slants
+    # through the hole, pressed against its wall); as at mid-board where it is not found there
+    centres, walls, radii, reach = {}, {}, {}, {}
+    for face, z, end in (("top", z_top - FACE_PROBE_M, 4), ("bottom", z_bottom + FACE_PROBE_M, 5)):
+        found = _pin_face(tree, matrix, inverse, middle, mid, centre, z, outline, unit, limit)
+        if found is None:
+            centres[face], walls[face], radii[face] = middle, wall, radius
+            reach[face] = up - (z_top - mid) if face == "top" else down - (mid - z_bottom)
+        else:
+            centres[face], walls[face], radii[face] = found[1:4]
+            reach[face] = found[end] - FACE_PROBE_M  # the pin past the face
+        # the solder's inner wall a little inside the pin: on its face, the two flickered
+        radii[face] = np.clip(radii[face] - PIN_INSET_M, 1e-6, walls[face] - 1e-6)
+    pads = {"top": _radial(centres["top"], rings[0], unit), "bottom": _radial(centres["bottom"], rings[1], unit)}
+    climbs, fillets = {}, {}
+    steps = np.arange(THT_STEPS + 1) / THT_STEPS
     for face, edge in pads.items():
-        edge = np.where(np.isfinite(edge) & (edge > wall), edge, wall)
+        edge = np.where(np.isfinite(edge) & (edge > walls[face]), edge, walls[face])
         pads[face] = edge
-        # The fillet is round about the pin, out to where the pad is narrowest; a square
-        # pad's corners past that are only wetted (a thin film), as on a real joint. Where a
-        # blade pin in a slot reaches past that, it starts a little out from the pin instead
-        rounds[face] = np.minimum(np.maximum(edge.min(), radius + MIN_FILLET_M), edge)
-        width = float(np.median(rounds[face] - radius))
+        # The fillet: an even band round the pin's outline, its corners rounded (as solder
+        # wets a round pin, a blade or a bent leg alike), as wide as the pad allows all
+        # round; a square pad's corners past it are only wetted (a thin film), as on a
+        # real joint. Per direction, its edge (k = 0) in to the pin (k = 1)
+        width = max(float(np.min(edge - radii[face])), MIN_FILLET_M)
+        fillets[face] = np.minimum(_grown(unit, radii[face], (1.0 - steps) * width), edge[:, None])
         share = PART_SIDE_CLIMB if face == side else SOLDER_SIDE_CLIMB
         climbs[face] = max(WET_FILM_M, min(share * width, 0.8 * reach[face], MAX_THT_CLIMB_M))
-    return _joint(centre, unit, wall, radius, pads, rounds, z_top, z_bottom, climbs)
+    return _joint(centres, unit, walls, radii, pads, fillets, z_top, z_bottom, climbs)
+
+
+def _grown(unit, radius, widths):
+    """Per direction (`unit`, from the pin's middle) and width, how far out the pin's outline
+    (`radius` per direction) grown by that width reaches: (directions, widths). An even
+    band round the pin, its corners rounded: where each ray last leaves a band round one of
+    the outline's sides or a disc round one of its corners."""
+    corners = radius[:, None] * unit
+    side = np.roll(corners, -1, axis=0) - corners
+    length = np.maximum(np.linalg.norm(side, axis=1), 1e-30)
+    along = side / length[:, None]
+    normal = np.column_stack((along[:, 1], -along[:, 0]))
+    normal *= np.where((normal * corners).sum(axis=1) < 0, -1.0, 1.0)[:, None]  # outward
+    width = widths[None, None, :]
+    toward = (unit @ corners.T)[:, :, None]  # (directions, corners, 1)
+    reach = toward ** 2 - (corners ** 2).sum(axis=1)[None, :, None] + width ** 2
+    discs = np.where(reach >= 0, toward + np.sqrt(np.maximum(reach, 0.0)), -np.inf)
+    facing = (unit @ normal.T)[:, :, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = ((normal * corners).sum(axis=1)[None, :, None] + width) / facing
+        at = (out * (unit @ along.T)[:, :, None] - (corners * along).sum(axis=1)[None, :, None]) / length[None, :, None]
+    bands = np.where((facing > 1e-12) & (at >= 0) & (at <= 1), out, -np.inf)
+    return np.maximum(np.maximum(discs.max(axis=1), bands.max(axis=1)), radius[:, None])
 
 
 def _pad_rings(obj):
@@ -988,54 +1438,132 @@ def _radial(centre, ring, unit):
     return np.where(good, t, np.inf).min(axis=1)
 
 
-def _pin(origin, unit, wall, parts):
-    """The pin in a hole: rays across the hole at mid-board, from its centre, meet a pin's
-    wall from inside. (radius per direction, how far the pin reaches up and down from
-    mid-board, the side its part is on), or None without one (PIN_HITS of the rays)."""
+def _cast(tree, inverse, origin, direction, limit):
+    """How far from `origin` along `direction` (board root's space) a ray meets the part's
+    metal (its tree, `inverse` into the part), within `limit`; or None."""
+    local = inverse[:3, :3] @ direction
+    scale = np.linalg.norm(local)
+    distance = tree.ray_cast(Vector(inverse[:3, :3] @ origin + inverse[:3, 3]), Vector(local / scale), limit * scale)[3]
+    return None if distance is None else distance / scale
+
+
+def _pin_middle(tree, matrix, inverse, centre, limit):
+    """A point in the middle of the metal nearest the hole's centre at mid-board (a blade or
+    a bent leg beside the centre), or None: across that metal towards it, then across that."""
+    local = inverse[:3, :3] @ centre + inverse[:3, 3]
+    scale = np.linalg.norm(inverse[:3, :3], axis=0).max()
+    nearest = tree.find_nearest(Vector(local), limit * scale)[0]
+    if nearest is None:
+        return None
+    toward = (matrix[:3, :3] @ np.array(nearest) + matrix[:3, 3] - centre)[:2]
+    if np.hypot(*toward) < NUDGE_M:
+        return None
+    toward = np.array((*(toward / np.hypot(*toward)), 0.0))
+    near = _cast(tree, inverse, centre, toward, limit)
+    if near is None:
+        return None
+    far = _cast(tree, inverse, centre + toward * (near + NUDGE_M), toward, 2 * limit)
+    if far is None:
+        return None
+    middle = centre + toward * (near + 0.5 * (NUDGE_M + far))
+    across = np.array((-toward[1], toward[0], 0.0))
+    ahead, behind = _cast(tree, inverse, middle, across, 2 * limit), _cast(tree, inverse, middle, -across, 2 * limit)
+    if ahead is None or behind is None:
+        return None
+    return middle + across * 0.5 * (ahead - behind)
+
+
+def _pin(centre, outline, unit, parts):
+    """The pin in a hole: rays across the hole at mid-board meet a pin's wall from inside.
+    They start at the hole's centre, else in the middle of the metal nearest it
+    (`_pin_middle`). (where they started, how far the drill's wall less WALL_GAP_M is from
+    there per direction, the pin's radius per direction, how far the pin reaches up and down
+    from mid-board, the side its part is on, the part: its tree, matrix and inverse), or None
+    without one (PIN_HITS of the rays)."""
     best = None
+    limit = 0.5 * float(np.ptp(outline, axis=0).max())
     for tree, matrix, inverse, *_, side in parts:
-        start = Vector(inverse[:3, :3] @ origin + inverse[:3, 3])
-        radius = np.full(len(unit), np.nan)
-        for index, (direction, reach) in enumerate(zip(unit, wall)):
-            local = inverse[:3, :3] @ np.array((direction[0], direction[1], 0.0))
-            scale = np.linalg.norm(local)
-            distance = tree.ray_cast(start, Vector(local / scale), (reach + PIN_SLACK_M) * scale)[3]
-            if distance is not None:
-                radius[index] = distance / scale
-        hits = int(np.isfinite(radius).sum())
-        if hits >= PIN_HITS * len(unit) and (best is None or hits > best[0]):
-            ends = []
-            for sign in (1.0, -1.0):
-                local = inverse[:3, :3] @ np.array((0.0, 0.0, sign))
-                scale = np.linalg.norm(local)
-                distance = tree.ray_cast(start, Vector(local / scale), PIN_REACH_M * scale)[3]
-                ends.append(distance / scale if distance is not None else PIN_REACH_M)
-            radius = np.where(np.isfinite(radius), radius, np.nanmedian(radius))
-            best = (hits, radius, ends[0], ends[1], side)
+        found = _pin_from(tree, inverse, centre, outline, unit)
+        if found is None:
+            middle = _pin_middle(tree, matrix, inverse, centre, limit)
+            found = None if middle is None else _pin_from(tree, inverse, middle, outline, unit)
+        if found is not None and (best is None or found[0] > best[0]):
+            best = (*found, side, (tree, matrix, inverse))
     return None if best is None else best[1:]
 
 
-def _joint(centre, unit, wall, radius, pads, rounds, z_top, z_bottom, climbs):
-    """A through-hole joint as one closed solid: per direction a profile (distance from the
-    hole's centre, height) up the barrel's wall, out over the solder-side pad, a thin film
-    in to where the fillet starts (`rounds`: the same distance every way the pin allows), the
-    fillet up to the pin, along the pin, the part-side fillet and film, back over that pad;
-    the profiles joined around the hole."""
+def _pin_face(tree, matrix, inverse, middle, mid, centre, z, outline, unit, limit):
+    """The pin at height `z`, just inside a face: followed there from its middle at mid-board
+    (`middle`, height `mid`: `_follow`), else about the middle of the metal nearest the
+    hole's centre (`centre`) there. `_pin_from`'s, or None."""
+    for inner in (_follow(tree, inverse, middle, mid, z, limit),
+                  _pin_middle(tree, matrix, inverse, np.array((centre[0], centre[1], z)), limit)):
+        found = None if inner is None else _pin_from(tree, inverse, inner, outline, unit, inside=True)
+        if found is not None:
+            return found
+    return None
+
+
+def _follow(tree, inverse, middle, start, end, limit):
+    """A pin's middle followed from (`middle`, height `start`) to height `end` in
+    FOLLOW_STEPS, centred across it (along x, then y) at each: a snap-in leg slants
+    through the hole. None when lost (a ray across it meets nothing)."""
+    point = np.array((middle[0], middle[1], start))
+    for z in np.linspace(start, end, FOLLOW_STEPS + 1)[1:]:
+        point[2] = z
+        for axis in (np.array((1.0, 0.0, 0.0)), np.array((0.0, 1.0, 0.0))):
+            ahead, behind = _cast(tree, inverse, point, axis, 2 * limit), _cast(tree, inverse, point, -axis, 2 * limit)
+            if ahead is None or behind is None:
+                return None
+            point = point + axis * 0.5 * (ahead - behind)
+    return point
+
+
+def _pin_from(tree, inverse, origin, outline, unit, inside=False):
+    """`_pin`'s rays from `origin`, for one part: (hits, origin's xy, wall, radius, up, down),
+    or None when fewer than PIN_HITS of them meet its metal. `inside`: `origin` is in the
+    pin (`_pin_middle`): FACE_HITS of them must, and one that does not meets the drill's
+    wall first (a leg pressed against it)."""
+    wall = _radial(origin[:2], outline, unit) - WALL_GAP_M
+    if not np.all(np.isfinite(wall)):
+        return None
+    start = Vector(inverse[:3, :3] @ origin + inverse[:3, 3])  # in the part: once for all the rays
+    local = np.column_stack((unit, np.zeros(len(unit)))) @ inverse[:3, :3].T
+    scale = np.linalg.norm(local, axis=1)
+    radius = np.array([tree.ray_cast(start, Vector(along / stretch), (reach + PIN_SLACK_M) * stretch)[3]
+                       for along, stretch, reach in zip(local, scale, wall)], dtype=float) / scale
+    hits = int(np.isfinite(radius).sum())
+    if hits < (FACE_HITS if inside else PIN_HITS) * len(unit):
+        return None
+    ends = [_cast(tree, inverse, origin, np.array((0.0, 0.0, sign)), PIN_REACH_M) for sign in (1.0, -1.0)]
+    ends = [PIN_REACH_M if end is None else end for end in ends]
+    radius = np.where(np.isfinite(radius), radius, wall if inside else np.nanmedian(radius))
+    return hits, origin[:2], wall, radius, ends[0], ends[1]
+
+
+def _joint(centres, unit, walls, radii, pads, fillets, z_top, z_bottom, climbs):
+    """A through-hole joint as one closed solid: per direction a profile (distance, height)
+    up the barrel's wall, out over the solder-side pad, a thin film in to where the fillet
+    starts, the fillet up to the pin (`fillets`: per direction its distances, edge to pin),
+    along the pin, the part-side fillet and film, back over that pad; the profiles joined
+    around the hole. Each face's distances are from its own centre (`centres`: where the pin
+    leaves that face), as are its `walls` (the drill's), `radii` (the pin's) and pads."""
     steps = np.arange(THT_STEPS + 1) / THT_STEPS
     count = len(unit)
-    columns = [(wall, np.full(count, z_top)), (wall, np.full(count, z_bottom)),
-               (pads["bottom"], np.full(count, z_bottom))]
-    for k in steps:  # the bottom fillet: from its round edge in to the pin, rising (down)
-        columns.append((rounds["bottom"] + (radius - rounds["bottom"]) * k,
-                        np.full(count, z_bottom - (WET_FILM_M + (climbs["bottom"] - WET_FILM_M) * k * k))))
-    for k in steps:  # the top fillet: from the pin out to its round edge
-        columns.append((radius + (rounds["top"] - radius) * k,
-                        np.full(count, z_top + WET_FILM_M + (climbs["top"] - WET_FILM_M) * (1 - k) ** 2)))
-    columns.append((pads["top"], np.full(count, z_top)))
-    distance = np.stack([np.broadcast_to(column[0], (count,)) for column in columns], axis=1)  # (directions, points)
-    height = np.stack([column[1] for column in columns], axis=1)
+    columns = [("top", walls["top"], z_top), ("bottom", walls["bottom"], z_bottom),
+               ("bottom", pads["bottom"], z_bottom)]
+    for index, k in enumerate(steps):  # the bottom fillet: from its edge in to the pin, rising (down)
+        columns.append(("bottom", fillets["bottom"][:, index],
+                        z_bottom - (WET_FILM_M + (climbs["bottom"] - WET_FILM_M) * k * k)))
+    for index, k in enumerate(steps):  # the top fillet: from the pin out to its edge
+        columns.append(("top", fillets["top"][:, THT_STEPS - index],
+                        z_top + WET_FILM_M + (climbs["top"] - WET_FILM_M) * (1 - k) ** 2))
+    columns.append(("top", pads["top"], z_top))
+    distance = np.stack([np.broadcast_to(column[1], (count,)) for column in columns], axis=1)  # (directions, points)
+    height = np.stack([np.full(count, column[2]) for column in columns], axis=1)
+    origin = np.stack([np.broadcast_to(centres[column[0]], (count, 2)) for column in columns], axis=1)
     directions, points = distance.shape
-    xy = centre + distance[..., None] * unit[:, None, :]
+    xy = origin + distance[..., None] * unit[:, None, :]
     vertices = np.concatenate((xy, height[..., None]), axis=2).reshape(-1, 3)
     j, k = np.meshgrid(np.arange(directions), np.arange(points), indexing="ij")
     a = j * points + k
