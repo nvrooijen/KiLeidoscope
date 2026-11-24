@@ -728,6 +728,7 @@ def _put_on(footprint, source, key, library, entry):
     board.swapped[footprint_id] = {"key": key, "names": names, "kicad": kicad, "library": library.name}
     board.model_objects_by_fp[footprint_id] = list(names)
     board.model_bound.add(footprint_id)
+    _show_insides(footprint_id, footprint)  # the part whole now: its insides closed in its case or not
     if board.in_snapshot:
         board.touched.update(names)
     _placeholder(footprint_id)
@@ -798,6 +799,25 @@ def _placeholder(footprint_id):
     box = components.find(components.PLACEHOLDER, footprint_id)
     if box is not None:
         set_visible(box, models.placeholder_visible(components.find(components.FRAME, footprint_id), footprint_id))
+
+
+def _show_insides(footprint_id, footprint):
+    """A placed part's insides shown or hidden as models.model_is_visible has them
+    (focus.insides_shown), touching only what changes."""
+    for name in board.swapped.get(footprint_id, {}).get("names", ()):
+        obj = lookup(name)
+        if obj is None or obj.get("kls_role") != "insides":
+            continue
+        shown = footprint is not None and models.model_is_visible(footprint, obj)
+        if obj.hide_render == shown:  # (set_visible sets it with the viewport's)
+            set_visible(obj, shown)
+
+
+def show_insides_here():
+    """The current board's placed parts' insides: drawn only while something opens their
+    part (Transparent cases, the cut plane, X-ray with it selected; focus.insides_shown)."""
+    for footprint_id in tuple(board.swapped):
+        _show_insides(footprint_id, components.find(components.FRAME, footprint_id))
 
 
 def show_fields():
@@ -883,7 +903,8 @@ def save_to_my_parts(footprint):
         raise ValueError(f"{keeper} keeps this part up to date with KiCad; a copy in My parts would not be")
     footprint_id = footprint["kls_id"]
     shown = [obj for obj in (lookup(found) for found in board.model_objects_by_fp.get(footprint_id, ()))
-             if obj is not None and not obj.hide_render and obj.get("kls_role") != FIELD]
+             if obj is not None and obj.get("kls_role") != FIELD
+             and (not obj.hide_render or obj.get("kls_role") == "insides")]  # insides: hidden only while closed in
     if not shown:
         raise ValueError("This footprint shows no model to save")
     # The part is saved as the footprint it is named after has it: a footprint whose field

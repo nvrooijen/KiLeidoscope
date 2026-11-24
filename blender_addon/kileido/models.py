@@ -364,6 +364,8 @@ def model_is_visible(footprint, model_obj):
         return False
     if model_obj.get("kls_role") == "field" and not getattr(bpy.context.scene, "kileido_show_fields", False):
         return False  # a library part's field lines: only with Field lines
+    if model_obj.get("kls_role") == "insides" and not focus.insides_shown(model_obj.get("kls_model_fp_id")):
+        return False  # a library part's insides, closed in its opaque case
     flags = [bool(flag) for flag in footprint.get("kls_model_visible", ())]
     if not flags:
         return True

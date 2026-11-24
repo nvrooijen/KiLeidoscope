@@ -815,6 +815,8 @@ def refresh():
             remove_from(material)
     _pushed = None
     push()
+    from . import parts  # imports this module
+    parts.show_insides_here()  # the cut opens every part: their insides drawn while it is on
 
 
 def _on_depsgraph(scene, _depsgraph):

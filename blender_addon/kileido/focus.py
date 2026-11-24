@@ -27,12 +27,14 @@ rather than blended: grainier while the view moves.
 
 A library part opens up when selected: its insides, contacts and clear cover set
 KEEP on their objects, so they stay as they are while its case fades with the rest
-(the steady stage fades by Amount x (1 - KEEP)).
+(the steady stage fades by Amount x (1 - KEEP)). Insides are drawn only while something
+opens their part this way, Transparent cases or the cut plane (insides_shown): closed
+in an opaque case they are hidden, viewport and render.
 
 Transparent cases (the Parts tab's switch) fade every library part's case at
 once, with nothing selected and the rest of the board as it is: SEE_THROUGH on the case
 objects, and the steady stage fades by the larger of the two. How far the cases fade is
-the switch's slider, Transparency (1: to a faint outline), which the stage reads from the
+the switch's slider, Transparency (1: nothing of the case left), which the stage reads from the
 scene itself (a View Layer attribute): keyframed, it animates in the viewport and in
 renders with no Python running per frame.
 """
@@ -49,7 +51,8 @@ CUT_FACE = "KLS cut face"  # the cut plane's section (cut.py): it fades with the
 GREY = (0.5, 0.5, 0.5, 1.0)  # unlit colour of everything that is not highlighted
 VISIBLE = 0.05  # opacity of everything that is not highlighted (0.15 looked too hazy)
 STEADY = "kls_steady_shader"  # on a material: its shader never changes with a switch (library parts)
-STEADY_GROUP = "KLS_Steady_v4"  # v2: SEE_THROUGH; v3: both read from FOCUS; v4: the slider from the scene
+STEADY_GROUP = "KLS_Steady_v5"  # v2: SEE_THROUGH; v3: both read from FOCUS; v4: the slider from the scene;
+# v5: the slider at 1 leaves nothing of the case
 STEADY_NODE = "KLS steady"
 KEEP = "kls_focus_keep"  # on an object: 1 keeps it unfaded (a selected library part's insides)
 SEE_THROUGH = "kls_see_through"  # on an object: 1 fades it whatever X-ray does (library parts' cases)
@@ -57,6 +60,7 @@ FOCUS = "kls_focus"  # on an object: (KEEP, SEE_THROUGH, 0), what the steady sta
 # object attribute, not two, as Eevee reads at most eight per material and a part's own may need most
 OPENED = ("insides", "contacts", "cover", "light", "field")  # what of a selected library part stays: all but its case
 SEE_THROUGH_AMOUNT = "kileido_see_through_amount"  # the Scene property: how far cases fade
+OWN_CULLING = "kls_own_backface_culling"  # on a material: its own culling, while Transparent cases culls it
 _active = False
 
 
@@ -132,7 +136,8 @@ def steady_group():
     amount = nodes.new("ShaderNodeAttribute")  # the slider, read from the scene: keyframes animate it
     amount.attribute_type, amount.attribute_name = "VIEW_LAYER", SEE_THROUGH_AMOUNT
     see = math("MULTIPLY", flagged, amount.outputs["Fac"])
-    fade = math("MAXIMUM", math("MULTIPLY", value("Amount"), math("SUBTRACT", 1.0, keep)), see)
+    xray = math("MULTIPLY", value("Amount"), math("SUBTRACT", 1.0, keep))
+    fade = math("MAXIMUM", xray, see)
     offset = nodes.new("ShaderNodeVectorMath")
     offset.operation = "SUBTRACT"
     links.new(nodes.new("ShaderNodeNewGeometry").outputs["Position"], offset.inputs[0])
@@ -148,8 +153,10 @@ def steady_group():
     links.new(fade, lit.inputs[0])
     links.new(source.outputs["Shader"], lit.inputs[1])
     links.new(grey.outputs[0], lit.inputs[2])
-    out = nodes.new("ShaderNodeMixShader")  # then see-through: faded to VISIBLE, gone wholly
-    links.new(math("MAXIMUM", math("MULTIPLY", fade, 1.0 - VISIBLE), gone), out.inputs[0])
+    # then see-through: X-ray's fade to VISIBLE (a faint grey stays), Transparent cases' by the
+    # slider itself (at 1 nothing of the case stays), gone wholly on the cut's removed side
+    out = nodes.new("ShaderNodeMixShader")
+    links.new(math("MAXIMUM", math("MAXIMUM", math("MULTIPLY", xray, 1.0 - VISIBLE), see), gone), out.inputs[0])
     links.new(lit.outputs[0], out.inputs[1])
     links.new(nodes.new("ShaderNodeBsdfTransparent").outputs[0], out.inputs[2])
     links.new(out.outputs[0], sink.inputs["Shader"])
@@ -292,6 +299,48 @@ def _open_selected_parts():
             obj[KEEP], obj[SEE_THROUGH] = keep, see
             obj[FOCUS] = (keep, see, 0.0)
             obj.update_tag()
+        if obj.get("kls_role") in ("case", "cover"):
+            for slot in obj.material_slots:
+                _cull_back(slot.material, see_through)
+    from . import parts  # imports this module
+    parts.show_insides_here()  # opened or closed by what changed
     if chosen and not board.in_snapshot:
         from . import highlight  # imports this module
         highlight.refresh_components()  # the boxes of opened parts go, and come back
+
+
+def _cull_back(material, see_through):
+    """A case's or cover's material while Transparent cases is on: its back faces culled.
+    Eevee's dithered transparency still leaves a trace of a wholly clear case's back faces
+    along its edges (measured: 300 pixels of a 320 x 240 render at Transparency 1; none with
+    them culled); the faces are see-through anyway. Off, the material's own setting comes
+    back, so the cut plane still shows a case's inside. Culling is a pass state, no shader
+    recompiles for it (measured: 0.15 s, against 19 s for a render method switch)."""
+    if material is None:
+        return
+    if see_through:
+        if OWN_CULLING not in material:
+            material[OWN_CULLING] = int(material.use_backface_culling)
+        if not material.use_backface_culling:
+            material.use_backface_culling = True
+    elif OWN_CULLING in material:
+        own = bool(material[OWN_CULLING])
+        del material[OWN_CULLING]
+        if material.use_backface_culling != own:
+            material.use_backface_culling = own
+
+
+def insides_shown(footprint_id):
+    """Whether a library part's insides are drawn. Closed in an opaque case nothing shows
+    them, and they still cost: drawn behind the case, their geometry nodes evaluated (a
+    QFN-64's bond wires alone are 17,000 triangles). So only while something opens the
+    part: Transparent cases, the cut plane, or X-ray with the part selected. A part with a
+    clear cover (an LED's lens: its die shows through) or no case at all always shows them."""
+    scene = bpy.context.scene
+    if getattr(scene, "kileido_see_through", False) or getattr(scene, "kileido_cut", False):
+        return True
+    if _active and footprint_id in board.highlight_components.get("footprints", set()):
+        return True
+    names = board.swapped.get(footprint_id, {}).get("names", ())
+    roles = {obj.get("kls_role") for obj in map(lookup, names) if obj is not None}
+    return "case" not in roles or "cover" in roles

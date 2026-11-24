@@ -2246,7 +2246,7 @@ def _properties():
             update=lambda self, context: _see_through_update()),
         "kileido_see_through_amount": FloatProperty(
             name="Transparency", default=0.85, min=0.0, max=1.0, subtype="FACTOR",
-            description="How far Transparent cases fades the cases: 1 leaves a faint outline, lower keeps more "
+            description="How far Transparent cases fades the cases: 1 leaves nothing of them, lower keeps more "
                         "of the case",
             update=lambda self, context: _see_through_update()),
         "kileido_cut": BoolProperty(

@@ -34,7 +34,8 @@ told_footprint = {}  # reference -> the last `footprint` the test library's `pla
 
 def make_library(folder):
     """A library of two parts and its index: a resistor (a 1.6 x 0.8 x 0.45 mm block, an
-    inside and field lines) and a bead that is only for references starting "FB"."""
+    inside and field lines) and a bead that is only for references starting "FB" (and has a
+    clear cover over its insides)."""
     made = []
     for name, size in (("Test_R_0603", (1.6, 0.8, 0.45)), ("Test_Bead_0603", (1.6, 0.8, 0.8))):
         collection = bpy.data.collections.new(name)
@@ -57,6 +58,10 @@ def make_library(folder):
         field = bpy.data.objects.new(f"{name}: field", bpy.data.meshes.new(f"{name}: field"))
         field["kls_role"] = "field"
         collection.objects.link(field)
+        if name == "Test_Bead_0603":  # a clear cover over its insides, as an LED's lens
+            lens = bpy.data.objects.new(f"{name}: lens", bpy.data.meshes.new(f"{name}: lens"))
+            lens["kls_role"] = "cover"
+            collection.objects.link(lens)
         made.append(collection)
     index = bpy.data.texts.new(parts.INDEX)
     index.write(json.dumps({
@@ -109,6 +114,10 @@ def snapshot():
         footprint["fields"] = fields.get(footprint["reference"], [])
         footprint["pins"] = [["1", "A", "passive"], ["2", "K", "passive"]] if footprint["reference"] == "J1" else []
     return snapshot_from_jsonable(data)
+
+
+def insides_of(reference):
+    return next(obj for obj in objects_of(reference)[1] if obj.get("kls_role") == "insides")
 
 
 def objects_of(reference):
@@ -211,6 +220,8 @@ def main():
     check(abs(under.matrix_world.translation.z + 0.225 * MM) < 1e-9, "J2's part hangs under the board")
     check(not objects_of("J3")[1], "the bead is not for a reference J3")
     check(part.data == under.data, "the parts share their mesh")
+    # its insides closed in its opaque case: not drawn, viewport or render, until something opens it
+    check(core.hide_get() and core.hide_render, "J1's insides hidden inside its case")
     check(core.data.get("kls_dressed") == 1 and core.data["kls_test_value"] == "4k7" and core.data.users == 1,
           "place gave J1's insides their own mesh")
     check(part.material_slots[0].material in focus.shown_materials(), "X-ray reaches the part's material")
@@ -263,19 +274,53 @@ def main():
     check(not parts.my_parts_folder().exists() or not any(parts.my_parts_folder().iterdir()), "nothing written")
     check(core.get(focus.KEEP) == 1.0 and not part.get(focus.KEEP) and not under.get(focus.KEEP),
           "X-ray opens the selected part only")
+    check(not core.hide_get() and not core.hide_render and insides_of("J2").hide_get(),
+          "X-ray draws the opened part's insides only")
     check(tuple(core[focus.FOCUS]) == (1.0, 0.0, 0.0) and tuple(part[focus.FOCUS]) == (0.0, 0.0, 0.0),
           "the steady stage's one attribute says the same")
     box = board.collection.all_objects.get(f"KLS footprint highlight {footprint['kls_id']}")
     check(box is None or box.hide_get(), "no selection box over an opened part")
     bpy.context.scene.kileido_focus = False
     check(not core.get(focus.KEEP), "X-ray off: nothing kept")
+    check(core.hide_get() and core.hide_render, "X-ray off: J1's insides closed in again")
     highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": []})
     check(parts.selected() is None, "nothing selected")
+
+    # the cut plane opens every part: their insides drawn while it is on
+    bpy.context.scene.kileido_cut = True
+    check(not core.hide_get() and not insides_of("J2").hide_get(), "the cut plane draws every part's insides")
+    bpy.context.scene.kileido_cut = False
+    check(core.hide_get() and insides_of("J2").hide_get(), "cut plane off: closed in again")
 
     # Transparent cases: every case fades, without X-ray or a selection; insides stay
     bpy.context.scene.kileido_see_through = True
     check(part.get(focus.SEE_THROUGH) == 1.0 and under.get(focus.SEE_THROUGH) == 1.0
           and not core.get(focus.SEE_THROUGH), "transparent cases: the cases only")
+    check(not core.hide_get() and not core.hide_render and not insides_of("J2").hide_get(),
+          "transparent cases: every part's insides drawn")
+    case_material = part.material_slots[0].material
+    check(case_material.use_backface_culling and case_material.get(focus.OWN_CULLING) == 0,
+          "transparent cases: the case's back faces culled, its own setting kept")
+    # The slider reaches the case's transparency through maxima only (no x0.95 for X-ray's faint
+    # grey on the way): at 1, nothing of the case is left
+    stage = case_material.node_tree.nodes[focus.STEADY_NODE].node_tree
+    clear = next(node for node in stage.nodes if node.type == "MIX_SHADER" and node.inputs[2].is_linked
+                 and node.inputs[2].links[0].from_node.type == "BSDF_TRANSPARENT"
+                 and any(link.to_node.type == "GROUP_OUTPUT" for link in node.outputs[0].links))
+    slider = next(node for node in stage.nodes if node.type == "ATTRIBUTE" and node.attribute_type == "VIEW_LAYER")
+
+    def through_maxima(node):
+        """Whether `node`'s output reaches the clear mix's factor through MAXIMUM nodes only."""
+        for link in node.outputs[0].links:
+            if link.to_node == clear and link.to_socket == clear.inputs[0]:
+                return True
+            if link.to_node.type == "MATH" and link.to_node.operation == "MAXIMUM" and through_maxima(link.to_node):
+                return True
+        return False
+
+    see = next(link.to_node for link in slider.outputs["Fac"].links if link.to_node.type == "MATH")
+    check(see.operation == "MULTIPLY" and through_maxima(see),
+          "the slider sets the case's transparency itself (at 1: nothing left of it)")
     check(tuple(part[focus.FOCUS]) == (0.0, 1.0, 0.0), "and in the steady stage's attribute")
     stage = part.material_slots[0].material.node_tree.nodes[focus.STEADY_NODE]
     check(stage.node_tree.name == focus.STEADY_GROUP, "the part's material has the current steady stage")
@@ -291,6 +336,11 @@ def main():
           "KiLeidoscope's stages are named as STAGE_PREFIX promises")
     bpy.context.scene.kileido_see_through = False
     check(not part.get(focus.SEE_THROUGH), "transparent cases off")
+    check(core.hide_get() and core.hide_render, "transparent cases off: insides closed in again")
+    check(not case_material.use_backface_culling and focus.OWN_CULLING not in case_material,
+          "transparent cases off: the case's own culling back")
+    # the bead's part has a clear cover: its insides show through it, always
+    check(not insides_of("J4").hide_get() and not insides_of("J4").hide_render, "insides under a clear cover stay")
 
     # the cut plane, as an add-on follows it
     check(parts.cut_plane() is None, "cut plane off: None")
@@ -340,7 +390,7 @@ def main():
         replace(f, reference="FB3") if f.reference == "J3" else f for f in moved_again.footprints))
     apply.load_frames(footprints_message(renamed, 4))
     bead = objects_of("FB3")[1]
-    check(len(bead) == 3 and all(obj.get("kls_part_name") == "Test_Bead_0603" for obj in bead), "FB3's bead")
+    check(len(bead) == 4 and all(obj.get("kls_part_name") == "Test_Bead_0603" for obj in bead), "FB3's bead")
     check(all(obj.name.startswith("FB3") for obj in bead), f"named after its reference: {[o.name for o in bead]}")
 
     # parts found again after their bookkeeping is lost (a saved file opened, an undo)
@@ -499,7 +549,7 @@ def main():
     parts.add_library(LIBRARY, str(library), place=dropping, draw=draw)
     parts.place_again(LIBRARY)
     names = board.model_objects_by_fp[fb3["kls_id"]]
-    check(len(names) == 2 and all(name in bpy.data.objects for name in names),
+    check(len(names) == 3 and all(name in bpy.data.objects for name in names),
           f"a place that removes an object: the rest stay the footprint's: {names}")
     parts.add_library(LIBRARY, str(library), place=place, draw=draw)
     parts.place_again(LIBRARY)
