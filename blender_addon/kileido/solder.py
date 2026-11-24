@@ -672,7 +672,10 @@ def _parts(objects=None):
         if frame is None or frame.get("kls_footprint") != 1:
             frame = components.find(components.FRAME, footprint_id)
         matrix = np.array(poses.in_root(obj, world_to_root), dtype=np.float64)
-        now = (obj.name in bound and models.model_is_visible(frame, obj), obj.data.as_pointer(), matrix.tobytes(),
+        # a model scaled to nothing holds no solder (and has no inverse)
+        visible = (obj.name in bound and models.model_is_visible(frame, obj)
+                   and abs(np.linalg.det(matrix[:3, :3])) > 1e-30)
+        now = (visible, obj.data.as_pointer(), matrix.tobytes(),
                tuple(slot.material.as_pointer() if slot.material else 0 for slot in obj.material_slots),
                obj.get("kls_role"))
         if now[0]:
@@ -847,7 +850,8 @@ def _soft_edge(points, starts, ends):
     unit = d / length[:, None]
     rel = points[:, None, :] - starts[None, :, :]
     s = (rel * unit[None]).sum(axis=2)  # the foot of the perpendicular, along the segment
-    h = np.maximum(np.abs(rel[..., 0] * unit[None, :, 1] - rel[..., 1] * unit[None, :, 0]), 1e-12)
+    # at least 10 nm: on an edge's line part()'s difference is rounding noise, over h³
+    h = np.maximum(np.abs(rel[..., 0] * unit[None, :, 1] - rel[..., 1] * unit[None, :, 0]), 1e-8)
 
     def part(t):  # h³ times the integral of (h² + t²)^-2 up to t
         return 0.5 * (t * h / (h * h + t * t) + np.arctan(t / h))
@@ -1360,7 +1364,8 @@ def _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs):
             centres[face], walls[face], radii[face] = found[1:4]
             reach[face] = found[end] - FACE_PROBE_M  # the pin past the face
         # the solder's inner wall a little inside the pin: on its face, the two flickered
-        radii[face] = np.clip(radii[face] - PIN_INSET_M, 1e-6, walls[face] - 1e-6)
+        most = np.maximum(walls[face] - 1e-6, 0.5 * walls[face])  # inside the wall, even a pin nearly on it
+        radii[face] = np.clip(radii[face] - PIN_INSET_M, np.minimum(1e-6, most), most)
     pads = {"top": _radial(centres["top"], rings[0], unit), "bottom": _radial(centres["bottom"], rings[1], unit)}
     climbs, fillets = {}, {}
     steps = np.arange(THT_STEPS + 1) / THT_STEPS
