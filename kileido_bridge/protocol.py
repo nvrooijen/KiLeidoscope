@@ -176,6 +176,7 @@ def fill_message(snapshot: model.BoardSnapshot, layer: str, kind: str, revision:
         header = {"type": "layer_data", "layer": layer, "kind": kind, "revision": revision, "ids": ids}
         return encode_frame(header, _rings(entries))
     drills = []  # (item index, *_pad_drill(pad)) for pads with a hole
+    drill_pads = []  # per drill: its pad's footprint id and pad number ("" for a mounting hole)
     for item in snapshot.zones if kind == "zones" else snapshot.pads:
         if kind == "zones":
             polygons = item.polygons if item.layer == layer else ()
@@ -188,9 +189,12 @@ def fill_message(snapshot: model.BoardSnapshot, layer: str, kind: str, revision:
             drill = _pad_drill(item) if kind == "pads" else None
             if drill is not None:
                 drills.append((len(ids), *drill))
+                drill_pads.append([item.footprint_id, item.number])
         entries += _polygon_entries(len(ids), polygons)
         ids.append(item.id)
     header = {"type": "layer_data", "layer": layer, "kind": kind, "revision": revision, "ids": ids}
+    if kind == "pads":
+        header["drill_pads"] = drill_pads  # the reflowed solder's through-hole joints (solder.py)
     arrays = _rings(entries)
     if kind == "pads":
         drill_items, rows, angles, ovals, plated = zip(*drills) if drills else ((),) * 5

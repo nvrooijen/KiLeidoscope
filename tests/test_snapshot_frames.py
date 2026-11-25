@@ -51,6 +51,8 @@ def test_pad_frames_include_through_hole_drills_on_each_copper_layer():
         assert arrays["drill"][0].tolist() == [12_000_000, 23_000_000, 2_000_000, 1_000_000]
         assert header["ids"][int(arrays["drill_item"][0])] == "55555555-5555-4555-8555-555555555555"
         assert arrays["drill_oval"].tolist() == [1]
+        # whose pad each drill is: the reflowed solder's through-hole joints
+        assert header["drill_pads"] == [["66666666-6666-4666-8666-666666666666", "1"]]
 
 
 def test_rotated_oval_drill_angle_and_shape_survive_binary_frame():

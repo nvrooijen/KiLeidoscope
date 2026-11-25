@@ -439,8 +439,10 @@ def _apply_drills(header, arrays):
         return
     active = set()
     hole_rows = []
-    for row, index, angle, oval, plated in zip(arrays["drill"], arrays["drill_item"], arrays["drill_angle"],
-                                               arrays["drill_oval"], arrays["drill_plated"]):
+    # per drill its pad's footprint and number (an older bridge sends none)
+    drill_pads = header.get("drill_pads") or [None] * len(arrays["drill_item"])
+    for row, index, angle, oval, plated, owner in zip(arrays["drill"], arrays["drill_item"], arrays["drill_angle"],
+                                                      arrays["drill_oval"], arrays["drill_plated"], drill_pads):
         pad_id = header["ids"][int(index)]
         obj = owned_object(f"KLS F.Cu drill {pad_id}")
         obj["kls_drill"] = 1
@@ -464,6 +466,10 @@ def _apply_drills(header, arrays):
         obj["kls_drill_oval"] = bool(oval)
         hole_rows.append((x, y, width, height, float(angle), bool(oval)))
         obj["kls_id"] = pad_id
+        if owner is not None:  # whose pin goes through it (solder.py)
+            obj["kls_fp_id"], obj["kls_pad_number"] = owner
+        elif "kls_fp_id" in obj:
+            del obj["kls_fp_id"], obj["kls_pad_number"]
         set_visible(obj, True)
         active.add(obj.name)
         board.touched.add(obj.name)

@@ -477,6 +477,50 @@ def main():
     assert z_bottom - profiles[..., 2].min() > 0.05e-3, z_bottom - profiles[..., 2].min()  # a fillet, not a film
     assert signed_volume(objects[joint]) > 0
 
+    # Not by colour: a numbered pad's hole holds its own footprint's pin, whatever colour its
+    # model gives it (a vendor model's grey leads)
+    assert drill["kls_fp_id"] == J1 and drill["kls_pad_number"] == "1"  # (the bridge says whose pad it is)
+    state.board.model_objects_by_fp[J1].remove(objects["J1 leg"].name)
+    grey = material("stand-in vendor grey", (0.8, 0.8, 0.8))
+    assert not solder.is_metal(grey)
+    vendor = part("J1 vendor pin", J1, "top", (x - 0.3e-3, y - 0.3e-3, z_bottom - 2e-3), (x + 0.3e-3, y + 0.3e-3, z_top + 4e-3),
+                  grey, sides=24)
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    assert z_bottom - coordinates(objects[joint])[:, 2].min() > 0.05e-3  # a fillet, not a film
+    # ... a hole without a pad number (a mounting or peg hole) only a metal one: a plastic peg stays bare
+    drill["kls_pad_number"] = ""
+    solder.refresh()
+    assert solder.last_build()["joints"] == 0
+    vendor.data.materials[0] = tin
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    drill["kls_pad_number"] = "1"
+    vendor.data.materials[0] = grey
+    # ... and a library part's object with a role only by that role: its case holds no solder
+    vendor["kls_role"] = "case"
+    solder.refresh()
+    assert solder.last_build()["joints"] == 0
+    state.board.model_objects_by_fp[J1].remove(vendor.name)
+
+    # A pin ending inside the board (above mid-board): found just inside the face it leaves by
+    part("J1 short pin", J1, "top", (x - 0.3e-3, y - 0.3e-3, z_top - 0.3e-3), (x + 0.3e-3, y + 0.3e-3, z_top + 4e-3),
+         tin, sides=24)
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    assert signed_volume(objects[joint]) > 0
+
+    # A model's pin wider than the footprint's hole (a blade through a smaller drill): it fills
+    # the hole where it reaches past the wall
+    state.board.model_objects_by_fp[J1].remove(objects["J1 short pin"].name)
+    part("J1 wide blade", J1, "top", (x - 1.1e-3, y - 0.6e-3, z_bottom - 2e-3), (x + 1.1e-3, y + 0.6e-3, z_top + 4e-3), tin)
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    assert signed_volume(objects[joint]) > 0
+
     # No timers run in background mode: a switch builds the solder at once, and a script
     # that blocks Blender pumps it (studio.pump), settled only once it is built
     scene.kileido_solder_reflowed = False

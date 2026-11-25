@@ -51,7 +51,7 @@ def test_a_footprint_holding_a_point_is_read_with_its_pads():
     assert footprints[0].proto.SerializeToString(deterministic=True) == first
 
 
-def test_a_selected_point_is_skipped():
+def test_a_selected_point_does_not_stop_the_selection_read():
     track = bt.Track()
     track.id.value = "track-1"
     packed = Any()
@@ -59,4 +59,6 @@ def test_a_selected_point_is_skipped():
 
     ids = selected_ids(Board(_KiCad([_point(), packed]), DocumentSpecifier()))
 
-    assert "track-1" in ids and "point-1" not in ids
+    # kipy 0.9 knows ReferencePoint and hands its id on (the selection ignores it); older kipy
+    # cannot map it and hands on an empty id
+    assert "track-1" in ids and ids - {"point-1", ""} == {"track-1"}
