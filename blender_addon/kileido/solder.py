@@ -30,7 +30,9 @@ What counts as metal, best first:
   keeps a model's colours but neither its material names (they come in as mat_0, mat_1,
   ...) nor a metal flag (every material imports as metallic): measured 2026-10-19 on
   KiCad 10.0.6 exports in Blender 4.5 and 5.2. Vendor models use their own colours, so
-  their metal is not known.
+  their metal is not known;
+- in a numbered pad's plated hole where no such metal is found: any face of that pad's own
+  footprint's model (without a role): only its pin goes through there, whatever its colour.
 """
 
 import contextlib
@@ -612,16 +614,18 @@ def _body_faces(obj):
     return _faces[key]
 
 
-def _metal_tree(obj):
+def _metal_tree(obj, whole=False):
     """A BVH of one model part's metal faces, in its mesh's own coordinates (None without
     any), the piece of metal each of its faces is part of (`_pieces`) and their cache key.
-    Parts sharing a mesh and materials share them."""
+    Parts sharing a mesh and materials share them. `whole`: every face, whatever its colour
+    (a numbered pad's own pin, `_own_parts`)."""
     role = obj.get("kls_role")
     if role is not None and role != CONTACTS:
         return None, None, None
     mesh = obj.data
-    flags = (True,) if role == CONTACTS else tuple(is_metal(slot.material) for slot in obj.material_slots)
-    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags)
+    every = whole or role == CONTACTS
+    flags = (True,) if every else tuple(is_metal(slot.material) for slot in obj.material_slots)
+    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags, whole)
     if key in _trees:
         return (*_trees[key], key)
     tree = pieces = None
@@ -631,7 +635,7 @@ def _metal_tree(obj):
         corners = np.empty(count * 3, np.int32)
         mesh.loop_triangles.foreach_get("vertices", corners)
         corners = corners.reshape(-1, 3)
-        if role != CONTACTS:
+        if not every:
             slots = np.empty(count, np.int32)
             mesh.loop_triangles.foreach_get("material_index", slots)
             corners = corners[np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
@@ -640,7 +644,7 @@ def _metal_tree(obj):
             mesh.vertices.foreach_get("co", co)
             co = co.reshape(-1, 3)
             tree = BVHTree.FromPolygons(co.tolist(), corners.tolist(), all_triangles=True)
-            pieces = _pieces(co, corners)
+            pieces = None if whole else _pieces(co, corners)  # (only the SMD solder uses them)
     _trees[key] = (tree, pieces)
     return tree, pieces, key
 
@@ -1308,6 +1312,7 @@ def _build_through_hole(obj, parts, named):
         last = None
     entries = {}
     revisited = 0
+    owned = {}  # footprint -> its model parts, every face (`_own_parts`)
     for drill in named.values():
         if not (drill.get("kls_drill") and drill.get("kls_plated") and drill.get("kls_drill_size")
                 and len(drill.data.vertices)):
@@ -1316,8 +1321,10 @@ def _build_through_hole(obj, parts, named):
         centre = np.array(drill.location[:2], dtype=np.float64)
         size = tuple(drill["kls_drill_size"])
         rings = (top.get(pad_id), bottom.get(pad_id))
+        # a numbered pad's footprint: its model has a pin in the hole (an older bridge: not known)
+        owner = drill.get("kls_fp_id") if drill.get("kls_pad_number") else None
         shape = (centre.tobytes(), size, bool(drill.get("kls_drill_oval", False)), round(drill.rotation_euler.z, 9),
-                 *(b"" if ring is None else ring.tobytes() for ring in rings))
+                 owner, *(b"" if ring is None else ring.tobytes() for ring in rings))
         half = 0.5 * max(size)
         low = np.array((centre[0] - half, centre[1] - half, z_bottom - PIN_REACH_M))
         high = np.array((centre[0] + half, centre[1] + half, z_top + PIN_REACH_M))
@@ -1326,7 +1333,8 @@ def _build_through_hole(obj, parts, named):
             entries[pad_id] = entry
             continue
         revisited += 1
-        joint = _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs)
+        joint = _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs,
+                      (lambda owner=owner: _own_parts(owner, named, owned)) if owner else None)
         entries[pad_id] = {"shape": shape, "low": low, "high": high, "kept": joint,
                            "vertices": None if joint is None else joint[0]}
     layout = _place(obj.data, last, entries)
@@ -1337,17 +1345,24 @@ def _build_through_hole(obj, parts, named):
           rewritten=layout["rewritten"])
 
 
-def _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs):
-    """One plated hole's joint (vertices, triangles, smooth flags), or None without a pin."""
+def _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs, own=None):
+    """One plated hole's joint (vertices, triangles, smooth flags), or None without a pin.
+    `own`: for a numbered pad, what gives its own model parts, every face (`_own_parts`),
+    looked at where no metal is found."""
     angles = np.linspace(0.0, 2 * np.pi, THT_ANGLES, endpoint=False)
     unit = np.column_stack((np.cos(angles), np.sin(angles)))
     outline = _drill_outline(centre, *drill["kls_drill_size"], drill.rotation_euler.z,
                              drill.get("kls_drill_oval", False))
-    mid = 0.5 * (z_top + z_bottom)
-    half = 0.5 * max(drill["kls_drill_size"])  # parts reaching into the hole at mid-board
-    near = np.flatnonzero(np.all(highs[:, :2] >= centre - half, axis=1) & np.all(lows[:, :2] <= centre + half, axis=1)
-                          & (highs[:, 2] >= mid) & (lows[:, 2] <= mid))
-    pin = _pin(np.array((centre[0], centre[1], mid)), outline, unit, [parts[index] for index in near])
+    half = 0.5 * max(drill["kls_drill_size"])
+    # The pin at mid-board, else just inside either face (a pin ending inside the board)
+    for mid in (0.5 * (z_top + z_bottom), z_top - FACE_PROBE_M, z_bottom + FACE_PROBE_M):
+        near = np.flatnonzero(np.all(highs[:, :2] >= centre - half, axis=1) & np.all(lows[:, :2] <= centre + half, axis=1)
+                              & (highs[:, 2] >= mid) & (lows[:, 2] <= mid))  # parts reaching into the hole there
+        pin = _pin(np.array((centre[0], centre[1], mid)), outline, unit, [parts[index] for index in near])
+        if pin is None and own is not None:
+            pin = _pin(np.array((centre[0], centre[1], mid)), outline, unit, own())
+        if pin is not None:
+            break
     if pin is None:
         return None
     middle, wall, radius, up, down, side, (tree, matrix, inverse) = pin
@@ -1381,6 +1396,30 @@ def _hole(drill, centre, rings, z_top, z_bottom, parts, lows, highs):
         share = PART_SIDE_CLIMB if face == side else SOLDER_SIDE_CLIMB
         climbs[face] = max(WET_FILM_M, min(share * width, 0.8 * reach[face], MAX_THT_CLIMB_M))
     return _joint(centres, unit, walls, radii, pads, fillets, z_top, z_bottom, climbs)
+
+
+def _own_parts(footprint_id, named, owned):
+    """A footprint's shown model parts without a role, every face of them (`_metal_tree`'s
+    `whole`), as `_pin` takes parts: in a numbered pad's hole only its pin goes through,
+    whatever colour the model gives it. `owned`: these, per footprint, for this build."""
+    if footprint_id not in owned:
+        found = []
+        world_to_root = poses.to_root()
+        for name in board.model_objects_by_fp.get(footprint_id, ()):
+            obj = named.get(name)
+            if obj is None or obj.type != "MESH" or obj.get("kls_role") is not None:
+                continue
+            frame = obj.parent
+            if frame is None or frame.get("kls_footprint") != 1:
+                frame = components.find(components.FRAME, footprint_id)
+            matrix = np.array(poses.in_root(obj, world_to_root), dtype=np.float64)
+            if not models.model_is_visible(frame, obj) or abs(np.linalg.det(matrix[:3, :3])) <= 1e-30:
+                continue
+            tree = _metal_tree(obj, whole=True)[0]
+            if tree is not None:
+                found.append((tree, matrix, np.linalg.inv(matrix), obj.get("kls_side", "top")))
+        owned[footprint_id] = found
+    return owned[footprint_id]
 
 
 def _grown(unit, radius, widths):
@@ -1528,7 +1567,9 @@ def _pin_from(tree, inverse, origin, outline, unit, inside=False):
     """`_pin`'s rays from `origin`, for one part: (hits, origin's xy, wall, radius, up, down),
     or None when fewer than PIN_HITS of them meet its metal. `inside`: `origin` is in the
     pin (`_pin_middle`): FACE_HITS of them must, and one that does not meets the drill's
-    wall first (a leg pressed against it)."""
+    wall first (a leg pressed against it). The same where the rays turn out to start inside
+    the pin (PIN_HITS of them meet its faces from behind) and it reaches past the drill's
+    wall: a model's blade wider than the footprint's hole fills the hole there."""
     wall = _radial(origin[:2], outline, unit) - WALL_GAP_M
     if not np.all(np.isfinite(wall)):
         return None
@@ -1538,6 +1579,14 @@ def _pin_from(tree, inverse, origin, outline, unit, inside=False):
     radius = np.array([tree.ray_cast(start, Vector(along / stretch), (reach + PIN_SLACK_M) * stretch)[3]
                        for along, stretch, reach in zip(local, scale, wall)], dtype=float) / scale
     hits = int(np.isfinite(radius).sum())
+    if not inside and hits < PIN_HITS * len(unit):
+        # further out: a face turned away is where the ray left the pin it started in
+        behind = 0
+        for along, stretch in zip(local, scale):
+            _, normal, _, _ = tree.ray_cast(start, Vector(along / stretch), PIN_REACH_M * stretch)
+            behind += normal is not None and normal.dot(Vector(along)) > 0
+        if behind >= PIN_HITS * len(unit):
+            inside, hits = True, len(unit)
     if hits < (FACE_HITS if inside else PIN_HITS) * len(unit):
         return None
     ends = [_cast(tree, inverse, origin, np.array((0.0, 0.0, sign)), PIN_REACH_M) for sign in (1.0, -1.0)]
