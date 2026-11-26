@@ -1,6 +1,6 @@
 <!-- Guide for 0.5.1. -->
 
-# (New!) LLM review visualizer on the 3D board
+# LLM review visualizer on the 3D board
 
 No, this is not yet another AI plugin. It's a tool for visualizing your AI board checking tools. This tool is designed to tackle one of the largest frustrations in PCB design; the lengthy review process. While LLMs are now very capable of checking your boards with some great specialized KiCad based plugins, the output of these tools remains text-based. Because your PCBs are 3D structures, it is up to the user to translate from text to the 3D world, which can quickly become fatiguing when dealing with large, complex boards. The KiLeidoscope LLM-review tab hopes to facilitate this process, by simply introducing a handshake layer between the LLM's textual output and Blender's 3D visualization. Furthermore, the 3D LLM-review double-checks the LLM's suggested fixes with KiCad's DRC, and even visualizes the LLM's suggestions using ghost placements of components or trace re-routing!
 

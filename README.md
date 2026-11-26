@@ -26,7 +26,7 @@ KiLeidoscope is fully open source and in early development; feedback and contrib
 </p>
 <p align="center"><sub>Left: a differential pair selected in KiCad, with and without X-ray mode.
 Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2).<br>
-Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Bend layer, folding in Blender. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
+Right: flex mode: a flex LED ring, flat in KiCad with its marks on the Bend layer, folding in Blender. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
 
 ## Features
 
@@ -35,9 +35,9 @@ Right: flex mode (beta): a flex LED ring, flat in KiCad with its marks on the Be
 - Selection both ways: a click in Blender selects in KiCad, and KiCad's selection shows in Blender, with the differential-pair partner in blue.
 - Blender's EEVEE preview or Cycles engine, using different colour modes for either KiCad's PCB editor theme or realistic representations.
 - Per-layer visibility, X-ray mode and adjustable layer thickness.
-- Multi-board assemblies (beta): up to four boards from four KiCad PCB editors in one window, each live from its own KiCad, placed as they sit in the product and checked for collisions, with the arrangement kept in an OpenUSD file. See the [multi-board guide](docs/multi-board.md).
+- Multi-board assemblies: up to four boards from four KiCad PCB editors in one window, each live from its own KiCad, placed as they sit in the product and checked for collisions, with the arrangement kept in an OpenUSD file. See the [multi-board guide](docs/multi-board.md).
 - IMS boards: a 2-layer board drawn on its aluminum or copper base, the thin epoxy under F.Cu, in 3D and in the cross section, with warnings for vias and plated holes that would short to the base. See the [IMS guide](docs/ims.md).
-- Flex and rigid-flex boards (beta): bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
+- Flex and rigid-flex boards: bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
 - LLM review on the 3D board: paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the [LLM guide](docs/llm-review.md).
 - Dynamic phase: how far a differential pair's P and N are apart in time at every point along the pair, live as you route, from the pair's tuning profile in KiCad. See the [dynamic phase guide](docs/dynamic-phase.md).
@@ -76,7 +76,7 @@ Right: the cut plane opens the board and shows its cross section, with each via 
   </picture>
 </p>
 <p align="center"><sub>Left: IMS mode: an LED board on a copper base in Realistic mode. In KiCad it is a plain 2-layer board; KiLeidoscope draws its metal base. See the <a href="docs/ims.md">IMS guide</a>.<br>
-Right: flex mode (beta): the flex template folded in Blender from a few marks on its Bend and Stiffener layers in KiCad, with its coverlay and stiffeners. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
+Right: flex mode: the flex template folded in Blender from a few marks on its Bend and Stiffener layers in KiCad, with its coverlay and stiffeners. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
 
 ## Architecture
 

@@ -1,4 +1,4 @@
-# (New!) Multi-board assemblies (beta)
+# Multi-board assemblies
 
 Many PCB-based products consist of multi-board assemblies, creating a more complex design scenario for electronic designers. Unfortunately, KiCad lacks the tools to visualize these boards simultaneously, and the user is required to export to a CAD software in order to see if the complex board assemblies fit. Kileidoscope's new multi-board mode brings up to four boards from four KiCad PCB editors into one Blender window, each following its own KiCad live over the IPC API, and lets you place them as they sit in the product: stacked, folded over each other or side by side. A collision check marks where boards and components run into each other, connectors can be marked as mated so a plugged pair no longer counts, and the arrangement is saved to a small OpenUSD file that any USD-aware tool can read.
 
