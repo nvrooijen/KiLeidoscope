@@ -1,6 +1,6 @@
 <!-- Preliminary guide for 0.5.0: text to be reviewed, pictures still to come. -->
 
-# (New!) KiCad DRC on the 3D board
+# KiCad DRC on the 3D board
 
 The Kileidoscope bridge is now updated with KiCad's DRC, which can be run directly from the UI. KiCad's design rule checker tells you what is wrong and where. It is, however, limited to 2D, whereas PCBs are inherently 3D objects. Some problems read much better in 3D: a via whose drill comes too close to a pad on an inner layer, a track squeezed past a board edge on the bottom side, two holes that nearly touch through every layer. KiLeidoscope's DRC column runs KiCad's own DRC on the board as it is open in KiCad, lists what it finds, and draws the finding you pick on the 3D board: the items involved lit, the gap measured, the label beside it, and a hole problem cut open so you see the barrels in section.
 

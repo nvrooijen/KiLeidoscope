@@ -1,4 +1,4 @@
-# (New!) Insulated Metal Substrate (IMS) boards
+# Insulated Metal Substrate (IMS) boards
 
 IMS boards are the aluminum or copper core boards used typically under LEDs and other high-power parts due to their excellent thermal conductivity. Its substrate consists of a copper layer forming the circuit, above a thin, heat-conducting epoxy and below that the thick metal base that spreads the heat into a heatsink. KiCad (and many other ECAD tools) unfortunately have no dedicated IMS setting, and such boards are represented as simple 2-layer laminate boards. KiLeidoscope's IMS mode shows it as the board you will get: the metal base in B.Cu's place, the thin epoxy above it, and F.Cu on top, in 3D and in the cut plane's cross-section. All within reach of Blender's great arsenal of rendering and analysis tools!
 
