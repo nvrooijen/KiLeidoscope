@@ -1,6 +1,6 @@
 # Part libraries
 
-A part library holds parts made in Blender that can take the place of KiCad's 3D models on the board, matched by footprint name. KiCad's models are the default: a footprint takes a library's part where you pick that library for it, or where you make the library the Default. A placed part behaves as KiCad's models do: it follows the footprint when you move it in KiCad, hides with KiCad's model visibility, fades in X-ray mode, opens up in the cut plane, takes reflowed solder on its contacts and folds with a flex board. Footprints with no 3D model in KiCad get their part too.
+KiCad has a large part library that is great for designing PCBs and for basic renders. For professional-looking renders, especially cut-open views and views inside parts, its models fall short. Part libraries let you replace KiCad's model of a footprint with a part made in Blender, with everything Blender's materials can do: transparency, surface roughness, glowing LED lenses, insides you can open up, and more. A placed part behaves as KiCad's models do: it follows the footprint when you move it in KiCad, hides with KiCad's model visibility, fades in X-ray mode, opens up in the cut plane, takes reflowed solder on its contacts and folds with a flex board. Footprints without a 3D model in KiCad can get a part too.
 
 KiCad's models reach Blender through `kicad-cli`'s GLB export, which keeps each material's colour and nothing else: names, specular and shininess are dropped, and every material arrives fully metallic and fully rough. KiCad's own library paints its models from one palette of named materials (`PIN-01` for tinned leads, `IC-BODY-EPOXY-04`, `GLASS-13`, ...), so KiLeidoscope knows each of those colours and gives it its look back: leads and pins come out as metal, bodies as plastic or ceramic, glass diodes as glass. A colour outside that palette, as on most makers' models, stays as it arrives.
 
@@ -25,7 +25,7 @@ The **Parts** tab on the sidebar's left edge opens the Parts column.
 - **Libraries** lists My parts and the libraries you added. **Add library…** takes a `.blend` file or, with no file picked, the folder shown. The cross takes a library you added off the list; its file stays where it is (if it was the Default, KiCad is again).
 - With one footprint selected in KiCad, **Model from** says where its model comes from and picks it: **KiCad**, any library that has a part for it, or **Default** to follow the Default library again. The pick is for every footprint of that name, on every board, whatever the Default is.
 - **Save to my parts** saves the selected footprint's model, and picks My parts for its name. A part from an add-on's library that keeps its parts up to date with KiCad (an LED's colour from its field, say) is not saved: the copy would no longer be kept up to date. The bin beside it, **Remove from my parts**, deletes My parts' file for the footprint's name, after asking; its footprints go back to the Default library or KiCad's model.
-- **Transparent cases** turns every part's case see-through at once, without X-ray mode or a selection, so the insides show; the slider beside it sets how far. It acts on the objects a part marks as its case (see [Roles](#roles)), so it shows only while a placed part has one: KiCad's models have none.
+- **Transparent cases** turns every part's case see-through at once, without X-ray mode or a selection, so the insides show; the slider beside it sets how far, and at 1 the case is gone entirely. It acts on the objects a part marks as its case (see [Roles](#roles)), so it shows only while a placed part has one: KiCad's models have none.
 - A library another add-on offers has its own box last, with its name and the switches the add-on gives it, greyed while none of its parts is placed.
 
 ## My parts
@@ -81,7 +81,8 @@ Each object of a part can carry a custom property `kls_role`. A part without rol
 | Role | What KiLeidoscope does with it |
 |---|---|
 | `case` | With the part selected in X-ray mode it fades with the rest of the board, so the insides show. **Transparent cases** fades every case at once |
-| `insides`, `cover`, `light` | Stay as they are when X-ray opens the part (`cover`: a clear outside you see in through; Transparent cases fades it with the case) |
+| `insides` | Drawn only while something opens the part: Transparent cases, the cut plane, or X-ray with the part selected. Inside an opaque case they would show nothing and still cost drawing time. A part with a `cover`, or with no case, always shows them. When X-ray opens the part they stay as they are |
+| `cover`, `light` | Stay as they are when X-ray opens the part (`cover`: a clear outside you see in through; Transparent cases fades it with the case) |
 | `contacts` | Stay as well, and reflowed solder climbs them |
 | `field` | Placed hidden. Collision checks and selection boxes leave them out |
 
