@@ -549,31 +549,71 @@ class _BodyView:
         return hit if hit[0] is None else (hit[0], hit[1], hit[2], hit[3] / stretch)
 
 
+SHAPED = {"MESH", "CURVES", "CURVE", "SURFACE", "META", "FONT"}  # object types with faces to solder to
+
+
+def _mesh_arrays(mesh):
+    """A mesh's vertices (n, 3), triangles' corners (k, 3) and material per triangle (k,)."""
+    mesh.calc_loop_triangles()
+    count = len(mesh.loop_triangles)
+    corners = np.empty(count * 3, np.int32)
+    mesh.loop_triangles.foreach_get("vertices", corners)
+    slots = np.empty(count, np.int32)
+    mesh.loop_triangles.foreach_get("material_index", slots)
+    co = np.empty(len(mesh.vertices) * 3, np.float64)
+    mesh.vertices.foreach_get("co", co)
+    return co.reshape(-1, 3), corners.reshape(-1, 3), slots
+
+
+def _shape(obj):
+    """A model part's geometry in its own coordinates: (its materials, a key for what its
+    triangles depend on, a function giving them: `_mesh_arrays`), or None. A mesh as it is
+    (read only when asked); another object (a library part's leads drawn as Curves by
+    Geometry Nodes) as Blender evaluates it, with that geometry's materials."""
+    if obj.type == "MESH":
+        mesh = obj.data
+        return ([slot.material for slot in obj.material_slots],
+                (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons)), lambda: _mesh_arrays(mesh))
+    if obj.type not in SHAPED:
+        return None
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    # the mesh its modifiers make (Curves: to_mesh refuses them), else Blender's conversion
+    geometry = evaluated.evaluated_geometry() if hasattr(evaluated, "evaluated_geometry") else None
+    mesh = geometry.mesh if geometry is not None else None  # (alive while `geometry` is)
+    if mesh is not None:
+        arrays, materials = _mesh_arrays(mesh), list(mesh.materials)
+    else:
+        try:
+            mesh = evaluated.to_mesh()
+        except RuntimeError:  # no geometry to make a mesh of
+            mesh = None
+        try:
+            if mesh is None:
+                return None
+            arrays, materials = _mesh_arrays(mesh), list(mesh.materials)
+        finally:
+            evaluated.to_mesh_clear()
+    key = (obj.data.as_pointer(), obj.data.name, hash(arrays[0].tobytes()), len(arrays[1]))
+    return materials, key, lambda: arrays
+
+
 def _body_faces(obj):
     """One model part's faces that are not metal, in its mesh's own coordinates: (vertices,
     triangles), or None. A parts pack's case is all body, its contacts none."""
     role = obj.get("kls_role")
     if role == CONTACTS:
         return None
-    mesh = obj.data
-    flags = (False,) if role is not None else tuple(palette.is_metal(slot.material) for slot in obj.material_slots)
-    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags)
+    shape = _shape(obj)
+    if shape is None:
+        return None
+    materials, base, arrays = shape
+    flags = (False,) if role is not None else tuple(palette.is_metal(material) for material in materials)
+    key = (*base, flags)
     if key not in _faces:
-        mesh.calc_loop_triangles()
-        count = len(mesh.loop_triangles)
-        corners = np.empty(count * 3, np.int32)
-        mesh.loop_triangles.foreach_get("vertices", corners)
-        corners = corners.reshape(-1, 3)
+        co, corners, slots = arrays()
         if role is None and flags:
-            slots = np.empty(count, np.int32)
-            mesh.loop_triangles.foreach_get("material_index", slots)
             corners = corners[~np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
-        found = None
-        if len(corners):
-            co = np.empty(len(mesh.vertices) * 3, np.float64)
-            mesh.vertices.foreach_get("co", co)
-            found = (co.reshape(-1, 3), corners)
-        _faces[key] = found
+        _faces[key] = (co, corners) if len(corners) else None
     return _faces[key]
 
 
@@ -585,27 +625,21 @@ def _metal_tree(obj, whole=False):
     role = obj.get("kls_role")
     if role is not None and role != CONTACTS:
         return None, None, None
-    mesh = obj.data
+    shape = _shape(obj)
+    if shape is None:
+        return None, None, None
+    materials, base, arrays = shape
     every = whole or role == CONTACTS
-    flags = (True,) if every else tuple(palette.is_metal(slot.material) for slot in obj.material_slots)
-    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags, whole)
+    flags = (True,) if every else tuple(palette.is_metal(material) for material in materials)
+    key = (*base, flags, whole)
     if key in _trees:
         return (*_trees[key], key)
     tree = pieces = None
     if any(flags):
-        mesh.calc_loop_triangles()
-        count = len(mesh.loop_triangles)
-        corners = np.empty(count * 3, np.int32)
-        mesh.loop_triangles.foreach_get("vertices", corners)
-        corners = corners.reshape(-1, 3)
+        co, corners, slots = arrays()
         if not every:
-            slots = np.empty(count, np.int32)
-            mesh.loop_triangles.foreach_get("material_index", slots)
             corners = corners[np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
         if len(corners):
-            co = np.empty(len(mesh.vertices) * 3, np.float64)
-            mesh.vertices.foreach_get("co", co)
-            co = co.reshape(-1, 3)
             tree = BVHTree.FromPolygons(co.tolist(), corners.tolist(), all_triangles=True)
             pieces = None if whole else _pieces(co, corners)  # (only the SMD solder uses them)
     _trees[key] = (tree, pieces)
@@ -631,7 +665,7 @@ def _parts(objects=None):
     world_to_root = poses.to_root()
     for obj in tuple(board.collection.all_objects) if objects is None else objects:
         footprint_id = obj.get("kls_model_fp_id")
-        if footprint_id is None or obj.type != "MESH":
+        if footprint_id is None or obj.type not in SHAPED:
             continue
         pointer = (obj.as_pointer(), obj.name)
         seen.add(pointer)
@@ -1370,7 +1404,7 @@ def _own_parts(footprint_id, named, owned):
         world_to_root = poses.to_root()
         for name in board.model_objects_by_fp.get(footprint_id, ()):
             obj = named.get(name)
-            if obj is None or obj.type != "MESH" or obj.get("kls_role") is not None:
+            if obj is None or obj.type not in SHAPED or obj.get("kls_role") is not None:
                 continue
             frame = obj.parent
             if frame is None or frame.get("kls_footprint") != 1:
