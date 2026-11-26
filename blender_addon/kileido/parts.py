@@ -499,7 +499,8 @@ def refresh(rebind=False, settle=True):
                 wanted[footprint_id] = (library, blend, collection, entry, key)
     changed = [footprint_id for footprint_id in sorted(set(board.swapped) | set(wanted))
                if board.swapped.get(footprint_id, {}).get("key") != (wanted[footprint_id][4]
-                                                                    if footprint_id in wanted else None)]
+                                                                    if footprint_id in wanted else None)
+               or not _intact(footprint_id)]  # its objects gone: placed again
     if not changed and not (rebind and board.swapped):
         return 0
     if settle:
@@ -533,6 +534,19 @@ def refresh(rebind=False, settle=True):
         cut.add_materials()  # and are cut open with the board
     state.log(f"part libraries: {len(board.swapped)} footprints carry a part, {len(changed)} changed")
     return len(changed)
+
+
+def _own(name, footprint_id):
+    """The board's object `name` if it is one of the footprint's models or part objects, else
+    None: a name kept for one footprint can be another's once references change hands."""
+    obj = lookup(name)
+    return obj if obj is not None and obj.get("kls_model_fp_id") == footprint_id else None
+
+
+def _intact(footprint_id):
+    """Every object of the footprint's placed part is still there and still its own."""
+    swapped = board.swapped.get(footprint_id)
+    return swapped is None or all(_own(name, footprint_id) is not None for name in swapped["names"])
 
 
 def _adopt():
@@ -777,7 +791,7 @@ def _take_off(footprint_id):
     if swapped is None:
         return
     for name in swapped["names"]:
-        obj = lookup(name)
+        obj = _own(name, footprint_id)
         if obj is not None and obj.get(PART) == 1:
             _remove(obj)
     footprint = components.find(components.FRAME, footprint_id)

@@ -195,8 +195,8 @@ def _move_models(footprint_id, footprint, world):
     names = board.model_objects_by_fp.get(footprint_id, [])
     for index, model_name in enumerate(names):
         model_obj = lookup(model_name)
-        if model_obj is None:
-            continue
+        if model_obj is None or model_obj.get("kls_model_fp_id") != footprint_id:
+            continue  # gone, or the name is another footprint's now: never moved onto this one
         if model_obj.get("kls_library_part") == 1:  # a library part (parts.py): named after its part
             name = components.part_name(footprint["kls_reference"], model_obj.get("kls_part_name", ""),
                                         int(model_obj.get("kls_model_part", 0)) % 1000)
@@ -209,6 +209,9 @@ def _move_models(footprint_id, footprint, world):
         if values is not None and len(values) == 16:
             components.attach(model_obj, footprint, Matrix(tuple(values[row * 4:row * 4 + 4] for row in range(4))))
         set_visible(model_obj, models.model_is_visible(footprint, model_obj))
+    swapped = board.swapped.get(footprint_id)
+    if swapped is not None:  # a library part's objects (parts.py): its own list follows the new names
+        swapped["names"] = list(names)
 
 
 def refresh_dnp():

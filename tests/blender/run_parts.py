@@ -393,6 +393,66 @@ def main():
     check(len(bead) == 4 and all(obj.get("kls_part_name") == "Test_Bead_0603" for obj in bead), "FB3's bead")
     check(all(obj.name.startswith("FB3") for obj in bead), f"named after its reference: {[o.name for o in bead]}")
 
+    # J1 and J2 trade references in one edit (a renumbering): each footprint keeps its own part,
+    # and the names the board keeps for it lead to its objects, not to the other's; a new value on
+    # one later places its part again and leaves the other's alone
+    top, bottom = objects_of("J1")[0], objects_of("J2")[0]
+
+    def own(footprint, value):
+        """The footprint's part: its three objects, found by the names the board keeps for it,
+        each the footprint's own, held by it, and placed with its value."""
+        names = board.model_objects_by_fp.get(footprint["kls_id"], ())
+        placed = [board.collection.all_objects.get(name) for name in names]
+        return (len(placed) == 3 and list(board.swapped.get(footprint["kls_id"], {}).get("names", ())) == list(names) and
+                all(obj is not None and obj.get("kls_model_fp_id") == footprint["kls_id"] and obj.parent == footprint
+                    and obj["kls_test_value"] == value for obj in placed))
+
+    def edit(snapshot, revision, *changes):
+        """`snapshot` with each (footprint, {field: value}) of `changes` changed, applied as a live edit."""
+        by_id = {footprint["kls_id"]: fields for footprint, fields in changes}
+        edited = replace(snapshot, footprints=tuple(replace(f, **by_id[f.id]) if f.id in by_id else f
+                                                    for f in snapshot.footprints))
+        apply.load_frames(footprints_message(edited, revision))
+        bpy.context.view_layer.update()
+        return edited
+
+    edited = edit(renamed, 5, (top, {"reference": "J2"}), (bottom, {"reference": "J1"}))
+    check(own(top, "1k") and own(bottom, "10k"), "references traded: each footprint keeps its own part")
+    edited = edit(edited, 6, (top, {"reference": "J1"}), (bottom, {"reference": "J2"}))
+    check(own(top, "1k") and own(bottom, "10k"), "and traded back")
+    edited = edit(edited, 7, (top, {"value": "2k2"}))
+    check(own(top, "2k2") and own(bottom, "10k"), "a new value on J1 places J1's part again and leaves J2's")
+
+    # two footprints of one reference (as KiCad's Create Array leaves them): each keeps its own part,
+    # through new values on both and the references told apart again
+    edited = edit(edited, 8, (bottom, {"reference": "J1"}))
+    check(own(top, "2k2") and own(bottom, "10k"), "two J1s: each its own part")
+    edited = edit(edited, 9, (top, {"value": "3k3"}), (bottom, {"value": "22k"}))
+    check(own(top, "3k3") and own(bottom, "22k"), "two J1s, both with a new value: each its own part again")
+    edited = edit(edited, 10, (bottom, {"reference": "J2"}))
+    check(own(top, "3k3") and own(bottom, "22k"), "told apart again")
+
+    # two J1s again, and the other one renumbered: the one keeping J1 holds the ".001" names. Then
+    # every footprint moves (the board's origin moved) and KiCad's models are bound again: it keeps
+    # its part (the banner board's three lost parts, 2026-11-26)
+    edited = edit(edited, 11, (bottom, {"reference": "J1"}))
+    edited = edit(edited, 12, (top, {"reference": "J5"}))
+    for revision, step in ((13, -1_000_000), (14, 1_000_000)):
+        edited = replace(edited, footprints=tuple(replace(f, pos=(f.pos[0] + step, f.pos[1])) for f in edited.footprints))
+        apply.load_frames(footprints_message(edited, revision))
+        parts.refresh(rebind=True)
+        check(own(top, "3k3") and own(bottom, "22k"), f"every footprint moved, models bound again: each its own part ({revision})")
+    edited = edit(edited, 15, (top, {"reference": "J1"}), (bottom, {"reference": "J2"}))
+
+    # a part's objects gone from under the board (as a bug once removed them): the next edit places it again
+    for name in tuple(board.model_objects_by_fp[bottom["kls_id"]]):
+        parts._remove(board.collection.all_objects[name])  # with the mesh its `place` made
+    edited = edit(edited, 16)
+    check(own(bottom, "22k"), "a part whose objects are gone is placed again")
+    renamed = edit(edited, 17, (top, {"value": "1k"}), (bottom, {"value": "10k"}))  # as the checks below have them
+    check(own(top, "1k") and own(bottom, "10k"), "the values back")
+    part = case_of("J1")
+
     # parts found again after their bookkeeping is lost (a saved file opened, an undo)
     count = len(part_objects())
     board.swapped.clear()
