@@ -27,7 +27,7 @@ from . import focus, laminate, metal, nodes, poses, section, shading, transform
 from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
 from .objects import (camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates,
                       read_edges, role)
-from .state import board, picked
+from .state import board, each_loaded, picked
 
 GROUP = "KLS_Clip_v1"
 NODE = focus.CUT_NODE
@@ -816,7 +816,8 @@ def refresh():
     _pushed = None
     push()
     from . import parts  # imports this module
-    parts.show_insides_here()  # the cut opens every part: their insides drawn while it is on
+    for _slot in each_loaded():  # library parts clip in one shared stage, on every board
+        parts.show_insides_here()  # the cut opens every part: their insides drawn while it is on
 
 
 def _on_depsgraph(scene, _depsgraph):

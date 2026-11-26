@@ -485,7 +485,7 @@ def refresh(rebind=False, settle=True):
     footprints = {obj["kls_id"]: obj for obj in tuple(board.collection.all_objects)
                   if obj.get("kls_footprint") == 1 and obj.get("kls_active") == 1}
     if not board.swapped:
-        _adopt()
+        adopt()
     libraries = [_Library(row) for row in listing()]
     picked, fallback = choices(), default()
     wanted, stamps = {}, {}
@@ -549,9 +549,11 @@ def _intact(footprint_id):
     return swapped is None or all(_own(name, footprint_id) is not None for name in swapped["names"])
 
 
-def _adopt():
+def adopt():
     """Parts already in the collection (a saved .blend opened again, an undo) are the
-    board's again: found by what they carry, so they are not placed a second time."""
+    board's again: found by what they carry, so they are not placed a second time. A saved
+    copy (saved.py) adopts them as it is opened: with no live KiCad nothing else would, and
+    Transparent cases, the cut plane and X-ray could not open them."""
     found = {}
     for obj in board.collection.all_objects:
         if obj.get(PART) == 1 and obj.get("kls_model_fp_id") is not None:
@@ -820,8 +822,8 @@ def _show_insides(footprint_id, footprint):
     (focus.insides_shown), touching only what changes."""
     for name in board.swapped.get(footprint_id, {}).get("names", ()):
         obj = lookup(name)
-        if obj is None or obj.get("kls_role") != "insides":
-            continue
+        if obj is None or obj.get("kls_role") != "insides" or obj.get("kls_lift_hidden") is not None:
+            continue  # (a part a finding draws lifted stays hidden under its copy: findings_draw)
         shown = footprint is not None and models.model_is_visible(footprint, obj)
         if obj.hide_render == shown:  # (set_visible sets it with the viewport's)
             set_visible(obj, shown)

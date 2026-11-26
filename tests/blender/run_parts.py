@@ -291,6 +291,12 @@ def main():
     check(not core.hide_get() and not insides_of("J2").hide_get(), "the cut plane draws every part's insides")
     bpy.context.scene.kileido_cut = False
     check(core.hide_get() and insides_of("J2").hide_get(), "cut plane off: closed in again")
+    # a part a finding draws lifted (findings_draw): its insides stay hidden under the copy
+    core["kls_lift_hidden"] = 1
+    bpy.context.scene.kileido_cut = True
+    check(core.hide_get() and core.hide_render, "a lifted part's insides stay hidden when the cut opens parts")
+    bpy.context.scene.kileido_cut = False
+    del core["kls_lift_hidden"]
 
     # Transparent cases: every case fades, without X-ray or a selection; insides stay
     bpy.context.scene.kileido_see_through = True
@@ -628,6 +634,27 @@ def main():
           "removed: no file, no choice, KiCad's models again")
     check(not kileido.KILEIDO_OT_remove_part.poll(bpy.context), "and nothing left to remove")
     highlight.apply_selection({"selected": [], "pair": [], "pads": [], "footprints": []})
+
+    # a saved copy opened again, without KiCad: its parts are the board's, so the cut plane and
+    # Transparent cases still open them (no live edit comes to call refresh)
+    parts.add_library(LIBRARY, str(library), place=place, draw=draw)
+    parts.set_default(f"addon:{LIBRARY}")
+    bpy.context.view_layer.update()
+    placed = len(board.swapped)
+    path = str(folder / "saved.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    bpy.ops.wm.open_mainfile(filepath=path)
+    check(board.saved_copy and len(board.swapped) == placed > 0 and parts.has_cases(),
+          f"reopened: the saved parts are the board's ({len(board.swapped)} of {placed}), Transparent cases offered")
+    core = insides_of("J1")
+    check(core.hide_get() and core.hide_render, "reopened: J1's insides closed in, as saved")
+    bpy.context.scene.kileido_cut = True
+    check(not core.hide_get() and not core.hide_render, "reopened: the cut plane opens the parts")
+    bpy.context.scene.kileido_cut = False
+    bpy.context.scene.kileido_see_through = True
+    check(not core.hide_get() and not core.hide_render, "reopened: Transparent cases open them")
+    bpy.context.scene.kileido_see_through = False
+    check(core.hide_get(), "and close them again")
     kileido.unregister()
     check(parts.MODULE_ALIAS not in sys.modules, "unregistered: the module's alias is gone")
     shutil.rmtree(folder, ignore_errors=True)

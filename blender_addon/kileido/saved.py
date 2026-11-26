@@ -90,3 +90,5 @@ def _restore(collection, header):
         board.pose, board.pose_of = (tuple(stored[:3]), tuple(stored[3:])), board.board_path or board.board_name
     board.status = SAVED_STATUS
     board.saved_copy = True
+    from . import parts  # (it imports this module's neighbours)
+    parts.adopt()  # its library parts are the board's: the cut plane and Transparent cases open them

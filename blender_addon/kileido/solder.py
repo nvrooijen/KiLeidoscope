@@ -673,8 +673,9 @@ def _parts(objects=None):
         if frame is None or frame.get("kls_footprint") != 1:
             frame = components.find(components.FRAME, footprint_id)
         matrix = np.array(poses.in_root(obj, world_to_root), dtype=np.float64)
-        # a model scaled to nothing holds no solder (and has no inverse)
-        visible = (obj.name in bound and models.model_is_visible(frame, obj)
+        # a model scaled to nothing holds no solder (and has no inverse); a part's field lines,
+        # shown or not, are no part of its body (as for collisions and selection boxes)
+        visible = (obj.name in bound and obj.get("kls_role") != "field" and models.model_is_visible(frame, obj)
                    and abs(np.linalg.det(matrix[:3, :3])) > 1e-30)
         now = (visible, obj.data.as_pointer(), matrix.tobytes(),
                tuple(slot.material.as_pointer() if slot.material else 0 for slot in obj.material_slots),

@@ -2247,8 +2247,7 @@ def _properties():
         "kileido_see_through_amount": FloatProperty(
             name="Transparency", default=0.85, min=0.0, max=1.0, subtype="FACTOR",
             description="How far Transparent cases fades the cases: 1 leaves nothing of them, lower keeps more "
-                        "of the case",
-            update=lambda self, context: _see_through_update()),
+                        "of the case"),  # the parts' shader reads it from the scene (focus.SEE_THROUGH_AMOUNT): nothing to run
         "kileido_cut": BoolProperty(
             name="Cut plane", default=False,
             description="Cut the board open along a plane (the \"KLS cut plane\" object: move or turn it) and, "
