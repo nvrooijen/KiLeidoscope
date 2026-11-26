@@ -83,6 +83,11 @@ Right: the cut plane opens the board and shows its cross section, with each via 
 <p align="center"><sub>Left: IMS mode: an LED board on a copper base in Realistic mode. In KiCad it is a plain 2-layer board; KiLeidoscope draws its metal base. See the <a href="docs/ims.md">IMS guide</a>.<br>
 Right: flex mode: the flex template folded in Blender from a few marks on its Bend and Stiffener layers in KiCad, with its coverlay and stiffeners. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
 
+<p align="center">
+  <img src="assets/PartsLib_IC_web.png" width="800" alt="Close-up of an IC on a board with its case opened up: the die with its logic, memory and two inductor loops, gold bond wires arching from the die's pads to the lead frame, and the leads around it.">
+</p>
+<p align="center"><sub>Part libraries: an IC from a part library, opened up to show its die, bond wires and lead frame. A library's parts take the place of KiCad's models by footprint name. See the <a href="docs/part-libraries.md">part libraries guide</a>.</sub></p>
+
 ## Architecture
 
 <picture>
