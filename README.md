@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="assets/banner.svg" width="800" alt="KiLeidoscope in 3D letters above a long circuit board sliding past; midway the parts turn see-through and show their insides: chip dies, bond wires, lead frames and windings.">
+</p>
+
+<p align="center">
   <img src="assets/mainUI.png" width="400" align="middle" alt="A board in Blender with KiLeidoscope's Realistic colours and a differential pair highlighted red and blue, next to the KiLeidoscope sidebar panel: live with KiCad, Preview or Cycles, board finish ENIG and the stackup with a visibility eye and thickness per layer.">
   &nbsp;&nbsp;
   <img src="assets/turntable.gif" width="400" align="middle" alt="A board turning in a Cycles render while it is edited in KiCad: the selected net's tracks get wider, the top solder mask and silkscreen switch off, X-ray mode turns the rest of the board see-through grey, and one segment of the net moves sideways.">
