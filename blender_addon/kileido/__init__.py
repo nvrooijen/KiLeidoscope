@@ -26,9 +26,9 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import (apply, camera, collisions, columns, cosmetics, cut, dump, edge_plating, findings, findings_draw,
-               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, hotkeys, ims, join, kicad_cli,
-               kicad_app, layers, lighting, live, models, packages, phase, pick, poses, protection, render_depth,
-               saved, slots, solder, studio, watcher)
+               findings_markers, focus, fold, footprints, high_speed_panel, hole_cut, holes, hotkeys, ims, join,
+               kicad_cli, kicad_app, layers, lighting, live, models, packages, parts, phase, pick, poses, protection,
+               render_depth, saved, slots, solder, studio, watcher)
 from . import arrangement, boardprops
 from .objects import outline_bounds, view3d_spaces
 from . import state
@@ -292,6 +292,193 @@ class KILEIDO_OT_cut_plane(bpy.types.Operator):
             cut.place("Y", centered=True)
         else:
             cut.place(self.axis)
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_save_part(bpy.types.Operator):
+    bl_idname = "kileido.save_part"
+    bl_label = "Save to my parts"
+    bl_description = ("Save the model of the footprint selected in KiCad, with the materials it has now, to My "
+                      "parts. From then on every board uses it for that footprint; saving again replaces it")
+
+    @classmethod
+    def poll(cls, context):
+        footprint = parts.selected()
+        if footprint is None:
+            cls.poll_message_set("Select one footprint in KiCad")
+            return False
+        keeper = parts.kept_up_by(footprint)
+        if keeper:
+            cls.poll_message_set(f"{keeper} keeps this part up to date with KiCad; a copy in My parts would not be")
+            return False
+        return True
+
+    def execute(self, context):
+        footprint = parts.selected()
+        if footprint is None:
+            return {"CANCELLED"}
+        try:
+            file = parts.save_to_my_parts(footprint)
+        except (ValueError, OSError, RuntimeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Saved to My parts: {file.name}")
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_remove_part(bpy.types.Operator):
+    bl_idname = "kileido.remove_part"
+    bl_label = "Remove from my parts"
+    bl_description = ("Delete My parts' file for the selected footprint's name: every footprint of that name "
+                      "takes the next library's part, or KiCad's model")
+
+    @classmethod
+    def poll(cls, context):
+        footprint = parts.selected()
+        if footprint is None or parts.in_my_parts(footprint) is None:
+            cls.poll_message_set("My parts holds no part for the selected footprint")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        file = parts.in_my_parts(parts.selected())
+        return context.window_manager.invoke_confirm(self, event, title="Remove from my parts",
+                                                     message=f"Delete {file.name}? This cannot be undone.",
+                                                     confirm_text="Delete", icon="WARNING")
+
+    def execute(self, context):
+        footprint = parts.selected()
+        if footprint is None:
+            return {"CANCELLED"}
+        try:
+            file = parts.remove_from_my_parts(footprint)
+        except (ValueError, OSError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Removed from My parts: {file.name}")
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_part_choose(bpy.types.Operator):
+    bl_idname = "kileido.part_choose"
+    bl_label = "Model from"
+    bl_description = "Where every footprint of this name takes its model from, on every board"
+    name: StringProperty(options={"HIDDEN"})
+    key: StringProperty(options={"HIDDEN"})  # a library's key, "kicad", or "" to follow the Default
+
+    def execute(self, context):
+        try:
+            parts.set_choice(self.name, self.key or None)
+        except OSError as error:
+            self.report({"ERROR"}, f"The choice could not be saved: {error}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class KILEIDO_MT_part_source(bpy.types.Menu):
+    bl_idname = "KILEIDO_MT_part_source"
+    bl_label = "Model from"
+
+    def draw(self, context):
+        footprint = parts.selected()
+        if footprint is None:
+            return
+        name = parts.match_name(footprint)
+        picked = parts.choices().get(name, "")
+        for key, label in [("", f"Default ({_default_name()})"), (parts.KICAD, "KiCad"), *parts.options(footprint)]:
+            item = self.layout.operator(KILEIDO_OT_part_choose.bl_idname, text=label,
+                                        icon="CHECKMARK" if key == picked else "BLANK1")
+            item.name, item.key = name, key
+
+
+class KILEIDO_OT_part_library_add(bpy.types.Operator, ImportHelper):
+    bl_idname = "kileido.part_library_add"
+    bl_label = "Add library"
+    bl_description = ("Add a part library: a .blend of parts or, with no file picked, the folder shown "
+                      "(one .blend per part, each named after its footprint)")
+    filter_glob: StringProperty(default="*.blend", options={"HIDDEN"})
+
+    def execute(self, context):
+        path = Path(self.filepath)
+        if not (path.is_dir() or (path.is_file() and path.suffix.lower() == ".blend")):
+            self.report({"ERROR"}, "Pick a .blend file, or a folder of them")
+            return {"CANCELLED"}
+        try:
+            parts.add_user_library(path)
+        except OSError as error:
+            self.report({"ERROR"}, f"The library list could not be saved: {error}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_part_library_remove(bpy.types.Operator):
+    bl_idname = "kileido.part_library_remove"
+    bl_label = "Remove library"
+    bl_description = "Take this library off the list (its file stays where it is)"
+    key: StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        if not self.key.startswith("user:"):
+            return {"CANCELLED"}
+        try:
+            parts.remove_user_library(self.key[5:])
+        except OSError as error:
+            self.report({"ERROR"}, f"The library list could not be saved: {error}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class KILEIDO_OT_part_default(bpy.types.Operator):
+    bl_idname = "kileido.part_default"
+    bl_label = "Default library"
+    bl_description = ("Where footprints take their model from when their Model from does not say: KiCad, or a "
+                      "library (where it has a part for the footprint; KiCad's model where it has none)")
+    key: StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        try:
+            parts.set_default(self.key)
+        except OSError as error:
+            self.report({"ERROR"}, f"The default could not be saved: {error}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class KILEIDO_MT_part_default(bpy.types.Menu):
+    bl_idname = "KILEIDO_MT_part_default"
+    bl_label = "Default library"
+
+    def draw(self, context):
+        current = parts.default()
+        for key, label in [(parts.KICAD, "KiCad"), *((row["key"], row["name"]) for row in parts.listing())]:
+            item = self.layout.operator(KILEIDO_OT_part_default.bl_idname, text=label,
+                                        icon="CHECKMARK" if key == current else "BLANK1")
+            item.key = key
+
+
+class KILEIDO_OT_my_parts_folder(bpy.types.Operator):
+    bl_idname = "kileido.my_parts_folder"
+    bl_label = "My parts folder"
+    bl_description = "Choose the folder My parts are saved to and read from (one .blend per part)"
+    directory: StringProperty(subtype="DIR_PATH", options={"HIDDEN"})
+
+    @classmethod
+    def description(cls, context, properties):
+        return f"{cls.bl_description}. Now: {parts.my_parts_folder()}"
+
+    def invoke(self, context, event):
+        self.directory = str(parts.my_parts_folder()) + "/"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.directory:
+            return {"CANCELLED"}
+        try:
+            parts.set_my_parts_folder(Path(self.directory))
+        except OSError as error:
+            self.report({"ERROR"}, f"The folder could not be saved: {error}")
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -693,6 +880,85 @@ def _draw_studio(layout, scene):
     reset.operator(KILEIDO_OT_reset_lights.bl_idname, text="", icon="FILE_REFRESH")
 
 
+_draw_failures = {}  # library name -> its draw's last error, logged once
+
+
+def _default_name():
+    current = parts.default()
+    return next((row["name"] for row in parts.listing() if row["key"] == current), "KiCad")
+
+
+def _draw_parts(layout, scene):
+    """The Parts column: parts made in Blender in place of KiCad's models (parts.py). Where
+    models come from (the Default library, the libraries), the selected footprint's model,
+    Transparent cases while a placed part has a case, then add-ons' libraries' own boxes."""
+    layout.label(text="Parts")
+    box = layout.box()
+    row = box.row(align=True)
+    row.label(text="Default library")
+    row.menu(KILEIDO_MT_part_default.bl_idname, text=_default_name())
+    status = parts.status()
+    if status:
+        box.label(text=status)
+    box.label(text="Libraries")
+    rows = box.column(align=True)
+    for library in parts.listing():
+        if library["kind"] == "addon":  # an add-on's library: its own box below, not a row here
+            continue
+        row = rows.row(align=True)
+        row.label(text=library["name"] + (f" ({library['problem']})" if library["problem"] else ""),
+                  icon="ERROR" if library["problem"] else "NONE")
+        if library["kind"] == "my":
+            row.operator(KILEIDO_OT_my_parts_folder.bl_idname, text="", icon="FILE_FOLDER", emboss=False)
+        elif library["kind"] == "user":
+            row.operator(KILEIDO_OT_part_library_remove.bl_idname, text="", icon="X",
+                         emboss=False).key = library["key"]
+    box.operator(KILEIDO_OT_part_library_add.bl_idname, text="Add library\u2026", icon="ADD")
+    _draw_part_selected(layout.box())
+    if parts.has_cases():  # KiCad's models have no case: nothing to fade without a library's part
+        row = layout.box().row(align=True)
+        row.prop(scene, "kileido_see_through", text="Transparent cases")
+        amount = row.row(align=True)
+        amount.active = scene.kileido_see_through
+        amount.prop(scene, "kileido_see_through_amount", text="", slider=True)
+    used = parts.libraries_in_use()
+    for library in parts.listing():  # an add-on's library: its name, then its own switches
+        if library["kind"] != "addon":
+            continue
+        box = layout.box()
+        box.active = library["name"] in used  # greyed while none of its parts is placed
+        row = box.row(align=True)
+        row.label(text=library["name"] + (f" ({library['problem']})" if library["problem"] else ""),
+                  icon="ERROR" if library["problem"] else "NONE")
+        if library["draw"] is None:  # its switches show whatever the Default: its parts may be picked
+            continue
+        try:
+            library["draw"](box, bpy.context)
+        except Exception as error:  # a broken library must not break the panel
+            box.label(text="Its switches could not be drawn", icon="ERROR")
+            if _draw_failures.get(library["name"]) != str(error):
+                _draw_failures[library["name"]] = str(error)
+                state.log(f"part library {library['name']}: drawing its switches failed: {error}")
+
+
+def _draw_part_selected(box):
+    """The footprint selected in KiCad: where its model comes from (Model from overrules the
+    Default library for its name), Save to my parts and Remove from my parts."""
+    footprint = parts.selected() if board.loaded else None
+    if footprint is None:
+        _draw_wrapped(box, "Select one footprint in KiCad to see where its model comes from, and to save it",
+                      margin=COLUMN_WRAP_MARGIN_PX)
+    else:
+        source = parts.source_of(footprint)
+        box.label(text=f"{footprint.get('kls_reference') or '?'}: {parts.match_name(footprint) or 'no name'}")
+        row = box.row(align=True)
+        row.label(text="Model from", icon="MESH_CUBE")
+        row.menu(KILEIDO_MT_part_source.bl_idname, text=source or "No model")
+    row = box.row(align=True)
+    row.operator(KILEIDO_OT_save_part.bl_idname, icon="FILE_TICK")
+    row.operator(KILEIDO_OT_remove_part.bl_idname, text="", icon="TRASH")
+
+
 def _draw_findings(tab):
     """The DRC or LLM column (findings.py), its lines wrapped to the column."""
     return lambda layout, scene: findings.draw_column(layout, scene,
@@ -824,8 +1090,9 @@ def _boards_state():
 
 COLUMNS = {"STUDIO": _draw_studio, "BOARDS": _draw_boards_column, "IMS": _draw_ims, "FLEX": _draw_flex_column,
            "DRC": _draw_findings("DRC"), "LLM": _draw_findings("LLM"),
-           "HIGH_SPEED": _draw_high_speed}  # columns.TABS keys -> what the column draws
+           "HIGH_SPEED": _draw_high_speed, "PARTS": _draw_parts}  # columns.TABS keys -> what the column draws
 columns.STATES.update(BOARDS=_boards_state, IMS=_ims_state, FLEX=_flex_state,
+                      PARTS=lambda: "on" if board.swapped else "off",
                       DRC=lambda: findings.tab_state("DRC"), LLM=lambda: findings.tab_state("LLM"),
                       HIGH_SPEED=_high_speed_state)
 
@@ -1676,8 +1943,8 @@ class _Status:
 
     def draw(self, context):
         column = self.layout.column(align=True)
-        lines = [live.status_text(), live.outdated_pads_text(), models.export_status(), cosmetics.status(),
-                 live.last_apply_text()]
+        lines = [live.status_text(), live.outdated_pads_text(), models.export_status(), parts.status(),
+                 cosmetics.status(), live.last_apply_text()]
         # The dielectric warning concerns RF numbers only; the viewer never uses them.
         lines += [warning for warning in board.warnings
                   if "no dielectric properties from KiCad IPC" not in warning and
@@ -1752,8 +2019,10 @@ CLASSES = (KILEIDO_OT_frame_camera, KILEIDO_OT_reset_lights,
            KILEIDO_OT_reset_cache,
            KILEIDO_OT_viewport, KILEIDO_OT_cut_plane, KILEIDO_OT_pick, KILEIDO_OT_all_layers, KILEIDO_OT_flex_show,
            KILEIDO_OT_copy_note, KILEIDO_MT_coverlay_texts, KILEIDO_OT_fold_step, KILEIDO_OT_fold_animation,
-           KILEIDO_OT_flex_group, *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, *hotkeys.CLASSES,
-           KILEIDO_PT_panel)
+           KILEIDO_OT_flex_group, KILEIDO_OT_save_part, KILEIDO_OT_remove_part, KILEIDO_OT_part_choose,
+           KILEIDO_MT_part_source, KILEIDO_OT_part_library_add,
+           KILEIDO_OT_part_library_remove, KILEIDO_OT_part_default, KILEIDO_MT_part_default, KILEIDO_OT_my_parts_folder,
+           *findings.CLASSES, *high_speed_panel.CLASSES, *columns.CLASSES, *hotkeys.CLASSES, KILEIDO_PT_panel)
 _icons = None  # bpy.utils.previews collection with the logo and ICON_FILES
 ICON_FILES = ("logo", "xray", "scissors", "bucket")
 LOGO_SCALE = 6.0  # the logo at the top of the panel, in icon heights
@@ -1880,6 +2149,11 @@ def _rotation_set(_scene, value):
         collisions.schedule()
 
 
+def _see_through_update():
+    for _slot in state.each_loaded():
+        focus.refresh()
+
+
 def _scene_properties():
     """Every Scene property the add-on registers (and removes again), by attribute name."""
     with using(1):  # board 1's names: boardprops.expand makes the others
@@ -1961,6 +2235,19 @@ def _properties():
             name="X-ray mode", default=False,
             description="While something is selected in KiCad, everything else turns see-through and grey",
             update=lambda self, context: focus.refresh()),
+        "kileido_show_fields": BoolProperty(
+            name="Field lines", default=False,
+            description="Show what library parts mark as field lines (objects with the role \"field\")",
+            update=lambda self, context: parts.show_fields()),
+        "kileido_see_through": BoolProperty(
+            name="Transparent cases", default=False,
+            description="Every library part's case turns see-through, so its insides show (objects with the role "
+                        "\"case\"), with or without X-ray mode",
+            update=lambda self, context: _see_through_update()),
+        "kileido_see_through_amount": FloatProperty(
+            name="Transparency", default=0.85, min=0.0, max=1.0, subtype="FACTOR",
+            description="How far Transparent cases fades the cases: 1 leaves nothing of them, lower keeps more "
+                        "of the case"),  # the parts' shader reads it from the scene (focus.SEE_THROUGH_AMOUNT): nothing to run
         "kileido_cut": BoolProperty(
             name="Cut plane", default=False,
             description="Cut the board open along a plane (the \"KLS cut plane\" object: move or turn it) and, "
@@ -2272,6 +2559,7 @@ def register():
     fold.install()
     poses.install()
     studio.install()
+    parts.install()
     findings_draw.install()
     findings_markers.install()
     solder.install()
@@ -2306,6 +2594,7 @@ def unregister():
             models.stop_following()
             cosmetics.stop_following()
     studio.uninstall()
+    parts.uninstall()
     phase.stop_pulses()
     render_depth.uninstall()
     collisions.uninstall()

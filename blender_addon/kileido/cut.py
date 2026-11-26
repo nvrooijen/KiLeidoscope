@@ -27,7 +27,7 @@ from . import focus, laminate, metal, nodes, poses, section, shading, transform
 from .placement import CAP_PLATING_M, ims_band, mask_thickness, via_plating
 from .objects import (camera_rays_only, hide, node_modifier, outline_bounds, read_attribute, read_coordinates,
                       read_edges, role)
-from .state import board, picked
+from .state import board, each_loaded, picked
 
 GROUP = "KLS_Clip_v1"
 NODE = focus.CUT_NODE
@@ -183,8 +183,9 @@ def _usable(material):
 
 
 def add_to(material):
-    """Insert the clip stage before the output (after X-ray mode's)."""
-    if not _usable(material) or material.node_tree.nodes.get(NODE) is not None:
+    """Insert the clip stage before the output (after X-ray mode's). A steady material
+    (library parts) clips in its own stage (focus.steady_group)."""
+    if not _usable(material) or material.get(focus.STEADY) or material.node_tree.nodes.get(NODE) is not None:
         return
     tree_nodes, links = material.node_tree.nodes, material.node_tree.links
     output = next((node for node in tree_nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None)
@@ -200,7 +201,7 @@ def add_to(material):
 
 
 def remove_from(material):
-    if not _usable(material):
+    if not _usable(material) or material.get(focus.STEADY):
         return
     tree_nodes, links = material.node_tree.nodes, material.node_tree.links
     stage = tree_nodes.get(NODE)
@@ -319,6 +320,11 @@ def select(extend=False):
     bpy.context.view_layer.objects.active = plane
 
 
+def plane_state(scene=None):
+    """(on, origin, unit normal towards the removed side), world-space tuples."""
+    return _state(scene or bpy.context.scene)
+
+
 def _state(scene):
     """(on, origin, unit normal towards the removed side)."""
     plane = bpy.data.objects.get(PLANE)
@@ -364,9 +370,10 @@ def push(scene=None):
     if state == _pushed:
         return
     _pushed = state
-    group = bpy.data.node_groups.get(GROUP)
-    if group is not None:
-        on, origin, normal = state
+    on, origin, normal = state
+    for group in (bpy.data.node_groups.get(GROUP), bpy.data.node_groups.get(focus.STEADY_GROUP)):
+        if group is None:
+            continue
         group.nodes["Enabled"].outputs[0].default_value = 1.0 if on else 0.0
         inside = bpy.data.node_groups.get(SECTION_INSIDE_GROUP)
         if inside is not None:
@@ -802,9 +809,15 @@ def refresh():
         hide(plane, not on)
         fit(plane)  # the board may have grown since the plane was placed
     for material in materials():
-        (add_to if on else remove_from)(material)
+        if on:
+            add_to(material)
+        else:  # a steady material keeps its own stage, switched off by value (remove_from skips it)
+            remove_from(material)
     _pushed = None
     push()
+    from . import parts  # imports this module
+    for _slot in each_loaded():  # library parts clip in one shared stage, on every board
+        parts.show_insides_here()  # the cut opens every part: their insides drawn while it is on
 
 
 def _on_depsgraph(scene, _depsgraph):

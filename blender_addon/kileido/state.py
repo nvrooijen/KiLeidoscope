@@ -80,6 +80,7 @@ class BoardState:
         self.appearance = {}  # colours and finish from the bridge (board_specs.read_appearance)
         self.export = {}  # the bridge's live board copy for kicad-cli (see protocol.board_message)
         self.mask_images = {}  # "F"/"B" -> (saved-board mask plot image, world XY bounds)
+        self.mask_open = {}  # "F"/"B" -> (its image's key, bools: where that plot is open), apply._mask_open
         self.relief_images = {}  # "F"/"B" -> (blurred copper plot: the mask's relief, world XY bounds)
         self.silk = {}  # "F"/"B" -> silkscreen printed on the surfaces (cosmetics.refresh_silk)
         self.via_too_big = 0  # vias KiCad tents over an empty finished hole larger than the panel's Max tent hole
@@ -100,6 +101,9 @@ class BoardState:
         self.component_names_of = 0  # the collection (pointer) that index is of
         self.object_index = {}  # object name -> object, as found in the collection (objects.lookup)
         self.object_index_of = 0  # the collection (pointer) that index is of
+        # footprint id -> its library part (parts.py): key, its objects' names, KiCad's models' names, library
+        self.swapped = {}
+        self.part_options = {}  # footprint id -> keys of the libraries with a part for it (parts.refresh)
 
         # KiCad's selection (protocol.selection_message).
         self.highlight = {"selected": set(), "pair": set(), "finding": set()}  # finding: findings_draw

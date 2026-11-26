@@ -14,7 +14,9 @@ the barrels' plating).
   panel's fill material instead.
 - Tented or covered on a side: a thin mask disk closes the hole there. No tent spans a
   large empty hole, so where the finished hole (the drill less its plating) is larger than
-  `max_tent` a side is closed only over a plug or fill.
+  `max_tent` a side is closed only over a plug or fill. Where KiCad's own plot of that
+  side's mask is open over the via (a via in a pad's opening), there is no tent: the fab's
+  mask has none inside a pad, the via is open there.
 - Finished: only a via with nothing on either end gets the board finish in its barrel;
   a tent, plug or fill keeps the plating chemistry out.
 - Plugged: solder mask ink from that side, half the barrel (type III-a); plugged from every
@@ -43,8 +45,30 @@ def unpack(packed):
     return (packed >> (2 * np.arange(len(FIELDS), dtype=np.int32))) & 3
 
 
-def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
+def open_at(plot, bounds, xy):
+    """Per point, True where a mask plot is open at it: `plot` is (rows, cols) bools, True
+    open, its first row at `bounds`' ymin (xmin, ymin, xmax, ymax, the area it covers).
+    Outside the plot it is closed."""
+    plot = np.asarray(plot, bool)
+    xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    found = np.zeros(len(xy), bool)
+    xmin, ymin, xmax, ymax = (float(value) for value in bounds)
+    if plot.ndim != 2 or not plot.size or xmax <= xmin or ymax <= ymin:
+        return found
+    rows, cols = plot.shape
+    col = np.floor((xy[:, 0] - xmin) / (xmax - xmin) * cols).astype(np.int64)
+    row = np.floor((xy[:, 1] - ymin) / (ymax - ymin) * rows).astype(np.int64)
+    inside = (col >= 0) & (col < cols) & (row >= 0) & (row < rows)
+    found[inside] = plot[row[inside], col[inside]]
+    return found
+
+
+def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M, open_top=None, open_bottom=None):
     """Per via, what is drawn: a dict of bool arrays (`side`: ints).
+
+    open_top, open_bottom: per via, KiCad's plot of that side's mask is open over it (a via
+    in a pad's opening, `open_at`); a tent or cover asked for there is not drawn. None: no
+    plot yet, every tent asked for is drawn.
 
     core_top, core_bottom: a plug or fill in the barrel's upper / lower half. filled: the
     whole barrel is filled, in the panel's fill material. plugged: the core is a plug of
@@ -68,7 +92,10 @@ def resolve(packed, rules, hole, outer_top, outer_bottom, max_tent=MAX_TENT_M):
     core_top = filled | every_end | plug_top | buried
     core_bottom = filled | every_end | plug_bottom | buried
     small = np.asarray(hole, np.float64) <= max_tent + 1e-9
-    asked_top, asked_bottom = (on[:, 0] | on[:, 2]) & top, (on[:, 1] | on[:, 3]) & bottom
+    bare_top, bare_bottom = (np.zeros(len(on), bool) if bare is None else np.asarray(bare, bool)
+                             for bare in (open_top, open_bottom))
+    asked_top = (on[:, 0] | on[:, 2]) & top & ~bare_top
+    asked_bottom = (on[:, 1] | on[:, 3]) & bottom & ~bare_bottom
     closed_top = asked_top & (small | core_top)
     closed_bottom = asked_bottom & (small | core_bottom)
     drilled = (top | bottom) & ~capped

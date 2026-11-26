@@ -21,7 +21,7 @@ import bpy
 import numpy as np
 from mathutils import Euler, Matrix
 
-from . import components, cut, focus, fold, highlight, kicad_cli, poses, solder
+from . import components, cut, focus, fold, highlight, kicad_cli, palette, parts, poses, solder
 from .objects import link_owned, lookup, set_visible
 from . import state
 from .state import SLOTS, board
@@ -362,6 +362,10 @@ def model_is_visible(footprint, model_obj):
     """
     if footprint is None or footprint.get("kls_active") != 1 or dnp_excluded(footprint):
         return False
+    if model_obj.get("kls_role") == "field" and not getattr(bpy.context.scene, "kileido_show_fields", False):
+        return False  # a library part's field lines: only with Field lines
+    if model_obj.get("kls_role") == "insides" and not focus.insides_shown(model_obj.get("kls_model_fp_id")):
+        return False  # a library part's insides, closed in its opaque case
     flags = [bool(flag) for flag in footprint.get("kls_model_visible", ())]
     if not flags:
         return True
@@ -417,6 +421,7 @@ def bind_root(root, asset_hash, saved_positions=None):
         raise ValueError("Load or connect a board before loading models")
     fold.unfold_parts()  # models match and sit on the footprints' flat places; folded again below
     bpy.context.view_layer.update()
+    palette.apply(palette.materials_of(root.children_recursive))  # KiCad's materials, known by colour
     matches = _matches(root, saved_positions)
     active = set()
     mesh_cache = {}
@@ -471,6 +476,7 @@ def bind_root(root, asset_hash, saved_positions=None):
     for obj in tuple(board.collection.all_objects):
         if obj.get("kls_model_fp_id") is not None and obj.name not in active:
             set_visible(obj, False)
+    parts.refresh(rebind=True, settle=False)  # library parts take KiCad's models' place again
     board.model_bound = set(board.model_objects_by_fp)
     highlight.refresh()  # component boxes size themselves to the loaded models
     focus.refresh()  # model materials fade in focus mode too

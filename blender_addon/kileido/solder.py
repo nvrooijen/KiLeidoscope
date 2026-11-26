@@ -25,12 +25,10 @@ the barrel filled, a concave fillet up the pin on the solder side, a thinner one
 part's side (`build_through_hole`).
 
 What counts as metal, best first:
-- a parts-pack object marked `kls_role` "contacts" (any other role: none of it);
-- faces of a KiCad library model in one of the library's metal colours. kicad-cli's GLB
-  keeps a model's colours but neither its material names (they come in as mat_0, mat_1,
-  ...) nor a metal flag (every material imports as metallic): measured 2026-10-19 on
-  KiCad 10.0.6 exports in Blender 4.5 and 5.2. Vendor models use their own colours, so
-  their metal is not known;
+- a library part's object marked `kls_role` "contacts" (any other role: none of it);
+- faces whose material KiCad's palette calls metal (`palette.is_metal`: PIN-01, PIN-02,
+  MET-*), by the material's palette tag or else its colour. Vendor models use their own
+  colours, so their metal is not known;
 - in a numbered pad's plated hole where no such metal is found: any face of that pad's own
   footprint's model (without a role): only its pin goes through there, whatever its colour.
 """
@@ -45,22 +43,11 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import delaunay_2d_cdt
 
-from . import components, fold, models, poses, transform
+from . import components, fold, models, palette, poses, transform
 from .objects import owned_name, owned_object, read_attribute, set_visible
 from .placement import stencil_thickness
 from .state import board, boards, each_loaded, using
 
-# The KiCad library's metal materials (VRML names; sRGB as its .wrl files give them).
-METAL_SRGB = (
-    (0.824, 0.820, 0.781),  # PIN-01: tinned leads, terminations and pins
-    (0.859, 0.738, 0.496),  # PIN-02: gold
-    (0.298, 0.298, 0.298),  # MET-01
-    (0.508, 0.508, 0.508),  # MET-SILVER
-    (0.704, 0.270, 0.083),  # MET-COPPER
-    (0.372, 0.372, 0.373),  # MET-ALUMINUM
-    (0.714, 0.428, 0.181),  # MET-BRONZE
-)
-COLOUR_TOLERANCE = 0.004  # sRGB: the GLB's colours match the library's to 3 decimals
 CONTACTS = "contacts"  # a parts pack's terminations and leads (kls_role)
 MAX_GAP_M = 0.3e-3  # metal further out than this is not wetted (a toroid's winding, a shield can)
 RAY_START_M = 20e-6  # rays start this far under the paste's plane (3 um over the copper), inside the
@@ -481,30 +468,6 @@ def _note(side, **numbers):
 
 # --- Metal --------------------------------------------------------------------------------
 
-def _to_srgb(c):
-    return 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
-
-
-def _base_colour(material):
-    if material is None:
-        return None
-    if not material.use_nodes or material.node_tree is None:
-        return tuple(material.diffuse_color[:3])
-    principled = next((node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
-    if principled is None or principled.inputs["Base Color"].is_linked:  # a texture: colour unknown
-        return None
-    return tuple(principled.inputs["Base Color"].default_value[:3])
-
-
-def is_metal(material):
-    """True for a material in one of the KiCad library's metal colours."""
-    colour = _base_colour(material)
-    if colour is None:
-        return False
-    srgb = [_to_srgb(c) for c in colour]
-    return any(all(abs(a - b) <= COLOUR_TOLERANCE for a, b in zip(srgb, metal)) for metal in METAL_SRGB)
-
-
 Pieces = namedtuple("Pieces", "face low high triangles")  # `_pieces`
 
 
@@ -586,31 +549,71 @@ class _BodyView:
         return hit if hit[0] is None else (hit[0], hit[1], hit[2], hit[3] / stretch)
 
 
+SHAPED = {"MESH", "CURVES", "CURVE", "SURFACE", "META", "FONT"}  # object types with faces to solder to
+
+
+def _mesh_arrays(mesh):
+    """A mesh's vertices (n, 3), triangles' corners (k, 3) and material per triangle (k,)."""
+    mesh.calc_loop_triangles()
+    count = len(mesh.loop_triangles)
+    corners = np.empty(count * 3, np.int32)
+    mesh.loop_triangles.foreach_get("vertices", corners)
+    slots = np.empty(count, np.int32)
+    mesh.loop_triangles.foreach_get("material_index", slots)
+    co = np.empty(len(mesh.vertices) * 3, np.float64)
+    mesh.vertices.foreach_get("co", co)
+    return co.reshape(-1, 3), corners.reshape(-1, 3), slots
+
+
+def _shape(obj):
+    """A model part's geometry in its own coordinates: (its materials, a key for what its
+    triangles depend on, a function giving them: `_mesh_arrays`), or None. A mesh as it is
+    (read only when asked); another object (a library part's leads drawn as Curves by
+    Geometry Nodes) as Blender evaluates it, with that geometry's materials."""
+    if obj.type == "MESH":
+        mesh = obj.data
+        return ([slot.material for slot in obj.material_slots],
+                (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons)), lambda: _mesh_arrays(mesh))
+    if obj.type not in SHAPED:
+        return None
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    # the mesh its modifiers make (Curves: to_mesh refuses them), else Blender's conversion
+    geometry = evaluated.evaluated_geometry() if hasattr(evaluated, "evaluated_geometry") else None
+    mesh = geometry.mesh if geometry is not None else None  # (alive while `geometry` is)
+    if mesh is not None:
+        arrays, materials = _mesh_arrays(mesh), list(mesh.materials)
+    else:
+        try:
+            mesh = evaluated.to_mesh()
+        except RuntimeError:  # no geometry to make a mesh of
+            mesh = None
+        try:
+            if mesh is None:
+                return None
+            arrays, materials = _mesh_arrays(mesh), list(mesh.materials)
+        finally:
+            evaluated.to_mesh_clear()
+    key = (obj.data.as_pointer(), obj.data.name, hash(arrays[0].tobytes()), len(arrays[1]))
+    return materials, key, lambda: arrays
+
+
 def _body_faces(obj):
     """One model part's faces that are not metal, in its mesh's own coordinates: (vertices,
     triangles), or None. A parts pack's case is all body, its contacts none."""
     role = obj.get("kls_role")
     if role == CONTACTS:
         return None
-    mesh = obj.data
-    flags = (False,) if role is not None else tuple(is_metal(slot.material) for slot in obj.material_slots)
-    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags)
+    shape = _shape(obj)
+    if shape is None:
+        return None
+    materials, base, arrays = shape
+    flags = (False,) if role is not None else tuple(palette.is_metal(material) for material in materials)
+    key = (*base, flags)
     if key not in _faces:
-        mesh.calc_loop_triangles()
-        count = len(mesh.loop_triangles)
-        corners = np.empty(count * 3, np.int32)
-        mesh.loop_triangles.foreach_get("vertices", corners)
-        corners = corners.reshape(-1, 3)
+        co, corners, slots = arrays()
         if role is None and flags:
-            slots = np.empty(count, np.int32)
-            mesh.loop_triangles.foreach_get("material_index", slots)
             corners = corners[~np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
-        found = None
-        if len(corners):
-            co = np.empty(len(mesh.vertices) * 3, np.float64)
-            mesh.vertices.foreach_get("co", co)
-            found = (co.reshape(-1, 3), corners)
-        _faces[key] = found
+        _faces[key] = (co, corners) if len(corners) else None
     return _faces[key]
 
 
@@ -622,27 +625,21 @@ def _metal_tree(obj, whole=False):
     role = obj.get("kls_role")
     if role is not None and role != CONTACTS:
         return None, None, None
-    mesh = obj.data
+    shape = _shape(obj)
+    if shape is None:
+        return None, None, None
+    materials, base, arrays = shape
     every = whole or role == CONTACTS
-    flags = (True,) if every else tuple(is_metal(slot.material) for slot in obj.material_slots)
-    key = (mesh.as_pointer(), mesh.name, len(mesh.vertices), len(mesh.polygons), flags, whole)
+    flags = (True,) if every else tuple(palette.is_metal(material) for material in materials)
+    key = (*base, flags, whole)
     if key in _trees:
         return (*_trees[key], key)
     tree = pieces = None
     if any(flags):
-        mesh.calc_loop_triangles()
-        count = len(mesh.loop_triangles)
-        corners = np.empty(count * 3, np.int32)
-        mesh.loop_triangles.foreach_get("vertices", corners)
-        corners = corners.reshape(-1, 3)
+        co, corners, slots = arrays()
         if not every:
-            slots = np.empty(count, np.int32)
-            mesh.loop_triangles.foreach_get("material_index", slots)
             corners = corners[np.array(flags, bool)[np.clip(slots, 0, len(flags) - 1)]]
         if len(corners):
-            co = np.empty(len(mesh.vertices) * 3, np.float64)
-            mesh.vertices.foreach_get("co", co)
-            co = co.reshape(-1, 3)
             tree = BVHTree.FromPolygons(co.tolist(), corners.tolist(), all_triangles=True)
             pieces = None if whole else _pieces(co, corners)  # (only the SMD solder uses them)
     _trees[key] = (tree, pieces)
@@ -668,7 +665,7 @@ def _parts(objects=None):
     world_to_root = poses.to_root()
     for obj in tuple(board.collection.all_objects) if objects is None else objects:
         footprint_id = obj.get("kls_model_fp_id")
-        if footprint_id is None or obj.type != "MESH":
+        if footprint_id is None or obj.type not in SHAPED:
             continue
         pointer = (obj.as_pointer(), obj.name)
         seen.add(pointer)
@@ -676,8 +673,9 @@ def _parts(objects=None):
         if frame is None or frame.get("kls_footprint") != 1:
             frame = components.find(components.FRAME, footprint_id)
         matrix = np.array(poses.in_root(obj, world_to_root), dtype=np.float64)
-        # a model scaled to nothing holds no solder (and has no inverse)
-        visible = (obj.name in bound and models.model_is_visible(frame, obj)
+        # a model scaled to nothing holds no solder (and has no inverse); a part's field lines,
+        # shown or not, are no part of its body (as for collisions and selection boxes)
+        visible = (obj.name in bound and obj.get("kls_role") != "field" and models.model_is_visible(frame, obj)
                    and abs(np.linalg.det(matrix[:3, :3])) > 1e-30)
         now = (visible, obj.data.as_pointer(), matrix.tobytes(),
                tuple(slot.material.as_pointer() if slot.material else 0 for slot in obj.material_slots),
@@ -1407,7 +1405,7 @@ def _own_parts(footprint_id, named, owned):
         world_to_root = poses.to_root()
         for name in board.model_objects_by_fp.get(footprint_id, ()):
             obj = named.get(name)
-            if obj is None or obj.type != "MESH" or obj.get("kls_role") is not None:
+            if obj is None or obj.type not in SHAPED or obj.get("kls_role") is not None:
                 continue
             frame = obj.parent
             if frame is None or frame.get("kls_footprint") != 1:

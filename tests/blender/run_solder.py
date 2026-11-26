@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "blender_addon"))
 sys.path.insert(0, str(ROOT))
 import kileido  # noqa: E402
-from kileido import apply, shading, solder, state  # noqa: E402
+from kileido import apply, palette, shading, solder, state  # noqa: E402
 from kileido.objects import link_owned  # noqa: E402
 from kileido_bridge.model import snapshot_from_jsonable  # noqa: E402  (no kipy import)
 from kileido_bridge.protocol import snapshot_frames  # noqa: E402
@@ -106,6 +106,35 @@ def part(name, footprint_id, side, low, high, made, role=None, sides=0, more=(),
     return obj
 
 
+def curves_lead(name, footprint_id, side, start, end, radius, made, role=None):
+    """A stand-in lead drawn as a library part draws it: Curves (one strand from `start` to
+    `end`) made a tube by Geometry Nodes, no mesh of its own."""
+    data = bpy.data.hair_curves.new(name)
+    data.add_curves([2])
+    data.points[0].position, data.points[1].position = start, end
+    data.materials.append(made)
+    obj = bpy.data.objects.new(name, data)
+    link_owned(obj, "components")
+    tree = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    into, out = tree.nodes.new("NodeGroupInput"), tree.nodes.new("NodeGroupOutput")
+    tube, circle = tree.nodes.new("GeometryNodeCurveToMesh"), tree.nodes.new("GeometryNodeCurvePrimitiveCircle")
+    circle.inputs["Radius"].default_value = radius
+    tube.inputs["Fill Caps"].default_value = True
+    tree.links.new(into.outputs[0], tube.inputs["Curve"])
+    tree.links.new(circle.outputs["Curve"], tube.inputs["Profile Curve"])
+    tree.links.new(tube.outputs["Mesh"], out.inputs[0])
+    obj.modifiers.new(name, "NODES").node_group = tree
+    obj["kls_model_fp_id"] = footprint_id
+    obj["kls_side"] = side
+    if role is not None:
+        obj["kls_role"] = role
+    state.board.model_objects_by_fp.setdefault(footprint_id, []).append(obj.name)
+    state.board.model_bound.add(footprint_id)
+    return obj
+
+
 def coordinates(obj):
     co = np.empty(len(obj.data.vertices) * 3, np.float64)
     obj.data.vertices.foreach_get("co", co)
@@ -139,7 +168,7 @@ def main():
 
     # Metal: the library's metal colours; a parts pack's roles first
     tin, epoxy = material("stand-in tin", PIN_01), material("stand-in epoxy", BLACK)
-    assert solder.is_metal(tin) and not solder.is_metal(epoxy)
+    assert palette.is_metal(tin) and not palette.is_metal(epoxy)
 
     # Off: nothing is built
     solder.refresh()
@@ -482,7 +511,7 @@ def main():
     assert drill["kls_fp_id"] == J1 and drill["kls_pad_number"] == "1"  # (the bridge says whose pad it is)
     state.board.model_objects_by_fp[J1].remove(objects["J1 leg"].name)
     grey = material("stand-in vendor grey", (0.8, 0.8, 0.8))
-    assert not solder.is_metal(grey)
+    assert not palette.is_metal(grey)
     vendor = part("J1 vendor pin", J1, "top", (x - 0.3e-3, y - 0.3e-3, z_bottom - 2e-3), (x + 0.3e-3, y + 0.3e-3, z_top + 4e-3),
                   grey, sides=24)
     bpy.context.view_layer.update()
@@ -520,6 +549,17 @@ def main():
     solder.refresh()
     assert solder.last_build()["joints"] == 1
     assert signed_volume(objects[joint]) > 0
+
+    # A library part's lead drawn as Curves by Geometry Nodes (no mesh of its own): soldered
+    # as Blender draws it
+    state.board.model_objects_by_fp[J1].remove(objects["J1 wide blade"].name)
+    lead = curves_lead("J1 curves lead", J1, "top", (x, y, z_bottom - 2e-3), (x, y, z_top + 4e-3), 0.3e-3, tin,
+                       role="contacts")
+    bpy.context.view_layer.update()
+    solder.refresh()
+    assert solder.last_build()["joints"] == 1
+    assert z_bottom - coordinates(objects[joint])[:, 2].min() > 0.05e-3  # a fillet, not a film
+    state.board.model_objects_by_fp[J1].remove(lead.name)
 
     # No timers run in background mode: a switch builds the solder at once, and a script
     # that blocks Blender pumps it (studio.pump), settled only once it is built

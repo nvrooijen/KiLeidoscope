@@ -110,6 +110,10 @@ class Footprint:
     dnp: bool = False  # KiCad's "Do not populate"
     value: str = ""  # the Value field, e.g. "100n"
     lib_id: str = ""  # library and footprint name, e.g. "Capacitor_SMD:C_0402_1005Metric"
+    # For part libraries (the add-on's parts.py): the footprint's other fields as (name,
+    # text), and its pads' schematic pins as (pad number, pin name, pin type)
+    fields: tuple[tuple[str, str], ...] = ()
+    pins: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -222,7 +226,9 @@ def snapshot_from_jsonable(data: dict) -> BoardSnapshot:
                         tuple(f["model_paths"]),
                         tuple(int(value) for value in f["bbox_nm"]) if f["bbox_nm"] is not None else None,
                         tuple(f["model_visible"]), bool(f.get("dnp", False)),  # older dumps: no dnp,
-                        f.get("value", ""), f.get("lib_id", ""))  # no value or library
+                        f.get("value", ""), f.get("lib_id", ""),  # no value or library,
+                        tuple(tuple(field) for field in f.get("fields", ())),  # no fields
+                        tuple(tuple(pin) for pin in f.get("pins", ())))  # and no pins
               for f in data["footprints"]),
         tuple(ZoneFill(z["id"], z["net"], z["layer"], tuple(polygon(poly) for poly in z["polygons"]))
               for z in data["zones"]),

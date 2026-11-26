@@ -298,7 +298,7 @@ def _component_extent(footprint_id, footprint):
     corners = []
     for name in board.model_objects_by_fp.get(footprint_id, ()):
         part = lookup(name)
-        if part is not None and not part.hide_get():
+        if part is not None and not part.hide_get() and part.get("kls_role") != "field":  # field lines: not the part
             corners += [_in_frame(part, footprint, to_local) @ Vector(corner) for corner in part.bound_box]
     if corners:
         points = np.array([tuple(corner) for corner in corners])
@@ -327,6 +327,8 @@ def _refresh_component_boxes(chosen, kind="selected"):
     prefix = "KLS footprint highlight " + ("" if kind == "selected" else f"{kind} ")
     active = set()
     for footprint_id in chosen:
+        if focus.opened(footprint_id):
+            continue
         footprint = components.find(components.FRAME, footprint_id)
         extent = _component_extent(footprint_id, footprint) if footprint is not None else None
         if extent is None:

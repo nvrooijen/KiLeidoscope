@@ -14,8 +14,8 @@ import numpy as np
 from mathutils import Vector
 
 from . import (cosmetics, cut, edge_plating, findings, findings_draw, focus, fold, footprints, highlight, holes, ims,
-               laminate, layers, lighting, materials, models, nodes, phase, poses, protection, render_depth, saved,
-               solder, studio, transform)
+               laminate, layers, lighting, materials, models, nodes, parts, phase, poses, protection, render_depth,
+               saved, solder, studio, transform)
 from . import kicad_app
 from .client import FrameDecoder
 from .objects import (OUTLINE, VIEW_CLIP_START_M, ensure_groups, hide, lookup, outline_bounds, owned_object,
@@ -57,6 +57,8 @@ def apply_frame(header, arrays):
         refresh_protection()  # the board's via rules come with it
     elif message_type == "footprints":
         footprints.apply(header)
+        if not board.in_snapshot:  # a snapshot's footprints get their library parts at its end
+            parts.refresh()
         highlight.refresh_components()
         findings_draw.rehide_lifted()  # a part drawn lifted stays hidden under its copy
         solder.invalidate()  # parts moved: the solder flows to where their leads are
@@ -163,6 +165,7 @@ def _end_snapshot():
             layers.refresh(row)
     lighting.ensure_studio_lights()
     refresh_ims_warnings()
+    parts.refresh(settle=False)  # library parts for the footprints; X-ray and the cut below take them in
     focus.refresh()
     cut.refresh()
     fold.invalidate()
@@ -827,6 +830,27 @@ def refresh_ims_finish():
     materials.paint_ims_base()
 
 
+def _mask_open(side, xy):
+    """Per via at `xy`, True where KiCad's plot of that side's solder mask ("F"/"B") is open
+    (a via in a pad's opening); None while there is no plot. The plot's openings are read
+    once per image (`board.mask_open`)."""
+    plot = board.mask_images.get(side)
+    if plot is None:
+        return None
+    image, bounds = plot
+    try:
+        key = (image.as_pointer(), image.name, tuple(image.size))
+    except ReferenceError:  # freed under us (undo, file load)
+        return None
+    cached = board.mask_open.get(side)
+    if cached is None or cached[0] != key:
+        width, height = key[2]
+        pixels = np.empty(width * height * 4, np.float32)
+        image.pixels.foreach_get(pixels)
+        cached = board.mask_open[side] = (key, pixels.reshape(height, width, 4)[..., 3] > 0.5)  # alpha 1: open
+    return protection.open_at(cached[1], bounds, xy)
+
+
 def refresh_protection(highlights=True):
     """Resolve each via's protection (KiCad's, with the board's rules and the panel's Via
     fill, Max tent hole and Via wall; protection.py) into the point attributes nodes.vias
@@ -841,10 +865,12 @@ def refresh_protection(highlights=True):
     scene = bpy.context.scene
     drill = read_attribute(mesh, "drill", np.float32).astype(np.float64)
     bore = np.maximum(drill - 2 * via_plating(), 0.2 * drill)  # the finished hole, as nodes.vias draws it
+    xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
     found = protection.resolve(read_attribute(mesh, "protection", np.int32), board.appearance.get("via_rules"),
                                bore, read_attribute(mesh, "outer_top", np.float32) > 0.5,
                                read_attribute(mesh, "outer_bottom", np.float32) > 0.5,
-                               float(getattr(scene, "kileido_max_tent_mm", 0.3)) * 1e-3)
+                               float(getattr(scene, "kileido_max_tent_mm", 0.3)) * 1e-3,
+                               _mask_open("F", xy), _mask_open("B", xy))
     copper_fill = getattr(scene, "kileido_via_fill_material", "RESIN") == "COPPER"
     for name, values in (("core_top", found["core_top"]), ("core_bottom", found["core_bottom"]),
                          ("fill_copper", found["filled"] & copper_fill), ("plug_ink", found["plugged"]),
@@ -854,7 +880,6 @@ def refresh_protection(highlights=True):
         write_attribute(mesh, name, "FLOAT", np.asarray(values, np.float32))
     mesh.update()
     board.via_too_big = int(found["too_big"].sum())
-    xy = read_coordinates(mesh)[:, :2] if len(mesh.vertices) else np.empty((0, 2))
     drilled = found["drilled"]  # rings; tents and cores close them
     holes.set_vias(xy[drilled], bore[drilled], found["side"][drilled])
     if highlights:

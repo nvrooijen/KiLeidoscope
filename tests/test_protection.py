@@ -17,10 +17,11 @@ NONE = (0, 0, 0, 0, 0, 0, 0, 0)
 UNTENTED_RULES = NONE
 
 
-def resolve(*codes, rules=UNTENTED_RULES, hole=0.3e-3, top=True, bottom=True, max_tent=0.3e-3):
+def resolve(*codes, rules=UNTENTED_RULES, hole=0.3e-3, top=True, bottom=True, max_tent=0.3e-3, open_top=None,
+            open_bottom=None):
     count = len(codes)
     return protection.resolve(protection.pack(codes), rules, np.full(count, hole),
-                              np.full(count, top), np.full(count, bottom), max_tent)
+                              np.full(count, top), np.full(count, bottom), max_tent, open_top, open_bottom)
 
 
 def test_fields_match_the_bridge():
@@ -85,3 +86,28 @@ def test_a_tent_does_not_span_a_large_empty_hole():
     half = resolve((1, 1, 0, 0, 1, 0, 0, 0), hole=0.5e-3)  # IV-a: the plug carries the top tent only
     assert not half["open"][0] and half["too_big"][0]
     assert not resolve((1, 1, 0, 0, 0, 0, 0, 0), hole=0.5e-3, max_tent=0.6e-3)["too_big"][0]
+
+
+def test_no_tent_inside_a_mask_opening():
+    """A tented via in a pad: KiCad's mask plot is open over it, so the fab's mask has no
+    tent there and the via is open on that side (user report: a mask disc inside a pad)."""
+    tented = (1, 1, 0, 0, 0, 0, 0, 0)
+    in_top_pad = resolve(tented, tented, open_top=[True, False], open_bottom=[False, False])
+    assert in_top_pad["tent_top"].tolist() == [False, True] and in_top_pad["tent_bottom"].all()
+    assert not in_top_pad["too_big"].any()  # no tent asked for there, none too big
+    in_both = resolve(tented, open_top=[True], open_bottom=[True])
+    assert in_both["open"][0] and in_both["finished"][0] and not in_both["tent_top"][0]
+    covered = resolve((0, 0, 1, 1, 0, 0, 0, 0), open_top=[True], open_bottom=[False])  # a cover too
+    assert not covered["tent_top"][0] and covered["tent_bottom"][0]
+    plugged = resolve((1, 0, 0, 0, 1, 0, 0, 0), open_top=[True])  # the plug stays, the tent goes
+    assert plugged["core_top"][0] and not plugged["tent_top"][0]
+    assert resolve(tented)["tent_top"][0]  # no plot yet: as KiCad asks
+
+
+def test_open_at_samples_the_plot():
+    plot = np.zeros((4, 8), bool)
+    plot[1, 6] = True  # row 1 from the bottom (y 0.25..0.5), column 6 (x 1.5..1.75)
+    xy = [(1.6, 0.3), (1.6, 0.6), (0.1, 0.3), (2.5, 0.3), (-0.1, 0.3)]
+    assert protection.open_at(plot, (0.0, 0.0, 2.0, 1.0), xy).tolist() == [True, False, False, False, False]
+    assert not protection.open_at(plot, (0.0, 0.0, 0.0, 1.0), xy).any()  # an empty area: closed
+    assert protection.open_at(plot, (0, 0, 2, 1), np.empty((0, 2))).shape == (0,)

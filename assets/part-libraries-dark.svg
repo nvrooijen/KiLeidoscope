@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="606" viewBox="0 0 680 606" role="img">
+<title>KiLeidoscope part libraries</title>
+<desc>KiCad's live API gives each footprint's name, value, fields and pins; the bridge reads them and sends them in its frames. The Blender add-on matches each footprint against My parts, the libraries the user added and the libraries other add-ons offer through the kileidoscope_parts hook, by name, the KiLeidoscope Model field or a library's kls_index; the Parts tab sets the Default library and each footprint's Model from, and saves parts to My parts. A matched part is placed as copies that are the footprint's model objects, an add-on's place is called for its own parts, and X-ray, the cut plane, reflowed solder and folding treat them as KiCad's models.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text { font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; dominant-baseline: central; }
+.th { font-size: 14px; font-weight: 500; }
+.ts { font-size: 12px; font-weight: 400; }
+.lbl { fill: #B7BDC8; }
+.arr { stroke: #9198A1; stroke-width: 1.5; fill: none; }
+.group { stroke: #9198A1; stroke-width: 0.5; stroke-dasharray: 4 4; fill: none; }
+</style>
+</defs>
+<rect x="30" y="14" width="620" height="86" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="30">KiCad</text>
+<rect x="30" y="110" width="620" height="100" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="126">Bridge</text>
+<rect x="30" y="232" width="620" height="360" rx="8" class="group"/>
+<text class="ts lbl" x="46" y="248">Blender add-on</text>
+<rect x="210" y="30" width="260" height="56" rx="8" fill="#314CB0" stroke="#314CB0" stroke-width="0.5"/>
+<text class="th" x="340" y="50" text-anchor="middle" fill="#FFFFFF">KiCad, live</text>
+<text class="ts" x="340" y="68" text-anchor="middle" fill="#D6DDF5">footprints: name, value, fields, pins</text>
+<rect x="150" y="140" width="170" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="235" y="160" text-anchor="middle" fill="#173404">Footprint reader</text>
+<text class="ts" x="235" y="178" text-anchor="middle" fill="#3B6D11">kicad_reader.py</text>
+<rect x="360" y="140" width="170" height="56" rx="8" fill="#CDEBC5" stroke="#639922" stroke-width="0.5"/>
+<text class="th" x="445" y="160" text-anchor="middle" fill="#173404">Frames</text>
+<text class="ts" x="445" y="178" text-anchor="middle" fill="#3B6D11">protocol.py</text>
+<rect x="50" y="262" width="180" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="140" y="282" text-anchor="middle" fill="#412402">My parts</text>
+<text class="ts" x="140" y="300" text-anchor="middle" fill="#633806">one .blend per part</text>
+<rect x="250" y="262" width="180" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="282" text-anchor="middle" fill="#412402">Added libraries</text>
+<text class="ts" x="340" y="300" text-anchor="middle" fill="#633806">.blend files, folders</text>
+<rect x="450" y="262" width="180" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="540" y="282" text-anchor="middle" fill="#412402">Add-on libraries</text>
+<text class="ts" x="540" y="300" text-anchor="middle" fill="#633806">kileidoscope_parts</text>
+<rect x="45" y="348" width="130" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="110" y="368" text-anchor="middle" fill="#412402">Parts tab</text>
+<text class="ts" x="110" y="386" text-anchor="middle" fill="#633806">Default, Model from</text>
+<rect x="200" y="348" width="280" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="368" text-anchor="middle" fill="#412402">Matching</text>
+<text class="ts" x="340" y="386" text-anchor="middle" fill="#633806">by name, Model field, kls_index</text>
+<rect x="200" y="434" width="280" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="340" y="454" text-anchor="middle" fill="#412402">Placing</text>
+<text class="ts" x="340" y="472" text-anchor="middle" fill="#633806">copies as the footprint's models</text>
+<rect x="45" y="520" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="111" y="540" text-anchor="middle" fill="#412402">X-ray</text>
+<text class="ts" x="111" y="558" text-anchor="middle" fill="#633806">focus.py</text>
+<rect x="197" y="520" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="263" y="540" text-anchor="middle" fill="#412402">Cut plane</text>
+<text class="ts" x="263" y="558" text-anchor="middle" fill="#633806">cut.py</text>
+<rect x="349" y="520" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="415" y="540" text-anchor="middle" fill="#412402">Reflowed solder</text>
+<text class="ts" x="415" y="558" text-anchor="middle" fill="#633806">solder.py</text>
+<rect x="501" y="520" width="132" height="56" rx="8" fill="#E87D0D" stroke="#E87D0D" stroke-width="0.5"/>
+<text class="th" x="567" y="540" text-anchor="middle" fill="#412402">Folding</text>
+<text class="ts" x="567" y="558" text-anchor="middle" fill="#633806">fold.py</text>
+<line x1="320" y1="86" x2="245" y2="138" class="arr" marker-end="url(#arrow)"/>
+<line x1="320" y1="168" x2="358" y2="168" class="arr" marker-end="url(#arrow)"/>
+<line x1="440" y1="196" x2="440" y2="346" class="arr" marker-end="url(#arrow)"/>
+<line x1="160" y1="318" x2="255" y2="346" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="318" x2="340" y2="346" class="arr" marker-end="url(#arrow)"/>
+<line x1="500" y1="318" x2="470" y2="346" class="arr" marker-end="url(#arrow)"/>
+<line x1="175" y1="376" x2="198" y2="376" class="arr" marker-end="url(#arrow)"/>
+<line x1="95" y1="348" x2="95" y2="320" class="arr" marker-end="url(#arrow)"/>
+<text class="ts lbl" x="89" y="333" text-anchor="end">Save</text>
+<line x1="340" y1="404" x2="340" y2="432" class="arr" marker-end="url(#arrow)"/>
+<path d="M480 462 H580 V320" class="arr" marker-end="url(#arrow)"/>
+<text class="ts lbl" x="588" y="420">place</text>
+<line x1="280" y1="490" x2="115" y2="518" class="arr" marker-end="url(#arrow)"/>
+<line x1="320" y1="490" x2="268" y2="518" class="arr" marker-end="url(#arrow)"/>
+<line x1="360" y1="490" x2="410" y2="518" class="arr" marker-end="url(#arrow)"/>
+<line x1="400" y1="490" x2="562" y2="518" class="arr" marker-end="url(#arrow)"/>
+</svg>

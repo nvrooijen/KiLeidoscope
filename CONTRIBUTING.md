@@ -26,6 +26,7 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_silk.py
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_exports.py
 blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_studio.py
+blender --background --factory-startup --python-exit-code 1 --python tests/blender/run_parts.py
 ```
 
 Add-ons that build on KiLeidoscope (turntables, camera rigs, lighting) use its studio hook: see `docs/studio-hook.md`.

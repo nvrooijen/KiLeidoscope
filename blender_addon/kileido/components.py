@@ -31,6 +31,11 @@ def _tagged(reference):
     return (reference or "?") + (f" {prefix.strip()}" if prefix and board.name_prefix == prefix else "")
 
 
+def tagged(reference):
+    """The reference as KiLeidoscope shows it: "R12", board 2's "R12 B2"."""
+    return _tagged(reference)
+
+
 def label(reference, model_paths):
     """"R12 · R_0603_1608Metric": the reference and the first 3D model's file name."""
     stem = next((PureWindowsPath(path).stem for path in model_paths if path), "")
@@ -48,6 +53,12 @@ def placeholder_name(reference, model_paths):
 
 def model_name(reference, model_paths, part):
     return _fit(label(reference, model_paths), "" if part == 0 else f" {part + 1}")
+
+
+def part_name(reference, part, index):
+    """"R12 · R_0603_1608Metric (part)", "... (part) 2": a library part's objects (parts.py),
+    told from KiCad's model parts of the same name."""
+    return _fit(f"{_tagged(reference)} · {part}", " (part)" + ("" if index == 0 else f" {index + 1}"))
 
 
 def _fit(name, tail=""):
@@ -108,7 +119,8 @@ def attach(obj, frame, local):
     shows it inside "R12", and it follows the frame (a move, a fold) by itself."""
     if obj.parent != frame:
         obj.parent = frame
-        if obj.animation_data is not None:  # a fold keyed on it before parts had frames
+        # a fold keyed on it before parts had frames; a library part's drivers are its own (parts.py)
+        if obj.animation_data is not None and obj.get("kls_library_part") != 1:
             obj.animation_data_clear()
         for key in ("kls_flat_matrix", "kls_folded_matrix"):
             obj.pop(key, None)

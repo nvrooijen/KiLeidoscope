@@ -82,7 +82,8 @@ def _components(collection):
     """(local low, local high, footprint matrix, reference) of every shown component."""
     parts = {}
     for obj in collection.all_objects:
-        if obj.get("kls_model_fp_id") is not None and obj.type == "MESH" and not obj.hide_get():
+        if (obj.get("kls_model_fp_id") is not None and obj.type == "MESH" and not obj.hide_get()
+                and obj.get("kls_role") != "field"):  # a library part's field lines reach round it: not the part
             parts.setdefault(obj["kls_model_fp_id"], []).append(obj)
     placeholders = {obj.get("kls_footprint_id"): obj for obj in collection.all_objects
                     if obj.get("kls_footprint_placeholder") == 1 and not obj.hide_get()}
