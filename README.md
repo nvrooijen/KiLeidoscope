@@ -39,54 +39,70 @@ Right: flex mode: a flex LED ring, flat in KiCad with its marks on the Bend laye
 - Selection both ways: a click in Blender selects in KiCad, and KiCad's selection shows in Blender, with the differential-pair partner in blue.
 - Blender's EEVEE preview or Cycles engine, using different colour modes for either KiCad's PCB editor theme or realistic representations.
 - Per-layer visibility, X-ray mode and adjustable layer thickness.
-- Multi-board assemblies: up to four boards from four KiCad PCB editors in one window, each live from its own KiCad, placed as they sit in the product and checked for collisions, with the arrangement kept in an OpenUSD file. See the [multi-board guide](docs/multi-board.md).
-- IMS boards: a 2-layer board drawn on its aluminum or copper base, the thin epoxy under F.Cu, in 3D and in the cross section, with warnings for vias and plated holes that would short to the base. See the [IMS guide](docs/ims.md).
-- Flex and rigid-flex boards: bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the [flex guide](docs/flex.md).
 - KiCad DRC on the 3D board: run KiCad's own design rule check from the sidebar and click a finding to see it drawn where it is: the items lit, the gap measured against its limit, a hole problem cut open in section, and a marker per finding on the board. See the [DRC guide](docs/drc.md).
-- LLM review on the 3D board: paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the [LLM guide](docs/llm-review.md).
-- Dynamic phase: how far a differential pair's P and N are apart in time at every point along the pair, live as you route, from the pair's tuning profile in KiCad. See the [dynamic phase guide](docs/dynamic-phase.md).
-- Part libraries: parts made in Blender in place of KiCad's 3D models, matched by footprint name. Give a model the materials you want, save it to My parts, and every board uses it. See the [part libraries guide](docs/part-libraries.md).
 
-<p align="center">
-  <img src="assets/llm-return-vias-crop.png" width="430" align="middle" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC).">
-  &nbsp;&nbsp;
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/dynamic-phase-sweep-dark.gif">
-    <img src="assets/dynamic-phase-sweep-light.gif" width="353" align="middle" alt="Dynamic phase on a board's differential pairs: pulses travel along each pair, P red and N blue, the tint showing where the two are apart in time, with amber markers on the pairs. First on the rendered board, then again in X-ray mode.">
-  </picture>
-</p>
-<p align="center"><sub>Left: LLM review: a layer change without a return via, as an LLM reported it. KiLeidoscope measures the nearest return vias against the limit, red past it, and draws the two vias the LLM suggests where it put them, checked by KiCad's DRC. See the <a href="docs/llm-review.md">LLM guide</a>.<br>
-Right: dynamic phase: pulses travel along each pair at P's and N's own delays, and the tint shows where they are apart in time, on the board and in X-ray mode. See the <a href="docs/dynamic-phase.md">dynamic phase guide</a>.</sub></p>
-
-<p align="center">
-  <img src="assets/collisions.png" width="290" align="middle" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red.">
-  &nbsp;&nbsp;
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/CutPlaneViasAnnotatedDark_web.png">
-    <img src="assets/CutPlaneViasAnnotatedLight_web.png" width="510" align="middle" alt="A board cut open with the cut plane. The cross section shows laminate bands and copper layers, with labels for edge plating and for buried, blind, tented, plugged, filled and capped vias.">
-  </picture>
-</p>
-<p align="center"><sub>Left: Multi-board assembly mode, visualizing board and component collisions. Malformed board outlines are highlighted.<br>
-Right: the cut plane opens the board and shows its cross section, with each via drawn as KiCad has it set. See the <a href="docs/cut-plane.md">cut plane guide</a>.</sub></p>
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/IMS_dark_web.png">
-    <img src="assets/IMS_light_web.png" width="360" align="middle" alt="An LED board on a copper base: four large LED packages, copper pads and mounting holes on a white solder mask, the copper base showing along the board's edges and inside the holes. Labels point to the insulated metal substrate, the copper or aluminum base, the different metal finishes and a dashed cross-sectional view line.">
-  </picture>
-  &nbsp;&nbsp;
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/FlexAnnotated_dark_web.png">
-    <img src="assets/FlexAnnotated_light_web.png" width="450" align="middle" alt="Two views of a folded flex board. Left: the flex template with amber coverlay, a body with mounting holes and a tail that bends and twists, ending in gold ZIF contacts. Right: the same board from below, its body on a steel stiffener with holes, its tail with a cross-hatched ground. Labels: KiCad synchronized design, Blender rendering and flexing; flex modes (bending, twisting, cones); coverlay (amber, black, white); stiffeners (steel, FR4, polyimide).">
-  </picture>
-</p>
-<p align="center"><sub>Left: IMS mode: an LED board on a copper base in Realistic mode. In KiCad it is a plain 2-layer board; KiLeidoscope draws its metal base. See the <a href="docs/ims.md">IMS guide</a>.<br>
-Right: flex mode: the flex template folded in Blender from a few marks on its Bend and Stiffener layers in KiCad, with its coverlay and stiffeners. See the <a href="docs/flex.md">flex guide</a>.</sub></p>
-
-<p align="center">
-  <img src="assets/PartsLib_IC_web.png" width="800" alt="Close-up of an IC on a board with its case opened up: the die with its logic, memory and two inductor loops, gold bond wires arching from the die's pads to the lead frame, and the leads around it.">
-</p>
-<p align="center"><sub>Part libraries: an IC from a part library, opened up to show its die, bond wires and lead frame. A library's parts take the place of KiCad's models by footprint name. See the <a href="docs/part-libraries.md">part libraries guide</a>.</sub></p>
+<table>
+<tr>
+<td width="50%" valign="top">
+<p align="center"><img src="assets/collisions.png" width="201" alt="Two boards in a multi-board assembly. Red boxes mark where boards and components collide, and a malformed board outline is highlighted red."></p>
+<b>Multi-board assemblies</b><br>
+Up to four boards from four KiCad PCB editors in one window, each live from its own KiCad, placed as they sit in the product and checked for collisions, with the arrangement kept in an OpenUSD file. See the <a href="docs/multi-board.md">multi-board guide</a>.
+</td>
+<td width="50%" valign="top">
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/CutPlaneViasAnnotatedDark_web.png">
+<img src="assets/CutPlaneViasAnnotatedLight_web.png" width="380" alt="A board cut open with the cut plane. The cross section shows laminate bands and copper layers, with labels for edge plating and for buried, blind, tented, plugged, filled and capped vias.">
+</picture></p>
+<b>Cut plane</b><br>
+Opens the board and shows its cross section, with each via drawn as KiCad has it set. See the <a href="docs/cut-plane.md">cut plane guide</a>.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/IMS_dark_web.png">
+<img src="assets/IMS_light_web.png" width="300" alt="An LED board on a copper base: four large LED packages, copper pads and mounting holes on a white solder mask, the copper base showing along the board's edges and inside the holes. Labels point to the insulated metal substrate, the copper or aluminum base, the different metal finishes and a dashed cross-sectional view line.">
+</picture></p>
+<b>IMS boards</b><br>
+A 2-layer board drawn on its aluminum or copper base, the thin epoxy under F.Cu, in 3D and in the cross section, with warnings for vias and plated holes that would short to the base. See the <a href="docs/ims.md">IMS guide</a>.
+</td>
+<td width="50%" valign="top">
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/FlexAnnotated_dark_web.png">
+<img src="assets/FlexAnnotated_light_web.png" width="380" alt="Two views of a folded flex board. Left: the flex template with amber coverlay, a body with mounting holes and a tail that bends and twists, ending in gold ZIF contacts. Right: the same board from below, its body on a steel stiffener with holes, its tail with a cross-hatched ground. Labels: KiCad synchronized design, Blender rendering and flexing; flex modes (bending, twisting, cones); coverlay (amber, black, white); stiffeners (steel, FR4, polyimide).">
+</picture></p>
+<b>Flex and rigid-flex boards</b><br>
+Bends, twists, cones, wraps and domes folded in Blender from marks on KiCad's Bend and Stiffener layers, with the stiffeners, the coverlay and flex checks as you route. Two KiCad templates to start from. See the <a href="docs/flex.md">flex guide</a>.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<p align="center"><img src="assets/llm-return-vias-crop.png" width="380" alt="Four labels beside two signal vias on a grey X-ray board: Return via 2.96 mm > 1.00 mm max and 2.59 mm > 1.00 mm max, and two translucent red suggested vias, each labelled Suggested via, fits (KiCad DRC)."></p>
+<b>LLM review</b><br>
+Paste one prompt into the LLM tool you already use, and its findings are drawn where they are, every claim measured again on the live board and its suggestions checked by KiCad's DRC. See the <a href="docs/llm-review.md">LLM guide</a>.
+</td>
+<td width="50%" valign="top">
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/dynamic-phase-sweep-dark.gif">
+<img src="assets/dynamic-phase-sweep-light.gif" width="313" alt="Dynamic phase on a board's differential pairs: pulses travel along each pair, P red and N blue, the tint showing where the two are apart in time, with amber markers on the pairs. First on the rendered board, then again in X-ray mode.">
+</picture></p>
+<b>Dynamic phase</b><br>
+How far a differential pair's P and N are apart in time at every point along the pair, live as you route, from the pair's tuning profile in KiCad. See the <a href="docs/dynamic-phase.md">dynamic phase guide</a>.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<p align="center"><img src="assets/PartsLib_IC_web.png" width="380" alt="Close-up of an IC on a board with its case opened up: the die with its logic, memory and two inductor loops, gold bond wires arching from the die's pads to the lead frame, and the leads around it."></p>
+<b>Part libraries</b><br>
+Parts made in Blender in place of KiCad's 3D models, matched by footprint name. Give a model the materials you want, save it to My parts, and every board uses it. See the <a href="docs/part-libraries.md">part libraries guide</a>.
+</td>
+<td width="50%" valign="top">
+<p align="center"><img src="assets/WireLib_web.png" width="380" alt="A small board with a copper toroid inductor, two capacitors and an IC opened up to show its die. Red and black wires, twisted together, are soldered into the pads at each end of the board."></p>
+<b>Wire library (coming soon!)</b><br>
+Wires soldered into the board's pads, with their gauge, insulation, colour and twist set per wire in Blender or from a field on the footprint in KiCad.
+</td>
+</tr>
+</table>
 
 ## Architecture
 
