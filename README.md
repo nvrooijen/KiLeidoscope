@@ -3,12 +3,10 @@
 </p>
 
 <p align="center">
-  <img src="assets/mainUI.png" width="400" align="middle" alt="A board in Blender with KiLeidoscope's Realistic colours and a differential pair highlighted red and blue, next to the KiLeidoscope sidebar panel: live with KiCad, Preview or Cycles, board finish ENIG and the stackup with a visibility eye and thickness per layer.">
+  <img src="assets/mainUI.png" width="334" align="middle" alt="A board in Blender with KiLeidoscope's Realistic colours and a differential pair highlighted red and blue, next to the KiLeidoscope sidebar panel: live with KiCad, Preview or Cycles, board finish ENIG and the stackup with a visibility eye and thickness per layer.">
   &nbsp;&nbsp;
-  <img src="assets/turntable.gif" width="400" align="middle" alt="A board turning in a Cycles render while it is edited in KiCad: the selected net's tracks get wider, the top solder mask and silkscreen switch off, X-ray mode turns the rest of the board see-through grey, and one segment of the net moves sideways.">
+  <img src="assets/WireLib_web.png" width="444" align="middle" alt="A small board with a copper toroid inductor, two capacitors and an IC opened up to show its die. Red and black wires, twisted together, are soldered into the pads at each end of the board.">
 </p>
-<p align="center"><sub>Right: real-time edits in KiCad appear in the Cycles render as the board turns, showcasing the various different modes of visualization and editing.<br>
-Board: <a href="https://github.com/piecol/CM5_MINIMA_REV3">CM5 MINIMA REV3</a> by Pierluigi Colangeli (CERN-OHL-S v2); the edits were made for this demo and are not part of the design.</sub></p>
 
 <p align="center">
   <a href="https://www.blender.org/download/"><img src="https://img.shields.io/badge/Blender-5.1%20%7C%205.2-E87D0D?logo=blender&logoColor=white" alt="Blender 5.1 and 5.2"></a>
@@ -97,7 +95,7 @@ How far a differential pair's P and N are apart in time at every point along the
 Parts made in Blender in place of KiCad's 3D models, matched by footprint name. Give a model the materials you want, save it to My parts, and every board uses it. See the <a href="docs/part-libraries.md">part libraries guide</a>.
 </td>
 <td width="50%" valign="top">
-<p align="center"><img src="assets/WireLib_web.png" width="380" alt="A small board with a copper toroid inductor, two capacitors and an IC opened up to show its die. Red and black wires, twisted together, are soldered into the pads at each end of the board."></p>
+<p align="center"><img src="assets/WireTemplate_web.png" width="245" alt="A blue test board with wires soldered in: red and black wires bent into arches, three wires in a black housing, a blue cable split into its coloured pairs, stripped wires on flat pads at the front, and a twisted pair under the board."></p>
 <b>Wire library (coming soon!)</b><br>
 Wires soldered into the board's pads, with their gauge, insulation, colour and twist set per wire in Blender or from a field on the footprint in KiCad.
 </td>
