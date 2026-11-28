@@ -20,9 +20,6 @@ KiLeidoscope is an interactive, real-time bridge between KiCad and Blender 3D so
 
 KiLeidoscope is fully open source and in early development; feedback and contributions are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
-
-<p align="center"><sub>More pictures in the <a href="docs/gallery.md">gallery</a>.</sub></p>
-
 ## Features
 
 <p align="center"><img src="assets/feature-tabs.png" width="606" alt="KiLeidoscope's sidebar tabs in Blender: Studio, Multi-board, IMS, Flex, DRC, LLM, Diff pairs, Parts and Wires."></p>
@@ -96,6 +93,8 @@ Wires soldered into the board's pads, with their gauge, insulation, colour and t
 </td>
 </tr>
 </table>
+
+More pictures in the [gallery](https://github.com/nvrooijen/KiLeidoscope/blob/main/docs/gallery.md).
 
 ## Architecture
 
