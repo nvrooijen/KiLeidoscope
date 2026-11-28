@@ -87,7 +87,7 @@ How far a differential pair's P and N are apart in time at every point along the
 Parts made in Blender in place of KiCad's 3D models, matched by footprint name. Give a model the materials you want, save it to My parts, and every board uses it. See the <a href="docs/part-libraries.md">part libraries guide</a>.
 </td>
 <td width="50%" valign="top">
-<p align="center"><img src="assets/WireTemplate_web.png" width="245" alt="A blue test board with wires soldered in: red and black wires bent into arches, three wires in a black housing, a blue cable split into its coloured pairs, stripped wires on flat pads at the front, and a twisted pair under the board."></p>
+<p align="center"><img src="assets/WireTemplate_web.png" width="278" alt="The KiLeidoscope wire library template in Blender: two red and black twisted pairs rising from the board, red and black wires bent into arches through strain-relief holes, a black wire bent down past the board's edge, white and black wires stripped and soldered flat onto pads at the front, a two-pin header and a twisted pair running off to the left."></p>
 <b>Wire library (coming soon!)</b><br>
 Wires soldered into the board's pads, with their gauge, insulation, colour and twist set per wire in Blender or from a field on the footprint in KiCad.
 </td>
