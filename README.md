@@ -22,7 +22,7 @@ KiLeidoscope is fully open source and in early development; feedback and contrib
 
 ## Features
 
-<p align="center"><img src="assets/feature-tabs.png" width="606" alt="KiLeidoscope's sidebar tabs in Blender: Studio, Multi-board, IMS, Flex, DRC, LLM, Diff pairs, Parts and Wires."></p>
+<p align="center"><img src="assets/feature-tabs.png" width="680" alt="KiLeidoscope's sidebar tabs in Blender: Studio, Multi-board, IMS, Flex, DRC, LLM, Diff pairs, Parts and Wires."></p>
 
 - Live 3D view of the open board: copper, zones, pads, vias, drills and the board outline, updated as you edit.
 - Solder mask, silkscreen, fabrication and drawing layers and 3D component models, from KiCad's own exports of the unsaved board.
