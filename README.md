@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="assets/mainUI.svg" width="334" align="middle" alt="The KiLeidoscope wire library template in Blender: wires, twisted pairs and cables plugged into USB-C, USB-A, RJ45, DC barrel and JST SH connectors. It fades between solid jackets and Transparent jackets, which show the crimp contacts, the USB plug's paddle card and the RJ45's flat wire row, while the RJ45's yellow activity LED flickers. Bottom left, the KiLeidoscope panel: live with KiCad.">
+  <img src="assets/mainUI.svg" width="389" align="middle" alt="The KiLeidoscope wire library template in Blender: wires, twisted pairs and cables plugged into USB-C, USB-A, RJ45, DC barrel and JST SH connectors. It fades between solid jackets and Transparent jackets, which show the crimp contacts, the USB plug's paddle card and the RJ45's flat wire row, while the RJ45's yellow activity LED flickers. Bottom left, the KiLeidoscope panel: live with KiCad.">
   &nbsp;&nbsp;
-  <img src="assets/WireLib_web.png" width="444" align="middle" alt="A small board with a copper toroid inductor, two capacitors and an IC opened up to show its die. Red and black wires, twisted together, are soldered into the pads at each end of the board.">
+  <img src="assets/WireLib_web.png" width="389" align="middle" alt="A small board with a copper toroid inductor, two capacitors and an IC opened up to show its die. Red and black wires, twisted together, are soldered into the pads at each end of the board.">
 </p>
 
 <p align="center">
